@@ -15,7 +15,9 @@ use crate::smoke_test_environment::SwarmBuilder;
 use aptos_forge::{NodeExt, SwarmExt};
 use aptos_logger::info;
 use std::{sync::Arc, time::Duration};
-use aptos_sdk::transaction_builder::TransactionFactory;
+use tokio::time::sleep;
+use move_core_types::identifier::Identifier;
+use move_core_types::language_storage::ModuleId;
 
 /// Test basic timelock flow with fast interval for testing.
 ///
@@ -61,11 +63,11 @@ async fn test_timelock_basic_flow() {
 
         let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
             aptos_types::transaction::EntryFunction::new(
-                aptos_types::move_utils::ModuleId::new(
+                ModuleId::new(
                     aptos_types::account_address::AccountAddress::ONE,
-                    aptos_types::identifier::Identifier::new("timelock_config").unwrap(),
+                    Identifier::new("timelock_config").unwrap(),
                 ),
-                aptos_types::identifier::Identifier::new("set_interval_for_testing").unwrap(),
+                Identifier::new("set_interval_for_testing").unwrap(),
                 vec![],
                 vec![bcs::to_bytes(&(interval_secs * 1_000_000)).unwrap()],
             ),

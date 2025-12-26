@@ -18,6 +18,8 @@ use tokio::time::sleep;
 use aptos_dkg::ibe;
 use aptos_dkg::pvss::traits::Transcript;
 use aptos_types::dkg::real_dkg::Transcripts;
+use move_core_types::identifier::Identifier;
+use move_core_types::language_storage::ModuleId;
 
 #[tokio::test]
 async fn test_ibe_encrypt_decrypt_e2e() {
@@ -52,11 +54,11 @@ async fn test_ibe_encrypt_decrypt_e2e() {
 
         let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
             aptos_types::transaction::EntryFunction::new(
-                aptos_types::move_utils::ModuleId::new(
+                ModuleId::new(
                     aptos_types::account_address::AccountAddress::ONE,
-                    aptos_types::identifier::Identifier::new("timelock_config").unwrap(),
+                    Identifier::new("timelock_config").unwrap(),
                 ),
-                aptos_types::identifier::Identifier::new("set_interval_for_testing").unwrap(),
+                Identifier::new("set_interval_for_testing").unwrap(),
                 vec![],
                 vec![bcs::to_bytes(&(interval_secs * 1_000_000)).unwrap()],
             ),
