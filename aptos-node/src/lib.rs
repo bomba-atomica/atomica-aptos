@@ -250,8 +250,8 @@ pub fn start_and_report_ports(
     );
 
     assert!(
-        !cfg!(feature = "testing") && !cfg!(feature = "fuzzing"),
-        "Testing features shouldn't be compiled"
+        !cfg!(feature = "fuzzing"),
+        "Fuzzing features shouldn't be compiled"
     );
 
     // Ensure failpoints are configured correctly

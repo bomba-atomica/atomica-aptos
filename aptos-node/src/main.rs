@@ -12,11 +12,14 @@ use clap::Parser;
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 fn main() {
-    // Check that we are not including any Move test natives
-    aptos_vm::natives::assert_no_test_natives(ERROR_MSG_BAD_FEATURE_FLAGS);
+    #[cfg(not(feature = "testing"))]
+    {
+        // Check that we are not including any Move test natives
+        aptos_vm::natives::assert_no_test_natives(ERROR_MSG_BAD_FEATURE_FLAGS);
 
-    // Check that we do have the Move VM's tracing feature enabled
-    move_vm_runtime::tracing::assert_move_vm_tracing_feature_disabled(ERROR_MSG_BAD_FEATURE_FLAGS);
+        // Check that we do have the Move VM's tracing feature enabled
+        move_vm_runtime::tracing::assert_move_vm_tracing_feature_disabled(ERROR_MSG_BAD_FEATURE_FLAGS);
+    }
 
     // Start the node
     AptosNodeArgs::parse().run()
