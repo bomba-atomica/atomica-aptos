@@ -19,14 +19,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::weighted_vuf::bls::BLS_WVUF_DST;
-use aptos_crypto::blstrs::multi_pairing;
-use blstrs::{G1Projective, G2Projective, Gt, Scalar};
-use ff::Field;
-use group::Group;
-use rand::thread_rng;
-use sha3::{Digest, Keccak256};
-use std::iter;
+use crate::ibe::{ibe_encrypt, ibe_decrypt, Ciphertext, serialize_g2, deserialize_g2};
 
 /// Represents the public parameters for a single encryption layer.
 /// For timelock, this typically wraps the Identity-Based Encryption (IBE) public key
@@ -81,21 +74,9 @@ pub enum DecryptionResult {
     Plaintext(Vec<u8>),
 }
 
-use crate::ibe::{ibe_encrypt, ibe_decrypt, Ciphertext, serialize_g2, deserialize_g2};
-use anyhow::anyhow;
-
 /// Implementation of Onion Encryption using Boneh-Franklin IBE.
 pub struct IBEOnion;
 
-// ... (OnionPublicParams and OnionSecretKey structs remain unchanged)
-
-// OnionCiphertext struct is now just a wrapper mostly, but we can keep it as the output format
-// that serializes cleanly.
-// Actually, since we are using crate::ibe::Ciphertext for internal layers, 
-// the final output of multi_encrypt is also a crate::ibe::Ciphertext (the outermost layer).
-// So OnionCiphertext is redundant? 
-// No, OnionCiphertext in my design was {u, v}. crate::ibe::Ciphertext is {u, v}.
-// They are identical. I will use crate::ibe::Ciphertext as the return type to be consistent.
 
 impl OnionEncryption for IBEOnion {
     fn multi_encrypt(

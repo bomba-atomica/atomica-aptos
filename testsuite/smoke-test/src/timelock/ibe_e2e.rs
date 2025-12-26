@@ -48,12 +48,14 @@ async fn test_ibe_encrypt_decrypt_e2e() {
             0,
         );
         let root_account_data = client.get_account(root_account.address()).await.unwrap();
-        *root_account.sequence_number_mut() = root_account_data.inner().sequence_number;
+        root_account.set_sequence_number(root_account_data.inner().sequence_number);
 
         let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
             aptos_types::transaction::EntryFunction::new(
-                aptos_types::account_address::AccountAddress::ONE,
-                aptos_types::identifier::Identifier::new("timelock_config").unwrap(),
+                aptos_types::move_utils::ModuleId::new(
+                    aptos_types::account_address::AccountAddress::ONE,
+                    aptos_types::identifier::Identifier::new("timelock_config").unwrap(),
+                ),
                 aptos_types::identifier::Identifier::new("set_interval_for_testing").unwrap(),
                 vec![],
                 vec![bcs::to_bytes(&(interval_secs * 1_000_000)).unwrap()],
