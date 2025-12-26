@@ -9,7 +9,9 @@ use crate::{
 };
 use aptos_consensus_types::{common::Author, safety_data::SafetyData};
 use aptos_crypto::{bls12381, PrivateKey};
-use aptos_global_constants::{CONSENSUS_KEY, OWNER_ACCOUNT, SAFETY_DATA, WAYPOINT};
+use aptos_global_constants::{
+    CONSENSUS_KEY, OWNER_ACCOUNT, SAFETY_DATA, TIMELOCK_SHARE, WAYPOINT,
+};
 use aptos_logger::prelude::*;
 use aptos_secure_storage::{KVStorage, Storage};
 use aptos_types::waypoint::Waypoint;
@@ -187,6 +189,17 @@ impl PersistentSafetyStorage {
 
     pub fn internal_store(&mut self) -> &mut Storage {
         &mut self.internal_store
+    }
+
+    pub fn set_timelock_share(&mut self, interval: u64, share: Vec<u8>) -> Result<(), Error> {
+        let key = format!("{}_{}", TIMELOCK_SHARE, interval);
+        self.internal_store.set(&key, share)?;
+        Ok(())
+    }
+
+    pub fn get_timelock_share(&self, interval: u64) -> Result<Vec<u8>, Error> {
+        let key = format!("{}_{}", TIMELOCK_SHARE, interval);
+        Ok(self.internal_store.get::<Vec<u8>>(&key).map(|v| v.value)?)
     }
 }
 

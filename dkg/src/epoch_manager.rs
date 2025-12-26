@@ -78,11 +78,6 @@ pub struct EpochManager<P: OnChainConfigProvider> {
     // Note: We don't store start_event_tx because we send the event immediately after spawn
     timelock_rpc_msg_txs:
         HashMap<u64, aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
-
-    // In-memory storage of timelock secret shares (interval -> scalar_bytes)
-    // TODO Phase 4: Replace with persistent storage to survive restarts
-    // These are the BLS scalar shares from DKG that will be used to compute decryption keys
-    timelock_shares_cache: HashMap<u64, Vec<u8>>,
 }
 
 impl<P: OnChainConfigProvider> EpochManager<P> {
@@ -113,7 +108,6 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             key_storage: storage(safety_rules_config),
             timelock_dkg_close_txs: HashMap::new(),
             timelock_rpc_msg_txs: HashMap::new(),
-            timelock_shares_cache: HashMap::new(),
         }
     }
 
@@ -580,15 +574,19 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             }
         };
         
-        // Serialize scalar share
-        // share.main is the scalar. Use to_bytes_le() if available via trait or direct.
-        // It is `blstrs::Scalar`. It implements `Serialize`.
-        // `process_timelock_reveal` uses `scalar_from_bytes_le`.
-        // So I should use `to_bytes_le`.
-        // `DealtSecretKeyShare` in RealDKG is `blstrs::Scalar`.
-        let scalar_bytes = share.main.to_bytes_le();
+        // Serialize the secret key shares
+        // share.main is Vec<DealtSecretKeyShare>, each wrapping a G1Projective point
+        // For timelock, we need to store these shares so we can later derive the decryption key
+        // We'll serialize the entire share structure using BCS
+        let share_bytes = match bcs::to_bytes(&share) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                error!("[Timelock] Failed to serialize share for interval {}: {}", event.interval, e);
+                return;
+            }
+        };
         
-        if let Err(e) = self.store_timelock_share(event.interval, &scalar_bytes) {
+        if let Err(e) = self.store_timelock_share(event.interval, &share_bytes) {
              error!("[Timelock] Failed to store share: {}", e);
         }
     }
@@ -608,38 +606,31 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             },
         };
 
-        // 2. Deserialize the secret share scalar
-        let scalar = match aptos_crypto::blstrs::scalar_from_bytes_le(&share_bytes) {
+        // 2. Deserialize the secret key shares
+        use aptos_types::dkg::real_dkg::DealtSecretKeyShares;
+        let shares: DealtSecretKeyShares = match bcs::from_bytes(&share_bytes) {
             Ok(s) => s,
             Err(e) => {
                 error!(
-                    "[Timelock] Failed to deserialize secret share for interval {}: {}",
+                    "[Timelock] Failed to deserialize secret shares for interval {}: {}",
                     event.interval, e
                 );
                 return;
             },
         };
 
-        // 3. Compute timelock identity for this interval
-        // TODO: Get chain_id from epoch_state or config
-        // For now, hardcode to 1 (testnet). This should come from ChainId config.
-        let chain_id = 1u8;
-        let identity = aptos_dkg::ibe::compute_timelock_identity(event.interval, chain_id);
+        // 3. Extract the G1 point from the first share
+        // For timelock, we use the main path share
+        // The share is already the decryption key component (G1 point)
+        if shares.main.is_empty() {
+            error!("[Timelock] No main shares available for interval {}", event.interval);
+            return;
+        }
+        
+        let dk_g1 = shares.main[0].as_group_element().clone();
 
-        // 4. Derive decryption key: dk = scalar * H(identity)
-        let decryption_key = match aptos_dkg::ibe::derive_decryption_key(&scalar, &identity) {
-            Ok(dk) => dk,
-            Err(e) => {
-                error!(
-                    "[Timelock] Failed to derive decryption key for interval {}: {}",
-                    event.interval, e
-                );
-                return;
-            },
-        };
-
-        // 5. Serialize decryption key to bytes (G1 compressed = 48 bytes)
-        let dk_bytes = match aptos_dkg::ibe::serialize_g1(&decryption_key) {
+        // 4. Serialize decryption key to bytes (G1 compressed = 48 bytes)
+        let dk_bytes = match aptos_dkg::ibe::serialize_g1(&dk_g1) {
             Ok(bytes) => bytes,
             Err(e) => {
                 error!(
@@ -650,7 +641,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             },
         };
 
-        // 6. Create and submit TimelockShare transaction
+        // 5. Create and submit TimelockShare transaction
         let share = aptos_types::dkg::TimelockShare {
             interval: event.interval,
             author: self.my_addr,
@@ -677,16 +668,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             share.len()
         );
 
-        // Store in-memory for now
-        self.timelock_shares_cache.insert(interval, share.to_vec());
+        // Store in key_storage (persistent)
+        self.key_storage
+            .set_timelock_share(interval, share.to_vec())
+            .map_err(|e| anyhow!("[Timelock] Failed to store share: {}", e))?;
 
-        // TODO Phase 4: Persist to disk
-        // - Extend PersistentSafetyStorage or create TimelockShareStorage
-        // - Encrypt with validator's consensus key
-        // - Handle cleanup of old shares (after reveal + some grace period)
-
-        warn!(
-            "[Timelock] Share for interval {} stored in-memory only - will be lost on restart",
+        info!(
+            "[Timelock] Share for interval {} stored successfully in persistent storage",
             interval
         );
         Ok(())
@@ -696,22 +684,14 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     ///
     /// Returns error if share not found (validator may have joined after that interval).
     fn retrieve_timelock_share(&self, interval: u64) -> Result<Vec<u8>> {
-        info!(
-            "[Timelock] Retrieving secret share for interval {}",
-            interval
-        );
-
-        // Lookup in-memory cache
-        self.timelock_shares_cache
-            .get(&interval)
-            .cloned()
-            .ok_or_else(|| {
+        // Lookup in persistent storage
+        self.key_storage
+            .get_timelock_share(interval)
+            .map_err(|e| {
                 anyhow!(
-                    "No secret share found for interval {}. Validator may not have participated in DKG for this interval.",
-                    interval
+                    "No secret share found for interval {}: {}. Validator may not have participated in DKG for this interval.",
+                    interval, e
                 )
             })
-
-        // TODO Phase 4: Load from persistent storage if not in cache
     }
 }

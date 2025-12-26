@@ -76,6 +76,7 @@ This is the reference documentation of the Aptos framework.
 -  [`0x1::sui_derivable_account`](sui_derivable_account.md#0x1_sui_derivable_account)
 -  [`0x1::system_addresses`](system_addresses.md#0x1_system_addresses)
 -  [`0x1::timelock`](timelock.md#0x1_timelock)
+-  [`0x1::timelock_config`](timelock_config.md#0x1_timelock_config)
 -  [`0x1::timestamp`](timestamp.md#0x1_timestamp)
 -  [`0x1::transaction_context`](transaction_context.md#0x1_transaction_context)
 -  [`0x1::transaction_fee`](transaction_fee.md#0x1_transaction_fee)

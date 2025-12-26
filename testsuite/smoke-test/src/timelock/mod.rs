@@ -8,6 +8,7 @@
 //! for sealed bid auctions.
 
 pub mod basic_flow;
+pub mod ibe_e2e;
 
 use anyhow::{anyhow, Result};
 use aptos_api_types::ViewFunction;

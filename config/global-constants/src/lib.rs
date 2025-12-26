@@ -16,6 +16,7 @@ pub const OWNER_ACCOUNT: &str = "owner_account";
 /// Definitions of global data items (e.g., as held in secure storage)
 pub const SAFETY_DATA: &str = "safety_data";
 pub const WAYPOINT: &str = "waypoint";
+pub const TIMELOCK_SHARE: &str = "timelock_share";
 pub const GENESIS_WAYPOINT: &str = "genesis-waypoint";
 
 // TODO(Gas): double check if this right
