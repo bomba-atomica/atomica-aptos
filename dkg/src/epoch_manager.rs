@@ -25,8 +25,8 @@ use aptos_safety_rules::{safety_rules_manager::storage, PersistentSafetyStorage}
 use aptos_types::{
     account_address::AccountAddress,
     dkg::{
-        DKGSessionMetadata, DKGStartEvent, DKGState, DefaultDKG, RequestRevealEvent,
-        StartKeyGenEvent,
+        DKGSessionMetadata, DKGStartEvent, DKGState, DefaultDKG, KeyPublishedEvent,
+        RequestRevealEvent, StartKeyGenEvent,
     },
     epoch_state::EpochState,
     on_chain_config::{
@@ -142,6 +142,9 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                     return Ok(());
                 } else if let Ok(timelock_start) = StartKeyGenEvent::try_from(&event) {
                     self.start_timelock_dkg(timelock_start);
+                    return Ok(());
+                } else if let Ok(timelock_key) = KeyPublishedEvent::try_from(&event) {
+                    self.process_timelock_key_published(timelock_key);
                     return Ok(());
                 } else if let Ok(timelock_reveal) = RequestRevealEvent::try_from(&event) {
                     self.process_timelock_reveal(timelock_reveal);
@@ -510,6 +513,86 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // For now, this secret share extraction is deferred
     }
 
+    fn process_timelock_key_published(&mut self, event: KeyPublishedEvent) {
+        use aptos_types::dkg::{real_dkg::maybe_dk_from_bls_sk, DKGTrait, TimelockConfig};
+
+        info!("[Timelock] Processing KeyPublishedEvent for interval {}", event.interval);
+
+        let epoch_state = match &self.epoch_state {
+            Some(s) => s.clone(),
+            None => {
+                error!("[Timelock] Cannot process key published - no epoch state");
+                return;
+            }
+        };
+
+        // Reconstruct metadata
+        let total = epoch_state.verifier.len() as u64;
+        // Threshold: floor(N * 2 / 3) + 1
+        let threshold = (total * 2 / 3) + 1;
+        let config = TimelockConfig { threshold, total_validators: total };
+        // Create a dummy StartKeyGenEvent to reuse the metadata builder
+        let start_event = StartKeyGenEvent { interval: event.interval, config };
+
+        let metadata = self.build_timelock_session_metadata(&start_event, &epoch_state);
+        let pub_params = DefaultDKG::new_public_params(&metadata);
+        
+        // Deserialize transcript
+        let transcript: <DefaultDKG as DKGTrait>::Transcript = match bcs::from_bytes(&event.public_key) {
+             Ok(t) => t,
+             Err(e) => {
+                 error!("[Timelock] Failed to deserialize transcript for interval {}: {}", event.interval, e);
+                 return;
+             }
+        };
+
+        let my_pk = match epoch_state.verifier.get_public_key(&self.my_addr) {
+            Some(pk) => pk,
+            None => {
+                warn!("[Timelock] My public key not found in validator set");
+                return;
+            }
+        };
+        
+        let dealer_sk = match self.key_storage.consensus_sk_by_pk(my_pk) {
+            Ok(sk) => sk,
+            Err(e) => {
+                error!("[Timelock] Failed to get consensus SK: {}", e); 
+                return; 
+            }
+        };
+
+        let dk = match maybe_dk_from_bls_sk(&dealer_sk) {
+            Ok(dk) => dk,
+            Err(e) => {
+                error!("[Timelock] Failed to convert SK to DK: {}", e);
+                return;
+            }
+        };
+
+        let my_index = *epoch_state.verifier.address_to_validator_index().get(&self.my_addr).unwrap() as u64;
+
+        let (share, _pk_share) = match DefaultDKG::decrypt_secret_share_from_transcript(&pub_params, &transcript, my_index, &dk) {
+            Ok(res) => res,
+            Err(e) => {
+                error!("[Timelock] Failed to decrypt share for interval {}: {}", event.interval, e);
+                return;
+            }
+        };
+        
+        // Serialize scalar share
+        // share.main is the scalar. Use to_bytes_le() if available via trait or direct.
+        // It is `blstrs::Scalar`. It implements `Serialize`.
+        // `process_timelock_reveal` uses `scalar_from_bytes_le`.
+        // So I should use `to_bytes_le`.
+        // `DealtSecretKeyShare` in RealDKG is `blstrs::Scalar`.
+        let scalar_bytes = share.main.to_bytes_le();
+        
+        if let Err(e) = self.store_timelock_share(event.interval, &scalar_bytes) {
+             error!("[Timelock] Failed to store share: {}", e);
+        }
+    }
+
     fn process_timelock_reveal(&self, event: RequestRevealEvent) {
         info!("[Timelock] Revealing share for interval {}", event.interval);
 
@@ -570,6 +653,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // 6. Create and submit TimelockShare transaction
         let share = aptos_types::dkg::TimelockShare {
             interval: event.interval,
+            author: self.my_addr,
             share: dk_bytes,
         };
 

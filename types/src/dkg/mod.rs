@@ -238,6 +238,7 @@ pub type DefaultDKG = RealDKG;
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct TimelockShare {
     pub interval: u64,
+    pub author: AccountAddress,
     pub share: Vec<u8>,
 }
 
@@ -290,6 +291,28 @@ impl TryFrom<&ContractEvent> for RequestRevealEvent {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeyPublishedEvent {
+    pub interval: u64,
+    pub public_key: Vec<u8>,
+}
+
+impl MoveStructType for KeyPublishedEvent {
+    const MODULE_NAME: &'static IdentStr = ident_str!("timelock");
+    const STRUCT_NAME: &'static IdentStr = ident_str!("KeyPublishedEvent");
+}
+
+impl TryFrom<&ContractEvent> for KeyPublishedEvent {
+    type Error = anyhow::Error;
+
+    fn try_from(event: &ContractEvent) -> Result<Self> {
+        if event.type_tag() != &TypeTag::Struct(Box::new(Self::struct_tag())) {
+            bail!("Expected KeyPublishedEvent tag");
+        }
+        bcs::from_bytes(event.event_data()).context("Failed to deserialize KeyPublishedEvent")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +321,7 @@ mod tests {
     fn test_timelock_share_bcs() {
         let share = TimelockShare {
             interval: 100,
+            author: AccountAddress::ONE,
             share: vec![1, 2, 3, 4],
         };
         let bytes = bcs::to_bytes(&share).expect("serialization failed");

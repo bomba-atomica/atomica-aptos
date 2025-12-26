@@ -37,7 +37,7 @@ impl AptosVM {
         let mut session = self.new_session(resolver, session_id, None);
 
         let args = vec![
-            MoveValue::Signer(AccountAddress::ONE), // Or validator address? Using ONE/Framework for now as per dkg.rs pattern
+            MoveValue::Signer(dkg_transcript.metadata.author),
             MoveValue::U64(dkg_transcript.metadata.epoch), // Reuse epoch as interval
             dkg_transcript.transcript_bytes.as_move_value(),
         ];
@@ -79,7 +79,7 @@ impl AptosVM {
         let mut session = self.new_session(resolver, session_id, None);
 
         let args = vec![
-            MoveValue::Signer(AccountAddress::ONE),
+            MoveValue::Signer(share.author),
             MoveValue::U64(share.interval),
             share.share.as_move_value(),
         ];

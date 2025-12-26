@@ -15,6 +15,7 @@ use crate::smoke_test_environment::SwarmBuilder;
 use aptos_forge::{NodeExt, SwarmExt};
 use aptos_logger::info;
 use std::{sync::Arc, time::Duration};
+use aptos_sdk::transaction_builder::TransactionFactory;
 
 /// Test basic timelock flow with fast interval for testing.
 ///
@@ -40,15 +41,46 @@ async fn test_timelock_basic_flow() {
         .with_init_genesis_config(Arc::new(move |conf| {
             // Enable validator transactions (required for timelock)
             conf.consensus_config.enable_validator_txns();
-
-            // TODO: Add timelock configuration for shorter intervals
-            // This would require adding timelock_config to GenesisConfiguration
-            // For now, we rely on the default interval
         }))
         .build_with_cli(0)
         .await;
 
     let client = swarm.validators().next().unwrap().rest_client();
+
+    // Configure shorter interval for testing
+    {
+        info!("Setting timelock interval to {} seconds", interval_secs);
+        let root_key = swarm.root_key();
+        let mut root_account = aptos_sdk::types::LocalAccount::new(
+            aptos_types::account_address::AccountAddress::ONE,
+            root_key,
+            0,
+        );
+        let root_account_data = client.get_account(root_account.address()).await.unwrap();
+        *root_account.sequence_number_mut() = root_account_data.inner().sequence_number;
+
+        let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
+            aptos_types::transaction::EntryFunction::new(
+                aptos_types::account_address::AccountAddress::ONE,
+                aptos_types::identifier::Identifier::new("timelock_config").unwrap(),
+                aptos_types::identifier::Identifier::new("set_interval_for_testing").unwrap(),
+                vec![],
+                vec![bcs::to_bytes(&(interval_secs * 1_000_000)).unwrap()],
+            ),
+        );
+
+        let signed_txn = root_account.sign_with_transaction_builder(
+            aptos_sdk::transaction_builder::TransactionFactory::new(swarm.chain_id())
+                .payload(payload)
+                .max_gas_amount(2_000_000)
+                .gas_unit_price(100),
+        );
+
+        client.submit_and_wait(&signed_txn).await.unwrap();
+        info!("Timelock interval configured successfully");
+    }
+
+
 
     info!("Swarm started, verifying timelock is initialized at genesis");
 
@@ -79,49 +111,59 @@ async fn test_timelock_basic_flow() {
     info!("First rotation complete, verifying public key published");
 
     // Step 3 - Verify public key for the new interval is published
-    // Note: This may fail if validators haven't published yet
-    match super::verify_public_key_published(&client, target_interval).await {
-        Ok(public_key) => {
-            info!(
-                "Public key published for interval {}: {} bytes",
-                target_interval,
-                public_key.len()
-            );
-            // BLS12-381 G2 point should be 96 bytes (compressed)
-            assert!(
-                public_key.len() == 48 || public_key.len() == 96,
-                "Public key should be 48 or 96 bytes, got {}",
-                public_key.len()
-            );
-        }
-        Err(e) => {
-            info!(
-                "Public key not yet published for interval {}: {}",
-                target_interval, e
-            );
-            // This is expected if DKG hasn't completed
-        }
-    };
-
-    // Step 4 - Check if secret is revealed for previous interval
-    if initial_interval > 0 {
-        match super::verify_secret_aggregated(&client, initial_interval - 1, 3).await {
-            Ok(secret) => {
+    info!("Waiting for public key to be published for interval {}", target_interval);
+    let mut pub_key_published = false;
+    for _ in 0..60 { // Wait up to 60 seconds
+        match super::verify_public_key_published(&client, target_interval).await {
+            Ok(public_key) => {
                 info!(
-                    "Secret revealed for interval {}: {} bytes",
-                    initial_interval - 1,
-                    secret.len()
+                    "Public key published for interval {}: {} bytes",
+                    target_interval,
+                    public_key.len()
                 );
+                // For now, we store the full transcript, so it's large.
+                assert!(public_key.len() > 0);
+                pub_key_published = true;
+                break;
             }
-            Err(e) => {
-                info!(
-                    "Secret not yet revealed for interval {}: {}",
-                    initial_interval - 1,
-                    e
-                );
+            Err(_) => {
+                sleep(Duration::from_secs(1)).await;
             }
         }
     }
+    assert!(pub_key_published, "Public key failure for interval {}", target_interval);
+
+    // Step 4 - Verify Secret Reveal
+    // Wait for next rotation (Target + 1)
+    let reveal_target_interval = target_interval + 1;
+    info!("Waiting for rotation to interval {} to trigger reveal of interval {}", reveal_target_interval, target_interval);
+    
+    super::wait_for_interval_rotation(&client, reveal_target_interval, timeout_secs)
+        .await
+        .unwrap();
+
+    // Now check if secret for `target_interval` is revealed
+    info!("Waiting for secret to be revealed for interval {}", target_interval);
+    let mut secret_revealed = false;
+    for _ in 0..60 {
+        match super::verify_secret_aggregated(&client, target_interval, 3).await {
+            Ok(secret) => {
+                info!(
+                    "Secret revealed for interval {}: {} bytes",
+                    target_interval,
+                    secret.len()
+                );
+                // Secret is a serialized Group Element (G1 or G2 or scalar)
+                assert!(secret.len() > 0);
+                secret_revealed = true;
+                break;
+            }
+            Err(_) => {
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+    assert!(secret_revealed, "Secret reveal failure for interval {}", target_interval);
 
     info!("✅ Test completed - basic timelock flow verified");
 }
