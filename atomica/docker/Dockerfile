@@ -40,14 +40,26 @@ ARG GIT_SHA
 RUN echo "Building Atomica Aptos from commit: ${GIT_SHA}"
 
 
-# Build binaries in release mode with cargo cache mount for fast incremental builds
+# 1. Build aptos CLI (Lightweight - ENABLED)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/atomica-aptos/target,sharing=locked \
-    cargo build --release --bin aptos-node --features testing && \
-    cargo build --release --package aptos-faucet-service && \
-    cp target/release/aptos-node /build/aptos-node && \
-    cp target/release/aptos-faucet-service /build/aptos-faucet-service
+    cargo build --release --package aptos && \
+    cp target/release/aptos /build/aptos
+
+# 2. Build Faucet Service (Medium - COMMENTED OUT)
+# RUN --mount=type=cache,target=/usr/local/cargo/registry \
+#     --mount=type=cache,target=/usr/local/cargo/git \
+#     --mount=type=cache,target=/build/atomica-aptos/target,sharing=locked \
+#     cargo build --release --package aptos-faucet-service && \
+#     cp target/release/aptos-faucet-service /build/aptos-faucet-service
+
+# 3. Build Validator Node (Heavy - COMMENTED OUT)
+# RUN --mount=type=cache,target=/usr/local/cargo/registry \
+#     --mount=type=cache,target=/usr/local/cargo/git \
+#     --mount=type=cache,target=/build/atomica-aptos/target,sharing=locked \
+#     cargo build --release --bin aptos-node --features testing && \
+#     cp target/release/aptos-node /build/aptos-node
 
 # Stage 2: Runtime image (minimal)
 FROM debian:bullseye-slim
@@ -72,12 +84,14 @@ RUN groupadd -g 6180 aptos && \
     useradd -u 6180 -g aptos -s /bin/bash -m aptos
 
 # Copy binaries from builder stage
-COPY --from=builder /build/aptos-node /usr/local/bin/aptos-node
-COPY --from=builder /build/aptos-faucet-service /usr/local/bin/aptos-faucet-service
+# COPY --from=builder /build/aptos-node /usr/local/bin/aptos-node
+# COPY --from=builder /build/aptos-faucet-service /usr/local/bin/aptos-faucet-service
+COPY --from=builder /build/aptos /usr/local/bin/aptos
 
 # Set permissions
-RUN chmod +x /usr/local/bin/aptos-node && \
-    chmod +x /usr/local/bin/aptos-faucet-service
+RUN chmod +x /usr/local/bin/aptos
+    # && chmod +x /usr/local/bin/aptos-node \
+    # && chmod +x /usr/local/bin/aptos-faucet-service
 
 # Create data directory
 RUN mkdir -p /opt/aptos/var && \
@@ -103,5 +117,5 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8080/v1 || exit 1
 
 # Use Tini as entrypoint for proper signal handling
-ENTRYPOINT ["/tini", "--", "/usr/local/bin/aptos-node"]
+ENTRYPOINT ["/tini", "--", "/usr/local/bin/aptos"]
 CMD ["--help"]
