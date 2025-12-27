@@ -7,33 +7,32 @@ on:
       - dev-atomica
       - docker-testnet-org-refactor
     paths:
-      - '**/*.rs'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - 'atomica/docker/**'
-      - '.github/workflows/build-validator-image.yml'
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "atomica/docker/**"
+      - ".github/workflows/build-validator-image.yml"
   pull_request:
     branches:
       - main
       - dev-atomica
       - docker-testnet-org-refactor
     paths:
-      - '**/*.rs'
-      - '**/Cargo.toml'
-      - '**/Cargo.lock'
-      - 'atomica/docker/**'
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "atomica/docker/**"
   workflow_dispatch:
     inputs:
       git_ref:
-        description: 'Git ref to build (branch, tag, or commit)'
+        description: "Git ref to build (branch, tag, or commit)"
         required: false
-        default: 'HEAD'
+        default: "HEAD"
       force_rebuild:
-        description: 'Force rebuild even if image exists'
+        description: "Force rebuild even if image exists"
         required: false
         type: boolean
         default: false
-
 
 env:
   REGISTRY: ghcr.io
@@ -82,7 +81,7 @@ jobs:
         id: git-commit
         run: |
           echo "Current directory: $(pwd)"
-          
+
           if [ -n "${{ github.event.inputs.git_ref }}" ]; then
             echo "Using input ref: ${{ github.event.inputs.git_ref }}"
             GIT_SHA=$(git rev-parse --short "${{ github.event.inputs.git_ref }}" || true)
@@ -90,12 +89,12 @@ jobs:
             echo "Using HEAD"
             GIT_SHA=$(git rev-parse --short HEAD || true)
           fi
-          
+
           if [ -z "$GIT_SHA" ]; then
             echo "Error: Failed to get git SHA"
             exit 1
           fi
-          
+
           echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
           echo "Git commit: $GIT_SHA"
 
@@ -128,7 +127,6 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
             type=ref,event=pr
-            type=sha,prefix={{branch}}-
 
       - name: Check if image exists
         id: check-image
