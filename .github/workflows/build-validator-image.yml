@@ -81,11 +81,21 @@ jobs:
       - name: Get git commit
         id: git-commit
         run: |
+          echo "Current directory: $(pwd)"
+          
           if [ -n "${{ github.event.inputs.git_ref }}" ]; then
-            GIT_SHA=$(git rev-parse --short "${{ github.event.inputs.git_ref }}")
+            echo "Using input ref: ${{ github.event.inputs.git_ref }}"
+            GIT_SHA=$(git rev-parse --short "${{ github.event.inputs.git_ref }}" || true)
           else
-            GIT_SHA=$(git rev-parse --short HEAD)
+            echo "Using HEAD"
+            GIT_SHA=$(git rev-parse --short HEAD || true)
           fi
+          
+          if [ -z "$GIT_SHA" ]; then
+            echo "Error: Failed to get git SHA"
+            exit 1
+          fi
+          
           echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
           echo "Git commit: $GIT_SHA"
 
