@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - dev-atomica
+      - docker-testnet-org-refactor
     paths:
       - '**/*.rs'
       - '**/Cargo.toml'
@@ -15,6 +16,7 @@ on:
     branches:
       - main
       - dev-atomica
+      - docker-testnet-org-refactor
     paths:
       - '**/*.rs'
       - '**/Cargo.toml'
