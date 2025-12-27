@@ -22,11 +22,11 @@ mod consensus_observer;
 mod execution;
 #[cfg(test)]
 mod full_nodes;
-#[cfg(test)]
+#[cfg(all(test, feature = "indexer-tests"))]
 mod fullnode;
 #[cfg(test)]
 mod genesis;
-#[cfg(test)]
+#[cfg(all(test, feature = "indexer-tests"))]
 mod indexer;
 #[cfg(test)]
 mod inspection_service;

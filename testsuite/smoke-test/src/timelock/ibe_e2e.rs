@@ -11,7 +11,7 @@
 //! 5. Successfully decrypt the message
 
 use crate::smoke_test_environment::SwarmBuilder;
-use aptos_forge::{NodeExt, SwarmExt};
+use aptos_forge::{NodeExt, Swarm};
 use aptos_logger::info;
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
@@ -43,14 +43,9 @@ async fn test_ibe_encrypt_decrypt_e2e() {
     // 1. Configure shorter interval for testing
     {
         info!("Setting timelock interval to {} seconds", interval_secs);
-        let root_key = swarm.root_key();
-        let mut root_account = aptos_sdk::types::LocalAccount::new(
-            aptos_types::account_address::AccountAddress::ONE,
-            root_key,
-            0,
-        );
-        let root_account_data = client.get_account(root_account.address()).await.unwrap();
-        root_account.set_sequence_number(root_account_data.inner().sequence_number);
+        let mut root_account = swarm.chain_info().root_account();
+
+        let interval_us: u64 = interval_secs * 1_000_000;
 
         let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
             aptos_types::transaction::EntryFunction::new(
@@ -60,7 +55,7 @@ async fn test_ibe_encrypt_decrypt_e2e() {
                 ),
                 Identifier::new("set_interval_for_testing").unwrap(),
                 vec![],
-                vec![bcs::to_bytes(&(interval_secs * 1_000_000)).unwrap()],
+                vec![bcs::to_bytes(&interval_us).unwrap()],
             ),
         );
 
