@@ -10,7 +10,7 @@ on:
       - '**/*.rs'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
-      - 'docker/validator/**'
+      - 'atomica/docker/**'
       - '.github/workflows/build-validator-image.yml'
   pull_request:
     branches:
@@ -21,7 +21,7 @@ on:
       - '**/*.rs'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
-      - 'docker/validator/**'
+      - 'atomica/docker/**'
   workflow_dispatch:
     inputs:
       git_ref:
@@ -92,7 +92,7 @@ jobs:
       - name: Get Dockerfile hash
         id: dockerfile-hash
         run: |
-          DOCKERFILE_HASH=$(sha256sum docker/validator/Dockerfile | cut -c1-8)
+          DOCKERFILE_HASH=$(sha256sum atomica/docker/Dockerfile | cut -c1-8)
           echo "hash=$DOCKERFILE_HASH" >> $GITHUB_OUTPUT
           echo "Dockerfile hash: $DOCKERFILE_HASH"
 
@@ -151,7 +151,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: docker/validator/Dockerfile
+          file: atomica/docker/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
