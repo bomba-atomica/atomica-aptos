@@ -92,9 +92,8 @@ jobs:
       - name: Setup Rust cache (core dependencies)
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "aptos-core-deps"
+          shared-key: "aptos-build"
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/dev-atomica' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/docker-testnet-org-refactor' }}
 
       - name: Build move-core-types
         run: |
@@ -147,9 +146,8 @@ jobs:
       - name: Setup Rust cache (aptos-node)
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "aptos-node"
+          shared-key: "aptos-build"
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/dev-atomica' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/docker-testnet-org-refactor' }}
 
       - name: Build aptos-node
         run: |
@@ -202,9 +200,8 @@ jobs:
       - name: Setup Rust cache (aptos CLI)
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "aptos-cli"
+          shared-key: "aptos-build"
           cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/dev-atomica' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/docker-testnet-org-refactor' }}
 
       - name: Build aptos CLI
         run: |

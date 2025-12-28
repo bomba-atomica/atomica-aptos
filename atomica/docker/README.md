@@ -24,22 +24,24 @@ The workflow uses three sequential jobs to build dependencies incrementally:
 1. **Job 1: `build-core-dependencies`** (150 min timeout)
    - Builds `move-core-types` package
    - Builds `aptos-framework` package
-   - Saves cache with key `aptos-core-deps`
+   - Saves cache with shared key `aptos-build`
    - Cache is saved even if job fails (`cache-on-failure: true`)
 
 2. **Job 2: `build-aptos-node`** (150 min timeout)
    - Depends on Job 1
-   - Restores cache from Job 1
+   - Restores cache from Job 1 (same shared key `aptos-build`)
    - Builds `aptos-node` binary with testing features
-   - Saves incremental cache with key `aptos-node`
+   - Saves incremental cache (same shared key)
    - Cache is saved even if job fails
 
 3. **Job 3: `build-aptos-cli`** (150 min timeout)
    - Depends on Job 2
-   - Restores cache from Job 2
+   - Restores cache from Job 2 (same shared key `aptos-build`)
    - Builds `aptos` CLI binary
-   - Saves final cache with key `aptos-cli`
+   - Saves final cache (same shared key)
    - Publishes binary to GitHub releases
+
+**Note:** All jobs use the same `shared-key: "aptos-build"` so each job builds incrementally on the previous job's compiled artifacts.
 
 **Why chained jobs?**
 - Each job builds on the previous job's cache
@@ -183,11 +185,8 @@ If the Docker image workflow fails with "Binary release not found":
 If builds are slow or cache isn't working:
 
 1. Check the `Swatinem/rust-cache` step in binary workflow
-2. Ensure `save-if` condition allows caching for your branch (must be `main`, `dev-atomica`, or `docker-testnet-org-refactor`)
-3. Verify all three cache keys are being used:
-   - `aptos-core-deps` (Job 1: core dependencies)
-   - `aptos-node` (Job 2: aptos-node)
-   - `aptos-cli` (Job 3: aptos CLI)
+2. Verify the shared cache key `aptos-build` is being used across all jobs
+3. Cache is always saved, regardless of branch (no `save-if` condition)
 4. Clear cache and rebuild if corrupted: manually delete GitHub Actions cache
 5. Note: Even if a job fails, the cache is saved due to `cache-on-failure: true`
 
