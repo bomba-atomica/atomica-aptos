@@ -30,10 +30,18 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Reduce memory pressure during builds
+  CARGO_BUILD_JOBS: 2
+  # Disable incremental compilation (not useful in CI and uses extra disk space)
+  CARGO_INCREMENTAL: 0
+  # Use lld linker for faster, lower-memory linking, and split debuginfo to reduce memory
+  RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C linker=clang -C split-debuginfo=unpacked"
 
 jobs:
   # Single job: Build all Aptos binaries in one run for efficiency
   build-aptos-binaries:
+    # Using ubuntu-latest (7GB RAM, 2 cores). For faster builds with a paid plan:
+    # runs-on: ubuntu-latest-4-cores (16GB RAM, 4 cores)
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -72,6 +80,21 @@ jobs:
         with:
           toolchain: 1.75.0
 
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Remove unnecessary software to free up ~30GB
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+          echo "Disk space after cleanup:"
+          df -h
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -95,7 +118,14 @@ jobs:
       - name: Build aptos-node
         run: |
           echo "Building aptos-node with testing features..."
+          echo "Memory before build:"
+          free -h
+
+          # Build with optimized settings for CI
           cargo build --release --bin aptos-node --features testing
+
+          echo "Memory after build:"
+          free -h
 
       - name: Verify aptos-node binary
         run: |
