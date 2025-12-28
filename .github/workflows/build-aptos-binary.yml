@@ -32,15 +32,12 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Job 1: Build core dependencies (move-core-types, aptos-framework)
-  build-core-dependencies:
+  # Single job: Build all Aptos binaries in one run for efficiency
+  build-aptos-binaries:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 180
     permissions:
-      contents: read
-    outputs:
-      git-sha: ${{ steps.git-commit.outputs.sha }}
-      git-sha-full: ${{ steps.git-commit.outputs.sha_full }}
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -89,61 +86,7 @@ jobs:
             libudev-dev \
             libdw-dev
 
-      - name: Setup Rust cache (core dependencies)
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "aptos-build"
-          cache-on-failure: true
-
-      - name: Build move-core-types
-        run: |
-          echo "Building move-core-types..."
-          cargo build --release --package move-core-types
-
-      - name: Build aptos-framework
-        run: |
-          echo "Building aptos-framework..."
-          cargo build --release --package aptos-framework
-
-      - name: Verify core dependencies built
-        run: |
-          echo "Core dependencies built successfully"
-          ls -lh target/release/deps/ | head -20
-
-  # Job 2: Build aptos-node (depends on core dependencies)
-  build-aptos-node:
-    needs: build-core-dependencies
-    runs-on: ubuntu-latest
-    timeout-minutes: 150
-    permissions:
-      contents: read
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.75.0
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            clang \
-            libssl-dev \
-            pkg-config \
-            libpq-dev \
-            lld \
-            libudev-dev \
-            libdw-dev
-
-      - name: Setup Rust cache (aptos-node)
+      - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "aptos-build"
@@ -164,45 +107,6 @@ jobs:
             exit 1
           fi
 
-  # Job 3: Build aptos CLI (depends on aptos-node)
-  build-aptos-cli:
-    needs: build-aptos-node
-    runs-on: ubuntu-latest
-    timeout-minutes: 150
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.75.0
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            clang \
-            libssl-dev \
-            pkg-config \
-            libpq-dev \
-            lld \
-            libudev-dev \
-            libdw-dev
-
-      - name: Setup Rust cache (aptos CLI)
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "aptos-build"
-          cache-on-failure: true
-
       - name: Build aptos CLI
         run: |
           echo "Building aptos CLI..."
@@ -215,21 +119,27 @@ jobs:
       - name: Prepare release artifacts
         run: |
           mkdir -p artifacts
-          cp target/release/aptos artifacts/aptos-${{ needs.build-core-dependencies.outputs.git-sha }}
+          cp target/release/aptos artifacts/aptos-${{ steps.git-commit.outputs.sha }}
           cp target/release/aptos artifacts/aptos
-          chmod +x artifacts/aptos-${{ needs.build-core-dependencies.outputs.git-sha }}
+          cp target/release/aptos-node artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
+          cp target/release/aptos-node artifacts/aptos-node
+          chmod +x artifacts/aptos-${{ steps.git-commit.outputs.sha }}
           chmod +x artifacts/aptos
+          chmod +x artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
+          chmod +x artifacts/aptos-node
 
           # Create checksums
           cd artifacts
-          sha256sum aptos-${{ needs.build-core-dependencies.outputs.git-sha }} > aptos-${{ needs.build-core-dependencies.outputs.git-sha }}.sha256
+          sha256sum aptos-${{ steps.git-commit.outputs.sha }} > aptos-${{ steps.git-commit.outputs.sha }}.sha256
           sha256sum aptos > aptos.sha256
+          sha256sum aptos-node-${{ steps.git-commit.outputs.sha }} > aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
+          sha256sum aptos-node > aptos-node.sha256
           cd ..
 
-      - name: Upload binary as artifact
+      - name: Upload binaries as artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: aptos-binary-${{ needs.build-core-dependencies.outputs.git-sha }}
+          name: aptos-binaries-${{ steps.git-commit.outputs.sha }}
           path: artifacts/
           retention-days: 90
 
@@ -237,27 +147,25 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: binary-${{ needs.build-core-dependencies.outputs.git-sha }}
-          name: Aptos Binary ${{ needs.build-core-dependencies.outputs.git-sha }}
+          tag_name: binary-${{ steps.git-commit.outputs.sha }}
+          name: Aptos Binaries ${{ steps.git-commit.outputs.sha }}
           body: |
-            Aptos CLI binary built from commit ${{ needs.build-core-dependencies.outputs.git-sha-full }}
+            Aptos binaries built from commit ${{ steps.git-commit.outputs.sha-full }}
 
             **Build Information:**
-            - Commit: ${{ needs.build-core-dependencies.outputs.git-sha-full }}
+            - Commit: ${{ steps.git-commit.outputs.sha-full }}
             - Branch: ${{ github.ref_name }}
             - Built: ${{ github.event.repository.updated_at }}
 
-            **Build Strategy:**
-            - Job 1: Core dependencies (move-core-types, aptos-framework)
-            - Job 2: Aptos node
-            - Job 3: Aptos CLI
-
             **Files:**
-            - `aptos-${{ needs.build-core-dependencies.outputs.git-sha }}` - Aptos CLI binary
-            - `aptos-${{ needs.build-core-dependencies.outputs.git-sha }}.sha256` - SHA256 checksum
+            - `aptos-${{ steps.git-commit.outputs.sha }}` - Aptos CLI binary
+            - `aptos-node-${{ steps.git-commit.outputs.sha }}` - Aptos Node binary
+            - Corresponding `.sha256` checksum files
           files: |
-            artifacts/aptos-${{ needs.build-core-dependencies.outputs.git-sha }}
-            artifacts/aptos-${{ needs.build-core-dependencies.outputs.git-sha }}.sha256
+            artifacts/aptos-${{ steps.git-commit.outputs.sha }}
+            artifacts/aptos-${{ steps.git-commit.outputs.sha }}.sha256
+            artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
+            artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
           draft: false
           prerelease: true
         env:
