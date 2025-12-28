@@ -1,0 +1,267 @@
+name: Build Aptos Binary
+
+on:
+  push:
+    branches:
+      - main
+      - dev-atomica
+      - docker-testnet-org-refactor
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/build-aptos-binary.yml"
+  pull_request:
+    branches:
+      - main
+      - dev-atomica
+      - docker-testnet-org-refactor
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref to build (branch, tag, or commit)"
+        required: false
+        default: "HEAD"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Job 1: Build core dependencies (move-core-types, aptos-framework)
+  build-core-dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    outputs:
+      git-sha: ${{ steps.git-commit.outputs.sha }}
+      git-sha-full: ${{ steps.git-commit.outputs.sha_full }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get git commit
+        id: git-commit
+        run: |
+          if [ -n "${{ github.event.inputs.git_ref }}" ]; then
+            echo "Using input ref: ${{ github.event.inputs.git_ref }}"
+            GIT_SHA=$(git rev-parse --short "${{ github.event.inputs.git_ref }}" || true)
+            GIT_SHA_FULL=$(git rev-parse "${{ github.event.inputs.git_ref }}" || true)
+          else
+            echo "Using HEAD"
+            GIT_SHA=$(git rev-parse --short HEAD || true)
+            GIT_SHA_FULL=$(git rev-parse HEAD || true)
+          fi
+
+          if [ -z "$GIT_SHA" ]; then
+            echo "Error: Failed to get git SHA"
+            exit 1
+          fi
+
+          echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
+          echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
+          echo "Git commit: $GIT_SHA (full: $GIT_SHA_FULL)"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache (core dependencies)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "aptos-core-deps"
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/dev-atomica' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/docker-testnet-org-refactor' }}
+
+      - name: Build move-core-types
+        run: |
+          echo "Building move-core-types..."
+          cargo build --release --package move-core-types
+
+      - name: Build aptos-framework
+        run: |
+          echo "Building aptos-framework..."
+          cargo build --release --package aptos-framework
+
+      - name: Verify core dependencies built
+        run: |
+          echo "Core dependencies built successfully"
+          ls -lh target/release/deps/ | head -20
+
+  # Job 2: Build aptos-node (depends on core dependencies)
+  build-aptos-node:
+    needs: build-core-dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache (aptos-node)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "aptos-node"
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/dev-atomica' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/docker-testnet-org-refactor' }}
+
+      - name: Build aptos-node
+        run: |
+          echo "Building aptos-node with testing features..."
+          cargo build --release --bin aptos-node --features testing
+
+      - name: Verify aptos-node binary
+        run: |
+          if [ -f target/release/aptos-node ]; then
+            echo "aptos-node binary built successfully"
+            ls -lh target/release/aptos-node
+          else
+            echo "Error: aptos-node binary not found"
+            exit 1
+          fi
+
+  # Job 3: Build aptos CLI (depends on aptos-node)
+  build-aptos-cli:
+    needs: build-aptos-node
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache (aptos CLI)
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "aptos-cli"
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/dev-atomica' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/docker-testnet-org-refactor' }}
+
+      - name: Build aptos CLI
+        run: |
+          echo "Building aptos CLI..."
+          cargo build --release --package aptos
+
+      - name: Verify aptos binary
+        run: |
+          ./target/release/aptos --version
+
+      - name: Prepare release artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/release/aptos artifacts/aptos-${{ needs.build-core-dependencies.outputs.git-sha }}
+          cp target/release/aptos artifacts/aptos
+          chmod +x artifacts/aptos-${{ needs.build-core-dependencies.outputs.git-sha }}
+          chmod +x artifacts/aptos
+
+          # Create checksums
+          cd artifacts
+          sha256sum aptos-${{ needs.build-core-dependencies.outputs.git-sha }} > aptos-${{ needs.build-core-dependencies.outputs.git-sha }}.sha256
+          sha256sum aptos > aptos.sha256
+          cd ..
+
+      - name: Upload binary as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aptos-binary-${{ needs.build-core-dependencies.outputs.git-sha }}
+          path: artifacts/
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: binary-${{ needs.build-core-dependencies.outputs.git-sha }}
+          name: Aptos Binary ${{ needs.build-core-dependencies.outputs.git-sha }}
+          body: |
+            Aptos CLI binary built from commit ${{ needs.build-core-dependencies.outputs.git-sha-full }}
+
+            **Build Information:**
+            - Commit: ${{ needs.build-core-dependencies.outputs.git-sha-full }}
+            - Branch: ${{ github.ref_name }}
+            - Built: ${{ github.event.repository.updated_at }}
+
+            **Build Strategy:**
+            - Job 1: Core dependencies (move-core-types, aptos-framework)
+            - Job 2: Aptos node
+            - Job 3: Aptos CLI
+
+            **Files:**
+            - `aptos-${{ needs.build-core-dependencies.outputs.git-sha }}` - Aptos CLI binary
+            - `aptos-${{ needs.build-core-dependencies.outputs.git-sha }}.sha256` - SHA256 checksum
+          files: |
+            artifacts/aptos-${{ needs.build-core-dependencies.outputs.git-sha }}
+            artifacts/aptos-${{ needs.build-core-dependencies.outputs.git-sha }}.sha256
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

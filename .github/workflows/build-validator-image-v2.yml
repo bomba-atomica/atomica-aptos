@@ -1,0 +1,201 @@
+name: Build Validator Docker Image (v2)
+
+on:
+  workflow_run:
+    workflows: ["Build Aptos Binary"]
+    types:
+      - completed
+    branches:
+      - main
+      - dev-atomica
+      - docker-testnet-org-refactor
+  push:
+    branches:
+      - main
+      - dev-atomica
+      - docker-testnet-org-refactor
+    paths:
+      - "atomica/docker/**"
+      - ".github/workflows/build-validator-image-v2.yml"
+  pull_request:
+    branches:
+      - main
+      - dev-atomica
+      - docker-testnet-org-refactor
+    paths:
+      - "atomica/docker/**"
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref for binary (branch, tag, or commit SHA)"
+        required: false
+        default: "HEAD"
+      force_rebuild:
+        description: "Force rebuild even if image exists"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/validator
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get git commit
+        id: git-commit
+        run: |
+          if [ -n "${{ github.event.inputs.git_ref }}" ]; then
+            echo "Using input ref: ${{ github.event.inputs.git_ref }}"
+            GIT_SHA=$(git rev-parse --short "${{ github.event.inputs.git_ref }}" || true)
+          else
+            echo "Using HEAD"
+            GIT_SHA=$(git rev-parse --short HEAD || true)
+          fi
+
+          if [ -z "$GIT_SHA" ]; then
+            echo "Error: Failed to get git SHA"
+            exit 1
+          fi
+
+          echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
+          echo "Git commit: $GIT_SHA"
+
+      - name: Get Dockerfile hash
+        id: dockerfile-hash
+        run: |
+          DOCKERFILE_HASH=$(sha256sum atomica/docker/Dockerfile.prebuilt | cut -c1-8)
+          echo "hash=$DOCKERFILE_HASH" >> $GITHUB_OUTPUT
+          echo "Dockerfile hash: $DOCKERFILE_HASH"
+
+      - name: Set binary release tag
+        id: binary-tag
+        run: |
+          BINARY_TAG="binary-${{ steps.git-commit.outputs.sha }}"
+          echo "tag=$BINARY_TAG" >> $GITHUB_OUTPUT
+          echo "Binary release tag: $BINARY_TAG"
+
+      - name: Verify binary release exists
+        id: check-binary
+        run: |
+          BINARY_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.binary-tag.outputs.tag }}/aptos-${{ steps.git-commit.outputs.sha }}"
+
+          echo "Checking for binary at: $BINARY_URL"
+
+          if curl --output /dev/null --silent --head --fail "$BINARY_URL"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Binary release found: ${{ steps.binary-tag.outputs.tag }}"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Binary release not found: ${{ steps.binary-tag.outputs.tag }}"
+            echo "Please ensure the 'Build Aptos Binary' workflow has completed successfully"
+          fi
+
+      - name: Fail if binary not found
+        if: steps.check-binary.outputs.exists == 'false'
+        run: |
+          echo "ERROR: Binary release not found for commit ${{ steps.git-commit.outputs.sha }}"
+          echo "Release tag: ${{ steps.binary-tag.outputs.tag }}"
+          echo ""
+          echo "The Docker image build requires a prebuilt binary from GitHub releases."
+          echo "Please ensure the 'Build Aptos Binary' workflow has completed successfully."
+          echo ""
+          echo "You can:"
+          echo "1. Wait for the binary build workflow to complete"
+          echo "2. Manually trigger the 'Build Aptos Binary' workflow"
+          echo "3. Check that the binary workflow succeeded for this commit"
+          exit 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.git-commit.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}
+            type=raw,value=${{ steps.git-commit.outputs.sha }}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=pr
+
+      - name: Check if image exists
+        id: check-image
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.git-commit.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
+
+          if [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Force rebuild requested - will build: $IMAGE_TAG"
+          elif docker manifest inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Image already exists: $IMAGE_TAG"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Image does not exist, will build: $IMAGE_TAG"
+          fi
+
+      - name: Build and push Docker image
+        if: steps.check-image.outputs.exists == 'false'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: atomica/docker/Dockerfile.prebuilt
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_DATE=${{ steps.meta.outputs.created }}
+            GIT_SHA=${{ steps.git-commit.outputs.sha }}
+            BINARY_RELEASE_TAG=${{ steps.binary-tag.outputs.tag }}
+            GITHUB_REPOSITORY=${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image already exists (skip build)
+        if: steps.check-image.outputs.exists == 'true'
+        run: |
+          echo "Image already exists:"
+          echo "  Git SHA: ${{ steps.git-commit.outputs.sha }}"
+          echo "  Dockerfile hash: ${{ steps.dockerfile-hash.outputs.hash }}"
+          echo "  Tag: ${{ steps.git-commit.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
+          echo ""
+          echo "Skipping build to save CI time"
+          echo ""
+          echo "To force rebuild, use workflow_dispatch with force_rebuild=true"
+
+      - name: Output image tags
+        run: |
+          echo "Built images:"
+          echo "${{ steps.meta.outputs.tags }}" | while read -r tag; do
+            echo "  - $tag"
+          done
+
+      - name: Verify image
+        if: steps.check-image.outputs.exists == 'false' && github.event_name != 'pull_request'
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.git-commit.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
+          echo "Verifying image: $IMAGE"
+          docker run --rm "$IMAGE" --version
