@@ -1,0 +1,207 @@
+name: Build Aptos Binary
+
+on:
+  push:
+    branches:
+      - main
+      - dev-atomica
+      - docker-testnet-org-refactor
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/build-aptos-binary.yml"
+  pull_request:
+    branches:
+      - main
+      - dev-atomica
+      - docker-testnet-org-refactor
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Git ref to build (branch, tag, or commit)"
+        required: false
+        default: "HEAD"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Reduce memory pressure during builds
+  CARGO_BUILD_JOBS: 2
+  # Disable incremental compilation (not useful in CI and uses extra disk space)
+  CARGO_INCREMENTAL: 0
+  # All RUSTFLAGS are configured in .cargo/config.toml
+  # DO NOT set RUSTFLAGS here as it will override config.toml settings
+
+jobs:
+  # Single job: Build all Aptos binaries in one run for efficiency
+  build-aptos-binaries:
+    # Using ubuntu-latest (7GB RAM, 2 cores). For faster builds with a paid plan:
+    # runs-on: ubuntu-latest-4-cores (16GB RAM, 4 cores)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get git commit
+        id: git-commit
+        run: |
+          if [ -n "${{ github.event.inputs.git_ref }}" ]; then
+            echo "Using input ref: ${{ github.event.inputs.git_ref }}"
+            GIT_SHA=$(git rev-parse --short "${{ github.event.inputs.git_ref }}" || true)
+            GIT_SHA_FULL=$(git rev-parse "${{ github.event.inputs.git_ref }}" || true)
+          else
+            echo "Using HEAD"
+            GIT_SHA=$(git rev-parse --short HEAD || true)
+            GIT_SHA_FULL=$(git rev-parse HEAD || true)
+          fi
+
+          if [ -z "$GIT_SHA" ]; then
+            echo "Error: Failed to get git SHA"
+            exit 1
+          fi
+
+          echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
+          echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
+          echo "Git commit: $GIT_SHA (full: $GIT_SHA_FULL)"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Remove unnecessary software to free up ~30GB
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "aptos-build"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          # Keep environment hash so cache saves on each build (GitHub Actions doesn't save on exact cache hit)
+          # rust-cache automatically uses restore-keys to find the closest previous cache
+          add-job-id-key: false
+
+      - name: Build aptos-node
+        run: |
+          echo "Building aptos-node with testing features..."
+          echo "Memory before build:"
+          free -h
+
+          # Build with optimized settings for CI
+          cargo build --release --bin aptos-node --features testing
+
+          echo "Memory after build:"
+          free -h
+
+      - name: Verify aptos-node binary
+        run: |
+          if [ -f target/release/aptos-node ]; then
+            echo "aptos-node binary built successfully"
+            ls -lh target/release/aptos-node
+          else
+            echo "Error: aptos-node binary not found"
+            exit 1
+          fi
+
+      - name: Build aptos CLI
+        run: |
+          echo "Building aptos CLI..."
+          cargo build --release --package aptos
+
+      - name: Verify aptos binary
+        run: |
+          ./target/release/aptos --version
+
+      - name: Prepare release artifacts
+        run: |
+          mkdir -p artifacts
+          cp target/release/aptos artifacts/aptos-${{ steps.git-commit.outputs.sha }}
+          cp target/release/aptos artifacts/aptos
+          cp target/release/aptos-node artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
+          cp target/release/aptos-node artifacts/aptos-node
+          chmod +x artifacts/aptos-${{ steps.git-commit.outputs.sha }}
+          chmod +x artifacts/aptos
+          chmod +x artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
+          chmod +x artifacts/aptos-node
+
+          # Create checksums
+          cd artifacts
+          sha256sum aptos-${{ steps.git-commit.outputs.sha }} > aptos-${{ steps.git-commit.outputs.sha }}.sha256
+          sha256sum aptos > aptos.sha256
+          sha256sum aptos-node-${{ steps.git-commit.outputs.sha }} > aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
+          sha256sum aptos-node > aptos-node.sha256
+          cd ..
+
+      - name: Upload binaries as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aptos-binaries-${{ steps.git-commit.outputs.sha }}
+          path: artifacts/
+          retention-days: 90
+
+      - name: Create GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: binary-${{ steps.git-commit.outputs.sha }}
+          name: Aptos Binaries ${{ steps.git-commit.outputs.sha }}
+          body: |
+            Aptos binaries built from commit ${{ steps.git-commit.outputs.sha-full }}
+
+            **Build Information:**
+            - Commit: ${{ steps.git-commit.outputs.sha-full }}
+            - Branch: ${{ github.ref_name }}
+            - Built: ${{ github.event.repository.updated_at }}
+
+            **Files:**
+            - `aptos-${{ steps.git-commit.outputs.sha }}` - Aptos CLI binary
+            - `aptos-node-${{ steps.git-commit.outputs.sha }}` - Aptos Node binary
+            - Corresponding `.sha256` checksum files
+          files: |
+            artifacts/aptos-${{ steps.git-commit.outputs.sha }}
+            artifacts/aptos-${{ steps.git-commit.outputs.sha }}.sha256
+            artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
+            artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

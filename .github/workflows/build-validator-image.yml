@@ -1,0 +1,187 @@
+name: Build Validator Docker Image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Binary release tag (e.g., binary-80cf17c75e)"
+        required: true
+        type: string
+      force_rebuild:
+        description: "Force rebuild even if image exists"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/validator
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag
+        id: release-info
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            # Manual workflow_dispatch with explicit release tag
+            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+            echo "Using manual release tag: $RELEASE_TAG"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            # Triggered by release event
+            RELEASE_TAG="${{ github.event.release.tag_name }}"
+            echo "Using release event tag: $RELEASE_TAG"
+          else
+            echo "Error: No release tag specified"
+            exit 1
+          fi
+
+          # Validate format: binary-<sha>
+          if [[ ! "$RELEASE_TAG" =~ ^binary-[a-f0-9]+$ ]]; then
+            echo "Error: Invalid release tag format: $RELEASE_TAG"
+            echo "Expected format: binary-<commit-sha> (e.g., binary-80cf17c75e)"
+            exit 1
+          fi
+
+          # Extract git SHA from tag (remove 'binary-' prefix)
+          GIT_SHA="${RELEASE_TAG#binary-}"
+
+          echo "tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
+          echo "Release tag: $RELEASE_TAG"
+          echo "Git SHA: $GIT_SHA"
+
+      - name: Get Dockerfile hash
+        id: dockerfile-hash
+        run: |
+          DOCKERFILE_HASH=$(sha256sum atomica/docker/Dockerfile.prebuilt | cut -c1-8)
+          echo "hash=$DOCKERFILE_HASH" >> $GITHUB_OUTPUT
+          echo "Dockerfile hash: $DOCKERFILE_HASH"
+
+      - name: Verify binary release exists
+        id: check-binary
+        run: |
+          BINARY_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.release-info.outputs.tag }}/aptos-node-${{ steps.release-info.outputs.sha }}"
+
+          echo "Checking for binary at: $BINARY_URL"
+
+          if curl --output /dev/null --silent --head --fail "$BINARY_URL"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Binary release found: ${{ steps.release-info.outputs.tag }}"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Binary release not found: ${{ steps.release-info.outputs.tag }}"
+            echo "Please ensure the binary release exists"
+          fi
+
+      - name: Fail if binary not found
+        if: steps.check-binary.outputs.exists == 'false'
+        run: |
+          echo "ERROR: Binary release not found"
+          echo "Release tag: ${{ steps.release-info.outputs.tag }}"
+          echo "Expected binary: aptos-node-${{ steps.release-info.outputs.sha }}"
+          echo ""
+          echo "The Docker image build requires a prebuilt binary from GitHub releases."
+          echo ""
+          echo "Please verify:"
+          echo "1. The release '${{ steps.release-info.outputs.tag }}' exists"
+          echo "2. The release contains 'aptos-node-${{ steps.release-info.outputs.sha }}'"
+          echo "3. View releases: https://github.com/${{ github.repository }}/releases"
+          exit 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.release-info.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}
+            type=raw,value=${{ steps.release-info.outputs.sha }}
+            type=raw,value=${{ steps.release-info.outputs.tag }}
+            type=raw,value=latest,enable=${{ github.event.release.prerelease == false }}
+
+      - name: Check if image exists
+        id: check-image
+        run: |
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release-info.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
+
+          if [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Force rebuild requested - will build: $IMAGE_TAG"
+          elif docker manifest inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Image already exists: $IMAGE_TAG"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Image does not exist, will build: $IMAGE_TAG"
+          fi
+
+      - name: Build and push Docker image
+        if: steps.check-image.outputs.exists == 'false'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: atomica/docker/Dockerfile.prebuilt
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_DATE=${{ steps.meta.outputs.created }}
+            GIT_SHA=${{ steps.release-info.outputs.sha }}
+            BINARY_RELEASE_TAG=${{ steps.release-info.outputs.tag }}
+            GITHUB_REPOSITORY=${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Image already exists (skip build)
+        if: steps.check-image.outputs.exists == 'true'
+        run: |
+          echo "Image already exists:"
+          echo "  Release: ${{ steps.release-info.outputs.tag }}"
+          echo "  Git SHA: ${{ steps.release-info.outputs.sha }}"
+          echo "  Dockerfile hash: ${{ steps.dockerfile-hash.outputs.hash }}"
+          echo "  Tag: ${{ steps.release-info.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
+          echo ""
+          echo "Skipping build to save CI time"
+          echo ""
+          echo "To force rebuild, use workflow_dispatch with force_rebuild=true"
+
+      - name: Output image tags
+        run: |
+          echo "Built images:"
+          echo "${{ steps.meta.outputs.tags }}" | while read -r tag; do
+            echo "  - $tag"
+          done
+
+      - name: Verify image
+        if: steps.check-image.outputs.exists == 'false'
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release-info.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
+          echo "Verifying image: $IMAGE"
+          echo "Testing aptos-node binary:"
+          docker run --rm --entrypoint /usr/local/bin/aptos-node "$IMAGE" --version
+          echo "Testing aptos CLI binary:"
+          docker run --rm --entrypoint /usr/local/bin/aptos "$IMAGE" --version

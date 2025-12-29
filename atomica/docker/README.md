@@ -1,0 +1,210 @@
+# Atomica Aptos Docker Images
+
+This directory contains Docker configurations for building Atomica Aptos validator node images.
+
+## Build Strategy
+
+We use a two-stage build strategy to minimize resource usage and improve build times:
+
+### 1. Binary Build Workflow (`build-aptos-binary.yml`)
+
+This workflow builds the `aptos` binary directly on GitHub Actions runners and publishes it as a GitHub release.
+
+**Benefits:**
+- Leverages `Swatinem/rust-cache` action for efficient Rust dependency caching
+- Runs on bare GitHub Actions runners without Docker overhead
+- Creates reusable binary artifacts via GitHub releases
+- Faster incremental builds with shared cache across workflow runs
+- Chained job architecture ensures cache is saved even on partial failures
+
+**Chained Job Architecture:**
+
+The workflow uses three sequential jobs to build dependencies incrementally:
+
+1. **Job 1: `build-core-dependencies`** (150 min timeout)
+   - Builds `move-core-types` package
+   - Builds `aptos-framework` package
+   - Saves cache with shared key `aptos-build`
+   - Cache is saved even if job fails (`cache-on-failure: true`)
+
+2. **Job 2: `build-aptos-node`** (150 min timeout)
+   - Depends on Job 1
+   - Restores cache from Job 1 (same shared key `aptos-build`)
+   - Builds `aptos-node` binary with testing features
+   - Saves incremental cache (same shared key)
+   - Cache is saved even if job fails
+
+3. **Job 3: `build-aptos-cli`** (150 min timeout)
+   - Depends on Job 2
+   - Restores cache from Job 2 (same shared key `aptos-build`)
+   - Builds `aptos` CLI binary
+   - Saves final cache (same shared key)
+   - Publishes binary to GitHub releases
+
+**Note:** All jobs use the same `shared-key: "aptos-build"` so each job builds incrementally on the previous job's compiled artifacts.
+
+**Why chained jobs?**
+- Each job builds on the previous job's cache
+- If a job fails, earlier caches are still saved
+- Better visibility into which build stage is failing
+- More efficient resource usage per job
+- Allows for easier debugging and restarting from failed stage
+
+**Triggers:**
+- Push to `main`, `dev-atomica`, or `docker-testnet-org-refactor` branches
+- Pull requests to those branches
+- Manual workflow dispatch
+
+**Outputs:**
+- GitHub release with tag `binary-<short-sha>`
+- Binary artifact: `aptos-<short-sha>`
+- SHA256 checksum: `aptos-<short-sha>.sha256`
+
+### 2. Docker Image Build Workflow (`build-validator-image.yml`)
+
+This workflow builds lightweight Docker images that download prebuilt binaries from GitHub releases.
+
+**Benefits:**
+- Minimal build time (no Rust compilation in Docker)
+- Reduced resource usage and disk space requirements
+- Faster Docker builds focused only on OS setup and binary installation
+- Triggered only when binaries are released
+
+**Triggers:**
+- **Automatic:** When a GitHub release is published
+- **Manual:** Via workflow_dispatch with specific release tag
+
+**Process:**
+1. Receives release tag (e.g., `binary-80cf17c75e`)
+2. Validates release tag format
+3. Verifies that prebuilt binaries exist in the release
+4. Builds minimal Docker image with runtime dependencies
+5. Publishes to GitHub Container Registry with multiple tags
+
+## Dockerfiles
+
+### `Dockerfile` (Legacy)
+
+Multi-stage build that compiles Rust code inside Docker. This approach:
+- Has high resource requirements
+- Takes longer to build
+- Is more prone to OOM errors on CI
+- **Status:** Kept for reference but superseded by the new approach
+
+### `Dockerfile.prebuilt` (Current)
+
+Single-stage build that downloads prebuilt binaries. This approach:
+- Has minimal resource requirements
+- Builds quickly (typically < 5 minutes)
+- Downloads verified binaries from GitHub releases
+- **Status:** Active, used by `build-validator-image.yml`
+
+## Build Arguments
+
+### `Dockerfile.prebuilt`
+
+| Argument | Required | Description | Example |
+|----------|----------|-------------|---------|
+| `GIT_SHA` | Yes | Short Git commit hash | `abc1234` |
+| `BINARY_RELEASE_TAG` | Yes | GitHub release tag | `binary-abc1234` |
+| `GITHUB_REPOSITORY` | Yes | Repository path | `owner/repo` |
+| `BUILD_DATE` | No | Build timestamp | `2024-01-01T00:00:00Z` |
+
+## Manual Builds
+
+### Triggering Docker Image Build
+
+To manually build a Docker image for a specific release:
+
+1. **Via GitHub UI:**
+   - Go to Actions → Build Validator Docker Image
+   - Click "Run workflow"
+   - Enter the release tag (e.g., `binary-80cf17c75e`)
+   - Optionally enable "Force rebuild" to rebuild existing images
+
+2. **Via GitHub CLI:**
+   ```bash
+   gh workflow run build-validator-image.yml \
+     --repo bomba-atomica/atomica-aptos \
+     --field release_tag=binary-80cf17c75e
+   ```
+
+### Building Docker Image Locally
+
+Build the Docker image using prebuilt binaries from GitHub releases:
+
+```bash
+# Set the release information
+GIT_SHA="80cf17c75e"
+RELEASE_TAG="binary-${GIT_SHA}"
+
+# Build using Dockerfile.prebuilt
+docker build \
+  -f atomica/docker/Dockerfile.prebuilt \
+  --build-arg GIT_SHA=${GIT_SHA} \
+  --build-arg BINARY_RELEASE_TAG=${RELEASE_TAG} \
+  --build-arg GITHUB_REPOSITORY=bomba-atomica/atomica-aptos \
+  -t atomica-validator:${GIT_SHA} \
+  .
+```
+
+For local development with source builds, see the local build documentation.
+
+## Image Registry
+
+Images are published to GitHub Container Registry:
+
+```
+ghcr.io/<owner>/<repo>/validator:<tag>
+```
+
+### Tag Strategy
+
+| Tag Format | Description | Example |
+|------------|-------------|---------|
+| `<sha>-<dockerfile-hash>` | Unique build identifier (SHA + Dockerfile hash) | `80cf17c75e-a1b2c3d4` |
+| `<sha>` | Git commit hash | `80cf17c75e` |
+| `binary-<sha>` | Matching the binary release tag | `binary-80cf17c75e` |
+| `latest` | Latest non-prerelease build | `latest` |
+
+## Troubleshooting
+
+### Binary Not Found Error
+
+If the Docker image workflow fails with "Binary release not found":
+
+1. Check that the binary build workflow completed successfully
+2. Verify the release exists: `https://github.com/<owner>/<repo>/releases/tag/binary-<sha>`
+3. Manually trigger the binary build workflow if needed
+
+### Cache Issues
+
+If builds are slow or cache isn't working:
+
+1. Check the `Swatinem/rust-cache` step in binary workflow
+2. Verify the shared cache key `aptos-build` is being used across all jobs
+3. Cache is always saved, regardless of branch (no `save-if` condition)
+4. Clear cache and rebuild if corrupted: manually delete GitHub Actions cache
+5. Note: Even if a job fails, the cache is saved due to `cache-on-failure: true`
+
+### Resource Exhaustion
+
+The new approach should prevent resource exhaustion. If issues persist:
+
+1. Verify you're using `Dockerfile.prebuilt`, not the legacy `Dockerfile`
+2. Check that the workflow is `build-validator-image.yml`
+3. Review timeout settings (should be ~30 min for Docker, ~150 min for binary)
+
+## Migration from Legacy Workflow
+
+The legacy workflow has been removed. The current `build-validator-image.yml` workflow is the active production workflow.
+
+## Future Enhancements
+
+Potential improvements to consider:
+
+- [ ] Build additional binaries (`aptos-node`, `aptos-faucet-service`)
+- [ ] Support multi-architecture builds (ARM64)
+- [ ] Add smoke tests to workflow
+- [ ] Implement binary signing/verification
+- [ ] Add performance benchmarks to binary builds
