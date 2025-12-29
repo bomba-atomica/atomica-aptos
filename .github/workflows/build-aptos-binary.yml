@@ -116,9 +116,9 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           workspaces: "."
-          # Disable hash-based cache key components for stable key: v0-rust-aptos-build-Linux-x64
+          # Keep environment hash so cache saves on each build (GitHub Actions doesn't save on exact cache hit)
+          # rust-cache automatically uses restore-keys to find the closest previous cache
           add-job-id-key: false
-          add-rust-environment-hash-key: false
 
       - name: Build aptos-node
         run: |
