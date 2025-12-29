@@ -83,6 +83,35 @@ This workflow builds lightweight Docker images that download prebuilt binaries f
 
 ## Dockerfiles
 
+### `Dockerfile.local` (Local Development)
+
+Optimized for local development with fast incremental builds using BuildKit cache mounts.
+
+**Use case:**
+- Developers iterating on Aptos source code
+- Testing changes locally before pushing
+- Offline development
+
+**Build command:**
+```bash
+cd atomica/docker
+./build-local-image.sh
+```
+
+**Features:**
+- ✅ Uses BuildKit cache mounts for fast incremental builds
+- ✅ Persists cache across builds (cargo registry, git dependencies, build artifacts)
+- ✅ Builds only `aptos-node` binary (skips CLI to save time)
+- ✅ Works completely offline after initial setup
+- ✅ Plain progress output shows all build logs in real-time
+
+**Options:**
+```bash
+./build-local-image.sh --profile debug    # Faster compile, slower runtime
+./build-local-image.sh --no-cache         # Clean build (ignores cache)
+./build-local-image.sh --tag custom-tag   # Custom image tag
+```
+
 ### `Dockerfile` (Legacy)
 
 Multi-stage build that compiles Rust code inside Docker. This approach:
