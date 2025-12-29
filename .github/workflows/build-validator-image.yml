@@ -73,18 +73,27 @@ jobs:
 
       - name: Verify binary release exists
         id: check-binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BINARY_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.release-info.outputs.tag }}/aptos-node-${{ steps.release-info.outputs.sha }}"
+          RELEASE_TAG="${{ steps.release-info.outputs.tag }}"
+          BINARY_NAME="aptos-node-${{ steps.release-info.outputs.sha }}"
 
-          echo "Checking for binary at: $BINARY_URL"
+          echo "Checking for binary '$BINARY_NAME' in release '$RELEASE_TAG'"
 
-          if curl --output /dev/null --silent --head --fail "$BINARY_URL"; then
+          # Use GitHub API to check if asset exists in release
+          ASSET_CHECK=$(gh api "repos/${{ github.repository }}/releases/tags/${RELEASE_TAG}" \
+            --jq ".assets[] | select(.name == \"${BINARY_NAME}\") | .name" || echo "")
+
+          if [ -n "$ASSET_CHECK" ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Binary release found: ${{ steps.release-info.outputs.tag }}"
+            echo "✓ Binary release found: $RELEASE_TAG"
+            echo "✓ Asset: $BINARY_NAME"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "Binary release not found: ${{ steps.release-info.outputs.tag }}"
-            echo "Please ensure the binary release exists"
+            echo "✗ Binary release not found"
+            echo "  Release: $RELEASE_TAG"
+            echo "  Expected asset: $BINARY_NAME"
           fi
 
       - name: Fail if binary not found
@@ -104,6 +113,35 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Download binaries from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RELEASE_TAG="${{ steps.release-info.outputs.tag }}"
+          GIT_SHA="${{ steps.release-info.outputs.sha }}"
+
+          echo "Downloading binaries from release: $RELEASE_TAG"
+
+          # Download binaries and checksums
+          gh release download "$RELEASE_TAG" \
+            --pattern "aptos-node-${GIT_SHA}" \
+            --pattern "aptos-node-${GIT_SHA}.sha256" \
+            --pattern "aptos-${GIT_SHA}" \
+            --pattern "aptos-${GIT_SHA}.sha256" \
+            --dir ./atomica/docker/binaries
+
+          # Verify checksums
+          cd ./atomica/docker/binaries
+          sha256sum -c "aptos-node-${GIT_SHA}.sha256"
+          sha256sum -c "aptos-${GIT_SHA}.sha256"
+
+          # Make binaries executable
+          chmod +x "aptos-node-${GIT_SHA}"
+          chmod +x "aptos-${GIT_SHA}"
+
+          echo "✓ Binaries downloaded and verified"
+          ls -lh
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -152,7 +190,6 @@ jobs:
             BUILD_DATE=${{ steps.meta.outputs.created }}
             GIT_SHA=${{ steps.release-info.outputs.sha }}
             BINARY_RELEASE_TAG=${{ steps.release-info.outputs.tag }}
-            GITHUB_REPOSITORY=${{ github.repository }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
