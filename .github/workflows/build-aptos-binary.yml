@@ -3,8 +3,8 @@ name: Build Aptos Binary
 on:
   push:
     tags:
-      - 'v*.*.*'  # Trigger on version tags like v1.0.0, v1.2.3, etc.
-      - 'release-*'  # Also trigger on release-* tags
+      - "v*.*.*" # Trigger on version tags like v1.0.0, v1.2.3, etc.
+      - "release-*" # Also trigger on release-* tags
   workflow_dispatch:
     inputs:
       git_ref:
@@ -97,7 +97,7 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "aptos-build"
+          shared-key: "atomica-release"
           cache-on-failure: true
           cache-all-crates: true
           workspaces: "."
