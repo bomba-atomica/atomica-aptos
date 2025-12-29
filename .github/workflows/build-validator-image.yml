@@ -60,6 +60,9 @@ jobs:
           if [ -n "${{ github.event.inputs.git_ref }}" ]; then
             echo "Using input ref: ${{ github.event.inputs.git_ref }}"
             GIT_SHA=$(git rev-parse --short "${{ github.event.inputs.git_ref }}" || true)
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "Using PR head SHA"
+            GIT_SHA=$(git rev-parse --short "${{ github.event.pull_request.head.sha }}" || true)
           else
             echo "Using HEAD"
             GIT_SHA=$(git rev-parse --short HEAD || true)
