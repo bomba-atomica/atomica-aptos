@@ -49,8 +49,8 @@ Checks code formatting and runs Clippy lints.
 
 **Triggers:**
 
-- Push to `main`, `dev-atomica`, or `implement-ibe-*` branches
-- Pull requests to `main` or `dev-atomica`
+- Push to `main` or `dev-atomica` branches
+- Pull requests targeting `main` or `dev-atomica`
 - Changes to `*.rs`, `Cargo.toml`, `Cargo.lock`, `rustfmt.toml`, `clippy.toml`
 - Manual workflow dispatch
 
@@ -77,7 +77,8 @@ Focused test workflow for timelock and DKG implementations.
 
 **Triggers:**
 
-- Push to `main`, `dev-atomica`, or `implement-ibe-*` branches
+- Push to `main` or `dev-atomica` branches
+- Pull requests targeting `main` or `dev-atomica`
 - Changes to:
   - `aptos-move/framework/aptos-framework/sources/timelock*.move`
   - `aptos-move/aptos-vm/src/validator_txns/timelock.rs`
