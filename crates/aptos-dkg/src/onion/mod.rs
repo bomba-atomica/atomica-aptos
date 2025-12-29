@@ -149,6 +149,9 @@ impl OnionEncryption for IBEOnion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blstrs::{G1Projective, G2Projective, Scalar};
+    use crate::weighted_vuf::bls::BLS_WVUF_DST;
+    use group::Group;
 
     #[test]
     fn test_onion_encryption_flow_real_ibe() {
