@@ -48,12 +48,16 @@ RUN groupadd -g 6180 aptos && \
 COPY --chmod=755 atomica/docker/binaries/aptos-node-${GIT_SHA} /usr/local/bin/aptos-node
 COPY --chmod=755 atomica/docker/binaries/aptos-${GIT_SHA} /usr/local/bin/aptos
 
+# Copy Move framework bundle
+# The framework.mrb file contains the compiled Move modules for genesis generation
+COPY atomica/docker/binaries/framework-*.mrb /opt/aptos/framework/head.mrb
+
 # Verify the binaries work
 RUN /usr/local/bin/aptos-node --version && \
     /usr/local/bin/aptos --version
 
-# Create data directory
-RUN mkdir -p /opt/aptos/var && \
+# Create necessary directories and set permissions
+RUN mkdir -p /opt/aptos/var /opt/aptos/data /opt/aptos/etc && \
     chown -R aptos:aptos /opt/aptos
 
 # Add build metadata

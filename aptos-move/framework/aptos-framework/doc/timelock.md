@@ -14,6 +14,9 @@
 -  [Function `on_new_block`](#0x1_timelock_on_new_block)
 -  [Function `publish_public_key`](#0x1_timelock_publish_public_key)
 -  [Function `publish_secret_share`](#0x1_timelock_publish_secret_share)
+-  [Function `get_current_interval`](#0x1_timelock_get_current_interval)
+-  [Function `get_public_key`](#0x1_timelock_get_public_key)
+-  [Function `is_secret_revealed`](#0x1_timelock_is_secret_revealed)
 -  [Function `get_secret`](#0x1_timelock_get_secret)
 -  [Specification](#@Specification_1)
     -  [Function `initialize`](#@Specification_1_initialize)
@@ -27,6 +30,7 @@
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option">0x1::option</a>;
 <b>use</b> <a href="system_addresses.md#0x1_system_addresses">0x1::system_addresses</a>;
 <b>use</b> <a href="../../aptos-stdlib/doc/table.md#0x1_table">0x1::table</a>;
+<b>use</b> <a href="timelock_config.md#0x1_timelock_config">0x1::timelock_config</a>;
 <b>use</b> <a href="timestamp.md#0x1_timestamp">0x1::timestamp</a>;
 </code></pre>
 
@@ -264,9 +268,9 @@ Called by block prologue to trigger rotations.
         <b>return</b>
     };
 
-    // Check <b>if</b> 1 hour <b>has</b> passed (3600 seconds * 1,000,000 microseconds)
-    <b>let</b> one_hour_micros = 3600 * 1000000;
-    <b>if</b> (now - state.last_rotation_time &gt; one_hour_micros) {
+    // Check <b>if</b> configured interval <b>has</b> passed (get from <a href="timelock_config.md#0x1_timelock_config">timelock_config</a>)
+    <b>let</b> interval_micros = <a href="timelock_config.md#0x1_timelock_config_get_interval_microseconds">timelock_config::get_interval_microseconds</a>();
+    <b>if</b> (now - state.last_rotation_time &gt; interval_micros) {
         <b>let</b> old_interval = state.current_interval;
          // Emit reveal <a href="event.md#0x1_event">event</a> for the <b>old</b> interval
         <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> state.request_reveal_events, <a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> {
@@ -358,15 +362,111 @@ validators call this to publish the secret share/signature for a past interval
     interval: u64,
     share: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;
 ) <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
-    // TODO: Aggregation logic would go here.
-    // For PoC, just storing the first one for now or a list.
-    // The <b>struct</b> says `revealed_secrets: Table&lt;u64, <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;`.
-    // We will just overwrite/store it <b>to</b> show flow.
-
+    // TODO: Implement proper BLS signature aggregation in Phase 2
+    // Current behavior: Store first share only (placeholder)
+    // Real implementation needs <b>to</b>:
+    // 1. Verify validator authorization (via ValidatorTransaction context)
+    // 2. Verify BLS signature is valid for the interval identity
+    // 3. Collect shares from multiple validators
+    // 4. Once threshold reached, aggregate G1 points <b>to</b> compute final decryption key
+    // 5. Store aggregated key in revealed_secrets <a href="../../aptos-stdlib/doc/table.md#0x1_table">table</a>
+    //
+    // For now, we just store the first share <b>to</b> allow basic testing
     <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
      <b>if</b> (!<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.revealed_secrets, interval)) {
         <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.revealed_secrets, interval, share);
     };
+    // TODO: Otherwise, aggregate <b>with</b> existing shares (BLS aggregation)
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_timelock_get_current_interval"></a>
+
+## Function `get_current_interval`
+
+
+
+<pre><code>#[view]
+<b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_current_interval">get_current_interval</a>(): u64
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_current_interval">get_current_interval</a>(): u64 <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
+    <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
+        <b>return</b> 0
+    };
+    <b>borrow_global</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework).current_interval
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_timelock_get_public_key"></a>
+
+## Function `get_public_key`
+
+
+
+<pre><code>#[view]
+<b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_public_key">get_public_key</a>(interval: u64): <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_Option">option::Option</a>&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_public_key">get_public_key</a>(interval: u64): Option&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt; <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
+    <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
+        <b>return</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_none">option::none</a>()
+    };
+    <b>let</b> state = <b>borrow_global</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
+    <b>if</b> (<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.public_keys, interval)) {
+        <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_some">option::some</a>(*<a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow">table::borrow</a>(&state.public_keys, interval))
+    } <b>else</b> {
+        <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_none">option::none</a>()
+    }
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_timelock_is_secret_revealed"></a>
+
+## Function `is_secret_revealed`
+
+
+
+<pre><code>#[view]
+<b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_is_secret_revealed">is_secret_revealed</a>(interval: u64): bool
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_is_secret_revealed">is_secret_revealed</a>(interval: u64): bool <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
+    <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
+        <b>return</b> <b>false</b>
+    };
+    <b>let</b> state = <b>borrow_global</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
+    <a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.revealed_secrets, interval)
 }
 </code></pre>
 
@@ -390,15 +490,15 @@ validators call this to publish the secret share/signature for a past interval
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_secret">get_secret</a>(interval: u64): std::option::Option&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt; <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
+<pre><code><b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_secret">get_secret</a>(interval: u64): Option&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt; <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
-        <b>return</b> std::option::none()
+        <b>return</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_none">option::none</a>()
     };
     <b>let</b> state = <b>borrow_global</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
     <b>if</b> (<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.revealed_secrets, interval)) {
-        std::option::some(*<a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow">table::borrow</a>(&state.revealed_secrets, interval))
+        <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_some">option::some</a>(*<a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow">table::borrow</a>(&state.revealed_secrets, interval))
     } <b>else</b> {
-        std::option::none()
+        <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_none">option::none</a>()
     }
 }
 </code></pre>

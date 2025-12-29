@@ -1153,6 +1153,22 @@ pub enum EntryFunctionCall {
         share: Vec<u8>,
     },
 
+    /// Set interval for testing (devnet/testnet only).
+    ///
+    /// This function allows overriding the default interval on test networks
+    /// to speed up testing (e.g., 5 seconds instead of 1 hour).
+    ///
+    /// # Security
+    /// This function is blocked on mainnet (chain_id == 1) to prevent
+    /// production misconfigurations.
+    ///
+    /// # Arguments
+    /// - framework: Must be @aptos_framework signer
+    /// - interval_us: New interval in microseconds
+    TimelockConfigSetIntervalForTesting {
+        interval_us: u64,
+    },
+
     TransactionFeeConvertToAptosFaBurnRef {},
 
     /// Used in on-chain governances to update the major version for the next epoch.
@@ -1926,6 +1942,9 @@ impl EntryFunctionCall {
             TimelockPublishPublicKey { interval, pk } => timelock_publish_public_key(interval, pk),
             TimelockPublishSecretShare { interval, share } => {
                 timelock_publish_secret_share(interval, share)
+            },
+            TimelockConfigSetIntervalForTesting { interval_us } => {
+                timelock_config_set_interval_for_testing(interval_us)
             },
             TransactionFeeConvertToAptosFaBurnRef {} => {
                 transaction_fee_convert_to_aptos_fa_burn_ref()
@@ -5172,6 +5191,33 @@ pub fn timelock_publish_secret_share(interval: u64, share: Vec<u8>) -> Transacti
     ))
 }
 
+/// Set interval for testing (devnet/testnet only).
+///
+/// This function allows overriding the default interval on test networks
+/// to speed up testing (e.g., 5 seconds instead of 1 hour).
+///
+/// # Security
+/// This function is blocked on mainnet (chain_id == 1) to prevent
+/// production misconfigurations.
+///
+/// # Arguments
+/// - framework: Must be @aptos_framework signer
+/// - interval_us: New interval in microseconds
+pub fn timelock_config_set_interval_for_testing(interval_us: u64) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("timelock_config").to_owned(),
+        ),
+        ident_str!("set_interval_for_testing").to_owned(),
+        vec![],
+        vec![bcs::to_bytes(&interval_us).unwrap()],
+    ))
+}
+
 pub fn transaction_fee_convert_to_aptos_fa_burn_ref() -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
@@ -7364,6 +7410,18 @@ mod decoder {
         }
     }
 
+    pub fn timelock_config_set_interval_for_testing(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(EntryFunctionCall::TimelockConfigSetIntervalForTesting {
+                interval_us: bcs::from_bytes(script.args().get(0)?).ok()?,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn transaction_fee_convert_to_aptos_fa_burn_ref(
         payload: &TransactionPayload,
     ) -> Option<EntryFunctionCall> {
@@ -8174,6 +8232,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
         map.insert(
             "timelock_publish_secret_share".to_string(),
             Box::new(decoder::timelock_publish_secret_share),
+        );
+        map.insert(
+            "timelock_config_set_interval_for_testing".to_string(),
+            Box::new(decoder::timelock_config_set_interval_for_testing),
         );
         map.insert(
             "transaction_fee_convert_to_aptos_fa_burn_ref".to_string(),
