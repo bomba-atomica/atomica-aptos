@@ -34,8 +34,8 @@ env:
   CARGO_BUILD_JOBS: 2
   # Disable incremental compilation (not useful in CI and uses extra disk space)
   CARGO_INCREMENTAL: 0
-  # Use lld linker for faster, lower-memory linking, and split debuginfo to reduce memory
-  RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C linker=clang -C split-debuginfo=unpacked"
+  # All RUSTFLAGS are configured in .cargo/config.toml
+  # DO NOT set RUSTFLAGS here as it will override config.toml settings
 
 jobs:
   # Single job: Build all Aptos binaries in one run for efficiency
@@ -114,6 +114,11 @@ jobs:
         with:
           shared-key: "aptos-build"
           cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          # Disable hash-based cache key components for stable key: v0-rust-aptos-build-Linux-x64
+          add-job-id-key: false
+          add-rust-environment-hash-key: false
 
       - name: Build aptos-node
         run: |
