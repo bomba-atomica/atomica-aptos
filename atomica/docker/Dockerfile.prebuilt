@@ -10,7 +10,7 @@
 #   GIT_SHA: Git commit hash
 #   BINARY_RELEASE_TAG: GitHub release tag for the binary (e.g., binary-abc1234)
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 ARG TARGETARCH=amd64
 ARG GIT_SHA
@@ -26,14 +26,14 @@ RUN if [ -z "$GIT_SHA" ]; then \
         exit 1; \
     fi
 
-# Install runtime dependencies (matching aptos debian-base + libdw1)
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     iproute2 \
     libpq5 \
-    libssl3 \
-    libdw1 \
+    libssl3t64 \
+    libdw1t64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Add Tini to make sure the binaries receive proper SIGTERM signals when Docker is shut down
