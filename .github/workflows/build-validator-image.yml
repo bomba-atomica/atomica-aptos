@@ -16,7 +16,7 @@ on:
       - docker-testnet-org-refactor
     paths:
       - "atomica/docker/**"
-      - ".github/workflows/build-validator-image-v2.yml"
+      - ".github/workflows/build-validator-image.yml"
   pull_request:
     branches:
       - main
@@ -198,4 +198,7 @@ jobs:
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.git-commit.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
           echo "Verifying image: $IMAGE"
-          docker run --rm "$IMAGE" --version
+          echo "Testing aptos-node binary:"
+          docker run --rm --entrypoint /usr/local/bin/aptos-node "$IMAGE" --version
+          echo "Testing aptos CLI binary:"
+          docker run --rm --entrypoint /usr/local/bin/aptos "$IMAGE" --version

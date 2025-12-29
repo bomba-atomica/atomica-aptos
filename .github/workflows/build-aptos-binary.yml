@@ -43,7 +43,7 @@ jobs:
     # Using ubuntu-latest (7GB RAM, 2 cores). For faster builds with a paid plan:
     # runs-on: ubuntu-latest-4-cores (16GB RAM, 4 cores)
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 150
     permissions:
       contents: write
 

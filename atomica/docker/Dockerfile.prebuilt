@@ -49,21 +49,30 @@ ADD --chmod=755 https://github.com/krallin/tini/releases/download/v0.19.0/tini-$
 RUN groupadd -g 6180 aptos && \
     useradd -u 6180 -g aptos -s /bin/bash -m aptos
 
-# Download prebuilt binary from GitHub releases
-RUN BINARY_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${BINARY_RELEASE_TAG}/aptos-${GIT_SHA}" && \
-    CHECKSUM_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${BINARY_RELEASE_TAG}/aptos-${GIT_SHA}.sha256" && \
-    echo "Downloading binary from: $BINARY_URL" && \
-    curl -L -o /tmp/aptos "$BINARY_URL" && \
-    curl -L -o /tmp/aptos.sha256 "$CHECKSUM_URL" && \
-    echo "Verifying checksum..." && \
+# Download prebuilt binaries from GitHub releases
+RUN APTOS_NODE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${BINARY_RELEASE_TAG}/aptos-node-${GIT_SHA}" && \
+    APTOS_NODE_CHECKSUM_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${BINARY_RELEASE_TAG}/aptos-node-${GIT_SHA}.sha256" && \
+    APTOS_CLI_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${BINARY_RELEASE_TAG}/aptos-${GIT_SHA}" && \
+    APTOS_CLI_CHECKSUM_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${BINARY_RELEASE_TAG}/aptos-${GIT_SHA}.sha256" && \
+    echo "Downloading aptos-node from: $APTOS_NODE_URL" && \
+    curl -L -o /tmp/aptos-node "$APTOS_NODE_URL" && \
+    curl -L -o /tmp/aptos-node.sha256 "$APTOS_NODE_CHECKSUM_URL" && \
+    echo "Downloading aptos CLI from: $APTOS_CLI_URL" && \
+    curl -L -o /tmp/aptos "$APTOS_CLI_URL" && \
+    curl -L -o /tmp/aptos.sha256 "$APTOS_CLI_CHECKSUM_URL" && \
+    echo "Verifying checksums..." && \
     cd /tmp && \
+    sha256sum -c aptos-node.sha256 && \
     sha256sum -c aptos.sha256 && \
+    mv /tmp/aptos-node /usr/local/bin/aptos-node && \
     mv /tmp/aptos /usr/local/bin/aptos && \
+    chmod +x /usr/local/bin/aptos-node && \
     chmod +x /usr/local/bin/aptos && \
-    rm -f /tmp/aptos.sha256
+    rm -f /tmp/aptos-node.sha256 /tmp/aptos.sha256
 
-# Verify the binary works
-RUN /usr/local/bin/aptos --version
+# Verify the binaries work
+RUN /usr/local/bin/aptos-node --version && \
+    /usr/local/bin/aptos --version
 
 # Create data directory
 RUN mkdir -p /opt/aptos/var && \
@@ -89,5 +98,5 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8080/v1 || exit 1
 
 # Use Tini as entrypoint for proper signal handling
-ENTRYPOINT ["/tini", "--", "/usr/local/bin/aptos"]
-CMD ["--help"]
+ENTRYPOINT ["/tini", "--", "/usr/local/bin/aptos-node"]
+CMD ["-f", "/opt/aptos/validator.yaml"]

@@ -60,7 +60,7 @@ The workflow uses three sequential jobs to build dependencies incrementally:
 - Binary artifact: `aptos-<short-sha>`
 - SHA256 checksum: `aptos-<short-sha>.sha256`
 
-### 2. Docker Image Build Workflow (`build-validator-image-v2.yml`)
+### 2. Docker Image Build Workflow (`build-validator-image.yml`)
 
 This workflow builds lightweight Docker images that download prebuilt binaries from GitHub releases.
 
@@ -98,7 +98,7 @@ Single-stage build that downloads prebuilt binaries. This approach:
 - Has minimal resource requirements
 - Builds quickly (typically < 5 minutes)
 - Downloads verified binaries from GitHub releases
-- **Status:** Active, used by `build-validator-image-v2.yml`
+- **Status:** Active, used by `build-validator-image.yml`
 
 ## Build Arguments
 
@@ -195,19 +195,12 @@ If builds are slow or cache isn't working:
 The new approach should prevent resource exhaustion. If issues persist:
 
 1. Verify you're using `Dockerfile.prebuilt`, not the legacy `Dockerfile`
-2. Check that the workflow is `build-validator-image-v2.yml`
-3. Review timeout settings (should be ~30 min for Docker, ~90 min for binary)
+2. Check that the workflow is `build-validator-image.yml`
+3. Review timeout settings (should be ~30 min for Docker, ~150 min for binary)
 
 ## Migration from Legacy Workflow
 
-The legacy `build-validator-image.yml` workflow is still present but should be considered deprecated.
-
-**Migration steps:**
-
-1. Ensure both new workflows are enabled
-2. Monitor the first few builds to verify success
-3. Once stable, consider removing or archiving the legacy workflow
-4. Update any external references to use the new image tags
+The legacy workflow has been removed. The current `build-validator-image.yml` workflow is the active production workflow.
 
 ## Future Enhancements
 
