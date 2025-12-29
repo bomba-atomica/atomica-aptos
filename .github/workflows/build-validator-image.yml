@@ -67,7 +67,7 @@ jobs:
       - name: Get Dockerfile hash
         id: dockerfile-hash
         run: |
-          DOCKERFILE_HASH=$(sha256sum atomica/docker/Dockerfile.prebuilt | cut -c1-8)
+          DOCKERFILE_HASH=$(sha256sum atomica/docker/Dockerfile | cut -c1-8)
           echo "hash=$DOCKERFILE_HASH" >> $GITHUB_OUTPUT
           echo "Dockerfile hash: $DOCKERFILE_HASH"
 
@@ -182,7 +182,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: atomica/docker/Dockerfile.prebuilt
+          file: atomica/docker/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
