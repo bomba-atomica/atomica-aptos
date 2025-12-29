@@ -68,19 +68,18 @@ This workflow builds lightweight Docker images that download prebuilt binaries f
 - Minimal build time (no Rust compilation in Docker)
 - Reduced resource usage and disk space requirements
 - Faster Docker builds focused only on OS setup and binary installation
-- Automatic dependency on binary build workflow
+- Triggered only when binaries are released
 
 **Triggers:**
-- Automatically after successful binary build workflow completion
-- Push to branches (for Dockerfile changes only)
-- Pull requests (for Dockerfile changes only)
-- Manual workflow dispatch
+- **Automatic:** When a GitHub release is published
+- **Manual:** Via workflow_dispatch with specific release tag
 
 **Process:**
-1. Verifies that a prebuilt binary exists for the target commit
-2. Downloads binary from GitHub releases
-3. Builds minimal Docker image with runtime dependencies
-4. Publishes to GitHub Container Registry
+1. Receives release tag (e.g., `binary-80cf17c75e`)
+2. Validates release tag format
+3. Verifies that prebuilt binaries exist in the release
+4. Builds minimal Docker image with runtime dependencies
+5. Publishes to GitHub Container Registry with multiple tags
 
 ## Dockerfiles
 
@@ -113,44 +112,43 @@ Single-stage build that downloads prebuilt binaries. This approach:
 
 ## Manual Builds
 
-### Building Binary Locally
+### Triggering Docker Image Build
 
-```bash
-# Build the aptos binary
-cargo build --release --package aptos
+To manually build a Docker image for a specific release:
 
-# Verify the binary
-./target/release/aptos --version
-```
+1. **Via GitHub UI:**
+   - Go to Actions → Build Validator Docker Image
+   - Click "Run workflow"
+   - Enter the release tag (e.g., `binary-80cf17c75e`)
+   - Optionally enable "Force rebuild" to rebuild existing images
+
+2. **Via GitHub CLI:**
+   ```bash
+   gh workflow run build-validator-image.yml \
+     --repo bomba-atomica/atomica-aptos \
+     --field release_tag=binary-80cf17c75e
+   ```
 
 ### Building Docker Image Locally
 
-First, ensure you have a binary built or downloaded:
+Build the Docker image using prebuilt binaries from GitHub releases:
 
 ```bash
-# Option 1: Build locally
-cargo build --release --package aptos
-
-# Option 2: Download from GitHub releases
-GIT_SHA="abc1234"
+# Set the release information
+GIT_SHA="80cf17c75e"
 RELEASE_TAG="binary-${GIT_SHA}"
-curl -L -o aptos \
-  "https://github.com/OWNER/REPO/releases/download/${RELEASE_TAG}/aptos-${GIT_SHA}"
-chmod +x aptos
-```
 
-Then build the Docker image:
-
-```bash
-# Using prebuilt binary from GitHub releases
+# Build using Dockerfile.prebuilt
 docker build \
   -f atomica/docker/Dockerfile.prebuilt \
-  --build-arg GIT_SHA=abc1234 \
-  --build-arg BINARY_RELEASE_TAG=binary-abc1234 \
-  --build-arg GITHUB_REPOSITORY=owner/repo \
-  -t atomica-aptos:latest \
+  --build-arg GIT_SHA=${GIT_SHA} \
+  --build-arg BINARY_RELEASE_TAG=${RELEASE_TAG} \
+  --build-arg GITHUB_REPOSITORY=bomba-atomica/atomica-aptos \
+  -t atomica-validator:${GIT_SHA} \
   .
 ```
+
+For local development with source builds, see the local build documentation.
 
 ## Image Registry
 
@@ -164,11 +162,10 @@ ghcr.io/<owner>/<repo>/validator:<tag>
 
 | Tag Format | Description | Example |
 |------------|-------------|---------|
-| `<sha>-<dockerfile-hash>` | Unique build identifier | `abc1234-def5678` |
-| `<sha>` | Git commit | `abc1234` |
-| `latest` | Latest build from default branch | `latest` |
-| `<branch>` | Latest build from branch | `dev-atomica` |
-| `pr-<number>` | Pull request build | `pr-123` |
+| `<sha>-<dockerfile-hash>` | Unique build identifier (SHA + Dockerfile hash) | `80cf17c75e-a1b2c3d4` |
+| `<sha>` | Git commit hash | `80cf17c75e` |
+| `binary-<sha>` | Matching the binary release tag | `binary-80cf17c75e` |
+| `latest` | Latest non-prerelease build | `latest` |
 
 ## Troubleshooting
 
