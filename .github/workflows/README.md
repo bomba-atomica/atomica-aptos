@@ -5,7 +5,7 @@ This directory contains CI/CD workflows for the Atomica Aptos project.
 ## Available Workflows
 
 ### 1. Build Aptos Binary (`build-aptos-binary.yml`)
-Builds the Aptos node and CLI binaries on every push to main branches.
+Builds the Aptos node and CLI binaries for releases.
 
 **Features:**
 - Builds `aptos-node` and `aptos` CLI
@@ -14,9 +14,11 @@ Builds the Aptos node and CLI binaries on every push to main branches.
 - 90-day artifact retention
 
 **Triggers:**
-- Push to `main`, `dev-atomica`, `docker-testnet-org-refactor`
-- Pull requests to the same branches
+- Push tags matching `v*.*.*` (e.g., v1.0.0, v1.2.3)
+- Push tags matching `release-*` (e.g., release-mainnet)
 - Manual workflow dispatch
+
+**Note:** Does NOT build on regular commits or pull requests to avoid unnecessary CI usage.
 
 ---
 

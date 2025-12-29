@@ -2,24 +2,9 @@ name: Build Aptos Binary
 
 on:
   push:
-    branches:
-      - main
-      - dev-atomica
-      - docker-testnet-org-refactor
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - ".github/workflows/build-aptos-binary.yml"
-  pull_request:
-    branches:
-      - main
-      - dev-atomica
-      - docker-testnet-org-refactor
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
+    tags:
+      - 'v*.*.*'  # Trigger on version tags like v1.0.0, v1.2.3, etc.
+      - 'release-*'  # Also trigger on release-* tags
   workflow_dispatch:
     inputs:
       git_ref:
