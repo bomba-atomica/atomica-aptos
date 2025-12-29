@@ -909,7 +909,10 @@ move-vm-test-utils = { path = "third_party/move/move-vm/test-utils", features = 
 move-vm-types = { path = "third_party/move/move-vm/types" }
 
 [profile.release]
-debug = true
+debug = false
+strip = true
+lto = "thin"  # Changed from "fat" to reduce memory usage during linking
+codegen-units = 4  # Increased from 1 to reduce memory per compilation unit
 overflow-checks = true
 
 # For [build-dependencies], cargo sets `opt-level=0` independent of the actual profile used.

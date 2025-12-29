@@ -655,6 +655,7 @@ module std::features {
     /// Lifetime: transient
     const DERIVABLE_ACCOUNT_ABSTRACTION: u64 = 88;
 
+
     public fun is_derivable_account_abstraction_enabled(): bool acquires Features {
         is_enabled(DERIVABLE_ACCOUNT_ABSTRACTION)
     }
