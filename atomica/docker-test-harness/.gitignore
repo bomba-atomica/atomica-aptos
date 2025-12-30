@@ -14,3 +14,26 @@ node_modules/
 # Runtime data
 *.blob
 *.key
+
+# Framework files (except in fixtures)
+*.mrb
+!atomica/move-framework-fixtures/*.mrb
+
+# Test artifacts and workspaces
+docker-testnet/genesis-workspace/
+docker-testnet/config/genesis-artifacts/
+docker-testnet/config/framework.mrb
+
+# Compiled JavaScript files (bun uses .ts directly)
+*.js
+*.d.ts
+*.js.map
+*.d.ts.map
+src/*.js
+src/*.d.ts
+src/*.js.map
+src/*.d.ts.map
+test/**/*.js
+test/**/*.d.ts
+test/**/*.js.map
+test/**/*.d.ts.map

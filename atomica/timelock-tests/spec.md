@@ -6,15 +6,43 @@ The timelock-tests is a TypeScript-based test suite designed to replace the exis
 
 ## Goals
 
-- **Transaction-Centric Testing**: Ensure all DKG and timelock operations performed by validators are conducted through Aptos transactions, crafted and executed in TypeScript.
-- **Comprehensive Coverage**: Cover key scenarios including DKG initialization, key sharing, timelock creation, unlocking, and error handling.
-- **Automated Setup/Teardown**: Utilize docker-test-harness for spinning up and tearing down multi-validator testnets, ensuring isolated and repeatable test runs.
-- **Integration with Atomica-Web**: Mirror the testing patterns used in the atomica-web project, promoting consistency across the codebase.
-- **Reliability and Speed**: Provide faster, more reliable tests compared to smoketests, with better debugging and CI integration.
+- **Transaction-Centric Testing**: ✅ COMPLETED - All operations use Aptos transactions via TypeScript
+- **Comprehensive Coverage**: 🟡 IN PROGRESS - Basic flows covered, edge cases and error handling pending
+- **Automated Setup/Teardown**: ✅ COMPLETED - Docker testnet lifecycle fully automated
+- **Framework Compilation Verification**: ✅ COMPLETED - Fresh .mrb loading verified with Noop contract test
+- **Manual Rotation Trigger**: ✅ COMPLETED - Public function for testing rotation logic
+- **IBE Crypto Implementation**: 🔄 NEXT - Real cryptographic operations vs current placeholders
+- **CI Integration**: ✅ COMPLETED - GitHub Actions workflow with Docker setup
+
+## Current Status
+
+### ✅ **Completed Infrastructure**
+
+- Docker testnet startup and management (2-4 validators)
+- Transaction submission and blockchain queries
+- Test execution patterns (round-robin, breadth-first)
+- Framework compilation and verification system
+- Manual timelock rotation trigger
+- Comprehensive error handling and logging
+
+### 🔧 **Active Development**
+
+- **Phase 1 Critical Fixes**: Invalid share counting, historical threshold storage, DKG topic fixes
+- **IBE Cryptographic Operations**: TypeScript implementation of BLS12-381 IBE
+- **Enhanced Test Coverage**: Edge cases, failure scenarios, recovery mechanisms
+
+### 🎯 **Next Priorities**
+
+1. **Fix Move Code Bugs**: Invalid share counting, threshold storage (Phase 1)
+2. **Implement Real IBE Crypto**: Replace stubs with actual BLS12-381 operations
+3. **Complete End-to-End Flow**: DKG → Key Publication → Reveal → IBE Encryption/Decryption
+4. **Add Comprehensive Tests**: Error cases, validator changes, failure recovery
 
 ## Rationale
 
 Current smoketests for DKG and timelock rely on manual or scripted processes that may not fully simulate real-world validator interactions. By shifting to transaction-based testing, we ensure that all operations are validated through the blockchain's transaction layer, mirroring production behavior. This approach eliminates dependencies on external scripts and improves test maintainability.
+
+**Key Innovation**: Framework compilation verification ensures we're testing against freshly built Move code, not cached artifacts, providing confidence that changes are properly deployed.
 
 ## Implementation
 

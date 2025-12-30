@@ -2,7 +2,8 @@ import { AptosAccount, AptosClient, HexString, TxnBuilderTypes, BCS } from "apto
 import { spawn } from "child_process";
 import * as dotenv from "dotenv";
 import { cpSync, existsSync, mkdirSync, readFileSync } from "fs";
-import { resolve as pathResolve } from "path";
+import { resolve as pathResolve, join } from "path";
+import { homedir } from "os";
 import { generateGenesis } from "./genesis";
 import { findAptosBinary } from "./findAptosBinary";
 
@@ -26,6 +27,22 @@ function getAptosBinary(): string {
     return APTOS_BIN;
 }
 
+/** Get the aptos-framework binary path, finding it on first use */
+function getAptosFrameworkBinary(): string {
+    const frameworkPath = join(homedir(), ".cargo", "bin", "aptos-framework");
+    if (!existsSync(frameworkPath)) {
+        throw new Error(
+            `aptos-framework binary not found at ${frameworkPath}.\n\n` +
+                `Please build the aptos-framework binary:\n` +
+                `  cd /path/to/aptos-core && cargo build -p aptos-framework --release\n` +
+                `  # The binary will be available at ~/.cargo/bin/aptos-framework\n\n` +
+                `Or install globally:\n` +
+                `  cargo install --git https://github.com/aptos-labs/aptos-core aptos-framework`,
+        );
+    }
+    return frameworkPath;
+}
+
 /** Debug logging - controlled by ATOMICA_DEBUG_TESTNET env var */
 const DEBUG =
     process.env.ATOMICA_DEBUG_TESTNET === "1" || process.env.ATOMICA_DEBUG_TESTNET === "true";
@@ -44,59 +61,57 @@ function debug(message: string, data?: Record<string, unknown>): void {
 /**
  * Compile the latest Move framework code and place head.mrb in the specified directory
  *
- * Note: This compilation takes 10-15 minutes. Consider using pre-compiled frameworks for development.
+ * Uses the build-framework.sh script to generate framework fixtures with proper
+ * hash preservation and metadata tracking.
  */
 export async function compileAndPlaceFramework(
-    outputPath: string = "./atomica/move-fixtures/head.mrb",
+    outputPath: string = "./atomica/move-framework-fixtures/head.mrb",
+    skipIfExists: boolean = true,
 ): Promise<string> {
     return new Promise((resolve, reject) => {
-        // Ensure output directory exists
-        const outputDir = pathResolve(outputPath, "..");
-        mkdirSync(outputDir, { recursive: true });
+        // Check if output already exists and skip if requested
+        if (skipIfExists && existsSync(outputPath)) {
+            console.log(`✅ Framework head.mrb already exists at ${outputPath}, skipping build`);
+            resolve(outputPath);
+            return;
+        }
 
-        console.log(`🚀 Compiling aptos-framework and placing head.mrb at ${outputPath}...`);
-        console.log("⏱️  This may take 10-15 minutes on first run...");
-        console.log("💡 Tip: Consider using pre-compiled frameworks for faster development");
+        console.log(`🚀 Building framework fixtures to ${pathResolve(outputPath, "..")}...`);
 
-        // Run the aptos-framework release build with output path
-        const cargo = spawn(
-            "cargo",
-            [
-                "run",
-                "--locked",
-                "--package",
-                "aptos-framework",
-                "--",
-                "release",
-                "--output",
-                outputPath,
-            ],
-            {
-                cwd: process.cwd(),
-                stdio: "inherit",
-            },
+        // Use the build-framework.sh script for proper framework building
+        const scriptPath = pathResolve(
+            __dirname,
+            "../../source/move-framework-fixtures/build-framework.sh",
         );
+        const outputDir = pathResolve(outputPath, "..");
 
-        cargo.on("close", (code) => {
+        if (!existsSync(scriptPath)) {
+            reject(new Error(`Build script not found: ${scriptPath}`));
+            return;
+        }
+
+        const build = spawn("bash", [scriptPath, outputDir, "head"], {
+            cwd: process.cwd(),
+            stdio: "inherit",
+        });
+
+        build.on("close", (code) => {
             if (code === 0) {
                 if (existsSync(outputPath)) {
-                    console.log(`✅ Framework compiled successfully: ${outputPath}`);
-                    console.log("📦 You can now use this framework for local testnet deployments");
+                    console.log(`✅ Framework head.mrb built successfully at ${outputPath}`);
                     resolve(outputPath);
                 } else {
                     reject(
-                        new Error(
-                            `Framework compilation succeeded but ${outputPath} was not created`,
-                        ),
+                        new Error(`Framework build completed but ${outputPath} was not created`),
                     );
                 }
             } else {
-                reject(new Error(`Framework compilation failed with exit code ${code}`));
+                reject(new Error(`Framework build failed with exit code ${code}`));
             }
         });
 
-        cargo.on("error", (error) => {
-            reject(new Error(`Failed to start framework compilation: ${error.message}`));
+        build.on("error", (error) => {
+            reject(new Error(`Failed to run framework build script: ${error.message}`));
         });
     });
 }
@@ -106,7 +121,7 @@ export async function compileAndPlaceFramework(
  */
 export function copyExistingFramework(
     sourcePath: string,
-    outputPath: string = "./atomica/move-fixtures/head.mrb",
+    outputPath: string = "./atomica/move-framework-fixtures/head.mrb",
 ): string {
     const outputDir = pathResolve(outputPath, "..");
     mkdirSync(outputDir, { recursive: true });
@@ -176,6 +191,7 @@ export class DockerTestnet {
      */
     static async new(
         numValidators: number,
+        customFrameworkPath?: string,
         _options?: {
             // Options reserved for future use
         },
@@ -228,6 +244,25 @@ export class DockerTestnet {
             const validatorSrcDir = pathResolve(workspaceDir, `validator-${i}`);
             const validatorDstDir = pathResolve(validatorsDir, `validator-${i}`);
             cpSync(validatorSrcDir, validatorDstDir, { recursive: true });
+        }
+
+        // Copy custom framework to the location expected by genesis generation
+        let frameworkSource: string;
+        if (customFrameworkPath && existsSync(customFrameworkPath)) {
+            frameworkSource = customFrameworkPath;
+            console.log(`✅ Using custom test framework: ${customFrameworkPath}`);
+        } else {
+            frameworkSource = pathResolve(__dirname, "../../move-framework-fixtures/head.mrb");
+            if (!existsSync(frameworkSource)) {
+                console.log(`⚠️  No framework found, using Docker image default`);
+                frameworkSource = ""; // Skip copying
+            }
+        }
+
+        if (frameworkSource) {
+            const frameworkDest = pathResolve(composeDir, "framework.mrb");
+            cpSync(frameworkSource, frameworkDest);
+            console.log(`✅ Copied framework to ${frameworkDest}`);
         }
 
         // Start the testnet
@@ -929,6 +964,7 @@ export class DockerTestnet {
             pathResolve(__dirname, "../../config"), // relative to dist/ or src/
             pathResolve(process.cwd(), "source/docker-testnet/config"),
             pathResolve(process.cwd(), "docker-testnet/config"),
+            pathResolve(process.cwd(), "../docker-test-harness/docker-testnet/config"), // from timelock-tests
         ];
 
         for (const path of candidates) {

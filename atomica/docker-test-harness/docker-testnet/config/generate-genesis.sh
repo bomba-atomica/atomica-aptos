@@ -120,13 +120,20 @@ FRAMEWORK_PATHS=(
     "/usr/local/share/aptos/framework/head.mrb"
 )
 
+echo "=== CHECKING FRAMEWORK PATHS ===" >&2
 FRAMEWORK_FOUND=false
 for path in "${FRAMEWORK_PATHS[@]}"; do
+    echo "Checking: $path" >&2
     if [ -f "$path" ]; then
-        debug "Found framework at: $path"
+        echo "✅ FOUND FRAMEWORK AT: $path" >&2
+        ls -la "$path" >&2
         cp "$path" genesis-repo/framework.mrb
+        echo "✅ COPIED TO genesis-repo/framework.mrb" >&2
+        ls -la genesis-repo/framework.mrb >&2
         FRAMEWORK_FOUND=true
         break
+    else
+        echo "❌ NOT FOUND: $path" >&2
     fi
 done
 

@@ -134,10 +134,13 @@ function findComposeDir(): string {
  * Initialize a testnet with the specified number of validators
  * and wait for consensus to start
  */
-export async function initializeTestnet(numValidators: number): Promise<DockerTestnet> {
+export async function initializeTestnet(
+    numValidators: number,
+    customFrameworkPath?: string,
+): Promise<DockerTestnet> {
     console.log(`Initializing testnet with ${numValidators} validators...`);
 
-    const testnet = await DockerTestnet.new(numValidators);
+    const testnet = await DockerTestnet.new(numValidators, customFrameworkPath);
     setGlobalTestnet(testnet);
     console.log("✓ Testnet initialized successfully");
 

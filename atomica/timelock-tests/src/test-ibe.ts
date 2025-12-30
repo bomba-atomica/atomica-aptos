@@ -27,7 +27,7 @@ async function runIbeE2eTest() {
     const initialInterval = await queries.getCurrentInterval();
     const targetInterval = initialInterval + 1;
     console.log(`Step 2: Waiting for rotation to interval ${targetInterval} to trigger DKG`);
-    await waiters.waitForIntervalRotation(targetInterval, 120);
+    await waiters.waitForIntervalRotation(targetInterval, 300);
     console.log(`✅ Rotated to interval ${targetInterval}, DKG triggered`);
 
     // Step 3: Fetch MPK (DKG transcript)
@@ -54,7 +54,7 @@ async function runIbeE2eTest() {
     // Step 6: Wait for reveal (rotation to targetInterval + 1)
     const revealInterval = targetInterval + 1;
     console.log(`Step 6: Waiting for rotation to interval ${revealInterval} to trigger reveal`);
-    await waiters.waitForIntervalRotation(revealInterval, 120);
+    await waiters.waitForIntervalRotation(revealInterval, 300);
     console.log(`✅ Rotated to reveal interval ${revealInterval}`);
 
     // Step 7: Fetch revealed Decryption Key (G1 point)

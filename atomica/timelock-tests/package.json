@@ -9,7 +9,10 @@
     "test:parallel": "bun run test-runner.ts breadth-first",
     "test:basic": "bun run src/test-basic.ts",
     "test:ibe": "bun run src/test-ibe.ts",
+    "test:crypto": "bun run src/test-crypto-only.ts",
+    "test:rotation": "bun run src/test-manual-rotation.ts",
     "test:framework": "bun run src/test-framework-compilation.ts",
+    "test:framework-loading": "bun run src/test-framework-loading.ts",
     "test-runner": "bun run src/test-runner.ts",
     "lint": "eslint src/ test/",
     "lint:fix": "eslint src/ test/ --fix"
@@ -41,7 +44,9 @@
   },
   "dependencies": {
     "aptos": "^1.22.1",
-    "@atomica/docker-test-harness": "file:../docker-test-harness"
+    "@atomica/docker-test-harness": "file:../docker-test-harness",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^1.4.0"
   },
   "devDependencies": {
     "@types/jest": "^29.5.8",
