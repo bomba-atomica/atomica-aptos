@@ -47,7 +47,7 @@ use aptos_gas_schedule::{
     gas_feature_versions::{RELEASE_V1_10, RELEASE_V1_27, RELEASE_V1_38},
     AptosGasParameters, VMGasParameters,
 };
-use aptos_logger::{enabled, error, info, prelude::*, warn, Level};
+use aptos_logger::{enabled, error, info, warn, Level};
 use aptos_metrics_core::IntCounterVecHelper;
 #[cfg(any(test, feature = "testing"))]
 use aptos_types::state_store::StateViewId;
