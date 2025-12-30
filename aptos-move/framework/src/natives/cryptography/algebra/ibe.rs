@@ -107,6 +107,7 @@ macro_rules! decrypt_internal_impl {
     }};
 }
 
+#[allow(clippy::result_large_err)]
 pub fn decrypt_internal(
     context: &mut SafeNativeContext,
     ty_args: Vec<Type>,

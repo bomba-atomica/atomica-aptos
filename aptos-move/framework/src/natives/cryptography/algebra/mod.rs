@@ -377,9 +377,7 @@ pub fn make_all(
 pub fn make_ibe(
     builder: &SafeNativeBuilder,
 ) -> impl Iterator<Item = (String, NativeFunction)> + '_ {
-    let natives = vec![
-        ("decrypt_internal", ibe::decrypt_internal as RawSafeNative),
-    ];
+    let natives = vec![("decrypt_internal", ibe::decrypt_internal as RawSafeNative)];
     builder.make_named_natives(natives)
 }
 
