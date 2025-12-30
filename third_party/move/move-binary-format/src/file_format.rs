@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![allow(clippy::arc_with_non_send_sync)]
+#![allow(clippy::doc_lazy_continuation)]
 
 //! Binary format for transactions and modules.
 //!
