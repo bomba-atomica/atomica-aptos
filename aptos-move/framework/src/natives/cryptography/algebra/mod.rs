@@ -13,7 +13,7 @@ use crate::natives::cryptography::algebra::{
     eq::eq_internal,
     hash_to_structure::hash_to_internal,
     new::from_u64_internal,
-    pairing::{multi_pairing_internal, pairing_internal},
+    pairing::multi_pairing_internal,
     serialization::{deserialize_internal, serialize_internal},
 };
 use aptos_native_interface::{RawSafeNative, SafeNativeBuilder};

@@ -18,7 +18,7 @@ use ark_ec::{pairing::Pairing, CurveGroup};
 use ark_serialize::CanonicalSerialize;
 use move_vm_types::{loaded_data::runtime_types::Type, values::Value};
 use smallvec::{smallvec, SmallVec};
-use std::{collections::VecDeque, rc::Rc};
+use std::collections::VecDeque;
 use tiny_keccak::{Hasher, Keccak};
 
 fn feature_flag_of_ibe(
