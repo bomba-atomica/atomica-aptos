@@ -1,79 +1,39 @@
-# Atomica Aptos Validator Node - Multi-stage build with cache mounts
+# Atomica Aptos Validator Node - Prebuilt Binary
 #
-# This Dockerfile builds aptos-node in a Debian Bullseye environment
-# to ensure binary compatibility with the runtime image.
-# Uses BuildKit cache mounts for fast incremental builds.
+# This Dockerfile uses prebuilt aptos binaries downloaded by GitHub Actions
+# instead of building from source, reducing build time and resource usage.
 #
 # Build context: repository root
-# Requires: Docker BuildKit enabled (DOCKER_BUILDKIT=1)
 #
 # Build args:
 #   BUILD_DATE: Build timestamp
 #   GIT_SHA: Git commit hash
-#   PROFILE: Build profile (release or debug, default: release)
+#   BINARY_RELEASE_TAG: GitHub release tag for the binary (e.g., binary-abc1234)
 
-# Stage 1: Build the aptos-node binary
-FROM rust:1.75-bullseye AS builder
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    clang \
-    libssl-dev \
-    pkg-config \
-    libpq-dev \
-    lld \
-    libudev-dev \
-    libdw-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
-
-# Copy atomica-aptos source from repository root
-COPY . /build/atomica-aptos
-
-WORKDIR /build/atomica-aptos
-
-# Print the git commit being built
-ARG GIT_SHA
-RUN echo "Building Atomica Aptos from commit: ${GIT_SHA}"
-
-
-# 1. Build aptos CLI (Lightweight - ENABLED)
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/build/atomica-aptos/target,sharing=locked \
-    cargo build --release --package aptos && \
-    cp target/release/aptos /build/aptos
-
-# 2. Build Faucet Service (Medium - COMMENTED OUT)
-# RUN --mount=type=cache,target=/usr/local/cargo/registry \
-#     --mount=type=cache,target=/usr/local/cargo/git \
-#     --mount=type=cache,target=/build/atomica-aptos/target,sharing=locked \
-#     cargo build --release --package aptos-faucet-service && \
-#     cp target/release/aptos-faucet-service /build/aptos-faucet-service
-
-# 3. Build Validator Node (Heavy - COMMENTED OUT)
-# RUN --mount=type=cache,target=/usr/local/cargo/registry \
-#     --mount=type=cache,target=/usr/local/cargo/git \
-#     --mount=type=cache,target=/build/atomica-aptos/target,sharing=locked \
-#     cargo build --release --bin aptos-node --features testing && \
-#     cp target/release/aptos-node /build/aptos-node
-
-# Stage 2: Runtime image (minimal)
-FROM debian:bullseye-slim
+FROM ubuntu:24.04
 
 ARG TARGETARCH=amd64
+ARG GIT_SHA
+ARG BINARY_RELEASE_TAG
 
-# Install runtime dependencies (matching aptos debian-base + libdw1)
+# Validate required build args
+RUN if [ -z "$GIT_SHA" ]; then \
+        echo "Error: GIT_SHA build arg is required"; \
+        exit 1; \
+    fi && \
+    if [ -z "$BINARY_RELEASE_TAG" ]; then \
+        echo "Error: BINARY_RELEASE_TAG build arg is required"; \
+        exit 1; \
+    fi
+
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     iproute2 \
     libpq5 \
-    libssl1.1 \
-    libdw1 \
+    libssl3t64 \
+    libdw1t64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Add Tini to make sure the binaries receive proper SIGTERM signals when Docker is shut down
@@ -83,25 +43,28 @@ ADD --chmod=755 https://github.com/krallin/tini/releases/download/v0.19.0/tini-$
 RUN groupadd -g 6180 aptos && \
     useradd -u 6180 -g aptos -s /bin/bash -m aptos
 
-# Copy binaries from builder stage
-# COPY --from=builder /build/aptos-node /usr/local/bin/aptos-node
-# COPY --from=builder /build/aptos-faucet-service /usr/local/bin/aptos-faucet-service
-COPY --from=builder /build/aptos /usr/local/bin/aptos
+# Copy prebuilt binaries (downloaded by GitHub Actions)
+# These binaries are downloaded and verified in the CI workflow before building the image
+COPY --chmod=755 atomica/docker/binaries/aptos-node-${GIT_SHA} /usr/local/bin/aptos-node
+COPY --chmod=755 atomica/docker/binaries/aptos-${GIT_SHA} /usr/local/bin/aptos
 
-# Set permissions
-RUN chmod +x /usr/local/bin/aptos
-    # && chmod +x /usr/local/bin/aptos-node \
-    # && chmod +x /usr/local/bin/aptos-faucet-service
+# Copy Move framework bundle
+# The framework.mrb file contains the compiled Move modules for genesis generation
+COPY atomica/docker/binaries/framework-*.mrb /opt/aptos/framework/head.mrb
 
-# Create data directory
-RUN mkdir -p /opt/aptos/var && \
+# Verify the binaries work
+RUN /usr/local/bin/aptos-node --version && \
+    /usr/local/bin/aptos --version
+
+# Create necessary directories and set permissions
+RUN mkdir -p /opt/aptos/var /opt/aptos/data /opt/aptos/etc && \
     chown -R aptos:aptos /opt/aptos
 
 # Add build metadata
 ARG BUILD_DATE
-ARG GIT_SHA
 ENV BUILD_DATE=${BUILD_DATE}
 ENV GIT_SHA=${GIT_SHA}
+ENV BINARY_RELEASE_TAG=${BINARY_RELEASE_TAG}
 
 # Expose ports
 EXPOSE 6180 6181 6182 8080 9101
@@ -117,5 +80,5 @@ HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8080/v1 || exit 1
 
 # Use Tini as entrypoint for proper signal handling
-ENTRYPOINT ["/tini", "--", "/usr/local/bin/aptos"]
-CMD ["--help"]
+ENTRYPOINT ["/tini", "--", "/usr/local/bin/aptos-node"]
+CMD ["-f", "/opt/aptos/validator.yaml"]

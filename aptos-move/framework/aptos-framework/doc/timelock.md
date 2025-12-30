@@ -1,32 +1,28 @@
-
 <a id="0x1_timelock"></a>
 
 # Module `0x1::timelock`
 
-
-
--  [Struct `TimelockConfig`](#0x1_timelock_TimelockConfig)
--  [Struct `ValidatorShare`](#0x1_timelock_ValidatorShare)
--  [Resource `TimelockState`](#0x1_timelock_TimelockState)
--  [Struct `StartKeyGenEvent`](#0x1_timelock_StartKeyGenEvent)
--  [Struct `KeyPublishedEvent`](#0x1_timelock_KeyPublishedEvent)
--  [Struct `RequestRevealEvent`](#0x1_timelock_RequestRevealEvent)
--  [Struct `SecretRevealedEvent`](#0x1_timelock_SecretRevealedEvent)
--  [Constants](#@Constants_0)
--  [Function `initialize`](#0x1_timelock_initialize)
--  [Function `on_new_block`](#0x1_timelock_on_new_block)
--  [Function `publish_public_key`](#0x1_timelock_publish_public_key)
--  [Function `publish_secret_share`](#0x1_timelock_publish_secret_share)
--  [Function `get_current_interval`](#0x1_timelock_get_current_interval)
--  [Function `get_public_key`](#0x1_timelock_get_public_key)
--  [Function `is_secret_revealed`](#0x1_timelock_is_secret_revealed)
--  [Function `get_secret`](#0x1_timelock_get_secret)
--  [Specification](#@Specification_1)
-    -  [Function `initialize`](#@Specification_1_initialize)
-    -  [Function `on_new_block`](#@Specification_1_on_new_block)
-    -  [Function `publish_public_key`](#@Specification_1_publish_public_key)
-    -  [Function `publish_secret_share`](#@Specification_1_publish_secret_share)
-
+- [Struct `TimelockConfig`](#0x1_timelock_TimelockConfig)
+- [Struct `ValidatorShare`](#0x1_timelock_ValidatorShare)
+- [Resource `TimelockState`](#0x1_timelock_TimelockState)
+- [Struct `StartKeyGenEvent`](#0x1_timelock_StartKeyGenEvent)
+- [Struct `KeyPublishedEvent`](#0x1_timelock_KeyPublishedEvent)
+- [Struct `RequestRevealEvent`](#0x1_timelock_RequestRevealEvent)
+- [Struct `SecretRevealedEvent`](#0x1_timelock_SecretRevealedEvent)
+- [Constants](#@Constants_0)
+- [Function `initialize`](#0x1_timelock_initialize)
+- [Function `on_new_block`](#0x1_timelock_on_new_block)
+- [Function `publish_public_key`](#0x1_timelock_publish_public_key)
+- [Function `publish_secret_share`](#0x1_timelock_publish_secret_share)
+- [Function `get_current_interval`](#0x1_timelock_get_current_interval)
+- [Function `get_public_key`](#0x1_timelock_get_public_key)
+- [Function `is_secret_revealed`](#0x1_timelock_is_secret_revealed)
+- [Function `get_secret`](#0x1_timelock_get_secret)
+- [Specification](#@Specification_1)
+  - [Function `initialize`](#@Specification_1_initialize)
+  - [Function `on_new_block`](#@Specification_1_on_new_block)
+  - [Function `publish_public_key`](#@Specification_1_publish_public_key)
+  - [Function `publish_secret_share`](#@Specification_1_publish_secret_share)
 
 <pre><code><b>use</b> <a href="account.md#0x1_account">0x1::account</a>;
 <b>use</b> <a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra">0x1::bls12381_algebra</a>;
@@ -42,22 +38,15 @@
 <b>use</b> <a href="validator_consensus_info.md#0x1_validator_consensus_info">0x1::validator_consensus_info</a>;
 </code></pre>
 
-
-
 <a id="0x1_timelock_TimelockConfig"></a>
 
 ## Struct `TimelockConfig`
 
-
-
 <pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> <b>has</b> <b>copy</b>, drop, store
 </code></pre>
 
-
-
 <details>
 <summary>Fields</summary>
-
 
 <dl>
 <dt>
@@ -74,23 +63,17 @@
 </dd>
 </dl>
 
-
 </details>
 
 <a id="0x1_timelock_ValidatorShare"></a>
 
 ## Struct `ValidatorShare`
 
-
-
 <pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_ValidatorShare">ValidatorShare</a> <b>has</b> drop, store
 </code></pre>
 
-
-
 <details>
 <summary>Fields</summary>
-
 
 <dl>
 <dt>
@@ -107,23 +90,17 @@
 </dd>
 </dl>
 
-
 </details>
 
 <a id="0x1_timelock_TimelockState"></a>
 
 ## Resource `TimelockState`
 
-
-
 <pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> <b>has</b> key
 </code></pre>
 
-
-
 <details>
 <summary>Fields</summary>
-
 
 <dl>
 <dt>
@@ -182,7 +159,6 @@
 </dd>
 </dl>
 
-
 </details>
 
 <a id="0x1_timelock_StartKeyGenEvent"></a>
@@ -191,15 +167,11 @@
 
 Event emitted to tell validators: "Please generate keys for interval X"
 
-
 <pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> <b>has</b> drop, store
 </code></pre>
 
-
-
 <details>
 <summary>Fields</summary>
-
 
 <dl>
 <dt>
@@ -216,7 +188,6 @@ Event emitted to tell validators: "Please generate keys for interval X"
 </dd>
 </dl>
 
-
 </details>
 
 <a id="0x1_timelock_KeyPublishedEvent"></a>
@@ -225,15 +196,11 @@ Event emitted to tell validators: "Please generate keys for interval X"
 
 Event emitted when MPK (transcript) is published
 
-
 <pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_KeyPublishedEvent">KeyPublishedEvent</a> <b>has</b> drop, store
 </code></pre>
 
-
-
 <details>
 <summary>Fields</summary>
-
 
 <dl>
 <dt>
@@ -250,7 +217,6 @@ Event emitted when MPK (transcript) is published
 </dd>
 </dl>
 
-
 </details>
 
 <a id="0x1_timelock_RequestRevealEvent"></a>
@@ -259,15 +225,11 @@ Event emitted when MPK (transcript) is published
 
 Event emitted to tell validators: "Please reveal the secret for interval X"
 
-
 <pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> <b>has</b> drop, store
 </code></pre>
 
-
-
 <details>
 <summary>Fields</summary>
-
 
 <dl>
 <dt>
@@ -278,7 +240,6 @@ Event emitted to tell validators: "Please reveal the secret for interval X"
 </dd>
 </dl>
 
-
 </details>
 
 <a id="0x1_timelock_SecretRevealedEvent"></a>
@@ -287,15 +248,11 @@ Event emitted to tell validators: "Please reveal the secret for interval X"
 
 Event emitted when a secret is fully reconstructed
 
-
 <pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a> <b>has</b> drop, store
 </code></pre>
 
-
-
 <details>
 <summary>Fields</summary>
-
 
 <dl>
 <dt>
@@ -312,43 +269,32 @@ Event emitted when a secret is fully reconstructed
 </dd>
 </dl>
 
-
 </details>
 
 <a id="@Constants_0"></a>
 
 ## Constants
 
-
 <a id="0x1_timelock_ENOT_VALIDATOR"></a>
 
 Not a validator.
 
-
 <pre><code><b>const</b> <a href="timelock.md#0x1_timelock_ENOT_VALIDATOR">ENOT_VALIDATOR</a>: u64 = 2;
 </code></pre>
-
-
 
 <a id="0x1_timelock_EINVALID_SHARE"></a>
 
 Invalid share format.
 
-
 <pre><code><b>const</b> <a href="timelock.md#0x1_timelock_EINVALID_SHARE">EINVALID_SHARE</a>: u64 = 3;
 </code></pre>
-
-
 
 <a id="0x1_timelock_ETIMELOCK_NOT_INITIALIZED"></a>
 
 The singleton was not initialized.
 
-
 <pre><code><b>const</b> <a href="timelock.md#0x1_timelock_ETIMELOCK_NOT_INITIALIZED">ETIMELOCK_NOT_INITIALIZED</a>: u64 = 1;
 </code></pre>
-
-
 
 <a id="0x1_timelock_initialize"></a>
 
@@ -356,15 +302,11 @@ The singleton was not initialized.
 
 Initialize the timelock system.
 
-
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_initialize">initialize</a>(framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>)
 </code></pre>
 
-
-
 <details>
 <summary>Implementation</summary>
-
 
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_initialize">initialize</a>(framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>) {
     <a href="system_addresses.md#0x1_system_addresses_assert_aptos_framework">system_addresses::assert_aptos_framework</a>(framework);
@@ -382,8 +324,6 @@ Initialize the timelock system.
 }
 </code></pre>
 
-
-
 </details>
 
 <a id="0x1_timelock_on_new_block"></a>
@@ -392,15 +332,11 @@ Initialize the timelock system.
 
 Called by block prologue to trigger rotations.
 
-
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_on_new_block">on_new_block</a>(vm: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>)
 </code></pre>
 
-
-
 <details>
 <summary>Implementation</summary>
-
 
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_on_new_block">on_new_block</a>(vm: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>) <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
     <a href="system_addresses.md#0x1_system_addresses_assert_vm">system_addresses::assert_vm</a>(vm);
@@ -459,8 +395,6 @@ Called by block prologue to trigger rotations.
 }
 </code></pre>
 
-
-
 </details>
 
 <a id="0x1_timelock_publish_public_key"></a>
@@ -469,15 +403,11 @@ Called by block prologue to trigger rotations.
 
 validators call this to publish the public key for a future interval
 
-
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_public_key">publish_public_key</a>(validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, interval: u64, pk: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;)
 </code></pre>
 
-
-
 <details>
 <summary>Implementation</summary>
-
 
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_public_key">publish_public_key</a>(
     validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>,
@@ -500,8 +430,6 @@ validators call this to publish the public key for a future interval
 }
 </code></pre>
 
-
-
 </details>
 
 <a id="0x1_timelock_publish_secret_share"></a>
@@ -510,25 +438,20 @@ validators call this to publish the public key for a future interval
 
 validators call this to publish the secret share/signature for a past interval
 
-
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_secret_share">publish_secret_share</a>(validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, interval: u64, share: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;)
 </code></pre>
 
-
-
 <details>
 <summary>Implementation</summary>
-
 
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_secret_share">publish_secret_share</a>(
     validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>,
     interval: u64,
     share: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;
 ) <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
-    <b>let</b> validator_addr = std::signer::address_of(validator);
+    let validator_addr = std::signer::address_of(validator);
     // 1. Verify validator authorization
-    <b>assert</b>!(<a href="stake.md#0x1_stake_is_current_epoch_validator">stake::is_current_epoch_validator</a>(validator_addr), <a href="timelock.md#0x1_timelock_ENOT_VALIDATOR">ENOT_VALIDATOR</a>);
-
+    assert!(stake::is_current_epoch_validator(validator_addr), ENOT_VALIDATOR);
     <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
 
     // If already revealed, ignore (or could <b>abort</b>)
@@ -537,74 +460,74 @@ validators call this to publish the secret share/signature for a past interval
     };
 
     // 2. Store the share
-    <b>if</b> (!<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.validator_shares, interval)) {
-        <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.validator_shares, interval, <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>());
+    if (!table::contains(&state.validator_shares, interval)) {
+        table::add(&mut state.validator_shares, interval, vector::empty());
     };
-    <b>let</b> shares_list = <a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow_mut">table::borrow_mut</a>(&<b>mut</b> state.validator_shares, interval);
+    let shares_list = table::borrow_mut(&mut state.validator_shares, interval);
 
-    // Dedup: check <b>if</b> validator already submitted
-    <b>let</b> i = 0;
-    <b>let</b> len = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(shares_list);
-    <b>while</b> (i &lt; len) {
-        <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(shares_list, i).validator == validator_addr) {
-            <b>return</b> // Already submitted
+    // Dedup: check if validator already submitted
+    let i = 0;
+    let len = vector::length(shares_list);
+    while (i < len) {
+        if (vector::borrow(shares_list, i).validator == validator_addr) {
+            return // Already submitted
         };
         i = i + 1;
     };
 
-    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(shares_list, <a href="timelock.md#0x1_timelock_ValidatorShare">ValidatorShare</a> {
+    vector::push_back(shares_list, ValidatorShare {
         validator: validator_addr,
         share: share,
     });
 
-    // 3. Check <b>if</b> threshold is met
-    // We need <b>to</b> fetch the config for this interval. Ideally we stored it.
-    // But since we don't store historical configs in this <b>struct</b>, we define threshold based on current validators?
+    // 3. Check if threshold is met
+    // We need to fetch the config for this interval. Ideally we stored it.
+    // But since we don't store historical configs in this struct, we define threshold based on current validators?
     // CAUTION: Validator set might change between StartKeyGen (interval N) and Reveal (interval N+1).
-    // Ideally we should <b>use</b> the threshold from the time KeyGen started.
-    // But simpler for now: <b>use</b> CURRENT validator set threshold (assuming relatively stable set).
-    // OR: just Recalculate based on current <a href="stake.md#0x1_stake">stake</a>.
+    // Ideally we should use the threshold from the time KeyGen started.
+    // But simpler for now: use CURRENT validator set threshold (assuming relatively stable set).
+    // OR: just Recalculate based on current stake.
 
-    <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
-    <b>let</b> validator_addresses = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;<b>address</b>&gt;();
-    <b>let</b> i = 0;
-    <b>let</b> len = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&validators);
-    <b>while</b> (i &lt; len) {
-        <b>let</b> v = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&validators, i);
-        <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> validator_addresses, <a href="validator_consensus_info.md#0x1_validator_consensus_info_get_addr">validator_consensus_info::get_addr</a>(v));
+    let validators = stake::cur_validator_consensus_infos();
+    let validator_addresses = vector::empty<address>();
+    let i = 0;
+    let len = vector::length(&validators);
+    while (i < len) {
+        let v = vector::borrow(&validators, i);
+        vector::push_back(&mut validator_addresses, validator_consensus_info::get_addr(v));
         i = i + 1;
     };
-    <b>let</b> total_validators = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&validators);
-    <b>let</b> threshold = (total_validators * 2 / 3) + 1;
+    let total_validators = vector::length(&validators);
+    let threshold = (total_validators * 2 / 3) + 1;
 
-    <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(shares_list) &gt;= threshold) {
+    if (vector::length(shares_list) >= threshold) {
         // 4. Aggregate shares
         // Sum of G1 points
-        <b>let</b> sum = zero&lt;G1&gt;();
-        <b>let</b> i = 0;
-        <b>let</b> len = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(shares_list);
-        <b>while</b> (i &lt; len) {
-            <b>let</b> s_bytes = &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(shares_list, i).share;
-            // Deserialize failure implies invalid share - we could skip it, but for now we <b>abort</b>.
+        let sum = zero<G1>();
+        let i = 0;
+        let len = vector::length(shares_list);
+        while (i < len) {
+            let s_bytes = &vector::borrow(shares_list, i).share;
+            // Deserialize failure implies invalid share - we could skip it, but for now we abort.
             // In production, we should try-catch or validate beforehand.
-            <b>let</b> element_opt = deserialize&lt;G1, FormatG1Compr&gt;(s_bytes);
-            <b>if</b> (std::option::is_some(&element_opt)) {
-                <b>let</b> element = std::option::extract(&<b>mut</b> element_opt);
+            let element_opt = deserialize<G1, FormatG1Compr>(s_bytes);
+            if (std::option::is_some(&element_opt)) {
+                let element = std::option::extract(&mut element_opt);
                 sum = add(&sum, &element);
             };
-            // If invalid, we skip incrementing sum (effectively treating <b>as</b> 0? No, 0 is identity.
+            // If invalid, we skip incrementing sum (effectively treating as 0? No, 0 is identity.
             // Adding identity doesn't change sum. So invalid share = ignored.
-            // But we counted it towards threshold! This is a vulnerability <b>if</b> 1 share is invalid.
+            // But we counted it towards threshold! This is a vulnerability if 1 share is invalid.
             // We should only count valid shares towards threshold.
             // Correct logic: Filter valid shares first.
             i = i + 1;
         };
 
-        <b>let</b> aggregated_bytes = serialize&lt;G1, FormatG1Compr&gt;(&sum);
-        <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.revealed_secrets, interval, aggregated_bytes);
+        let aggregated_bytes = serialize<G1, FormatG1Compr>(&sum);
+        table::add(&mut state.revealed_secrets, interval, aggregated_bytes);
 
-        // Emit <a href="event.md#0x1_event">event</a>
-        <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> state.secret_revealed_events, <a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a> {
+        // Emit event
+        event::emit_event(&mut state.secret_revealed_events, SecretRevealedEvent {
             interval,
             secret: aggregated_bytes,
         });
@@ -612,25 +535,18 @@ validators call this to publish the secret share/signature for a past interval
 }
 </code></pre>
 
-
-
 </details>
 
 <a id="0x1_timelock_get_current_interval"></a>
 
 ## Function `get_current_interval`
 
-
-
 <pre><code>#[view]
 <b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_current_interval">get_current_interval</a>(): u64
 </code></pre>
 
-
-
 <details>
 <summary>Implementation</summary>
-
 
 <pre><code><b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_current_interval">get_current_interval</a>(): u64 <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
@@ -640,25 +556,18 @@ validators call this to publish the secret share/signature for a past interval
 }
 </code></pre>
 
-
-
 </details>
 
 <a id="0x1_timelock_get_public_key"></a>
 
 ## Function `get_public_key`
 
-
-
 <pre><code>#[view]
 <b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_public_key">get_public_key</a>(interval: u64): <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_Option">option::Option</a>&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;
 </code></pre>
 
-
-
 <details>
 <summary>Implementation</summary>
-
 
 <pre><code><b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_public_key">get_public_key</a>(interval: u64): Option&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt; <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
@@ -673,25 +582,18 @@ validators call this to publish the secret share/signature for a past interval
 }
 </code></pre>
 
-
-
 </details>
 
 <a id="0x1_timelock_is_secret_revealed"></a>
 
 ## Function `is_secret_revealed`
 
-
-
 <pre><code>#[view]
 <b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_is_secret_revealed">is_secret_revealed</a>(interval: u64): bool
 </code></pre>
 
-
-
 <details>
 <summary>Implementation</summary>
-
 
 <pre><code><b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_is_secret_revealed">is_secret_revealed</a>(interval: u64): bool <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
@@ -702,25 +604,18 @@ validators call this to publish the secret share/signature for a past interval
 }
 </code></pre>
 
-
-
 </details>
 
 <a id="0x1_timelock_get_secret"></a>
 
 ## Function `get_secret`
 
-
-
 <pre><code>#[view]
 <b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_secret">get_secret</a>(interval: u64): <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_Option">option::Option</a>&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;
 </code></pre>
 
-
-
 <details>
 <summary>Implementation</summary>
-
 
 <pre><code><b>public</b> <b>fun</b> <a href="timelock.md#0x1_timelock_get_secret">get_secret</a>(interval: u64): Option&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt; <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
@@ -735,56 +630,41 @@ validators call this to publish the secret share/signature for a past interval
 }
 </code></pre>
 
-
-
 </details>
 
 <a id="@Specification_1"></a>
 
 ## Specification
 
-
-
 <pre><code><b>pragma</b> verify = <b>true</b>;
 <b>pragma</b> aborts_if_is_strict;
 </code></pre>
 
-
 Helper to get the TimelockState resource
 
-
 <a id="0x1_timelock_spec_timelock_state"></a>
-
 
 <pre><code><b>fun</b> <a href="timelock.md#0x1_timelock_spec_timelock_state">spec_timelock_state</a>(): <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
    <b>borrow_global</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)
 }
 </code></pre>
 
-
 Invariant: current_interval is always non-negative (implied by u64, but useful anchor)
 Real invariant: last_rotation_time is never in the future relative to environment time
 
 Invariant: current_interval is always non-negative (implied by u64, but useful anchor)
 Real invariant: last_rotation_time is never in the future relative to environment time
-
 
 <pre><code><b>invariant</b> <b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework) ==&gt;
     <a href="timelock.md#0x1_timelock_spec_timelock_state">spec_timelock_state</a>().last_rotation_time &lt;= aptos_framework::timestamp::spec_now_microseconds();
 </code></pre>
 
-
-
 <a id="@Specification_1_initialize"></a>
 
 ### Function `initialize`
 
-
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_initialize">initialize</a>(framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>)
 </code></pre>
-
-
-
 
 <pre><code><b>let</b> addr = std::signer::address_of(framework);
 <b>aborts_if</b> !<a href="system_addresses.md#0x1_system_addresses_is_aptos_framework_address">system_addresses::is_aptos_framework_address</a>(addr);
@@ -792,43 +672,29 @@ Real invariant: last_rotation_time is never in the future relative to environmen
 <b>ensures</b> <b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(addr);
 </code></pre>
 
-
-
 <a id="@Specification_1_on_new_block"></a>
 
 ### Function `on_new_block`
 
-
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_on_new_block">on_new_block</a>(vm: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>)
 </code></pre>
-
-
-
 
 <pre><code><b>let</b> addr = std::signer::address_of(vm);
 <b>aborts_if</b> addr != @vm_reserved;
 </code></pre>
 
-
-
 <a id="@Specification_1_publish_public_key"></a>
 
 ### Function `publish_public_key`
 
-
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_public_key">publish_public_key</a>(validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, interval: u64, pk: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;)
 </code></pre>
-
-
-
 
 <a id="@Specification_1_publish_secret_share"></a>
 
 ### Function `publish_secret_share`
 
-
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_secret_share">publish_secret_share</a>(validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, interval: u64, share: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;)
 </code></pre>
-
 
 [move-book]: https://aptos.dev/move/book/SUMMARY
