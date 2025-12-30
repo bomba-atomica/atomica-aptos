@@ -159,10 +159,11 @@ pub fn bytecode_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
 
         let mut map_entries = BTreeMap::new();
         variant.attrs.retain(|attr| {
-            if let Ok(Meta::NameValue(nv)) = attr.parse_meta() {
-                if let Some(attr_name) = nv.path.get_ident() {
-                    let attr_name = attr_name.to_string();
-                    if KNOWN_ATTRIBUTES.contains_key(attr_name.as_str()) {
+            if let Ok(Meta::NameValue(nv)) = attr.parse_meta()
+                && let Some(attr_name) = nv.path.get_ident()
+            {
+                let attr_name = attr_name.to_string();
+                if KNOWN_ATTRIBUTES.contains_key(attr_name.as_str()) {
                         match nv.lit {
                             syn::Lit::Str(s) => {
                                 match map_entries.entry(attr_name) {
@@ -183,7 +184,6 @@ pub fn bytecode_spec(_attr: TokenStream, tokens: TokenStream) -> TokenStream {
                         }
                     }
                 }
-            }
             true
         });
 

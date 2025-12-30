@@ -45,7 +45,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.75.0
           components: rustfmt
 
       - name: Check formatting
@@ -67,7 +66,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.75.0
           components: clippy
 
       - name: Free up disk space
