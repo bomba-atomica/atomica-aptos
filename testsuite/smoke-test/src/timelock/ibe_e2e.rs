@@ -11,15 +11,15 @@
 //! 5. Successfully decrypt the message
 
 use crate::smoke_test_environment::SwarmBuilder;
-use aptos_forge::{NodeExt, Swarm};
-use aptos_logger::info;
-use std::{sync::Arc, time::Duration};
-use tokio::time::sleep;
 use aptos_dkg::ibe;
 use aptos_dkg::pvss::traits::Transcript;
+use aptos_forge::{NodeExt, Swarm};
+use aptos_logger::info;
 use aptos_types::dkg::real_dkg::Transcripts;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
+use std::{sync::Arc, time::Duration};
+use tokio::time::sleep;
 
 #[tokio::test]
 async fn test_ibe_encrypt_decrypt_e2e() {
@@ -74,10 +74,15 @@ async fn test_ibe_encrypt_decrypt_e2e() {
     let initial_interval = super::get_current_interval(&client).await.unwrap();
     let target_interval = initial_interval + 1;
     info!("Waiting for rotation to interval {}", target_interval);
-    super::wait_for_interval_rotation(&client, target_interval, 120).await.unwrap();
+    super::wait_for_interval_rotation(&client, target_interval, 120)
+        .await
+        .unwrap();
 
     // 3. Fetch MPK (DKG transcript)
-    info!("Waiting for public key (transcript) for interval {}", target_interval);
+    info!(
+        "Waiting for public key (transcript) for interval {}",
+        target_interval
+    );
     let mut transcript_bytes = Vec::new();
     for _ in 0..60 {
         if let Ok(bytes) = super::verify_public_key_published(&client, target_interval).await {
@@ -89,23 +94,39 @@ async fn test_ibe_encrypt_decrypt_e2e() {
     assert!(!transcript_bytes.is_empty(), "Failed to get transcript");
 
     // 4. Extract IBE Public Key (G2 point) from transcript
-    let transcripts: Transcripts = bcs::from_bytes(&transcript_bytes).expect("Failed to deserialize transcripts");
-    let mpk_g2 = transcripts.main.get_dealt_public_key().as_group_element().clone();
+    let transcripts: Transcripts =
+        bcs::from_bytes(&transcript_bytes).expect("Failed to deserialize transcripts");
+    let mpk_g2 = transcripts
+        .main
+        .get_dealt_public_key()
+        .as_group_element()
+        .clone();
     info!("Extracted MPK G2 point successfully");
 
     // 5. Encrypt a message using IBE
     let message = b"top_secret_bid_1000_atoms";
     let identity = ibe::compute_timelock_identity(target_interval, chain_id);
     let ciphertext = ibe::ibe_encrypt(&mpk_g2, &identity, message).expect("Encryption failed");
-    info!("Message encrypted successfully for interval {}", target_interval);
+    info!(
+        "Message encrypted successfully for interval {}",
+        target_interval
+    );
 
     // 6. Wait for reveal (rotation to target_interval + 1)
     let reveal_interval = target_interval + 1;
-    info!("Waiting for rotation to interval {} to trigger reveal", reveal_interval);
-    super::wait_for_interval_rotation(&client, reveal_interval, 120).await.unwrap();
+    info!(
+        "Waiting for rotation to interval {} to trigger reveal",
+        reveal_interval
+    );
+    super::wait_for_interval_rotation(&client, reveal_interval, 120)
+        .await
+        .unwrap();
 
     // 7. Fetch revealed Decryption Key (G1 point)
-    info!("Waiting for secret to be revealed for interval {}", target_interval);
+    info!(
+        "Waiting for secret to be revealed for interval {}",
+        target_interval
+    );
     let mut dk_bytes = Vec::new();
     for _ in 0..60 {
         if let Ok(bytes) = super::verify_secret_aggregated(&client, target_interval, 3).await {
@@ -121,7 +142,11 @@ async fn test_ibe_encrypt_decrypt_e2e() {
 
     // 8. Decrypt and verify
     let decrypted = ibe::ibe_decrypt(&dk_g1, &ciphertext).expect("Decryption failed");
-    assert_eq!(message.as_slice(), decrypted.as_slice(), "Decrypted message mismatch!");
+    assert_eq!(
+        message.as_slice(),
+        decrypted.as_slice(),
+        "Decrypted message mismatch!"
+    );
 
     info!("✅ IBE E2E test passed! Message successfully encrypted and decrypted.");
 }

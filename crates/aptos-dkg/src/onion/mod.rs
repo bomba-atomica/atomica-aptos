@@ -19,7 +19,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::ibe::{ibe_encrypt, ibe_decrypt, Ciphertext, serialize_g2, deserialize_g2};
+use crate::ibe::{deserialize_g2, ibe_decrypt, ibe_encrypt, serialize_g2, Ciphertext};
 
 /// Represents the public parameters for a single encryption layer.
 /// For timelock, this typically wraps the Identity-Based Encryption (IBE) public key
@@ -77,7 +77,6 @@ pub enum DecryptionResult {
 /// Implementation of Onion Encryption using Boneh-Franklin IBE.
 pub struct IBEOnion;
 
-
 impl OnionEncryption for IBEOnion {
     fn multi_encrypt(
         public_params: &[OnionPublicParams],
@@ -91,10 +90,10 @@ impl OnionEncryption for IBEOnion {
             let mpk_bytes = layer_params.public_key.clone();
             // Deserialize MPK (G2)
             let mpk = deserialize_g2(&mpk_bytes)?;
-            
+
             // Encrypt current payload for this layer's identity
             let ct = ibe_encrypt(&mpk, &layer_params.id, &current_payload)?;
-            
+
             // Serialize encryption result (Ciphertext) to bytes to become payload for next layer
             // Manual serialization since Ciphertext might not derive Serde
             let u_bytes = serialize_g2(&ct.u)?;
@@ -108,11 +107,8 @@ impl OnionEncryption for IBEOnion {
         // Since OnionCiphertext (my struct) is identical to (u, v), I can deserialize into it?
         // Wait, current_payload is (u_bytes, v_bytes).
         let (u, v): (Vec<u8>, Vec<u8>) = bcs::from_bytes(&current_payload)?;
-        
-        Ok(OnionCiphertext {
-            u,
-            v,
-        })
+
+        Ok(OnionCiphertext { u, v })
     }
 
     fn decrypt_layer(
@@ -136,12 +132,12 @@ impl OnionEncryption for IBEOnion {
 
         // Try to interpret plaintext as next layer (u_bytes, v_bytes)
         if let Ok((u_inner, v_inner)) = bcs::from_bytes::<(Vec<u8>, Vec<u8>)>(&decrypted_bytes) {
-             Ok(DecryptionResult::NextLayer(OnionCiphertext {
-                 u: u_inner,
-                 v: v_inner,
-             }))
+            Ok(DecryptionResult::NextLayer(OnionCiphertext {
+                u: u_inner,
+                v: v_inner,
+            }))
         } else {
-             Ok(DecryptionResult::Plaintext(decrypted_bytes))
+            Ok(DecryptionResult::Plaintext(decrypted_bytes))
         }
     }
 }
@@ -149,14 +145,14 @@ impl OnionEncryption for IBEOnion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blstrs::{G1Projective, G2Projective, Scalar};
     use crate::weighted_vuf::bls::BLS_WVUF_DST;
+    use blstrs::{G1Projective, G2Projective, Scalar};
     use group::Group;
 
     #[test]
     fn test_onion_encryption_flow_real_ibe() {
         let payload = b"secret_auction_bid";
-        
+
         // Setup Keys
         let mk: Scalar = aptos_crypto::blstrs::random_scalar(&mut rand::thread_rng());
         let mpk = G2Projective::generator() * mk;
@@ -168,9 +164,18 @@ mod tests {
         let id_inner = b"id_12";
 
         let params = vec![
-            OnionPublicParams { public_key: mpk_bytes.clone(), id: id_outer.to_vec() },
-            OnionPublicParams { public_key: mpk_bytes.clone(), id: id_middle.to_vec() },
-            OnionPublicParams { public_key: mpk_bytes.clone(), id: id_inner.to_vec() },
+            OnionPublicParams {
+                public_key: mpk_bytes.clone(),
+                id: id_outer.to_vec(),
+            },
+            OnionPublicParams {
+                public_key: mpk_bytes.clone(),
+                id: id_middle.to_vec(),
+            },
+            OnionPublicParams {
+                public_key: mpk_bytes.clone(),
+                id: id_inner.to_vec(),
+            },
         ];
 
         // 1. Encrypt
@@ -180,15 +185,21 @@ mod tests {
         // SK = H(ID) * MK
         let q_outer = G1Projective::hash_to_curve(id_outer, BLS_WVUF_DST, b"H(m)");
         let sk_outer = q_outer * mk;
-        let key_outer = OnionSecretKey { secret_key: sk_outer.to_compressed().to_vec() };
+        let key_outer = OnionSecretKey {
+            secret_key: sk_outer.to_compressed().to_vec(),
+        };
 
         let q_middle = G1Projective::hash_to_curve(id_middle, BLS_WVUF_DST, b"H(m)");
         let sk_middle = q_middle * mk;
-        let key_middle = OnionSecretKey { secret_key: sk_middle.to_compressed().to_vec() };
+        let key_middle = OnionSecretKey {
+            secret_key: sk_middle.to_compressed().to_vec(),
+        };
 
         let q_inner = G1Projective::hash_to_curve(id_inner, BLS_WVUF_DST, b"H(m)");
         let sk_inner = q_inner * mk;
-        let key_inner = OnionSecretKey { secret_key: sk_inner.to_compressed().to_vec() };
+        let key_inner = OnionSecretKey {
+            secret_key: sk_inner.to_compressed().to_vec(),
+        };
 
         // 3. Decrypt Layer 1 (Outer)
         let res1 = IBEOnion::decrypt_layer(&ciphertext, &key_outer).expect("Decrypt outer failed");
@@ -214,4 +225,3 @@ mod tests {
         assert_eq!(final_msg, payload);
     }
 }
-

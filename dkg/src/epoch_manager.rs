@@ -510,50 +510,63 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     fn process_timelock_key_published(&mut self, event: KeyPublishedEvent) {
         use aptos_types::dkg::{real_dkg::maybe_dk_from_bls_sk, DKGTrait, TimelockConfig};
 
-        info!("[Timelock] Processing KeyPublishedEvent for interval {}", event.interval);
+        info!(
+            "[Timelock] Processing KeyPublishedEvent for interval {}",
+            event.interval
+        );
 
         let epoch_state = match &self.epoch_state {
             Some(s) => s.clone(),
             None => {
                 error!("[Timelock] Cannot process key published - no epoch state");
                 return;
-            }
+            },
         };
 
         // Reconstruct metadata
         let total = epoch_state.verifier.len() as u64;
         // Threshold: floor(N * 2 / 3) + 1
         let threshold = (total * 2 / 3) + 1;
-        let config = TimelockConfig { threshold, total_validators: total };
+        let config = TimelockConfig {
+            threshold,
+            total_validators: total,
+        };
         // Create a dummy StartKeyGenEvent to reuse the metadata builder
-        let start_event = StartKeyGenEvent { interval: event.interval, config };
+        let start_event = StartKeyGenEvent {
+            interval: event.interval,
+            config,
+        };
 
         let metadata = self.build_timelock_session_metadata(&start_event, &epoch_state);
         let pub_params = DefaultDKG::new_public_params(&metadata);
-        
+
         // Deserialize transcript
-        let transcript: <DefaultDKG as DKGTrait>::Transcript = match bcs::from_bytes(&event.public_key) {
-             Ok(t) => t,
-             Err(e) => {
-                 error!("[Timelock] Failed to deserialize transcript for interval {}: {}", event.interval, e);
-                 return;
-             }
-        };
+        let transcript: <DefaultDKG as DKGTrait>::Transcript =
+            match bcs::from_bytes(&event.public_key) {
+                Ok(t) => t,
+                Err(e) => {
+                    error!(
+                        "[Timelock] Failed to deserialize transcript for interval {}: {}",
+                        event.interval, e
+                    );
+                    return;
+                },
+            };
 
         let my_pk = match epoch_state.verifier.get_public_key(&self.my_addr) {
             Some(pk) => pk,
             None => {
                 warn!("[Timelock] My public key not found in validator set");
                 return;
-            }
+            },
         };
-        
+
         let dealer_sk = match self.key_storage.consensus_sk_by_pk(my_pk) {
             Ok(sk) => sk,
             Err(e) => {
-                error!("[Timelock] Failed to get consensus SK: {}", e); 
-                return; 
-            }
+                error!("[Timelock] Failed to get consensus SK: {}", e);
+                return;
+            },
         };
 
         let dk = match maybe_dk_from_bls_sk(&dealer_sk) {
@@ -561,19 +574,31 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Err(e) => {
                 error!("[Timelock] Failed to convert SK to DK: {}", e);
                 return;
-            }
+            },
         };
 
-        let my_index = *epoch_state.verifier.address_to_validator_index().get(&self.my_addr).unwrap() as u64;
+        let my_index = *epoch_state
+            .verifier
+            .address_to_validator_index()
+            .get(&self.my_addr)
+            .unwrap() as u64;
 
-        let (share, _pk_share) = match DefaultDKG::decrypt_secret_share_from_transcript(&pub_params, &transcript, my_index, &dk) {
+        let (share, _pk_share) = match DefaultDKG::decrypt_secret_share_from_transcript(
+            &pub_params,
+            &transcript,
+            my_index,
+            &dk,
+        ) {
             Ok(res) => res,
             Err(e) => {
-                error!("[Timelock] Failed to decrypt share for interval {}: {}", event.interval, e);
+                error!(
+                    "[Timelock] Failed to decrypt share for interval {}: {}",
+                    event.interval, e
+                );
                 return;
-            }
+            },
         };
-        
+
         // Serialize the secret key shares
         // share.main is Vec<DealtSecretKeyShare>, each wrapping a G1Projective point
         // For timelock, we need to store these shares so we can later derive the decryption key
@@ -581,13 +606,16 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         let share_bytes = match bcs::to_bytes(&share) {
             Ok(bytes) => bytes,
             Err(e) => {
-                error!("[Timelock] Failed to serialize share for interval {}: {}", event.interval, e);
+                error!(
+                    "[Timelock] Failed to serialize share for interval {}: {}",
+                    event.interval, e
+                );
                 return;
-            }
+            },
         };
-        
+
         if let Err(e) = self.store_timelock_share(event.interval, &share_bytes) {
-             error!("[Timelock] Failed to store share: {}", e);
+            error!("[Timelock] Failed to store share: {}", e);
         }
     }
 
@@ -623,10 +651,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // For timelock, we use the main path share
         // The share is already the decryption key component (G1 point)
         if shares.main.is_empty() {
-            error!("[Timelock] No main shares available for interval {}", event.interval);
+            error!(
+                "[Timelock] No main shares available for interval {}",
+                event.interval
+            );
             return;
         }
-        
+
         let dk_g1 = shares.main[0].as_group_element().clone();
 
         // 4. Serialize decryption key to bytes (G1 compressed = 48 bytes)

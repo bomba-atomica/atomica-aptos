@@ -14,10 +14,10 @@
 use crate::smoke_test_environment::SwarmBuilder;
 use aptos_forge::{NodeExt, Swarm};
 use aptos_logger::info;
-use std::{sync::Arc, time::Duration};
-use tokio::time::sleep;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
+use std::{sync::Arc, time::Duration};
+use tokio::time::sleep;
 
 /// Test basic timelock flow with fast interval for testing.
 ///
@@ -79,8 +79,6 @@ async fn test_timelock_basic_flow() {
         info!("Timelock interval configured successfully");
     }
 
-
-
     info!("Swarm started, verifying timelock is initialized at genesis");
 
     // Step 1 - Verify timelock initialized at genesis
@@ -110,9 +108,13 @@ async fn test_timelock_basic_flow() {
     info!("First rotation complete, verifying public key published");
 
     // Step 3 - Verify public key for the new interval is published
-    info!("Waiting for public key to be published for interval {}", target_interval);
+    info!(
+        "Waiting for public key to be published for interval {}",
+        target_interval
+    );
     let mut pub_key_published = false;
-    for _ in 0..60 { // Wait up to 60 seconds
+    for _ in 0..60 {
+        // Wait up to 60 seconds
         match super::verify_public_key_published(&client, target_interval).await {
             Ok(public_key) => {
                 info!(
@@ -124,25 +126,35 @@ async fn test_timelock_basic_flow() {
                 assert!(public_key.len() > 0);
                 pub_key_published = true;
                 break;
-            }
+            },
             Err(_) => {
                 sleep(Duration::from_secs(1)).await;
-            }
+            },
         }
     }
-    assert!(pub_key_published, "Public key failure for interval {}", target_interval);
+    assert!(
+        pub_key_published,
+        "Public key failure for interval {}",
+        target_interval
+    );
 
     // Step 4 - Verify Secret Reveal
     // Wait for next rotation (Target + 1)
     let reveal_target_interval = target_interval + 1;
-    info!("Waiting for rotation to interval {} to trigger reveal of interval {}", reveal_target_interval, target_interval);
-    
+    info!(
+        "Waiting for rotation to interval {} to trigger reveal of interval {}",
+        reveal_target_interval, target_interval
+    );
+
     super::wait_for_interval_rotation(&client, reveal_target_interval, timeout_secs)
         .await
         .unwrap();
 
     // Now check if secret for `target_interval` is revealed
-    info!("Waiting for secret to be revealed for interval {}", target_interval);
+    info!(
+        "Waiting for secret to be revealed for interval {}",
+        target_interval
+    );
     let mut secret_revealed = false;
     for _ in 0..60 {
         match super::verify_secret_aggregated(&client, target_interval, 3).await {
@@ -156,13 +168,17 @@ async fn test_timelock_basic_flow() {
                 assert!(secret.len() > 0);
                 secret_revealed = true;
                 break;
-            }
+            },
             Err(_) => {
                 sleep(Duration::from_secs(1)).await;
-            }
+            },
         }
     }
-    assert!(secret_revealed, "Secret reveal failure for interval {}", target_interval);
+    assert!(
+        secret_revealed,
+        "Secret reveal failure for interval {}",
+        target_interval
+    );
 
     info!("✅ Test completed - basic timelock flow verified");
 }

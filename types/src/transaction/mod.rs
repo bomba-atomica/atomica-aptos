@@ -1244,13 +1244,16 @@ impl SignedTransaction {
     pub fn check_signature(self) -> Result<SignatureCheckedTransaction> {
         println!("======== check_signature CALLED ========");
         println!("  Sender: {:?}", self.sender());
-        println!("  Authenticator type: {}", match &self.authenticator {
-            TransactionAuthenticator::Ed25519 { .. } => "Ed25519",
-            TransactionAuthenticator::MultiEd25519 { .. } => "MultiEd25519",
-            TransactionAuthenticator::MultiAgent { .. } => "MultiAgent",
-            TransactionAuthenticator::FeePayer { .. } => "FeePayer",
-            TransactionAuthenticator::SingleSender { .. } => "SingleSender",
-        });
+        println!(
+            "  Authenticator type: {}",
+            match &self.authenticator {
+                TransactionAuthenticator::Ed25519 { .. } => "Ed25519",
+                TransactionAuthenticator::MultiEd25519 { .. } => "MultiEd25519",
+                TransactionAuthenticator::MultiAgent { .. } => "MultiAgent",
+                TransactionAuthenticator::FeePayer { .. } => "FeePayer",
+                TransactionAuthenticator::SingleSender { .. } => "SingleSender",
+            }
+        );
         println!("  About to call authenticator.verify()...");
 
         let result = self.authenticator.verify(&self.raw_txn);

@@ -59,7 +59,7 @@ pub async fn is_timelock_initialized(client: &Client) -> Result<bool> {
         Err(e) => {
             info!("[Timelock Test] Timelock not initialized: {}", e);
             Ok(false)
-        }
+        },
     }
 }
 
@@ -196,4 +196,3 @@ pub async fn verify_secret_aggregated(
         .flatten()
         .ok_or_else(|| anyhow!("Secret not aggregated for interval {}", interval))
 }
-
