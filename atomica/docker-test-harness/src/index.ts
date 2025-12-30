@@ -83,7 +83,7 @@ export async function compileAndPlaceFramework(
             __dirname,
             "../../source/move-framework-fixtures/build-framework.sh",
         );
-        const outputDir = pathResolve(outputPath, "..");
+        const outputDir = pathResolve(__dirname, "../../move-framework-fixtures");
 
         if (!existsSync(scriptPath)) {
             reject(new Error(`Build script not found: ${scriptPath}`));
