@@ -67,7 +67,7 @@ jobs:
       - name: Get Dockerfile hash
         id: dockerfile-hash
         run: |
-          DOCKERFILE_HASH=$(sha256sum atomica/docker/Dockerfile.prebuilt | cut -c1-8)
+          DOCKERFILE_HASH=$(sha256sum atomica/docker/Dockerfile | cut -c1-8)
           echo "hash=$DOCKERFILE_HASH" >> $GITHUB_OUTPUT
           echo "Dockerfile hash: $DOCKERFILE_HASH"
 
@@ -123,24 +123,27 @@ jobs:
 
           echo "Downloading binaries from release: $RELEASE_TAG"
 
-          # Download binaries and checksums
+          # Download binaries, framework, and checksums
           gh release download "$RELEASE_TAG" \
             --pattern "aptos-node-${GIT_SHA}" \
             --pattern "aptos-node-${GIT_SHA}.sha256" \
             --pattern "aptos-${GIT_SHA}" \
             --pattern "aptos-${GIT_SHA}.sha256" \
+            --pattern "framework-*.mrb" \
+            --pattern "framework-*.mrb.sha256" \
             --dir ./atomica/docker/binaries
 
           # Verify checksums
           cd ./atomica/docker/binaries
           sha256sum -c "aptos-node-${GIT_SHA}.sha256"
           sha256sum -c "aptos-${GIT_SHA}.sha256"
+          sha256sum -c framework-*.mrb.sha256
 
           # Make binaries executable
           chmod +x "aptos-node-${GIT_SHA}"
           chmod +x "aptos-${GIT_SHA}"
 
-          echo "✓ Binaries downloaded and verified"
+          echo "✓ Binaries and framework downloaded and verified"
           ls -lh
 
       - name: Log in to GitHub Container Registry
@@ -182,7 +185,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: atomica/docker/Dockerfile.prebuilt
+          file: atomica/docker/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

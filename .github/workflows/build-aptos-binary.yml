@@ -151,6 +151,18 @@ jobs:
         run: |
           ./target/release/aptos --version
 
+      - name: Build Move framework bundle
+        run: |
+          echo "Building Move framework release bundle (.mrb)..."
+          cargo run --release --package aptos-framework -- release
+          
+          # Compute hash of Move source files for versioning
+          FRAMEWORK_HASH=$(find aptos-move/framework -name "*.move" -type f -exec sha256sum {} \; | sort | sha256sum | cut -c1-16)
+          echo "framework_hash=$FRAMEWORK_HASH" >> $GITHUB_ENV
+          echo "Move framework hash: $FRAMEWORK_HASH"
+          
+          ls -lh head.mrb
+
       - name: Prepare release artifacts
         run: |
           mkdir -p artifacts
@@ -162,6 +174,11 @@ jobs:
           chmod +x artifacts/aptos
           chmod +x artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
           chmod +x artifacts/aptos-node
+          
+          # Copy framework bundle with hash
+          cp head.mrb artifacts/framework-${{ env.framework_hash }}.mrb
+          cp head.mrb artifacts/framework.mrb
+          cp head.mrb artifacts/head.mrb
 
           # Create checksums
           cd artifacts
@@ -169,6 +186,9 @@ jobs:
           sha256sum aptos > aptos.sha256
           sha256sum aptos-node-${{ steps.git-commit.outputs.sha }} > aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
           sha256sum aptos-node > aptos-node.sha256
+          sha256sum framework-${{ env.framework_hash }}.mrb > framework-${{ env.framework_hash }}.mrb.sha256
+          sha256sum framework.mrb > framework.mrb.sha256
+          sha256sum head.mrb > head.mrb.sha256
           cd ..
 
       - name: Upload binaries as artifacts
@@ -195,12 +215,18 @@ jobs:
             **Files:**
             - `aptos-${{ steps.git-commit.outputs.sha }}` - Aptos CLI binary
             - `aptos-node-${{ steps.git-commit.outputs.sha }}` - Aptos Node binary
+            - `head.mrb` - Move framework bundle (standard)
+            - `framework-${{ env.framework_hash }}.mrb` - Move framework bundle (hashed)
             - Corresponding `.sha256` checksum files
           files: |
             artifacts/aptos-${{ steps.git-commit.outputs.sha }}
             artifacts/aptos-${{ steps.git-commit.outputs.sha }}.sha256
             artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
             artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
+            artifacts/framework-${{ env.framework_hash }}.mrb
+            artifacts/framework-${{ env.framework_hash }}.mrb.sha256
+            artifacts/head.mrb
+            artifacts/head.mrb.sha256
           draft: false
           prerelease: true
         env:
