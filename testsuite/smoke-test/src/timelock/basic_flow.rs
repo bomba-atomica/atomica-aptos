@@ -52,7 +52,7 @@ async fn test_timelock_basic_flow() {
     // Configure shorter interval for testing
     {
         info!("Setting timelock interval to {} seconds", interval_secs);
-        let mut root_account = swarm.chain_info().root_account();
+        let root_account = swarm.chain_info().root_account();
 
         let interval_us: u64 = interval_secs * 1_000_000;
 
