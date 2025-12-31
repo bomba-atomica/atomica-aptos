@@ -74,9 +74,9 @@ The Move code correctly calls `timelock::on_new_block(vm)` in the block prologue
 - **Docker testnet startup**: Verified that docker testnet initializes correctly with 2 validators, genesis generation, and consensus startup.
 - **Resource querying**: Aptos client successfully queries blockchain state (timelock resources, timestamps, etc.).
 - **Transaction submission**: Fixed by using `client.waitForTransactionWithResult()` instead of `client.waitForTransaction()`, and ensuring proper account funding.
-- **Manual rotation function**: Implemented `trigger_rotation` public function in Move code for manual DKG rotation triggering.
 - **IBE crypto stubs**: Implemented placeholder IBE cryptographic operations with proper API structure.
 - **Test execution patterns**: Added round-robin and breadth-first test runners for different execution strategies.
+- **Framework compilation**: Added `compileAndPlaceFramework()` helper and test with Noop contract to verify fresh .mrb loading.
 - **Test infrastructure**: Created complete TypeScript test framework with helpers for transactions, queries, and waiters.
 
 ## Notes
