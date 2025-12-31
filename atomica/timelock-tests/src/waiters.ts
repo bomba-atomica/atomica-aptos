@@ -23,9 +23,8 @@ export class TimelockWaiters {
       try {
         const currentInterval = await this.queries.getCurrentInterval();
         const state = await this.queries.getTimelockState();
-        const timestamp = await this.queries.getCurrentTimestamp();
         console.log(
-          `Current interval: ${currentInterval} (target: ${targetInterval}), last_rotation_time: ${state.last_rotation_time}, current_time: ${timestamp}`,
+          `Current interval: ${currentInterval} (target: ${targetInterval}), last_rotation_time: ${state.last_rotation_time}`,
         );
 
         if (currentInterval >= targetInterval) {
