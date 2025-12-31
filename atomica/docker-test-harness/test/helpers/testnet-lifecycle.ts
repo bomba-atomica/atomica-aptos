@@ -118,6 +118,7 @@ function findComposeDir(): string {
         pathResolve(__dirname, "../../../config"),
         pathResolve(process.cwd(), "source/docker-testnet/config"),
         pathResolve(process.cwd(), "docker-testnet/config"),
+        pathResolve(process.cwd(), "../docker/config"),
         pathResolve(process.cwd(), "config"),
     ];
 

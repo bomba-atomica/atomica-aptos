@@ -16,5 +16,10 @@ node_modules/
 *.key
 
 # Docker testnet artifacts
-genesis-artifacts/
-validators/
+**/genesis-workspace/
+**/genesis-artifacts/
+**/validators/
+
+
+# should always build deps tree
+*.lock

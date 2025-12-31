@@ -33,11 +33,11 @@ function getAptosFrameworkBinary(): string {
     if (!existsSync(frameworkPath)) {
         throw new Error(
             `aptos-framework binary not found at ${frameworkPath}.\n\n` +
-            `Please build the aptos-framework binary:\n` +
-            `  cd /path/to/aptos-core && cargo build -p aptos-framework --release\n` +
-            `  # The binary will be available at ~/.cargo/bin/aptos-framework\n\n` +
-            `Or install globally:\n` +
-            `  cargo install --git https://github.com/aptos-labs/aptos-core aptos-framework`,
+                `Please build the aptos-framework binary:\n` +
+                `  cd /path/to/aptos-core && cargo build -p aptos-framework --release\n` +
+                `  # The binary will be available at ~/.cargo/bin/aptos-framework\n\n` +
+                `Or install globally:\n` +
+                `  cargo install --git https://github.com/aptos-labs/aptos-core aptos-framework`,
         );
     }
     return frameworkPath;
@@ -682,7 +682,7 @@ export class DockerTestnet {
         })();
 
         // Update lock to wait for this operation (catch errors so they don't block the queue)
-        this.faucetLock = currentOperation.catch(() => { });
+        this.faucetLock = currentOperation.catch(() => {});
 
         // Return the actual result (which may throw)
         return currentOperation;
@@ -964,6 +964,7 @@ export class DockerTestnet {
             pathResolve(__dirname, "../../config"), // relative to dist/ or src/
             pathResolve(process.cwd(), "source/docker-testnet/config"),
             pathResolve(process.cwd(), "docker-testnet/config"),
+            pathResolve(process.cwd(), "../docker/config"), // relative to docker-test-harness
             pathResolve(process.cwd(), "../docker-test-harness/docker-testnet/config"), // from timelock-tests
         ];
 

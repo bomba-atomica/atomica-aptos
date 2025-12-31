@@ -95,22 +95,13 @@ function runGenesisScript(config: ScriptConfig): Promise<void> {
 
         // Find the framework.mrb file - try multiple possible locations relative to workspaceDir
         const possiblePaths = [
-            pathResolve(
-                workspaceDir,
-                "..",
-                "..",
-                "..",
-                "move-framework-fixtures",
-                "test-head.mrb",
-            ),
-            pathResolve(
-                workspaceDir,
-                "..",
-                "..",
-                "..",
-                "move-framework-fixtures",
-                "head.mrb",
-            ),
+            pathResolve(workspaceDir, "..", "..", "..", "move-framework-fixtures", "test-head.mrb"),
+            pathResolve(workspaceDir, "..", "..", "..", "move-framework-fixtures", "head.mrb"),
+            // Fix for new directory structure:
+            // workspaceDir = atomica/docker/genesis-workspace
+            // .. = atomica/docker
+            // ../.. = atomica
+            pathResolve(workspaceDir, "..", "..", "move-framework-fixtures", "head.mrb"),
             pathResolve(process.cwd(), "..", "move-framework-fixtures", "head.mrb"),
             pathResolve(process.cwd(), "atomica", "move-framework-fixtures", "head.mrb"),
         ];
