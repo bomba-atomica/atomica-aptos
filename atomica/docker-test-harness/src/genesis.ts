@@ -100,7 +100,6 @@ function runGenesisScript(config: ScriptConfig): Promise<void> {
                 "..",
                 "..",
                 "..",
-                "atomica",
                 "move-framework-fixtures",
                 "test-head.mrb",
             ),
@@ -109,15 +108,11 @@ function runGenesisScript(config: ScriptConfig): Promise<void> {
                 "..",
                 "..",
                 "..",
-                "atomica",
                 "move-framework-fixtures",
                 "head.mrb",
             ),
-            pathResolve(workspaceDir, "..", "..", "..", "move-framework-fixtures", "head.mrb"),
-            pathResolve(workspaceDir, "..", "..", "move-framework-fixtures", "head.mrb"),
             pathResolve(process.cwd(), "..", "move-framework-fixtures", "head.mrb"),
             pathResolve(process.cwd(), "atomica", "move-framework-fixtures", "head.mrb"),
-            "/Users/lucas/code/rust/atomica-docker-infra/source/move-framework-fixtures/head.mrb",
         ];
 
         let frameworkPath = "";

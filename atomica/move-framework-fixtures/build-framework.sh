@@ -15,12 +15,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRAMEWORK_PATH="${1:-}"
-OUTPUT_DIR="${2:-$SCRIPT_DIR/../../../atomica/move-framework-fixtures}"
+OUTPUT_DIR="${2:-$SCRIPT_DIR}"
 FRAMEWORK_BIN="${APTOS_FRAMEWORK_BIN:-aptos-framework}"
 
 # Auto-detect framework path
 if [[ -z "$FRAMEWORK_PATH" ]]; then
-    CANDIDATE="$SCRIPT_DIR/../../../aptos-move/framework"
+    CANDIDATE="$SCRIPT_DIR/../../aptos-move/framework"
     if [[ -d "$CANDIDATE" ]]; then
         FRAMEWORK_PATH="$(cd "$CANDIDATE" && pwd)"
     else

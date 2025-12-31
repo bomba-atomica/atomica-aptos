@@ -33,11 +33,11 @@ function getAptosFrameworkBinary(): string {
     if (!existsSync(frameworkPath)) {
         throw new Error(
             `aptos-framework binary not found at ${frameworkPath}.\n\n` +
-                `Please build the aptos-framework binary:\n` +
-                `  cd /path/to/aptos-core && cargo build -p aptos-framework --release\n` +
-                `  # The binary will be available at ~/.cargo/bin/aptos-framework\n\n` +
-                `Or install globally:\n` +
-                `  cargo install --git https://github.com/aptos-labs/aptos-core aptos-framework`,
+            `Please build the aptos-framework binary:\n` +
+            `  cd /path/to/aptos-core && cargo build -p aptos-framework --release\n` +
+            `  # The binary will be available at ~/.cargo/bin/aptos-framework\n\n` +
+            `Or install globally:\n` +
+            `  cargo install --git https://github.com/aptos-labs/aptos-core aptos-framework`,
         );
     }
     return frameworkPath;
@@ -81,7 +81,7 @@ export async function compileAndPlaceFramework(
         // Use the build-framework.sh script for proper framework building
         const scriptPath = pathResolve(
             __dirname,
-            "../../source/move-framework-fixtures/build-framework.sh",
+            "../../move-framework-fixtures/build-framework.sh",
         );
         const outputDir = pathResolve(__dirname, "../../move-framework-fixtures");
 
@@ -682,7 +682,7 @@ export class DockerTestnet {
         })();
 
         // Update lock to wait for this operation (catch errors so they don't block the queue)
-        this.faucetLock = currentOperation.catch(() => {});
+        this.faucetLock = currentOperation.catch(() => { });
 
         // Return the actual result (which may throw)
         return currentOperation;

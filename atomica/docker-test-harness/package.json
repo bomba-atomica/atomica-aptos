@@ -10,6 +10,7 @@
         "test:local-build": "bun test test/local-build.test.ts",
         "test:faucet": "bun test test/faucet.test.ts",
         "test:verification": "bun test test/verification.test.ts",
+        "test:framework": "bun test test/framework-compilation.test.ts",
         "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
         "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
         "lint": "eslint .",
