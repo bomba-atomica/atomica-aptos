@@ -1,6 +1,6 @@
 import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
 import { AptosClient } from "aptos";
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync, existsSync, readlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawn } from "child_process";
@@ -12,14 +12,16 @@ import { spawn } from "child_process";
  *
  * This test verifies that the DockerTestnet.new() function's customFrameworkPath parameter
  * works correctly by:
- * 1. Creating a modified framework with a test contract (noop.move)
- * 2. Loading the custom framework into a testnet via customFrameworkPath
- * 3. Verifying the test contract is available on-chain
+ * 1. Copying production framework to temp and adding noop.move
+ * 2. Building the framework using build-framework.sh (content-addressable caching)
+ * 3. Loading the custom framework into a testnet via customFrameworkPath
+ * 4. Verifying the noop contract functions are available on-chain
  *
  * WHY THIS MATTERS:
  * - Ensures framework modifications can be tested without rebuilding Docker images
- * - Validates the genesis process can accept custom .mrb files
- * - Confirms that modified frameworks are properly embedded in genesis artifacts
+ * - Validates build-framework.sh produces working .mrb files with added contracts
+ * - Confirms genesis process accepts custom .mrb files with content-addressable caching
+ * - Verifies modified frameworks are properly embedded in genesis artifacts
  *
  * USAGE:
  *   cd atomica/timelock-tests
@@ -43,81 +45,106 @@ import { spawn } from "child_process";
  *
  * This function creates a modified version of the Aptos framework by:
  * 1. Copying production framework sources to a temp directory
- * 2. Adding a test contract (noop.move) to verify loading
- * 3. Creating Move.toml configuration
- * 4. Compiling the framework using aptos-framework binary
+ * 2. Adding noop.move to aptos-framework/sources (no Move.toml creation needed)
+ * 3. Building the framework using build-framework.sh script
  *
  * The resulting .mrb file can be used to test custom framework loading
  * in the docker-test-harness.
  */
 async function createTestFramework(): Promise<string> {
   const tempDir = mkdtempSync(join(tmpdir(), "aptos-framework-test-"));
-  const outputPath = "./atomica/move-framework-fixtures/test-head.mrb";
+  const frameworkDir = join(tempDir, "framework");
+  const outputDir = join(tempDir, "output");
 
   try {
     console.log(`📁 Creating test framework in: ${tempDir}`);
 
     // Step 1: Copy production framework sources to temp directory
     // This gives us a complete, working framework to modify
-    const sourceDir = join(process.cwd(), "../../aptos-move/framework/aptos-framework/sources");
-    const targetDir = join(tempDir, "sources");
+    const sourceDir = join(process.cwd(), "../../aptos-move/framework");
+    const targetDir = frameworkDir;
 
-    console.log(`📋 Copying production code from ${sourceDir} to ${targetDir}`);
+    console.log(`📋 Copying production framework from ${sourceDir} to ${targetDir}`);
     cpSync(sourceDir, targetDir, { recursive: true });
 
-    // Step 2: Add noop.move test contract to the framework
-    // This contract provides a simple function to verify framework loading
+    // Step 2: Add noop.move to aptos-framework sources
+    // This drops noop.move alongside the other framework move files
     const noopSource = join(process.cwd(), "../move-framework-fixtures/noop.move");
-    const noopTarget = join(targetDir, "noop.move");
+    const noopTarget = join(targetDir, "aptos-framework", "sources", "noop.move");
 
-    console.log(`➕ Adding noop.move to test framework`);
+    console.log(`➕ Adding noop.move to aptos-framework sources`);
     cpSync(noopSource, noopTarget);
 
-    // Step 3: Create Move.toml configuration for the test framework
-    // This defines package metadata and dependencies for compilation
-    const moveToml = `[package]
-name = "AptosFramework"
-version = "1.0.0"
-
-[dependencies]
-AptosStdlib = { local = "../aptos-stdlib" }
-MoveStdlib = { local = "../../../move-stdlib" }
-
-[addresses]
-aptos_framework = "0x1"
-aptos_std = "0x1"
-std = "0x1"
-`;
-
-    const moveTomlPath = join(tempDir, "Move.toml");
-    writeFileSync(moveTomlPath, moveToml);
-
-    // Step 4: Compile the framework using aptos-framework binary
+    // Step 3: Build the framework using build-framework.sh
     // This produces a .mrb file that includes our test contract
-    console.log("🔨 Compiling test framework with noop.move...");
+    console.log("🔨 Building test framework with noop.move using build-framework.sh...");
 
-    // Compile from temp directory using pre-built aptos-framework binary
     await new Promise<void>((resolve, reject) => {
-      const cargo = spawn("cargo", ["run", "--package", "aptos-framework", "--", "release", "--target", "head"], {
-        cwd: process.cwd(),
+      const buildScript = join(process.cwd(), "../move-framework-fixtures/build-framework.sh");
+      const buildProcess = spawn(buildScript, [frameworkDir, outputDir], {
         stdio: "inherit",
       });
 
-      cargo.on("close", (code) => {
+      buildProcess.on("close", (code) => {
         if (code === 0) {
-          console.log("✅ Framework compilation completed");
+          console.log("✅ Framework build completed");
           resolve();
         } else {
-          reject(new Error(`Framework compilation failed with exit code ${code}`));
+          reject(new Error(`Framework build failed with exit code ${code}`));
         }
       });
 
-      cargo.on("error", (error) => {
-        reject(new Error(`Failed to start framework compilation: ${error.message}`));
+      buildProcess.on("error", (error) => {
+        reject(new Error(`Failed to start framework build: ${error.message}`));
       });
     });
 
-    return outputPath;
+    // The build-framework.sh creates head.mrb symlink pointing to head-{HASH}.mrb
+    const symlinkPath = join(outputDir, "head.mrb");
+    if (!existsSync(symlinkPath)) {
+      throw new Error(`Expected symlink ${symlinkPath} to exist after build`);
+    }
+
+    // Copy the built framework (following symlink) to fixtures for the test
+    const actualFile = readlinkSync(symlinkPath);
+    const fixturesPath = join(process.cwd(), "../move-framework-fixtures/test-head.mrb");
+    cpSync(join(outputDir, actualFile), fixturesPath);
+
+    console.log(`📦 Test framework copied to: ${fixturesPath}`);
+    return fixturesPath;
+  } catch (error) {
+    console.error("❌ Failed to create test framework:", error);
+    throw error;
+  } finally {
+    // Clean up temp directory
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+      console.log(`🧹 Cleaned up temp directory: ${tempDir}`);
+    } catch (error) {
+      console.warn(`⚠️  Failed to cleanup temp directory: ${tempDir}`);
+    }
+  }
+}
+      });
+
+      buildProcess.on("error", (error) => {
+        reject(new Error(`Failed to start framework build: ${error.message}`));
+      });
+    });
+
+    // The build-framework.sh creates head.mrb symlink pointing to head-{HASH}.mrb
+    const symlinkPath = join(outputDir, "head.mrb");
+    if (!existsSync(symlinkPath)) {
+      throw new Error(`Expected symlink ${symlinkPath} to exist after build`);
+    }
+
+    // Copy the built framework (following symlink) to fixtures for the test
+    const actualFile = readlinkSync(symlinkPath);
+    const fixturesPath = join(process.cwd(), "../move-framework-fixtures/test-head.mrb");
+    cpSync(join(outputDir, actualFile), fixturesPath);
+
+    console.log(`📦 Test framework copied to: ${fixturesPath}`);
+    return fixturesPath;
   } catch (error) {
     console.error("❌ Failed to create test framework:", error);
     throw error;
@@ -149,15 +176,15 @@ async function testFrameworkCompilation() {
   console.log("This meta-test verifies custom .mrb framework loading capability");
 
   try {
-    // Phase 1: Create test framework with noop.move included
-    // This produces a .mrb file that can be passed to DockerTestnet.new()
+    // Phase 1: Create and build test framework with noop.move added
+    // This produces a .mrb file with noop.move included alongside production contracts
     const frameworkPath = await createTestFramework();
-    console.log(`📦 Custom framework created at: ${frameworkPath}`);
+    console.log(`📦 Test framework built at: ${frameworkPath}`);
 
     // Phase 2: Start testnet with custom framework
     // The customFrameworkPath parameter should load our modified framework
-    console.log("Starting testnet with test framework...");
-    console.log("If this fails, the docker-test-harness cannot load custom frameworks");
+    console.log("🚀 Starting testnet with custom framework...");
+    console.log("If this fails, the docker-test-harness cannot load custom .mrb files");
     const testnet = await initializeTestnet(2, frameworkPath);
 
     try {
@@ -179,15 +206,15 @@ async function testFrameworkCompilation() {
         throw new Error("Noop contract is_available() returned false - custom framework not loaded");
       }
 
-      console.log("✅ Noop contract is available - test framework loaded successfully!");
-      console.log(`✅ Framework compilation and loading test PASSED: ${frameworkPath}`);
-      console.log("✅ Docker test-harness can successfully insert modified .mrb files");
+      console.log("✅ Noop contract is available - custom framework loaded successfully!");
+      console.log(`✅ Framework build and loading test PASSED: ${frameworkPath}`);
+      console.log("✅ Docker test-harness can successfully load custom .mrb files built with build-framework.sh");
     } finally {
       await performCleanup("Framework compilation test completed");
     }
   } catch (error) {
-    console.error("❌ Framework compilation test failed:", error);
-    console.error("This indicates the docker-test-harness cannot load custom frameworks");
+    console.error("❌ Framework build and loading test failed:", error);
+    console.error("This indicates either build-framework.sh failed or docker-test-harness cannot load custom .mrb files");
     throw error;
   }
 }
