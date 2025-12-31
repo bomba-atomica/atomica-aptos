@@ -16,29 +16,34 @@ export class TimelockTransactions {
   async setIntervalForTesting(intervalMicroseconds: number): Promise<string> {
     console.log(`Setting interval to ${intervalMicroseconds} microseconds`);
 
-    const payload: Types.TransactionPayload = {
+    const payload = {
       type: "entry_function_payload",
       function: "0x1::timelock_config::set_interval_for_testing",
       type_arguments: [],
       arguments: [intervalMicroseconds.toString()],
     };
 
-    try {
-      console.log(`Generating transaction for account ${this.account.address()}`);
-      const txnRequest = await this.client.generateTransaction(this.account.address(), payload);
-      console.log(`Transaction generated, signing...`);
-      const signedTxn = await this.client.signTransaction(this.account, txnRequest);
-      console.log(`Transaction signed, submitting...`);
-      const txnResponse = await this.client.submitTransaction(signedTxn);
-      console.log(`Transaction submitted: ${txnResponse.hash}, waiting for confirmation...`);
-      await this.client.waitForTransaction(txnResponse.hash);
-      console.log(`Transaction confirmed successfully`);
-      return txnResponse.hash;
-    } catch (error) {
-      console.error(`Transaction failed: ${error}`);
-      throw error;
+    console.log(`Generating transaction for account ${this.account.address()}`);
+    const txn = await this.client.generateTransaction(this.account.address(), payload);
+    console.log("Transaction generated");
+
+    console.log("Signing transaction...");
+    const signedTxn = await this.client.signTransaction(this.account, txn);
+    console.log("Transaction signed");
+
+    console.log("Submitting transaction...");
+    const pendingTxn = await this.client.submitTransaction(signedTxn);
+    console.log("Transaction submitted:", pendingTxn.hash);
+
+    console.log("Waiting for transaction...");
+    const txnResult = await this.client.waitForTransactionWithResult(pendingTxn.hash);
+    console.log("✓ Transaction completed!");
+    console.log("Success:", txnResult.success);
+
+    if (!txnResult.success) {
+      throw new Error(`Transaction failed: ${txnResult.vm_status}`);
     }
 
-    return txnResponse.hash;
+    return pendingTxn.hash;
   }
 }
