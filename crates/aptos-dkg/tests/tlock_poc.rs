@@ -1,5 +1,5 @@
-use aptos_dkg::weighted_vuf::bls::BLS_WVUF_DST;
 use aptos_crypto::blstrs::multi_pairing;
+use aptos_dkg::weighted_vuf::bls::BLS_WVUF_DST;
 use blstrs::{G1Projective, G2Projective, Gt, Scalar};
 use group::Group;
 use sha3::{Digest, Keccak256};

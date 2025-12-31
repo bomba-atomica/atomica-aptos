@@ -2,6 +2,8 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(clippy::upper_case_acronyms)]
+
 use crate::{check_bounds::BoundsChecker, errors::*, file_format::*, file_format_common::*};
 use move_core_types::{
     ability::{Ability, AbilitySet},

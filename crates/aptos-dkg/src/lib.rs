@@ -33,6 +33,7 @@ pub mod algebra;
 pub mod dlog;
 pub(crate) mod fiat_shamir;
 pub mod ibe;
+pub mod onion;
 pub mod pcs;
 pub mod pvss;
 pub mod range_proofs;

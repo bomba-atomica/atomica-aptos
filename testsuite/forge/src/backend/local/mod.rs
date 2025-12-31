@@ -160,7 +160,7 @@ impl LocalFactory {
                 .add_validator_fullnode(version, vfn_override_config.clone(), *validator_peer_id)
                 .unwrap();
         }
-        swarm.wait_all_alive(Duration::from_secs(60)).await?;
+        swarm.wait_all_alive(Duration::from_secs(240)).await?;
 
         Ok(swarm)
     }

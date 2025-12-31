@@ -17,7 +17,7 @@ use aptos_vm_types::{
     module_and_script_storage::module_storage::AptosModuleStorage, output::VMOutput,
 };
 use move_core_types::{
-    account_address::AccountAddress,
+    // use move_core_types::account_address::AccountAddress;
     value::{serialize_values, MoveValue},
     vm_status::VMStatus,
 };
@@ -37,7 +37,7 @@ impl AptosVM {
         let mut session = self.new_session(resolver, session_id, None);
 
         let args = vec![
-            MoveValue::Signer(AccountAddress::ONE), // Or validator address? Using ONE/Framework for now as per dkg.rs pattern
+            MoveValue::Signer(dkg_transcript.metadata.author),
             MoveValue::U64(dkg_transcript.metadata.epoch), // Reuse epoch as interval
             dkg_transcript.transcript_bytes.as_move_value(),
         ];
@@ -79,7 +79,7 @@ impl AptosVM {
         let mut session = self.new_session(resolver, session_id, None);
 
         let args = vec![
-            MoveValue::Signer(AccountAddress::ONE),
+            MoveValue::Signer(share.author),
             MoveValue::U64(share.interval),
             share.share.as_move_value(),
         ];

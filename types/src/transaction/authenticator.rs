@@ -160,13 +160,16 @@ impl TransactionAuthenticator {
     /// Return Ok if all AccountAuthenticator's public keys match their signatures, Err otherwise
     pub fn verify(&self, raw_txn: &RawTransaction) -> Result<()> {
         println!("######## TransactionAuthenticator::verify CALLED ########");
-        println!("  Transaction type: {}", match self {
-            Self::Ed25519 { .. } => "Ed25519",
-            Self::FeePayer { .. } => "FeePayer",
-            Self::MultiAgent { .. } => "MultiAgent",
-            Self::MultiEd25519 { .. } => "MultiEd25519",
-            Self::SingleSender { .. } => "SingleSender",
-        });
+        println!(
+            "  Transaction type: {}",
+            match self {
+                Self::Ed25519 { .. } => "Ed25519",
+                Self::FeePayer { .. } => "FeePayer",
+                Self::MultiAgent { .. } => "MultiAgent",
+                Self::MultiEd25519 { .. } => "MultiEd25519",
+                Self::SingleSender { .. } => "SingleSender",
+            }
+        );
 
         let num_sigs: usize = self.sender().number_of_signatures()
             + self
@@ -177,7 +180,10 @@ impl TransactionAuthenticator {
         println!("  Total signatures: {}", num_sigs);
 
         if num_sigs > MAX_NUM_OF_SIGS {
-            println!("❌ MAX_NUM_OF_SIGS exceeded: {} > {}", num_sigs, MAX_NUM_OF_SIGS);
+            println!(
+                "❌ MAX_NUM_OF_SIGS exceeded: {} > {}",
+                num_sigs, MAX_NUM_OF_SIGS
+            );
             return Err(Error::new(AuthenticationError::MaxSignaturesExceeded));
         }
         match self {
@@ -797,21 +803,35 @@ impl AccountAuthenticator {
                 println!("========================================");
                 println!("DEBUG: Abstract Authenticator VERIFY called");
                 println!("  Function Info: {:?}", authenticator.function_info());
-                println!("  Provided Digest: {}", hex::encode(authenticator.signing_message_digest()));
+                println!(
+                    "  Provided Digest: {}",
+                    hex::encode(authenticator.signing_message_digest())
+                );
 
                 let original_signing_message = signing_message(message)?;
-                println!("  Original Signing Message length: {}", original_signing_message.len());
-                println!("  Original Signing Message (first 64 bytes): {}", hex::encode(&original_signing_message[..64.min(original_signing_message.len())]));
+                println!(
+                    "  Original Signing Message length: {}",
+                    original_signing_message.len()
+                );
+                println!(
+                    "  Original Signing Message (first 64 bytes): {}",
+                    hex::encode(
+                        &original_signing_message[..64.min(original_signing_message.len())]
+                    )
+                );
 
                 let computed_digest = AASigningData::signing_message_digest(
                     original_signing_message.clone(),
-                    authenticator.function_info().clone()
+                    authenticator.function_info().clone(),
                 )?;
                 println!("  Computed Digest: {}", hex::encode(&computed_digest));
 
                 if authenticator.signing_message_digest() != &computed_digest {
                     println!("❌ DIGEST MISMATCH!");
-                    println!("  Full Original Signing Message: {}", hex::encode(&original_signing_message));
+                    println!(
+                        "  Full Original Signing Message: {}",
+                        hex::encode(&original_signing_message)
+                    );
                 } else {
                     println!("✅ Digest Match!");
                 }
@@ -1752,52 +1772,52 @@ mod tests {
         let signed_txn = SignedTransaction::new_single_sender(raw_txn.clone(), account_auth);
         signed_txn.verify_signature().unwrap_err();
 
-        let mk_auth_01 = MultiKeyAuthenticator::new(multi_key.clone(), vec![
-            (0, signature0.clone()),
-            (1, signature1.clone()),
-        ])
+        let mk_auth_01 = MultiKeyAuthenticator::new(
+            multi_key.clone(),
+            vec![(0, signature0.clone()), (1, signature1.clone())],
+        )
         .unwrap();
         let single_key_authenticators = mk_auth_01.to_single_key_authenticators().unwrap();
-        assert_eq!(single_key_authenticators, vec![
-            sender0_auth.clone(),
-            sender1_auth.clone()
-        ]);
+        assert_eq!(
+            single_key_authenticators,
+            vec![sender0_auth.clone(), sender1_auth.clone()]
+        );
         let account_auth = AccountAuthenticator::multi_key(mk_auth_01);
         let signed_txn = SignedTransaction::new_single_sender(raw_txn.clone(), account_auth);
         signed_txn.verify_signature().unwrap();
 
-        let mk_auth_02 = MultiKeyAuthenticator::new(multi_key.clone(), vec![
-            (0, signature0.clone()),
-            (2, signature1.clone()),
-        ])
+        let mk_auth_02 = MultiKeyAuthenticator::new(
+            multi_key.clone(),
+            vec![(0, signature0.clone()), (2, signature1.clone())],
+        )
         .unwrap();
         let single_key_authenticators = mk_auth_02.to_single_key_authenticators().unwrap();
-        assert_eq!(single_key_authenticators, vec![
-            sender0_auth.clone(),
-            sender1_auth.clone()
-        ]);
+        assert_eq!(
+            single_key_authenticators,
+            vec![sender0_auth.clone(), sender1_auth.clone()]
+        );
         let account_auth = AccountAuthenticator::multi_key(mk_auth_02);
         let signed_txn = SignedTransaction::new_single_sender(raw_txn.clone(), account_auth);
         signed_txn.verify_signature().unwrap();
 
-        let mk_auth_12 = MultiKeyAuthenticator::new(multi_key.clone(), vec![
-            (1, signature1.clone()),
-            (2, signature1.clone()),
-        ])
+        let mk_auth_12 = MultiKeyAuthenticator::new(
+            multi_key.clone(),
+            vec![(1, signature1.clone()), (2, signature1.clone())],
+        )
         .unwrap();
         let single_key_authenticators = mk_auth_12.to_single_key_authenticators().unwrap();
-        assert_eq!(single_key_authenticators, vec![
-            sender1_auth.clone(),
-            sender1_auth.clone()
-        ]);
+        assert_eq!(
+            single_key_authenticators,
+            vec![sender1_auth.clone(), sender1_auth.clone()]
+        );
         let account_auth = AccountAuthenticator::multi_key(mk_auth_12);
         let signed_txn = SignedTransaction::new_single_sender(raw_txn.clone(), account_auth);
         signed_txn.verify_signature().unwrap();
 
-        MultiKeyAuthenticator::new(multi_key.clone(), vec![
-            (0, signature0.clone()),
-            (0, signature0.clone()),
-        ])
+        MultiKeyAuthenticator::new(
+            multi_key.clone(),
+            vec![(0, signature0.clone()), (0, signature0.clone())],
+        )
         .unwrap_err();
     }
 
@@ -2055,10 +2075,10 @@ mod tests {
         let second_sender0_auth = AccountAuthenticator::single_key(second_sender0_sk_auth.clone());
         let second_sender1_auth = AccountAuthenticator::single_key(second_sender1_sk_auth.clone());
         let fee_payer_multi_key_auth = AccountAuthenticator::multi_key(
-            MultiKeyAuthenticator::new(multi_key.clone(), vec![
-                (0, fee_payer0_sig.clone()),
-                (1, fee_payer1_sig.clone()),
-            ])
+            MultiKeyAuthenticator::new(
+                multi_key.clone(),
+                vec![(0, fee_payer0_sig.clone()), (1, fee_payer1_sig.clone())],
+            )
             .unwrap(),
         );
 
@@ -2071,21 +2091,27 @@ mod tests {
         );
 
         let authenticators = txn_auth.all_signers();
-        assert_eq!(authenticators, vec![
-            sender_auth,
-            second_sender0_auth,
-            second_sender1_auth,
-            fee_payer_multi_key_auth
-        ]);
+        assert_eq!(
+            authenticators,
+            vec![
+                sender_auth,
+                second_sender0_auth,
+                second_sender1_auth,
+                fee_payer_multi_key_auth
+            ]
+        );
 
         let single_key_authenticators = txn_auth.to_single_key_authenticators().unwrap();
-        assert_eq!(single_key_authenticators, vec![
-            sender_sk_auth,
-            second_sender0_sk_auth,
-            second_sender1_sk_auth,
-            fee_payer0_sk_auth,
-            fee_payer1_sk_auth
-        ]);
+        assert_eq!(
+            single_key_authenticators,
+            vec![
+                sender_sk_auth,
+                second_sender0_sk_auth,
+                second_sender1_sk_auth,
+                fee_payer0_sk_auth,
+                fee_payer1_sk_auth
+            ]
+        );
     }
 
     #[test]

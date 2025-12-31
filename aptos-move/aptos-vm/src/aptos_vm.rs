@@ -47,7 +47,7 @@ use aptos_gas_schedule::{
     gas_feature_versions::{RELEASE_V1_10, RELEASE_V1_27, RELEASE_V1_38},
     AptosGasParameters, VMGasParameters,
 };
-use aptos_logger::{enabled, prelude::*, Level, error, warn, info};
+use aptos_logger::{enabled, error, info, warn, Level};
 use aptos_metrics_core::IntCounterVecHelper;
 #[cfg(any(test, feature = "testing"))]
 use aptos_types::state_store::StateViewId;
@@ -677,7 +677,9 @@ impl AptosVM {
                 );
             }
 
-            let info = match module_storage.unmetered_get_deserialized_module(module_id.address(), module_id.name()) {
+            let info = match module_storage
+                .unmetered_get_deserialized_module(module_id.address(), module_id.name())
+            {
                 Ok(Some(module)) => match get_metadata(&module.metadata) {
                     Some(m) => match m.extract_abort_info(code) {
                         Some(info) => Some(info),
@@ -690,7 +692,7 @@ impl AptosVM {
                                 module_id.name()
                             );
                             None
-                        }
+                        },
                     },
                     None => {
                         warn!(
@@ -700,7 +702,7 @@ impl AptosVM {
                             module_id.name()
                         );
                         None
-                    }
+                    },
                 },
                 Ok(None) => {
                     warn!(
@@ -710,7 +712,7 @@ impl AptosVM {
                         module_id.name()
                     );
                     None
-                }
+                },
                 Err(e) => {
                     warn!(
                         *log_context,
@@ -720,7 +722,7 @@ impl AptosVM {
                         e
                     );
                     None
-                }
+                },
             };
 
             ExecutionStatus::MoveAbort {

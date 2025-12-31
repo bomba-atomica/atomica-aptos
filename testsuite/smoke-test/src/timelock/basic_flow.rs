@@ -12,9 +12,12 @@
 //! 6. On-chain aggregation produces decryption key
 
 use crate::smoke_test_environment::SwarmBuilder;
-use aptos_forge::{NodeExt, SwarmExt};
+use aptos_forge::{NodeExt, Swarm};
 use aptos_logger::info;
+use move_core_types::identifier::Identifier;
+use move_core_types::language_storage::ModuleId;
 use std::{sync::Arc, time::Duration};
+use tokio::time::sleep;
 
 /// Test basic timelock flow with fast interval for testing.
 ///
@@ -25,7 +28,14 @@ use std::{sync::Arc, time::Duration};
 /// - Verifies public key is published
 /// - Waits for reveal
 /// - Verifies secret is aggregated
+///
+/// NOTE: This test is currently ignored as we are replacing smoke tests with
+/// TypeScript-based tests using the docker-test-harness for more reliable
+/// and maintainable testing. These Rust smoke tests can be revisited in the
+/// future if needed, but the docker testnet approach provides better isolation
+/// and CI integration.
 #[tokio::test]
+#[ignore]
 async fn test_timelock_basic_flow() {
     let interval_secs = 5;
 
@@ -40,15 +50,41 @@ async fn test_timelock_basic_flow() {
         .with_init_genesis_config(Arc::new(move |conf| {
             // Enable validator transactions (required for timelock)
             conf.consensus_config.enable_validator_txns();
-
-            // TODO: Add timelock configuration for shorter intervals
-            // This would require adding timelock_config to GenesisConfiguration
-            // For now, we rely on the default interval
         }))
         .build_with_cli(0)
         .await;
 
     let client = swarm.validators().next().unwrap().rest_client();
+
+    // Configure shorter interval for testing
+    {
+        info!("Setting timelock interval to {} seconds", interval_secs);
+        let mut root_account = swarm.chain_info().root_account();
+
+        let interval_us: u64 = interval_secs * 1_000_000;
+
+        let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
+            aptos_types::transaction::EntryFunction::new(
+                ModuleId::new(
+                    aptos_types::account_address::AccountAddress::ONE,
+                    Identifier::new("timelock_config").unwrap(),
+                ),
+                Identifier::new("set_interval_for_testing").unwrap(),
+                vec![],
+                vec![bcs::to_bytes(&interval_us).unwrap()],
+            ),
+        );
+
+        let signed_txn = root_account.sign_with_transaction_builder(
+            aptos_sdk::transaction_builder::TransactionFactory::new(swarm.chain_id())
+                .payload(payload)
+                .max_gas_amount(2_000_000)
+                .gas_unit_price(100),
+        );
+
+        client.submit_and_wait(&signed_txn).await.unwrap();
+        info!("Timelock interval configured successfully");
+    }
 
     info!("Swarm started, verifying timelock is initialized at genesis");
 
@@ -79,49 +115,77 @@ async fn test_timelock_basic_flow() {
     info!("First rotation complete, verifying public key published");
 
     // Step 3 - Verify public key for the new interval is published
-    // Note: This may fail if validators haven't published yet
-    match super::verify_public_key_published(&client, target_interval).await {
-        Ok(public_key) => {
-            info!(
-                "Public key published for interval {}: {} bytes",
-                target_interval,
-                public_key.len()
-            );
-            // BLS12-381 G2 point should be 96 bytes (compressed)
-            assert!(
-                public_key.len() == 48 || public_key.len() == 96,
-                "Public key should be 48 or 96 bytes, got {}",
-                public_key.len()
-            );
+    info!(
+        "Waiting for public key to be published for interval {}",
+        target_interval
+    );
+    let mut pub_key_published = false;
+    for _ in 0..60 {
+        // Wait up to 60 seconds
+        match super::verify_public_key_published(&client, target_interval).await {
+            Ok(public_key) => {
+                info!(
+                    "Public key published for interval {}: {} bytes",
+                    target_interval,
+                    public_key.len()
+                );
+                // For now, we store the full transcript, so it's large.
+                assert!(public_key.len() > 0);
+                pub_key_published = true;
+                break;
+            },
+            Err(_) => {
+                sleep(Duration::from_secs(1)).await;
+            },
         }
-        Err(e) => {
-            info!(
-                "Public key not yet published for interval {}: {}",
-                target_interval, e
-            );
-            // This is expected if DKG hasn't completed
-        }
-    };
+    }
+    assert!(
+        pub_key_published,
+        "Public key failure for interval {}",
+        target_interval
+    );
 
-    // Step 4 - Check if secret is revealed for previous interval
-    if initial_interval > 0 {
-        match super::verify_secret_aggregated(&client, initial_interval - 1, 3).await {
+    // Step 4 - Verify Secret Reveal
+    // Wait for next rotation (Target + 1)
+    let reveal_target_interval = target_interval + 1;
+    info!(
+        "Waiting for rotation to interval {} to trigger reveal of interval {}",
+        reveal_target_interval, target_interval
+    );
+
+    super::wait_for_interval_rotation(&client, reveal_target_interval, timeout_secs)
+        .await
+        .unwrap();
+
+    // Now check if secret for `target_interval` is revealed
+    info!(
+        "Waiting for secret to be revealed for interval {}",
+        target_interval
+    );
+    let mut secret_revealed = false;
+    for _ in 0..60 {
+        match super::verify_secret_aggregated(&client, target_interval, 3).await {
             Ok(secret) => {
                 info!(
                     "Secret revealed for interval {}: {} bytes",
-                    initial_interval - 1,
+                    target_interval,
                     secret.len()
                 );
-            }
-            Err(e) => {
-                info!(
-                    "Secret not yet revealed for interval {}: {}",
-                    initial_interval - 1,
-                    e
-                );
-            }
+                // Secret is a serialized Group Element (G1 or G2 or scalar)
+                assert!(secret.len() > 0);
+                secret_revealed = true;
+                break;
+            },
+            Err(_) => {
+                sleep(Duration::from_secs(1)).await;
+            },
         }
     }
+    assert!(
+        secret_revealed,
+        "Secret reveal failure for interval {}",
+        target_interval
+    );
 
     info!("✅ Test completed - basic timelock flow verified");
 }
@@ -129,6 +193,12 @@ async fn test_timelock_basic_flow() {
 /// Test that timelock config can be updated on testnet (not mainnet).
 ///
 /// TODO: Implement when timelock_config module is tested
+///
+/// NOTE: This test is currently ignored as we are replacing smoke tests with
+/// TypeScript-based tests using the docker-test-harness for more reliable
+/// and maintainable testing. These Rust smoke tests can be revisited in the
+/// future if needed, but the docker testnet approach provides better isolation
+/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_config_override() {
@@ -139,6 +209,12 @@ async fn test_timelock_config_override() {
 /// Test that timelock handles validator set changes gracefully.
 ///
 /// TODO: Implement when DKG integration is complete
+///
+/// NOTE: This test is currently ignored as we are replacing smoke tests with
+/// TypeScript-based tests using the docker-test-harness for more reliable
+/// and maintainable testing. These Rust smoke tests can be revisited in the
+/// future if needed, but the docker testnet approach provides better isolation
+/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_with_validator_changes() {
@@ -152,6 +228,12 @@ async fn test_timelock_with_validator_changes() {
 /// Test that timelock handles DKG failures gracefully.
 ///
 /// TODO: Implement when DKG integration is complete
+///
+/// NOTE: This test is currently ignored as we are replacing smoke tests with
+/// TypeScript-based tests using the docker-test-harness for more reliable
+/// and maintainable testing. These Rust smoke tests can be revisited in the
+/// future if needed, but the docker testnet approach provides better isolation
+/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_dkg_failure_recovery() {

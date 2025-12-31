@@ -1,0 +1,248 @@
+name: Timelock & DKG Tests
+
+on:
+  push:
+    branches:
+      - main
+      - dev-atomica
+    paths:
+      - "aptos-move/framework/aptos-framework/sources/timelock.move"
+      - "aptos-move/framework/aptos-framework/sources/timelock_config.move"
+      - "aptos-move/aptos-vm/src/validator_txns/timelock.rs"
+      - "crates/aptos-dkg/**"
+      - "dkg/**"
+      - "types/src/dkg/**"
+      - "testsuite/smoke-test/src/timelock/**"
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - ".github/workflows/test-timelock-dkg.yml"
+  pull_request:
+    branches:
+      - main
+      - dev-atomica
+    paths:
+      - "aptos-move/framework/aptos-framework/sources/timelock.move"
+      - "aptos-move/framework/aptos-framework/sources/timelock_config.move"
+      - "aptos-move/aptos-vm/src/validator_txns/timelock.rs"
+      - "crates/aptos-dkg/**"
+      - "dkg/**"
+      - "types/src/dkg/**"
+      - "testsuite/smoke-test/src/timelock/**"
+      - "**/*.rs"
+      - "**/Cargo.toml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Reduce memory pressure during builds
+  CARGO_BUILD_JOBS: 2
+  # Disable incremental compilation (not useful in CI and uses extra disk space)
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  test-timelock-move:
+    name: Test Timelock Move Module
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Remove unnecessary software to free up ~30GB
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "atomica-test"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+
+      - name: Run timelock Move unit tests
+        run: |
+          echo "Running timelock Move module tests..."
+          cd aptos-move/framework/aptos-framework
+          cargo test -p aptos-framework --test move_unit_test -- timelock
+
+      - name: Check for test results
+        if: always()
+        run: |
+          if [ $? -eq 0 ]; then
+            echo "✅ Timelock Move tests passed"
+          else
+            echo "❌ Timelock Move tests failed"
+            exit 1
+          fi
+
+  test-dkg:
+    name: Test DKG Implementation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "atomica-test"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+
+      - name: Run DKG tests
+        run: |
+          echo "Running DKG crate tests..."
+          cargo test -p aptos-dkg --lib
+
+      - name: Check for test results
+        if: always()
+        run: |
+          if [ $? -eq 0 ]; then
+            echo "✅ DKG tests passed"
+          else
+            echo "❌ DKG tests failed"
+            exit 1
+          fi
+
+  test-validator-txn-timelock:
+    name: Test Validator Timelock Transaction Handler
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "atomica-test"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+
+      - name: Run validator transaction timelock tests
+        run: |
+          echo "Running validator transaction timelock tests..."
+          cargo test -p aptos-vm --lib validator_txns::timelock
+
+      - name: Check for test results
+        if: always()
+        run: |
+          if [ $? -eq 0 ]; then
+            echo "✅ Validator transaction timelock tests passed"
+          else
+            echo "❌ Validator transaction timelock tests failed"
+            exit 1
+          fi

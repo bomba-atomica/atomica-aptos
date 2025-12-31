@@ -2,6 +2,8 @@
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(clippy::collapsible_if)]
+
 use crate::{
     file_format::{CodeOffset, FunctionDefinitionIndex, TableIndex},
     IndexKind,

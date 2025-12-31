@@ -22,11 +22,11 @@ mod consensus_observer;
 mod execution;
 #[cfg(test)]
 mod full_nodes;
-#[cfg(test)]
+#[cfg(all(test, feature = "indexer-tests"))]
 mod fullnode;
 #[cfg(test)]
 mod genesis;
-#[cfg(test)]
+#[cfg(all(test, feature = "indexer-tests"))]
 mod indexer;
 #[cfg(test)]
 mod inspection_service;
@@ -57,13 +57,13 @@ mod sui_derivable_account;
 #[cfg(test)]
 mod test_smoke_tests;
 #[cfg(test)]
+mod timelock;
+#[cfg(test)]
 mod transaction;
 #[cfg(test)]
 mod transaction_filter;
 #[cfg(test)]
 mod txn_broadcast;
-#[cfg(test)]
-mod timelock;
 #[cfg(test)]
 mod txn_emitter;
 #[cfg(test)]
