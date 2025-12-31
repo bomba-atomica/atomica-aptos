@@ -6,5 +6,9 @@ genesis/
 data/
 logs/
 
+# Generated testnet artifacts
+genesis-artifacts/
+validators/
+
 # Environment overrides
 .env.local
