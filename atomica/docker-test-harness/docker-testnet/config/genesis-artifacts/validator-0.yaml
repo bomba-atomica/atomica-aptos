@@ -1,0 +1,22 @@
+base:
+  role: "validator"
+  data_dir: "/opt/aptos/data"
+  waypoint:
+    from_file: "/opt/aptos/genesis/waypoint.txt"
+
+execution:
+  genesis_file_location: "/opt/aptos/genesis/genesis.blob"
+
+validator_network:
+  discovery_method: "onchain"
+  listen_address: "/ip4/0.0.0.0/tcp/6180"
+  mutual_authentication: true
+  identity:
+    type: "from_file"
+    path: "/opt/aptos/identity/validator-identity.yaml"
+
+full_node_networks: []
+
+api:
+  enabled: true
+  address: "0.0.0.0:8080"
