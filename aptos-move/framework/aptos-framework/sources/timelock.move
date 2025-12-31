@@ -24,10 +24,20 @@ module aptos_framework::timelock {
     const EINVALID_SHARE: u64 = 3;
     /// Rotation triggered too early.
     const EROTATION_TOO_EARLY: u64 = 4;
+    /// Invalid interval for reveal operation.
+    const EINVALID_INTERVAL: u64 = 5;
+    /// Rotation triggered too early.
+    const EROTATION_TOO_EARLY: u64 = 4;
 
     struct TimelockConfig has copy, drop, store {
         threshold: u64,
         total_validators: u64,
+    }
+
+    struct IntervalConfig has store, drop, copy {
+        threshold: u64,
+        total_validators: u64,
+        created_at: u64,  // timestamp
     }
 
     struct ValidatorShare has store, drop {
@@ -44,6 +54,8 @@ module aptos_framework::timelock {
         validator_shares: Table<u64, vector<ValidatorShare>>,
         /// Store revealed secret keys/signatures (for decryption)
         revealed_secrets: Table<u64, vector<u8>>,
+        /// Store historical interval configurations
+        interval_configs: Table<u64, IntervalConfig>,
         /// Events
         start_keygen_events: EventHandle<StartKeyGenEvent>,
         key_published_events: EventHandle<KeyPublishedEvent>,
@@ -83,6 +95,7 @@ module aptos_framework::timelock {
             public_keys: table::new(),
             validator_shares: table::new(),
             revealed_secrets: table::new(),
+            interval_configs: table::new(),
             start_keygen_events: account::new_event_handle<StartKeyGenEvent>(framework),
             key_published_events: account::new_event_handle<KeyPublishedEvent>(framework),
             request_reveal_events: account::new_event_handle<RequestRevealEvent>(framework),
@@ -123,6 +136,14 @@ module aptos_framework::timelock {
             threshold,
             total_validators,
         };
+
+        // Store interval config for future reveal validation
+        let interval_config = IntervalConfig {
+            threshold,
+            total_validators,
+            created_at: now,
+        };
+        table::add(&mut state.interval_configs, state.current_interval, interval_config);
 
         event::emit_event(&mut state.start_keygen_events, StartKeyGenEvent {
             interval: state.current_interval,
@@ -283,54 +304,51 @@ module aptos_framework::timelock {
             i = i + 1;
         };
 
+        // 2. Validate share format BEFORE storing
+        let share_opt = deserialize<G1, FormatG1Compr>(&share);
+        assert!(std::option::is_some(&share_opt), EINVALID_SHARE);
+
         vector::push_back(shares_list, ValidatorShare {
             validator: validator_addr,
             share: share,
         });
 
-        // 3. Check if threshold is met
-        // We need to fetch the config for this interval. Ideally we stored it. 
-        // But since we don't store historical configs in this struct, we define threshold based on current validators? 
-        // CAUTION: Validator set might change between StartKeyGen (interval N) and Reveal (interval N+1).
-        // Ideally we should use the threshold from the time KeyGen started.
-        // But simpler for now: use CURRENT validator set threshold (assuming relatively stable set).
-        // OR: just Recalculate based on current stake.
-        
-        let validators = stake::cur_validator_consensus_infos();
-        let validator_addresses = vector::empty<address>();
+        // 3. Check if threshold is met using VALID shares only
+        // Count valid shares for threshold calculation
+        let valid_count = 0;
         let i = 0;
-        let len = vector::length(&validators);
+        let len = vector::length(shares_list);
         while (i < len) {
-            let v = vector::borrow(&validators, i);
-            vector::push_back(&mut validator_addresses, validator_consensus_info::get_addr(v));
+            let s_bytes = &vector::borrow(shares_list, i).share;
+            let element_opt = deserialize<G1, FormatG1Compr>(s_bytes);
+            if (std::option::is_some(&element_opt)) {
+                valid_count = valid_count + 1;
+            };
             i = i + 1;
         };
-        let total_validators = vector::length(&validators);
-        let threshold = (total_validators * 2 / 3) + 1;
-        
-        if (vector::length(shares_list) >= threshold) {
-            // 4. Aggregate shares
-            // Sum of G1 points
+
+        // Use stored interval config for threshold validation
+        assert!(table::contains(&state.interval_configs, interval), EINVALID_INTERVAL);
+        let config = table::borrow(&state.interval_configs, interval);
+        let threshold = config.threshold;
+
+        if (valid_count >= threshold) {
+            // 4. Aggregate VALID shares only
             let sum = zero<G1>();
             let i = 0;
             let len = vector::length(shares_list);
-            while (i < len) {
+            let valid_added = 0;
+            while (i < len && valid_added < threshold) {
                 let s_bytes = &vector::borrow(shares_list, i).share;
-                // Deserialize failure implies invalid share - we could skip it, but for now we abort.
-                // In production, we should try-catch or validate beforehand.
                 let element_opt = deserialize<G1, FormatG1Compr>(s_bytes);
                 if (std::option::is_some(&element_opt)) {
                     let element = std::option::extract(&mut element_opt);
                     sum = add(&sum, &element);
+                    valid_added = valid_added + 1;
                 };
-                // If invalid, we skip incrementing sum (effectively treating as 0? No, 0 is identity. 
-                // Adding identity doesn't change sum. So invalid share = ignored. 
-                // But we counted it towards threshold! This is a vulnerability if 1 share is invalid.
-                // We should only count valid shares towards threshold. 
-                // Correct logic: Filter valid shares first.
                 i = i + 1;
             };
-            
+
             let aggregated_bytes = serialize<G1, FormatG1Compr>(&sum);
             table::add(&mut state.revealed_secrets, interval, aggregated_bytes);
 
@@ -348,6 +366,19 @@ module aptos_framework::timelock {
             return 0
         };
         borrow_global<TimelockState>(@aptos_framework).current_interval
+    }
+
+    #[view]
+    public fun get_interval_config(interval: u64): Option<IntervalConfig> acquires TimelockState {
+        if (!exists<TimelockState>(@aptos_framework)) {
+            return option::none()
+        };
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        if (table::contains(&state.interval_configs, interval)) {
+            option::some(*table::borrow(&state.interval_configs, interval))
+        } else {
+            option::none()
+        }
     }
 
     #[view]
