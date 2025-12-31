@@ -37,7 +37,7 @@ async function testTransaction() {
     console.log("Waiting for transaction...");
     const txnResult = await client.waitForTransactionWithResult(pending.hash);
     console.log("✓ Transaction completed!");
-    console.log("Success:", txnResult.success);
+    console.log("Transaction hash:", pending.hash);
   } catch (error) {
     console.error("❌ Transaction failed:", error);
   } finally {

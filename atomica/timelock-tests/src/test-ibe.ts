@@ -1,6 +1,6 @@
 import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
 import { AptosClient, AptosAccount } from "aptos";
-import { TimelockTransactions, TimelockQueries, TimelockWaiters } from "./index";
+import { TimelockTransactions, TimelockQueries, TimelockWaiters, IBECrypto } from "./index";
 
 async function runIbeE2eTest() {
   console.log("🧪 Running IBE Encrypt/Decrypt E2E Test");
@@ -39,18 +39,16 @@ async function runIbeE2eTest() {
     console.log(`✅ Transcript received: ${transcriptBytes.length} bytes`);
 
     // Step 4: Extract IBE Public Key (G2 point) from transcript
-    // TODO: Deserialize transcript and extract MPK G2 point
-    // const transcripts = bcs::from_bytes(&transcript_bytes).expect("Failed to deserialize transcripts");
-    // const mpkG2 = transcripts.main.get_dealt_public_key().as_group_element().clone();
-    const mpkG2 = new Uint8Array(96); // Placeholder - 96 bytes for G2 point
-    console.log("✅ IBE public key extracted (placeholder)");
+    const mpkG2 = IBECrypto.extractG2FromTranscript(transcriptBytes);
+    console.log(`✅ Extracted IBE public key: ${mpkG2.length} bytes`);
 
     // Step 5: Encrypt a message using IBE
     const message = new TextEncoder().encode("top_secret_bid_1000_atoms");
-    // TODO: const identity = ibe::compute_timelock_identity(targetInterval, chainId);
-    const identity = new Uint8Array(32); // Placeholder identity
-    // TODO: const ciphertext = ibe::ibe_encrypt(&mpkG2, &identity, message).expect("Encryption failed");
-    const ciphertext = new Uint8Array(message.length + 96); // Placeholder ciphertext
+    const identity = IBECrypto.computeTimelockIdentity(targetInterval, chainId);
+    console.log(`✅ Computed identity for interval ${targetInterval}: ${identity.length} bytes`);
+
+    const ciphertext = IBECrypto.ibeEncrypt(mpkG2, identity, message);
+    console.log(`✅ Encrypted message: ${ciphertext.length} bytes`);
     console.log(`✅ Message encrypted for interval ${targetInterval}`);
 
     // Step 6: Wait for reveal (rotation to targetInterval + 1)
@@ -67,12 +65,12 @@ async function runIbeE2eTest() {
     }
     console.log(`✅ Decryption key received: ${dkBytes.length} bytes`);
 
-    // TODO: const dkG1 = ibe::deserialize_g1(&dk_bytes).expect("Failed to deserialize DK");
-    const dkG1 = new Uint8Array(48); // Placeholder - 48 bytes for G1 point
+    // Step 7: Deserialize decryption key (G1 point)
+    const dkG1 = IBECrypto.deserializeG1(dkBytes);
+    console.log(`✅ Deserialized decryption key: ${dkG1.length} bytes`);
 
     // Step 8: Decrypt and verify
-    // TODO: const decrypted = ibe::ibe_decrypt(&dkG1, &ciphertext).expect("Decryption failed");
-    const decrypted = message; // Placeholder - assume decryption works
+    const decrypted = IBECrypto.ibeDecrypt(dkG1, ciphertext);
     const decryptedText = new TextDecoder().decode(decrypted);
     const originalText = new TextDecoder().decode(message);
 

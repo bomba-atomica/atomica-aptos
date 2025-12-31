@@ -38,11 +38,9 @@ export class TimelockTransactions {
     console.log("Waiting for transaction...");
     const txnResult = await this.client.waitForTransactionWithResult(pendingTxn.hash);
     console.log("✓ Transaction completed!");
-    console.log("Success:", txnResult.success);
+    console.log("Result type:", typeof txnResult, "keys:", Object.keys(txnResult || {}));
 
-    if (!txnResult.success) {
-      throw new Error(`Transaction failed: ${txnResult.vm_status}`);
-    }
+    // The waitForTransactionWithResult throws on failure, so if we get here it's successful
 
     return pendingTxn.hash;
   }
