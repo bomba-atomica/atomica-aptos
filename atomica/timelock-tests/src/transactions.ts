@@ -14,6 +14,8 @@ export class TimelockTransactions {
    * Set timelock interval for testing (only works on testnet)
    */
   async setIntervalForTesting(intervalMicroseconds: number): Promise<string> {
+    console.log(`Setting interval to ${intervalMicroseconds} microseconds`);
+
     const payload: Types.TransactionPayload = {
       type: "entry_function_payload",
       function: "0x1::timelock_config::set_interval_for_testing",
@@ -21,10 +23,21 @@ export class TimelockTransactions {
       arguments: [intervalMicroseconds.toString()],
     };
 
-    const txnRequest = await this.client.generateTransaction(this.account.address(), payload);
-    const signedTxn = await this.client.signTransaction(this.account, txnRequest);
-    const txnResponse = await this.client.submitTransaction(signedTxn);
-    await this.client.waitForTransaction(txnResponse.hash);
+    try {
+      console.log(`Generating transaction for account ${this.account.address()}`);
+      const txnRequest = await this.client.generateTransaction(this.account.address(), payload);
+      console.log(`Transaction generated, signing...`);
+      const signedTxn = await this.client.signTransaction(this.account, txnRequest);
+      console.log(`Transaction signed, submitting...`);
+      const txnResponse = await this.client.submitTransaction(signedTxn);
+      console.log(`Transaction submitted: ${txnResponse.hash}, waiting for confirmation...`);
+      await this.client.waitForTransaction(txnResponse.hash);
+      console.log(`Transaction confirmed successfully`);
+      return txnResponse.hash;
+    } catch (error) {
+      console.error(`Transaction failed: ${error}`);
+      throw error;
+    }
 
     return txnResponse.hash;
   }

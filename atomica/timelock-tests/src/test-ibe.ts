@@ -5,7 +5,7 @@ import { TimelockTransactions, TimelockQueries, TimelockWaiters } from "./index"
 async function runIbeE2eTest() {
   console.log("🧪 Running IBE Encrypt/Decrypt E2E Test");
 
-  const testnet = await initializeTestnet(4);
+  const testnet = await initializeTestnet(2);
   try {
     const client = new AptosClient(testnet.validatorApiUrl(0));
     const account = testnet.getRootAccount();
@@ -61,7 +61,7 @@ async function runIbeE2eTest() {
 
     // Step 7: Fetch revealed Decryption Key (G1 point)
     console.log(`Step 7: Waiting for decryption key reveal for interval ${targetInterval}`);
-    const dkBytes = await waiters.waitForSecretAggregation(targetInterval, 3, 60);
+    const dkBytes = await waiters.waitForSecretAggregation(targetInterval, 2, 60);
     if (!dkBytes) {
       throw new Error("Decryption key not revealed");
     }

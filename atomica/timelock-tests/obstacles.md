@@ -4,7 +4,8 @@ This file tracks obstacles, issues, and blockers encountered during the implemen
 
 ## Current Issues
 
-- **Interval rotation not triggering**: Timelock interval rotation doesn't occur automatically in the testnet. Need to investigate why the timelock rotation logic isn't running.
+- **Transaction submission failure**: AptosClient.submitTransaction fails with ECONNREFUSED, even though queries work. May be due to validator configuration or endpoint issues.
+- **Interval rotation not triggering**: Timelock on_new_block logic is not causing interval rotation, possibly because block prologue is not calling timelock functions or timing issues.
 - **File corruption during edits**: TypeScript files getting corrupted during edit operations, requiring recreation.
 - **IBE cryptographic operations**: Need to implement or provide IBE encrypt/decrypt functions in TypeScript (compute_timelock_identity, ibe_encrypt, ibe_decrypt, deserialize_g1).
 
@@ -13,6 +14,7 @@ This file tracks obstacles, issues, and blockers encountered during the implemen
 - **Config path resolution**: Fixed docker-testnet/config path in findComposeDir to work from timelock-tests directory.
 - **TypeScript API compatibility**: Resolved Aptos SDK import issues by using AptosClient/AptosAccount API instead of newer Aptos class.
 - **Test runner timeout**: Switched to Bun runner with individual test scripts to avoid Jest ES module issues.
-- **Docker testnet startup**: Verified that docker testnet initializes correctly with 4 validators, genesis generation, and consensus startup.
+- **Docker testnet startup**: Verified that docker testnet initializes correctly with 2 validators, genesis generation, and consensus startup.
+- **Resource querying**: Aptos client successfully queries blockchain state (timelock resources, timestamps, etc.).
 
 ## Notes

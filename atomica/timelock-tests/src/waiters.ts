@@ -17,16 +17,25 @@ export class TimelockWaiters {
     const startTime = Date.now();
     const timeoutMs = timeoutSeconds * 1000;
 
+    console.log(`Waiting for interval to reach ${targetInterval} (timeout: ${timeoutSeconds}s)`);
+
     while (Date.now() - startTime < timeoutMs) {
       try {
         const currentInterval = await this.queries.getCurrentInterval();
+        const state = await this.queries.getTimelockState();
+        const timestamp = await this.queries.getCurrentTimestamp();
+        console.log(
+          `Current interval: ${currentInterval} (target: ${targetInterval}), last_rotation_time: ${state.last_rotation_time}, current_time: ${timestamp}`,
+        );
+
         if (currentInterval >= targetInterval) {
+          console.log(`✅ Interval rotation detected: ${currentInterval}`);
           return { current_interval: currentInterval };
         }
       } catch (error) {
-        // Continue waiting
+        console.log(`Error checking interval: ${error}`);
       }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000)); // Check every 1 second
     }
 
     throw new Error(`Timeout waiting for interval rotation to ${targetInterval}`);
