@@ -1,29 +1,38 @@
-import { test, expect } from "bun:test";
-import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
+import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle.js";
 import { AptosClient, AptosAccount } from "aptos";
 import { TimelockTransactions, TimelockQueries, TimelockWaiters } from "../src";
 
-/**
- * Test basic timelock flow with fast interval for testing.
- *
- * This test verifies the end-to-end flow of timelock encryption:
- * 1. Genesis initialization of timelock system
- * 2. Interval rotation triggers DKG for new keys
- * 3. Validators publish public key for encryption
- * 4. Interval rotation triggers reveal request
- * 5. Validators reveal secret shares
- * 6. On-chain aggregation produces decryption key
- *
- * Implementation details:
- * - Starts a 4-validator network using docker-test-harness
- * - Verifies timelock is initialized at genesis by checking blockchain state
- * - Configures shorter interval for testing via transaction
- * - Waits for first rotation and verifies public key publication
- * - Waits for reveal and checks secret aggregation
- */
-test("test_timelock_basic_flow", async () => {
-  const testnet = await initializeTestnet(4);
-  try {
+describe("Basic Timelock Flow", () => {
+  let testnet: any;
+  const NUM_VALIDATORS = 4;
+
+  beforeAll(async () => {
+    testnet = await initializeTestnet(NUM_VALIDATORS);
+  }, 300000); // 5 min timeout
+
+  afterAll(async () => {
+    await performCleanup("Basic timelock flow test completed");
+  });
+
+  /**
+   * Test basic timelock flow with fast interval for testing.
+   *
+   * This test verifies the end-to-end flow of timelock encryption:
+   * 1. Genesis initialization of timelock system
+   * 2. Interval rotation triggers DKG for new keys
+   * 3. Validators publish public key for encryption
+   * 4. Interval rotation triggers reveal request
+   * 5. Validators reveal secret shares
+   * 6. On-chain aggregation produces decryption key
+   *
+   * Implementation details:
+   * - Starts a 4-validator network using docker-test-harness
+   * - Verifies timelock is initialized at genesis by checking blockchain state
+   * - Configures shorter interval for testing via transaction
+   * - Waits for first rotation and verifies public key publication
+   * - Waits for reveal and checks secret aggregation
+   */
+  it("should execute complete timelock flow", async () => {
     const client = new AptosClient(testnet.validatorApiUrl(0));
     const account = testnet.getRootAccount();
 
@@ -72,7 +81,5 @@ test("test_timelock_basic_flow", async () => {
     console.log(`Secret aggregated for interval ${targetInterval}: ${secret!.length} bytes`);
 
     console.log("✅ Basic timelock flow test passed");
-  } finally {
-    await performCleanup("Basic timelock flow test completed");
-  }
+  });
 });

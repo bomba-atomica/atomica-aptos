@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
+import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle.js";
 
 /**
  * Test that timelock handles DKG failures gracefully.
