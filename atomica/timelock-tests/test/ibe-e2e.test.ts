@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
 
 /**
  * IBE Encrypt/Decrypt E2E test
@@ -20,21 +21,24 @@ import { test, expect } from "bun:test";
  * - Fetch revealed decryption key (G1 point)
  * - Decrypt message and verify it matches original
  *
- * @todo Implement testnet setup and lifecycle management
  * @todo Craft timelock configuration transactions
  * @todo Query blockchain for transcripts and revealed secrets
  * @todo Implement IBE encryption/decryption logic in TS
  * @todo Handle interval rotation waiting and verification
  */
 test("test_ibe_encrypt_decrypt_e2e", async () => {
-  // TODO: Initialize 4-validator testnet
-  // TODO: Configure timelock interval
-  // TODO: Wait for DKG and transcript publication
-  // TODO: Extract IBE public key from transcript
-  // TODO: Encrypt message using IBE
-  // TODO: Wait for secret reveal
-  // TODO: Fetch decryption key
-  // TODO: Decrypt and verify message
+  const testnet = await initializeTestnet(4);
+  try {
+    // TODO: Configure timelock interval
+    // TODO: Wait for DKG and transcript publication
+    // TODO: Extract IBE public key from transcript
+    // TODO: Encrypt message using IBE
+    // TODO: Wait for secret reveal
+    // TODO: Fetch decryption key
+    // TODO: Decrypt and verify message
 
-  expect(true).toBe(true); // Placeholder assertion
+    expect(true).toBe(true); // Placeholder assertion
+  } finally {
+    await performCleanup("IBE E2E test completed");
+  }
 });

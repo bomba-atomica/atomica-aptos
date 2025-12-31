@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
 
 /**
  * Test that timelock handles validator set changes gracefully.
@@ -16,18 +17,21 @@ import { test, expect } from "bun:test";
  * - Verify secret reveal works with threshold signatures
  *
  * @todo Implement when DKG integration is complete
- * @todo Setup initial 4-validator testnet
  * @todo Trigger DKG process
  * @todo Add validator during DKG
  * @todo Verify DKG completion
  * @todo Verify reveal with threshold
  */
 test("test_timelock_with_validator_changes", async () => {
-  // TODO: Initialize testnet with 4 validators
-  // TODO: Start DKG for new interval
-  // TODO: Add new validator during DKG
-  // TODO: Verify DKG completes successfully
-  // TODO: Verify secret reveal works
+  const testnet = await initializeTestnet(4);
+  try {
+    // TODO: Start DKG for new interval
+    // TODO: Add new validator during DKG
+    // TODO: Verify DKG completes successfully
+    // TODO: Verify secret reveal works
 
-  expect(true).toBe(true); // Placeholder assertion
+    expect(true).toBe(true); // Placeholder assertion
+  } finally {
+    await performCleanup("Timelock with validator changes test completed");
+  }
 });

@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
 
 /**
  * Test that timelock config can be updated on testnet (not mainnet).
@@ -13,16 +14,19 @@ import { test, expect } from "bun:test";
  * - For mainnet (chain_id == 1), verifies the transaction aborts
  *
  * @todo Implement when timelock_config module is tested
- * @todo Setup testnet and mainnet environments
  * @todo Craft config update transactions
  * @todo Verify transaction success/failure based on chain
+ * @todo Handle mainnet simulation or skip if not supported
  */
 test("test_timelock_config_override", async () => {
-  // TODO: Setup testnet environment
-  // TODO: Submit set_interval_for_testing transaction
-  // TODO: Verify interval update succeeds on testnet
-  // TODO: Setup mainnet environment (if possible)
-  // TODO: Verify transaction aborts on mainnet
+  const testnet = await initializeTestnet(4);
+  try {
+    // TODO: Submit set_interval_for_testing transaction
+    // TODO: Verify interval update succeeds on testnet
+    // TODO: Handle mainnet verification (may require separate setup)
 
-  expect(true).toBe(true); // Placeholder assertion
+    expect(true).toBe(true); // Placeholder assertion
+  } finally {
+    await performCleanup("Timelock config override test completed");
+  }
 });

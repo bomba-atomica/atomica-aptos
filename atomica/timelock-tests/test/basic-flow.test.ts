@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
 
 /**
  * Test basic timelock flow with fast interval for testing.
@@ -18,20 +19,23 @@ import { test, expect } from "bun:test";
  * - Waits for first rotation and verifies public key publication
  * - Waits for reveal and checks secret aggregation
  *
- * @todo Implement testnet setup using docker-test-harness
  * @todo Craft and submit timelock config transaction
  * @todo Query blockchain for timelock state
  * @todo Wait for interval rotations
  * @todo Verify public key and secret availability
  */
 test("test_timelock_basic_flow", async () => {
-  // TODO: Initialize testnet with 4 validators using docker-test-harness
-  // TODO: Configure timelock interval via transaction
-  // TODO: Verify timelock initialization at genesis
-  // TODO: Wait for interval rotation
-  // TODO: Verify public key publication
-  // TODO: Wait for reveal rotation
-  // TODO: Verify secret aggregation
+  const testnet = await initializeTestnet(4);
+  try {
+    // TODO: Configure timelock interval via transaction
+    // TODO: Verify timelock initialization at genesis
+    // TODO: Wait for interval rotation
+    // TODO: Verify public key publication
+    // TODO: Wait for reveal rotation
+    // TODO: Verify secret aggregation
 
-  expect(true).toBe(true); // Placeholder assertion
+    expect(true).toBe(true); // Placeholder assertion
+  } finally {
+    await performCleanup("Basic timelock flow test completed");
+  }
 });
