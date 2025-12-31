@@ -28,7 +28,14 @@ use tokio::time::sleep;
 /// - Verifies public key is published
 /// - Waits for reveal
 /// - Verifies secret is aggregated
+///
+/// NOTE: This test is currently ignored as we are replacing smoke tests with
+/// TypeScript-based tests using the docker-test-harness for more reliable
+/// and maintainable testing. These Rust smoke tests can be revisited in the
+/// future if needed, but the docker testnet approach provides better isolation
+/// and CI integration.
 #[tokio::test]
+#[ignore]
 async fn test_timelock_basic_flow() {
     let interval_secs = 5;
 
@@ -186,6 +193,12 @@ async fn test_timelock_basic_flow() {
 /// Test that timelock config can be updated on testnet (not mainnet).
 ///
 /// TODO: Implement when timelock_config module is tested
+///
+/// NOTE: This test is currently ignored as we are replacing smoke tests with
+/// TypeScript-based tests using the docker-test-harness for more reliable
+/// and maintainable testing. These Rust smoke tests can be revisited in the
+/// future if needed, but the docker testnet approach provides better isolation
+/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_config_override() {
@@ -196,6 +209,12 @@ async fn test_timelock_config_override() {
 /// Test that timelock handles validator set changes gracefully.
 ///
 /// TODO: Implement when DKG integration is complete
+///
+/// NOTE: This test is currently ignored as we are replacing smoke tests with
+/// TypeScript-based tests using the docker-test-harness for more reliable
+/// and maintainable testing. These Rust smoke tests can be revisited in the
+/// future if needed, but the docker testnet approach provides better isolation
+/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_with_validator_changes() {
@@ -209,6 +228,12 @@ async fn test_timelock_with_validator_changes() {
 /// Test that timelock handles DKG failures gracefully.
 ///
 /// TODO: Implement when DKG integration is complete
+///
+/// NOTE: This test is currently ignored as we are replacing smoke tests with
+/// TypeScript-based tests using the docker-test-harness for more reliable
+/// and maintainable testing. These Rust smoke tests can be revisited in the
+/// future if needed, but the docker testnet approach provides better isolation
+/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_dkg_failure_recovery() {

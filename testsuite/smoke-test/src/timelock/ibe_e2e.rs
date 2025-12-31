@@ -21,7 +21,13 @@ use move_core_types::language_storage::ModuleId;
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 
+/// NOTE: This test is currently ignored as we are replacing smoke tests with
+/// TypeScript-based tests using the docker-test-harness for more reliable
+/// and maintainable testing. These Rust smoke tests can be revisited in the
+/// future if needed, but the docker testnet approach provides better isolation
+/// and CI integration.
 #[tokio::test]
+#[ignore]
 async fn test_ibe_encrypt_decrypt_e2e() {
     let interval_secs = 5;
 
