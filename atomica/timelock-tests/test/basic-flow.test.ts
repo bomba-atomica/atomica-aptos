@@ -1,5 +1,7 @@
 import { test, expect } from "bun:test";
 import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
+import { AptosClient, AptosAccount } from "aptos";
+import { TimelockTransactions, TimelockQueries, TimelockWaiters } from "../src";
 
 /**
  * Test basic timelock flow with fast interval for testing.
@@ -18,23 +20,58 @@ import { initializeTestnet, performCleanup } from "../../docker-test-harness/tes
  * - Configures shorter interval for testing via transaction
  * - Waits for first rotation and verifies public key publication
  * - Waits for reveal and checks secret aggregation
- *
- * @todo Craft and submit timelock config transaction
- * @todo Query blockchain for timelock state
- * @todo Wait for interval rotations
- * @todo Verify public key and secret availability
  */
 test("test_timelock_basic_flow", async () => {
   const testnet = await initializeTestnet(4);
   try {
-    // TODO: Configure timelock interval via transaction
-    // TODO: Verify timelock initialization at genesis
-    // TODO: Wait for interval rotation
-    // TODO: Verify public key publication
-    // TODO: Wait for reveal rotation
-    // TODO: Verify secret aggregation
+    const client = new AptosClient(testnet.validatorApiUrl(0));
+    const account = testnet.getRootAccount();
 
-    expect(true).toBe(true); // Placeholder assertion
+    const transactions = new TimelockTransactions(client, account);
+    const queries = new TimelockQueries(client);
+    const waiters = new TimelockWaiters(queries);
+
+    const intervalSeconds = 5;
+
+    // Step 1: Verify timelock initialized at genesis
+    const initialized = await queries.isTimelockInitialized();
+    expect(initialized).toBe(true);
+
+    const initialInterval = await queries.getCurrentInterval();
+    console.log(`Initial interval: ${initialInterval}`);
+
+    // Step 2: Configure shorter interval for testing
+    console.log(`Setting timelock interval to ${intervalSeconds} seconds`);
+    const intervalMicroseconds = intervalSeconds * 1_000_000;
+    await transactions.setIntervalForTesting(intervalMicroseconds);
+    console.log("Timelock interval configured successfully");
+
+    // Step 3: Wait for first interval rotation
+    console.log("Waiting for first interval rotation");
+    const targetInterval = initialInterval + 1;
+    const rotationResult = await waiters.waitForIntervalRotation(targetInterval, 120);
+    expect(rotationResult.current_interval).toBeGreaterThanOrEqual(targetInterval);
+
+    // Step 4: Verify public key published
+    console.log(`Waiting for public key publication for interval ${targetInterval}`);
+    const transcript = await waiters.waitForPublicKeyPublication(targetInterval, 60);
+    expect(transcript).toBeTruthy();
+    expect(transcript!.length).toBeGreaterThan(0);
+    console.log(`Public key published for interval ${targetInterval}: ${transcript!.length} bytes`);
+
+    // Step 5: Wait for reveal rotation
+    const revealInterval = targetInterval + 1;
+    console.log(`Waiting for reveal rotation to interval ${revealInterval}`);
+    await waiters.waitForIntervalRotation(revealInterval, 120);
+
+    // Step 6: Verify secret aggregation
+    console.log(`Waiting for secret aggregation for interval ${targetInterval}`);
+    const secret = await waiters.waitForSecretAggregation(targetInterval, 3, 60); // threshold = 3 for 4 validators
+    expect(secret).toBeTruthy();
+    expect(secret!.length).toBeGreaterThan(0);
+    console.log(`Secret aggregated for interval ${targetInterval}: ${secret!.length} bytes`);
+
+    console.log("✅ Basic timelock flow test passed");
   } finally {
     await performCleanup("Basic timelock flow test completed");
   }
