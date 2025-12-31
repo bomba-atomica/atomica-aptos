@@ -5,125 +5,38 @@ import { cpSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { resolve as pathResolve } from "path";
 import { generateGenesis } from "./genesis";
 import { findAptosBinary } from "./findAptosBinary";
-
 /** Base API port for validators (incremented for each validator) */
 const BASE_API_PORT = 8080;
-
 /** Base validator network port for inter-validator communication */
 const BASE_VALIDATOR_PORT = 6180;
-
 /** Docker binary path - assumed to be in PATH or standard location */
 const DOCKER_BIN = "docker";
-
 /** Aptos CLI binary path - lazily initialized to avoid unnecessary lookups */
-let APTOS_BIN: string | null = null;
-
+let APTOS_BIN = null;
 /** Get the aptos binary path, finding it on first use */
-function getAptosBinary(): string {
+function getAptosBinary() {
     if (APTOS_BIN === null) {
         APTOS_BIN = findAptosBinary();
     }
     return APTOS_BIN;
 }
-
 /** Debug logging - controlled by ATOMICA_DEBUG_TESTNET env var */
-const DEBUG =
-    process.env.ATOMICA_DEBUG_TESTNET === "1" || process.env.ATOMICA_DEBUG_TESTNET === "true";
-
-function debug(message: string, data?: Record<string, unknown>): void {
+const DEBUG = process.env.ATOMICA_DEBUG_TESTNET === "1" || process.env.ATOMICA_DEBUG_TESTNET === "true";
+function debug(message, data) {
     if (DEBUG) {
         const timestamp = new Date().toISOString();
         if (data) {
             console.log(`[DEBUG ${timestamp}] ${message}`, JSON.stringify(data, null, 2));
-        } else {
+        }
+        else {
             console.log(`[DEBUG ${timestamp}] ${message}`);
         }
     }
 }
-
-/**
- * Compile the latest Move framework code and place head.mrb in the specified directory
- *
- * Note: This compilation takes 10-15 minutes. Consider using pre-compiled frameworks for development.
- */
-export async function compileAndPlaceFramework(
-    outputPath: string = "./atomica/move-fixtures/head.mrb",
-): Promise<string> {
-    return new Promise((resolve, reject) => {
-        // Ensure output directory exists
-        const outputDir = pathResolve(outputPath, "..");
-        mkdirSync(outputDir, { recursive: true });
-
-        console.log(`🚀 Compiling aptos-framework and placing head.mrb at ${outputPath}...`);
-        console.log("⏱️  This may take 10-15 minutes on first run...");
-        console.log("💡 Tip: Consider using pre-compiled frameworks for faster development");
-
-        // Run the aptos-framework release build with output path
-        const cargo = spawn(
-            "cargo",
-            [
-                "run",
-                "--locked",
-                "--package",
-                "aptos-framework",
-                "--",
-                "release",
-                "--output",
-                outputPath,
-            ],
-            {
-                cwd: process.cwd(),
-                stdio: "inherit",
-            },
-        );
-
-        cargo.on("close", (code) => {
-            if (code === 0) {
-                if (existsSync(outputPath)) {
-                    console.log(`✅ Framework compiled successfully: ${outputPath}`);
-                    console.log("📦 You can now use this framework for local testnet deployments");
-                    resolve(outputPath);
-                } else {
-                    reject(
-                        new Error(
-                            `Framework compilation succeeded but ${outputPath} was not created`,
-                        ),
-                    );
-                }
-            } else {
-                reject(new Error(`Framework compilation failed with exit code ${code}`));
-            }
-        });
-
-        cargo.on("error", (error) => {
-            reject(new Error(`Failed to start framework compilation: ${error.message}`));
-        });
-    });
-}
-
-/**
- * Copy an existing framework file to the fixtures directory
- */
-export function copyExistingFramework(
-    sourcePath: string,
-    outputPath: string = "./atomica/move-fixtures/head.mrb",
-): string {
-    const outputDir = pathResolve(outputPath, "..");
-    mkdirSync(outputDir, { recursive: true });
-
-    if (!existsSync(sourcePath)) {
-        throw new Error(`Source framework file not found: ${sourcePath}`);
-    }
-
-    cpSync(sourcePath, outputPath);
-    console.log(`✅ Framework copied from ${sourcePath} to ${outputPath}`);
-    return outputPath;
-}
-
 /**
  * Load environment variables
  */
-function loadEnvVariables(): Record<string, string> {
+function loadEnvVariables() {
     // Try to load .env from current working directory
     const cwdEnv = pathResolve(process.cwd(), ".env");
     if (existsSync(cwdEnv)) {
@@ -131,38 +44,20 @@ function loadEnvVariables(): Record<string, string> {
     }
     return {};
 }
-
-/**
- * Ledger info response from validator REST API
- */
-export interface LedgerInfo {
-    chain_id: number;
-    epoch: string;
-    ledger_version: string;
-    oldest_ledger_version: string;
-    ledger_timestamp: string;
-    node_role: string;
-    oldest_block_height: string;
-    block_height: string;
-    git_hash?: string;
-}
-
 /**
  * Docker Testnet - Automatic setup and teardown
  */
 export class DockerTestnet {
-    private composeDir: string;
-    private numValidators: number;
-    private validatorUrls: string[];
-    private faucetLock: Promise<unknown> = Promise.resolve();
-    private cleanupHandlersRegistered: boolean = false;
-
-    private constructor(composeDir: string, numValidators: number, validatorUrls: string[]) {
+    composeDir;
+    numValidators;
+    validatorUrls;
+    faucetLock = Promise.resolve();
+    cleanupHandlersRegistered = false;
+    constructor(composeDir, numValidators, validatorUrls) {
         this.composeDir = composeDir;
         this.numValidators = numValidators;
         this.validatorUrls = validatorUrls;
     }
-
     /**
      * Create a fresh, isolated Docker testnet with N validators
      *
@@ -174,54 +69,40 @@ export class DockerTestnet {
      * // Use published image (default)
      * const testnet = await DockerTestnet.new(4);
      */
-    static async new(
-        numValidators: number,
-        _options?: {
-            // Options reserved for future use
-        },
-    ): Promise<DockerTestnet> {
+    static async new(numValidators, _options) {
         if (numValidators < 1 || numValidators > 7) {
             throw new Error(`numValidators must be between 1 and 7, got ${numValidators}`);
         }
-
         const composeDir = DockerTestnet.findComposeDir();
         debug("Found compose directory", { composeDir });
-
         try {
             await DockerTestnet.ensureDockerRunning();
             debug("Docker daemon is running");
-        } catch (error: any) {
+        }
+        catch (error) {
             // Rethrow with a clean message if possible, or just let it bubble up
             throw new Error(`Prerequisite check failed: ${error.message}`);
         }
-
         // Load environment variables
         const envVars = loadEnvVariables();
-
         debug("Loaded environment variables", { keys: Object.keys(envVars) });
-
         console.log(`Setting up fresh Docker testnet with ${numValidators} validators...`);
-
         // Clean up any existing testnet
         await DockerTestnet.runCompose(["down", "--remove-orphans", "-v"], composeDir, envVars);
         await new Promise((resolve) => setTimeout(resolve, 2000));
-
         // Generate genesis and validator configs
         const workspaceDir = pathResolve(composeDir, "..", "genesis-workspace");
         const genesisArtifactsDir = pathResolve(composeDir, "genesis-artifacts");
         const validatorsDir = pathResolve(composeDir, "validators");
-
         await generateGenesis({
             numValidators,
             chainId: 4,
             workspaceDir,
         });
-
         // Copy genesis artifacts to config directory
         const outputDir = pathResolve(workspaceDir, "output");
         mkdirSync(genesisArtifactsDir, { recursive: true });
         cpSync(outputDir, genesisArtifactsDir, { recursive: true });
-
         // Copy validator configs and identities to config directory
         mkdirSync(validatorsDir, { recursive: true });
         for (let i = 0; i < numValidators; i++) {
@@ -229,7 +110,6 @@ export class DockerTestnet {
             const validatorDstDir = pathResolve(validatorsDir, `validator-${i}`);
             cpSync(validatorSrcDir, validatorDstDir, { recursive: true });
         }
-
         // Start the testnet
         // Use 5 minute timeout for 'up' command (image pull can be slow)
         // Only start the requested number of validators
@@ -238,13 +118,9 @@ export class DockerTestnet {
             validatorServices.push(`validator-${i}`);
         }
         try {
-            await DockerTestnet.runCompose(
-                ["up", "-d", ...validatorServices],
-                composeDir,
-                envVars,
-                300000,
-            );
-        } catch (error: any) {
+            await DockerTestnet.runCompose(["up", "-d", ...validatorServices], composeDir, envVars, 300000);
+        }
+        catch (error) {
             console.error("Failed to start testnet. Fetching logs...");
             try {
                 // Determine logs command
@@ -255,8 +131,7 @@ export class DockerTestnet {
                 let logs = "";
                 proc.stdout?.on("data", (d) => (logs += d.toString()));
                 proc.stderr?.on("data", (d) => (logs += d.toString())); // Capture stderr too just in case
-
-                await new Promise<void>((resolve) => {
+                await new Promise((resolve) => {
                     proc.on("close", () => {
                         console.error("=== DOCKER LOGS ===\n" + logs + "\n===================");
                         resolve();
@@ -264,49 +139,37 @@ export class DockerTestnet {
                     // Timeout for log fetch
                     setTimeout(() => resolve(), 5000);
                 });
-            } catch (_logError) {
+            }
+            catch (_logError) {
                 console.error("Failed to fetch logs.");
             }
             throw error;
         }
-
         // Wait for all validators to be healthy
         await waitForHealthy(numValidators, 120);
-
         // Discover validator endpoints
-        const validatorUrls: string[] = [];
+        const validatorUrls = [];
         for (let i = 0; i < numValidators; i++) {
             validatorUrls.push(`http://127.0.0.1:${BASE_API_PORT + i}`);
         }
-
         await new Promise((resolve) => setTimeout(resolve, 2000));
         console.log(`✓ Docker testnet ready with ${numValidators} validators`);
-
         const testnet = new DockerTestnet(composeDir, numValidators, validatorUrls);
-
         // Register cleanup handlers to ensure teardown on process exit/interrupt
         testnet.registerCleanupHandlers();
-
         return testnet;
     }
-
     /**
      * Tear down the testnet and clean up all resources
      */
-    async teardown(): Promise<void> {
+    async teardown() {
         console.log("Tearing down Docker testnet...");
         const envVars = loadEnvVariables();
-        await DockerTestnet.runCompose(
-            ["down", "--remove-orphans", "-v"],
-            this.composeDir,
-            envVars,
-        );
+        await DockerTestnet.runCompose(["down", "--remove-orphans", "-v"], this.composeDir, envVars);
         console.log("✓ Docker testnet stopped");
-
         // Unregister cleanup handlers after successful teardown
         this.unregisterCleanupHandlers();
     }
-
     /**
      * Register cleanup handlers for process signals and exit.
      * This ensures Docker containers are stopped when the process exits or is interrupted.
@@ -314,24 +177,23 @@ export class DockerTestnet {
      * Handlers are automatically registered when testnet is created via DockerTestnet.new()
      * and unregistered after teardown() completes.
      */
-    private registerCleanupHandlers(): void {
+    registerCleanupHandlers() {
         if (this.cleanupHandlersRegistered) {
             return;
         }
         this.cleanupHandlersRegistered = true;
-
-        const handleCleanup = async (signal: string): Promise<void> => {
+        const handleCleanup = async (signal) => {
             console.log(`\n[${signal}] Cleaning up Docker testnet...`);
             try {
                 await this.teardown();
                 console.log(`[${signal}] ✓ Docker testnet cleaned up`);
-            } catch (error: any) {
+            }
+            catch (error) {
                 console.error(`[${signal}] Failed to cleanup testnet:`, error.message);
             }
         };
-
         // Store bound handlers so we can remove them later
-        (this as any)._signalHandlers = {
+        this._signalHandlers = {
             SIGINT: async () => {
                 await handleCleanup("SIGINT");
                 process.exit(130); // 128 + 2 (SIGINT)
@@ -344,90 +206,68 @@ export class DockerTestnet {
                 await handleCleanup("beforeExit");
             },
         };
-
         // Register signal handlers
-        process.on("SIGINT", (this as any)._signalHandlers.SIGINT);
-        process.on("SIGTERM", (this as any)._signalHandlers.SIGTERM);
-        process.on("beforeExit", (this as any)._signalHandlers.beforeExit);
-
+        process.on("SIGINT", this._signalHandlers.SIGINT);
+        process.on("SIGTERM", this._signalHandlers.SIGTERM);
+        process.on("beforeExit", this._signalHandlers.beforeExit);
         debug("Cleanup handlers registered for SIGINT, SIGTERM, and beforeExit");
     }
-
     /**
      * Unregister cleanup handlers after teardown
      */
-    private unregisterCleanupHandlers(): void {
-        if (!this.cleanupHandlersRegistered || !(this as any)._signalHandlers) {
+    unregisterCleanupHandlers() {
+        if (!this.cleanupHandlersRegistered || !this._signalHandlers) {
             return;
         }
-
-        process.off("SIGINT", (this as any)._signalHandlers.SIGINT);
-        process.off("SIGTERM", (this as any)._signalHandlers.SIGTERM);
-        process.off("beforeExit", (this as any)._signalHandlers.beforeExit);
-
-        delete (this as any)._signalHandlers;
+        process.off("SIGINT", this._signalHandlers.SIGINT);
+        process.off("SIGTERM", this._signalHandlers.SIGTERM);
+        process.off("beforeExit", this._signalHandlers.beforeExit);
+        delete this._signalHandlers;
         this.cleanupHandlersRegistered = false;
-
         debug("Cleanup handlers unregistered");
     }
-
     /**
      * Get the REST API URL for a specific validator
      */
-    validatorApiUrl(index: number): string {
+    validatorApiUrl(index) {
         if (index < 0 || index >= this.numValidators) {
             throw new Error(`Validator index ${index} out of range (0-${this.numValidators - 1})`);
         }
         return this.validatorUrls[index];
     }
-
     /**
      * Get all validator API URLs
      */
-    validatorApiUrls(): string[] {
+    validatorApiUrls() {
         return [...this.validatorUrls];
     }
-
     /**
      * Get the number of validators
      */
-    getNumValidators(): number {
+    getNumValidators() {
         return this.numValidators;
     }
-
     /**
      * Get a validator account that was funded at genesis
      */
-    async getValidatorAccount(index: number): Promise<AptosAccount> {
+    async getValidatorAccount(index) {
         if (index < 0 || index >= this.numValidators) {
             throw new Error(`Validator index ${index} out of range (0-${this.numValidators - 1})`);
         }
-
-        const identityPath = pathResolve(
-            this.composeDir,
-            "validators",
-            `validator-${index}`,
-            "private-keys.yaml",
-        );
-
+        const identityPath = pathResolve(this.composeDir, "validators", `validator-${index}`, "private-keys.yaml");
         if (!existsSync(identityPath)) {
             throw new Error(`Validator identity file not found: ${identityPath}`);
         }
-
         const content = readFileSync(identityPath, "utf-8");
         const addrMatch = content.match(/account_address:\s*([a-fA-F0-9]+)/);
         const keyMatch = content.match(/account_private_key:\s*"0x([a-fA-F0-9]+)"/);
-
         if (!addrMatch || !keyMatch) {
             throw new Error(`Failed to parse validator identity from ${identityPath}`);
         }
-
         const address = "0x" + addrMatch[1];
         const privateKey = HexString.ensure(keyMatch[1]).toUint8Array();
-
         return new AptosAccount(privateKey, address);
     }
-
     /**
      * Get the faucet account for test-only minting operations
      *
@@ -440,42 +280,30 @@ export class DockerTestnet {
      * - Has minting capability for AptosCoin
      * - Can delegate minting capability to other accounts
      */
-    getFaucetAccount(): AptosAccount {
+    getFaucetAccount() {
         // Read root account private key from genesis artifacts
-        const rootKeysPath = pathResolve(
-            this.composeDir,
-            "genesis-artifacts",
-            "root-account-private-keys.yaml",
-        );
-
+        const rootKeysPath = pathResolve(this.composeDir, "genesis-artifacts", "root-account-private-keys.yaml");
         if (!existsSync(rootKeysPath)) {
             throw new Error(`Root account keys file not found: ${rootKeysPath}`);
         }
-
         const content = readFileSync(rootKeysPath, "utf-8");
         const keyMatch = content.match(/account_private_key:\s*"0x([a-fA-F0-9]+)"/);
-
         if (!keyMatch) {
             throw new Error(`Failed to parse root account private key from ${rootKeysPath}`);
         }
-
         const privateKey = HexString.ensure(keyMatch[1]).toUint8Array();
-
         // IMPORTANT: The Core Resources account is ALWAYS at address 0xA550C18 (hardcoded in Move.toml)
         // At genesis, its auth key is rotated to match the root_key from layout.yaml
         // So we use the hardcoded address with our generated private key
-        const coreResourcesAddress =
-            "0x00000000000000000000000000000000000000000000000000000000A550C18";
+        const coreResourcesAddress = "0x00000000000000000000000000000000000000000000000000000000A550C18";
         return new AptosAccount(privateKey, coreResourcesAddress);
     }
-
     /**
      * @deprecated Use getFaucetAccount() instead
      */
-    getRootAccount(): AptosAccount {
+    getRootAccount() {
         return this.getFaucetAccount();
     }
-
     /**
      * Bootstrap validators with unlocked funds for faucet operations
      *
@@ -487,21 +315,15 @@ export class DockerTestnet {
      *
      * @param amountPerValidator - Amount of unlocked APT (in octas) to give each validator
      */
-    async bootstrapValidators(amountPerValidator: bigint = 100_000_000_000_000n): Promise<void> {
+    async bootstrapValidators(amountPerValidator = 100000000000000n) {
         console.log(`Bootstrapping ${this.numValidators} validators with unlocked funds...`);
         console.log(`⚠️  Using test-only faucet account with minting capability`);
-
         const faucetAccount = this.getFaucetAccount();
         const client = new AptosClient(this.validatorApiUrl(0));
-
         for (let i = 0; i < this.numValidators; i++) {
             const validator = await this.getValidatorAccount(i);
             const validatorAddr = validator.address().hex();
-
-            console.log(
-                `  Minting ${amountPerValidator} octas for validator ${i} (${validatorAddr.slice(0, 10)}...)`,
-            );
-
+            console.log(`  Minting ${amountPerValidator} octas for validator ${i} (${validatorAddr.slice(0, 10)}...)`);
             try {
                 // Use aptos_account::transfer which creates CoinStore if it doesn't exist
                 // This is simpler than mint() which requires CoinStore to already exist
@@ -512,29 +334,23 @@ export class DockerTestnet {
                     type_arguments: [],
                     arguments: [validatorAddr, amountPerValidator.toString()],
                 };
-
-                const transferTxn = await client.generateTransaction(
-                    faucetAccount.address(),
-                    transferPayload,
-                );
+                const transferTxn = await client.generateTransaction(faucetAccount.address(), transferPayload);
                 const signedTransferTxn = await client.signTransaction(faucetAccount, transferTxn);
                 const transferPending = await client.submitTransaction(signedTransferTxn);
                 await client.waitForTransaction(transferPending.hash);
-
                 debug(`Validator ${i} funded via transfer from faucet`, {
                     address: validatorAddr,
                     amount: amountPerValidator.toString(),
                     txn: transferPending.hash,
                 });
-            } catch (error: any) {
+            }
+            catch (error) {
                 console.error(`  ✗ Failed to fund validator ${i}: ${error.message}`);
                 throw error;
             }
         }
-
         console.log(`✓ All validators bootstrapped with minted funds`);
     }
-
     /**
      * Fund a new account using the faucet (Core Resources account)
      *
@@ -547,60 +363,39 @@ export class DockerTestnet {
      * @param amount - Amount in octas to fund
      * @returns Transaction hash
      */
-    async faucet(address: string | HexString, amount: bigint = 100_000_000n): Promise<string> {
+    async faucet(address, amount = 100000000n) {
         // Wait for previous faucet operation to complete (serialization)
         await this.faucetLock;
-
         // Create the current faucet operation
         const currentOperation = (async () => {
             const faucetAccount = this.getFaucetAccount();
             const client = new AptosClient(this.validatorApiUrl(0));
-
             const targetAddr = typeof address === "string" ? address : address.hex();
             debug(`Faucet funding ${targetAddr} with ${amount} octas`);
-
             try {
                 // Manually build transaction without using SDK helpers that require indexer
                 // Build the entry function payload for aptos_account::transfer
-                const entryFunctionPayload = new TxnBuilderTypes.TransactionPayloadEntryFunction(
-                    TxnBuilderTypes.EntryFunction.natural(
-                        "0x1::aptos_account",
-                        "transfer",
-                        [],
-                        [
-                            BCS.bcsToBytes(TxnBuilderTypes.AccountAddress.fromHex(targetAddr)),
-                            BCS.bcsSerializeUint64(amount),
-                        ],
-                    ),
-                );
-
+                const entryFunctionPayload = new TxnBuilderTypes.TransactionPayloadEntryFunction(TxnBuilderTypes.EntryFunction.natural("0x1::aptos_account", "transfer", [], [
+                    BCS.bcsToBytes(TxnBuilderTypes.AccountAddress.fromHex(targetAddr)),
+                    BCS.bcsSerializeUint64(amount),
+                ]));
                 // Get account info for sequence number
                 const accountInfo = await client.getAccount(faucetAccount.address());
                 const chainId = await client.getChainId();
-
                 // Build raw transaction
-                const rawTxn = new TxnBuilderTypes.RawTransaction(
-                    TxnBuilderTypes.AccountAddress.fromHex(faucetAccount.address()),
-                    BigInt(accountInfo.sequence_number),
-                    entryFunctionPayload,
-                    BigInt(10000), // max gas
-                    BigInt(100), // gas price
-                    BigInt(Math.floor(Date.now() / 1000) + 600), // expiration (10 min from now)
-                    new TxnBuilderTypes.ChainId(chainId),
-                );
-
+                const rawTxn = new TxnBuilderTypes.RawTransaction(TxnBuilderTypes.AccountAddress.fromHex(faucetAccount.address()), BigInt(accountInfo.sequence_number), entryFunctionPayload, BigInt(10000), // max gas
+                BigInt(100), // gas price
+                BigInt(Math.floor(Date.now() / 1000) + 600), // expiration (10 min from now)
+                new TxnBuilderTypes.ChainId(chainId));
                 // Sign and submit
                 const signedTxn = await client.signTransaction(faucetAccount, rawTxn);
                 const txnResponse = await client.submitTransaction(signedTxn);
-
                 // Wait for transaction with extended timeout (60 seconds instead of default 20)
                 await client.waitForTransaction(txnResponse.hash, { timeoutSecs: 60 });
-
                 // Poll for balance using view function to ensure state is queryable
                 const maxRetries = 40; // Increased from 20
                 const retryDelayMs = 1000; // Increased from 500ms to 1s
                 let retries = 0;
-
                 while (retries < maxRetries) {
                     try {
                         // Call coin::balance view function (works for both CoinStore and fungible assets)
@@ -609,20 +404,20 @@ export class DockerTestnet {
                             type_arguments: ["0x1::aptos_coin::AptosCoin"],
                             arguments: [targetAddr],
                         });
-
-                        if (result && result.length > 0 && BigInt(result[0] as string) >= amount) {
+                        if (result && result.length > 0 && BigInt(result[0]) >= amount) {
                             break; // Balance confirmed, state is queryable
                         }
-
                         retries++;
                         if (retries < maxRetries) {
                             await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
                         }
-                    } catch (e: any) {
+                    }
+                    catch (e) {
                         retries++;
                         if (retries < maxRetries) {
                             await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-                        } else {
+                        }
+                        else {
                             // Last retry failed - log warning but continue
                             debug(`Warning: Could not confirm balance after ${retries} retries`, {
                                 targetAddr,
@@ -632,81 +427,67 @@ export class DockerTestnet {
                         }
                     }
                 }
-
                 debug(`Faucet transfer complete`, {
                     to: targetAddr,
                     amount: amount.toString(),
                     txn: txnResponse.hash,
                     retriesNeeded: retries,
                 });
-
                 return txnResponse.hash;
-            } catch (error: any) {
+            }
+            catch (error) {
                 throw new Error(`Faucet transfer failed: ${error.message}`);
             }
         })();
-
         // Update lock to wait for this operation (catch errors so they don't block the queue)
-        this.faucetLock = currentOperation.catch(() => {});
-
+        this.faucetLock = currentOperation.catch(() => { });
         // Return the actual result (which may throw)
         return currentOperation;
     }
-
     /**
      * Query ledger info from a validator
      */
-    async getLedgerInfo(validatorIndex: number): Promise<LedgerInfo> {
+    async getLedgerInfo(validatorIndex) {
         const url = `${this.validatorApiUrl(validatorIndex)}/v1`;
         const response = await fetch(url);
         if (!response.ok) {
             throw new Error(`Failed to get ledger info: ${response.status}`);
         }
-        return (await response.json()) as LedgerInfo;
+        return (await response.json());
     }
-
     /**
      * Get current block height from a validator
      */
-    async getBlockHeight(validatorIndex: number = 0): Promise<number> {
+    async getBlockHeight(validatorIndex = 0) {
         const info = await this.getLedgerInfo(validatorIndex);
         return parseInt(info.block_height, 10);
     }
-
     /**
      * Wait for a specific number of blocks to be produced
      */
-    async waitForBlocks(numBlocks: number, timeoutSecs: number = 60): Promise<void> {
+    async waitForBlocks(numBlocks, timeoutSecs = 60) {
         const deadline = Date.now() + timeoutSecs * 1000;
         const startInfo = await this.getLedgerInfo(0);
         const startHeight = parseInt(startInfo.block_height, 10);
         const targetHeight = startHeight + numBlocks;
-
-        console.log(
-            `  Waiting for ${numBlocks} blocks (from height ${startHeight} to ${targetHeight})`,
-        );
-
+        console.log(`  Waiting for ${numBlocks} blocks (from height ${startHeight} to ${targetHeight})`);
         while (Date.now() < deadline) {
             const currentInfo = await this.getLedgerInfo(0);
             const currentHeight = parseInt(currentInfo.block_height, 10);
-
             debug(`Block progress: ${currentHeight}/${targetHeight}`, {
                 current_height: currentHeight,
                 target_height: targetHeight,
                 current_version: currentInfo.ledger_version,
                 epoch: currentInfo.epoch,
             });
-
             if (currentHeight >= targetHeight) {
                 console.log(`  ✓ Reached target height ${currentHeight}`);
                 return;
             }
             await new Promise((resolve) => setTimeout(resolve, 1000));
         }
-
         throw new Error("Timeout waiting for blocks");
     }
-
     /**
      * Deploy Move contracts using aptos CLI from within the validator container.
      *
@@ -728,48 +509,28 @@ export class DockerTestnet {
      *   ],
      * });
      */
-    async deployContracts(options: {
-        contractsDir: string;
-        deployerPrivateKey: string;
-        deployerAddress?: string;
-        namedAddresses?: Record<string, string>;
-        initFunctions?: Array<{ functionId: string; args: string[] }>;
-        fundAmount?: bigint;
-    }): Promise<void> {
-        const {
-            contractsDir,
-            deployerPrivateKey,
-            deployerAddress,
-            namedAddresses = {},
-            initFunctions = [],
-            fundAmount = 10_000_000_000n, // 100 APT default
-        } = options;
-
+    async deployContracts(options) {
+        const { contractsDir, deployerPrivateKey, deployerAddress, namedAddresses = {}, initFunctions = [], fundAmount = 10000000000n, // 100 APT default
+         } = options;
         console.log("Deploying contracts using host aptos CLI...");
-
         // Derive deployer address if not provided
         let deployer = deployerAddress;
         if (!deployer) {
             const account = new AptosAccount(Buffer.from(deployerPrivateKey.slice(2), "hex"));
             deployer = account.address().hex();
         }
-
         console.log(`Deploying contracts to address: ${deployer}`);
-
         // Fund deployer account
         if (fundAmount > 0n) {
             console.log(`Funding deployer account ${deployer}...`);
             await this.faucet(deployer, fundAmount);
-
             // Wait for funding to settle
             await new Promise((resolve) => setTimeout(resolve, 2000));
         }
-
         // Build named addresses argument
         const namedAddressesArg = Object.entries(namedAddresses)
             .map(([key, value]) => `${key}=${value}`)
             .join(",");
-
         // Publish contracts using aptos CLI with private key (no profile needed!)
         console.log("Publishing contracts from host...");
         const publishArgs = [
@@ -786,13 +547,11 @@ export class DockerTestnet {
             "--skip-fetch-latest-git-deps", // Skip downloading git dependencies
             "--assume-yes",
         ];
-
         const result = await this.execCommand(getAptosBinary(), publishArgs);
         console.log("Publish result stdout:", result.stdout.trim());
         if (result.stderr.trim()) {
             console.log("Publish result stderr:", result.stderr.trim());
         }
-
         // Run initialization functions
         for (const initFunc of initFunctions) {
             console.log(`Initializing ${initFunc.functionId}...`);
@@ -807,21 +566,16 @@ export class DockerTestnet {
                 `http://127.0.0.1:${BASE_API_PORT}`,
                 "--assume-yes",
             ];
-
             if (initFunc.args.length > 0) {
                 args.push("--args", ...initFunc.args);
             }
-
             await this.execCommand(getAptosBinary(), args);
         }
-
         // Wait for deployment to be fully indexed
         console.log("Waiting for deployment to be indexed...");
         await new Promise((resolve) => setTimeout(resolve, 3000));
-
         console.log("✓ Contracts deployed successfully");
     }
-
     /**
      * Execute a command on the host system.
      *
@@ -830,46 +584,36 @@ export class DockerTestnet {
      * @returns Promise resolving to { stdout, stderr }
      * @private
      */
-    private async execCommand(
-        bin: string,
-        args: string[],
-    ): Promise<{ stdout: string; stderr: string }> {
+    async execCommand(bin, args) {
         return new Promise((resolve, reject) => {
             let stdout = "";
             let stderr = "";
-
             const proc = spawn(bin, args);
-
             proc.stdout?.on("data", (d) => {
                 const s = d.toString();
                 stdout += s;
-                if (DEBUG) process.stdout.write(s);
+                if (DEBUG)
+                    process.stdout.write(s);
             });
-
             proc.stderr?.on("data", (d) => {
                 const s = d.toString();
                 stderr += s;
-                if (DEBUG) process.stderr.write(s);
+                if (DEBUG)
+                    process.stderr.write(s);
             });
-
             proc.on("close", (code) => {
                 if (code === 0) {
                     resolve({ stdout, stderr });
-                } else {
-                    reject(
-                        new Error(
-                            `Command failed (exit ${code}): ${bin} ${args.join(" ")}\n${stderr}`,
-                        ),
-                    );
+                }
+                else {
+                    reject(new Error(`Command failed (exit ${code}): ${bin} ${args.join(" ")}\n${stderr}`));
                 }
             });
-
             proc.on("error", (err) => {
                 reject(new Error(`Failed to execute ${bin}: ${err.message}`));
             });
         });
     }
-
     /**
      * Execute a command inside a validator container.
      *
@@ -878,86 +622,63 @@ export class DockerTestnet {
      * @returns Promise resolving to { stdout, stderr }
      * @private
      */
-    private async execInContainer(
-        containerName: string,
-        command: string[],
-    ): Promise<{ stdout: string; stderr: string }> {
+    async execInContainer(containerName, command) {
         return new Promise((resolve, reject) => {
             let stdout = "";
             let stderr = "";
-
             const proc = spawn(DOCKER_BIN, ["exec", containerName, ...command]);
-
             proc.stdout?.on("data", (d) => {
                 const s = d.toString();
                 stdout += s;
-                if (DEBUG) process.stdout.write(s);
+                if (DEBUG)
+                    process.stdout.write(s);
             });
-
             proc.stderr?.on("data", (d) => {
                 const s = d.toString();
                 stderr += s;
-                if (DEBUG) process.stderr.write(s);
+                if (DEBUG)
+                    process.stderr.write(s);
             });
-
             proc.on("close", (code) => {
                 if (code === 0) {
                     resolve({ stdout, stderr });
-                } else {
-                    reject(
-                        new Error(
-                            `Command failed in container (exit ${code}): ${command.join(" ")}\n${stderr}`,
-                        ),
-                    );
+                }
+                else {
+                    reject(new Error(`Command failed in container (exit ${code}): ${command.join(" ")}\n${stderr}`));
                 }
             });
-
             proc.on("error", reject);
         });
     }
-
     /**
      * Find the docker-testnet directory
      */
-    private static findComposeDir(): string {
+    static findComposeDir() {
         // Candidates:
         // 1. ../config (if running from npm package structure source/docker-testnet/typescript-sdk)
         // 2. source/docker-testnet/config (if running from repo root)
         // 3. Env var?
-
         const candidates = [
-            pathResolve(__dirname, "../../config"), // relative to dist/ or src/
-            pathResolve(process.cwd(), "source/docker-testnet/config"),
-            pathResolve(process.cwd(), "docker-testnet/config"),
+            pathResolve(__dirname, "../docker-testnet/config"), // relative to src/
+            pathResolve(process.cwd(), "docker-testnet/config"), // when running from docker-test-harness/
+            pathResolve(process.cwd(), "source/docker-testnet/config"), // when running from repo root
         ];
-
         for (const path of candidates) {
             if (existsSync(pathResolve(path, "docker-compose.yaml"))) {
                 return path;
             }
         }
-
         // Explicit check for when installed as node_module (TODO: improve this)
-
-        throw new Error(
-            "Could not find docker-testnet/config directory containing docker-compose.yaml",
-        );
+        throw new Error("Could not find docker-testnet/config directory containing docker-compose.yaml");
     }
     /* Internal helper to run compose */
-    private static async runCompose(
-        args: string[],
-        cwd: string,
-        envVars: Record<string, string>,
-        timeoutMs: number = 60000,
-    ): Promise<void> {
+    static async runCompose(args, cwd, envVars, timeoutMs = 60000) {
         return new Promise((resolve, reject) => {
             const env = { ...process.env, ...envVars };
             const proc = spawn(DOCKER_BIN, ["compose", ...args], { cwd, env });
-
             let stdout = "";
             let stderr = "";
             let finished = false;
-
             // Set a timeout to kill hung processes
             const timeout = setTimeout(() => {
                 if (!finished) {
@@ -965,146 +686,105 @@ export class DockerTestnet {
                     proc.kill("SIGTERM");
                     // Give it 2 seconds, then force kill
                     setTimeout(() => proc.kill("SIGKILL"), 2000);
-
                     // For 'down' commands, treat timeout as success (cleanup attempt made)
                     if (args[0] === "down") {
                         resolve();
-                    } else {
-                        reject(
-                            new Error(
-                                `docker compose ${args.join(" ")} timed out after ${timeoutMs}ms`,
-                            ),
-                        );
+                    }
+                    else {
+                        reject(new Error(`docker compose ${args.join(" ")} timed out after ${timeoutMs}ms`));
                     }
                 }
             }, timeoutMs);
-
             proc.stdout?.on("data", (data) => (stdout += data.toString()));
             proc.stderr?.on("data", (data) => (stderr += data.toString()));
-
             proc.on("close", (code) => {
-                if (finished) return;
+                if (finished)
+                    return;
                 finished = true;
                 clearTimeout(timeout);
-
                 if (code === 0 || args[0] === "down") {
                     resolve();
-                } else {
-                    reject(
-                        new Error(
-                            `docker compose ${args.join(" ")} failed (exit ${code}):\n${stderr}`,
-                        ),
-                    );
+                }
+                else {
+                    reject(new Error(`docker compose ${args.join(" ")} failed (exit ${code}):\n${stderr}`));
                 }
             });
-
             proc.on("error", (err) => {
-                if (finished) return;
+                if (finished)
+                    return;
                 finished = true;
                 clearTimeout(timeout);
                 reject(err);
             });
         });
     }
-
     /* Check if Docker is available and running */
-    public static async ensureDockerRunning(): Promise<void> {
+    static async ensureDockerRunning() {
         return new Promise((resolve, reject) => {
             const proc = spawn(DOCKER_BIN, ["info"], {
                 stdio: ["ignore", "pipe", "pipe"],
             });
-
             proc.on("close", (code) => {
                 if (code === 0) {
                     resolve();
-                } else {
-                    reject(
-                        new Error(
-                            "Docker Daemon is not running. Please start Docker and try again.",
-                        ),
-                    );
+                }
+                else {
+                    reject(new Error("Docker Daemon is not running. Please start Docker and try again."));
                 }
             });
-
-            proc.on("error", (err: any) => {
+            proc.on("error", (err) => {
                 if (err.code === "ENOENT") {
                     reject(new Error(`Docker binary '${DOCKER_BIN}' not found in PATH.`));
-                } else {
+                }
+                else {
                     reject(new Error(`Failed to check Docker status: ${err.message}`));
                 }
             });
         });
     }
 }
-
 /**
  * Wait for all validators to become healthy
  */
-async function waitForHealthy(numValidators: number, timeoutSecs: number): Promise<void> {
+async function waitForHealthy(numValidators, timeoutSecs) {
     const deadline = Date.now() + timeoutSecs * 1000;
     console.log(`  Waiting for ${numValidators} validators to become healthy...`);
-
     while (Date.now() < deadline) {
         let healthyCount = 0;
-        const statuses: string[] = [];
-
+        const statuses = [];
         for (let i = 0; i < numValidators; i++) {
             const url = `http://127.0.0.1:${BASE_API_PORT + i}/v1`;
             try {
                 const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
                 if (response.ok) {
                     healthyCount++;
-                    const data = (await response.json()) as LedgerInfo;
+                    const data = (await response.json());
                     statuses.push(`V${i}:epoch${data.epoch},blk${data.block_height}`);
                     debug(`Validator ${i} healthy`, {
                         epoch: data.epoch,
                         block_height: data.block_height,
                     });
-                } else {
+                }
+                else {
                     statuses.push(`V${i}:HTTP${response.status}`);
                 }
-            } catch (_e: any) {
+            }
+            catch (_e) {
                 statuses.push(`V${i}:ERR`);
                 // Validator not ready yet
             }
         }
-
         if (healthyCount === numValidators) {
             console.log(`  ✓ All ${numValidators} validators healthy [${statuses.join(", ")}]`);
             return;
-        } else {
-            debug(
-                `Health check: ${healthyCount}/${numValidators} healthy [${statuses.join(", ")}]`,
-            );
         }
-
+        else {
+            debug(`Health check: ${healthyCount}/${numValidators} healthy [${statuses.join(", ")}]`);
+        }
         await new Promise((resolve) => setTimeout(resolve, 2000));
     }
-
     throw new Error("Timeout waiting for validators. Check 'docker compose logs' for details.");
 }
-
-/**
- * Network probe result for a single validator
- */
-export interface ProbeResult {
-    validatorIndex: number;
-    containerName: string;
-    ipAddress: string;
-    apiPort: number;
-    validatorPort: number;
-    metricsPort: number;
-    apiReachable: boolean;
-    apiResponse?: LedgerInfo;
-    apiError?: string;
-    portScans: {
-        port: number;
-        name: string;
-        reachable: boolean;
-        error?: string;
-    }[];
-}
-
 /**
  * Probe all validators in a testnet for connectivity and health
  *
@@ -1117,21 +797,17 @@ export interface ProbeResult {
  * Usage:
  *   ATOMICA_DEBUG_TESTNET=1 node -e "require('./dist/index.js').probeTestnet(4)"
  */
-export async function probeTestnet(numValidators: number = 4): Promise<ProbeResult[]> {
+export async function probeTestnet(numValidators = 4) {
     console.log(`\n=== Probing ${numValidators} validators ===\n`);
-
-    const results: ProbeResult[] = [];
-
+    const results = [];
     for (let i = 0; i < numValidators; i++) {
         const containerName = `atomica-validator-${i}`;
         const ipAddress = `172.19.0.${10 + i}`;
         const apiPort = BASE_API_PORT + i;
         const validatorPort = BASE_VALIDATOR_PORT;
         const metricsPort = 9101 + i;
-
         console.log(`\nProbing validator-${i} (${containerName}):`);
-
-        const result: ProbeResult = {
+        const result = {
             validatorIndex: i,
             containerName,
             ipAddress,
@@ -1141,7 +817,6 @@ export async function probeTestnet(numValidators: number = 4): Promise<ProbeResu
             apiReachable: false,
             portScans: [],
         };
-
         // Check REST API
         const apiUrl = `http://127.0.0.1:${apiPort}/v1`;
         console.log(`  Testing REST API: ${apiUrl}`);
@@ -1149,25 +824,23 @@ export async function probeTestnet(numValidators: number = 4): Promise<ProbeResu
             const response = await fetch(apiUrl, { signal: AbortSignal.timeout(5000) });
             if (response.ok) {
                 result.apiReachable = true;
-                result.apiResponse = (await response.json()) as LedgerInfo;
-                console.log(
-                    `    ✓ API reachable - Epoch: ${result.apiResponse.epoch}, Block: ${result.apiResponse.block_height}`,
-                );
-            } else {
+                result.apiResponse = (await response.json());
+                console.log(`    ✓ API reachable - Epoch: ${result.apiResponse.epoch}, Block: ${result.apiResponse.block_height}`);
+            }
+            else {
                 result.apiError = `HTTP ${response.status}`;
                 console.log(`    ✗ API returned: ${response.status}`);
             }
-        } catch (error: any) {
+        }
+        catch (error) {
             result.apiError = error.message;
             console.log(`    ✗ API unreachable: ${error.message}`);
         }
-
         // Scan important ports (from host perspective)
         const portsToScan = [
             { port: apiPort, name: "REST API" },
             { port: metricsPort, name: "Metrics" },
         ];
-
         for (const { port, name } of portsToScan) {
             console.log(`  Testing ${name} port: ${port}`);
             try {
@@ -1182,7 +855,8 @@ export async function probeTestnet(numValidators: number = 4): Promise<ProbeResu
                     reachable: true,
                 });
                 console.log(`    ✓ Port ${port} (${name}) reachable`);
-            } catch (error: any) {
+            }
+            catch (error) {
                 result.portScans.push({
                     port,
                     name,
@@ -1192,7 +866,6 @@ export async function probeTestnet(numValidators: number = 4): Promise<ProbeResu
                 console.log(`    ✗ Port ${port} (${name}) unreachable: ${error.message}`);
             }
         }
-
         // Check container networking (requires docker exec)
         console.log(`  Checking container internal networking...`);
         try {
@@ -1204,56 +877,48 @@ export async function probeTestnet(numValidators: number = 4): Promise<ProbeResu
                 "-c",
                 `curl -s -m 2 http://172.19.0.${10 + ((i + 1) % numValidators)}:8080/v1 | head -c 50 || echo FAIL`,
             ]);
-
             let output = "";
             pingOther.stdout?.on("data", (d) => (output += d.toString()));
-
-            await new Promise<void>((resolve) => {
+            await new Promise((resolve) => {
                 pingOther.on("close", () => resolve());
                 setTimeout(() => {
                     pingOther.kill();
                     resolve();
                 }, 3000);
             });
-
             if (output.includes("chain_id")) {
                 console.log(`    ✓ Container can reach other validators`);
-            } else {
+            }
+            else {
                 console.log(`    ✗ Container cannot reach other validators`);
             }
-        } catch (error: any) {
+        }
+        catch (error) {
             console.log(`    ? Could not test container networking: ${error.message}`);
         }
-
         results.push(result);
     }
-
     // Summary
     console.log(`\n=== Probe Summary ===`);
     const healthyValidators = results.filter((r) => r.apiReachable).length;
     console.log(`Healthy validators: ${healthyValidators}/${numValidators}`);
-
     if (healthyValidators > 0 && results[0].apiResponse) {
-        const epochs = new Set(
-            results.filter((r) => r.apiResponse).map((r) => r.apiResponse!.epoch),
-        );
-        const blocks = new Set(
-            results.filter((r) => r.apiResponse).map((r) => r.apiResponse!.block_height),
-        );
-
+        const epochs = new Set(results.filter((r) => r.apiResponse).map((r) => r.apiResponse.epoch));
+        const blocks = new Set(results.filter((r) => r.apiResponse).map((r) => r.apiResponse.block_height));
         if (epochs.size === 1) {
             console.log(`All validators in epoch: ${[...epochs][0]}`);
-        } else {
+        }
+        else {
             console.log(`WARNING: Validators in different epochs: ${[...epochs].join(", ")}`);
         }
-
         if (blocks.size === 1) {
             console.log(`All validators at block: ${[...blocks][0]}`);
-        } else {
+        }
+        else {
             console.log(`Validators at blocks: ${[...blocks].join(", ")} (minor differences OK)`);
         }
     }
-
     console.log(`\n`);
     return results;
 }
+//# sourceMappingURL=index.js.map

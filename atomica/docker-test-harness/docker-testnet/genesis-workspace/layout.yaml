@@ -1,0 +1,15 @@
+---
+root_key: "0xb843add507c4a5c93332729bae170b475678dbbc5e3138d5bda3475d75916105"
+users: ["validator-0", "validator-1"]
+chain_id: 4
+allow_new_validators: false
+epoch_duration_secs: 7200
+is_test: true
+min_stake: 100000000000000
+min_voting_threshold: 100000000000000
+max_stake: 100000000000000000
+recurring_lockup_duration_secs: 86400
+required_proposer_stake: 100000000000000
+rewards_apy_percentage: 10
+voting_duration_secs: 43200
+voting_power_increase_limit: 20

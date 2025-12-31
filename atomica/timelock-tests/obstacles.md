@@ -8,8 +8,31 @@ This file tracks obstacles, issues, and blockers encountered during the implemen
 - **File corruption during edits**: TypeScript files getting corrupted during edit operations, requiring recreation.
 - **Docker daemon instability**: Docker daemon stops running intermittently, causing testnet initialization failures.
 - **Framework rebuild required**: New manual rotation function in Move code needs framework rebuild to be available.
-- **Automatic interval rotation**: Block prologue may not be calling timelock::on_new_block consistently in testnet.
+- **Automatic interval rotation**: Timelock on_new_block is not called in testnet, preventing automatic DKG rotation.
 - **CI workflow YAML formatting**: GitHub Actions workflow has indentation issues that need to be fixed.
+- **Framework compilation time**: `compileAndPlaceFramework()` takes 10+ minutes to compile entire Rust codebase.
+
+## Framework Compilation Solutions
+
+### Option 1: Pre-compiled Framework (Recommended)
+
+Instead of compiling from scratch each time, use a pre-compiled framework:
+
+- Copy existing `head.mrb` from CI artifacts or local builds
+- Download from GitHub releases if available
+- Use cached framework builds
+
+### Option 2: Incremental Compilation
+
+- Use `cargo build --release` instead of `cargo run` for faster builds
+- Cache Rust dependencies between builds
+- Only rebuild when Move code actually changes
+
+### Option 3: CI-Only Compilation
+
+- Only run full compilation in CI environments
+- Use pre-built frameworks for local development
+- Provide fallback to existing framework files
 
 ## Investigation Notes
 
