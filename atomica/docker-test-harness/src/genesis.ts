@@ -95,6 +95,15 @@ function runGenesisScript(config: ScriptConfig): Promise<void> {
 
         // Find the framework.mrb file - try multiple possible locations relative to workspaceDir
         const possiblePaths = [
+            pathResolve(
+                workspaceDir,
+                "..",
+                "..",
+                "..",
+                "atomica",
+                "move-fixtures",
+                "test-head.mrb",
+            ),
             pathResolve(workspaceDir, "..", "..", "..", "atomica", "move-fixtures", "head.mrb"),
             pathResolve(workspaceDir, "..", "..", "..", "move-framework-fixtures", "head.mrb"),
             pathResolve(workspaceDir, "..", "..", "move-framework-fixtures", "head.mrb"),
