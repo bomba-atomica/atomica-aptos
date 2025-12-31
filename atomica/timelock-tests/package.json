@@ -5,11 +5,11 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "bun test",
-    "test:basic": "bun run test-basic",
-    "test:ibe": "bun run test-ibe",
-    "test-basic": "bun run src/test-basic.ts",
-    "test-ibe": "bun run src/test-ibe.ts",
+    "test": "bun run test-runner.ts round-robin",
+    "test:parallel": "bun run test-runner.ts breadth-first",
+    "test:basic": "bun run src/test-basic.ts",
+    "test:ibe": "bun run src/test-ibe.ts",
+    "test-runner": "bun run src/test-runner.ts",
     "lint": "eslint src/ test/",
     "lint:fix": "eslint src/ test/ --fix"
   },
