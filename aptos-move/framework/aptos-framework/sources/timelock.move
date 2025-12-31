@@ -22,6 +22,8 @@ module aptos_framework::timelock {
     const ENOT_VALIDATOR: u64 = 2;
     /// Invalid share format.
     const EINVALID_SHARE: u64 = 3;
+    /// Rotation triggered too early.
+    const EROTATION_TOO_EARLY: u64 = 4;
 
     struct TimelockConfig has copy, drop, store {
         threshold: u64,
@@ -88,10 +90,92 @@ module aptos_framework::timelock {
         });
     }
 
+    /// Internal function to perform rotation logic
+    fun perform_rotation(state: &mut TimelockState) {
+        let now = timestamp::now_microseconds();
+        let old_interval = state.current_interval;
+
+        // Emit reveal event for the old interval
+        event::emit_event(&mut state.request_reveal_events, RequestRevealEvent {
+            interval: old_interval,
+        });
+
+        state.current_interval = state.current_interval + 1;
+        state.last_rotation_time = now;
+
+        // Get current validator set to determine threshold
+        let validators = stake::cur_validator_consensus_infos();
+        let validator_addresses = vector::empty<address>();
+        let i = 0;
+        let len = vector::length(&validators);
+        while (i < len) {
+            let v = vector::borrow(&validators, i);
+            vector::push_back(&mut validator_addresses, validator_consensus_info::get_addr(v));
+            i = i + 1;
+        };
+        let total_validators = vector::length(&validators);
+        // Byztantine Fault Tolerance threshold: 2f + 1, where N = 3f + 1
+        // Simple formula: floor(N * 2 / 3) + 1
+        let threshold = (total_validators * 2 / 3) + 1;
+        if (total_validators == 0) { threshold = 1; }; // Fallback for testing/genesis
+
+        let config = TimelockConfig {
+            threshold,
+            total_validators,
+        };
+
+        event::emit_event(&mut state.start_keygen_events, StartKeyGenEvent {
+            interval: state.current_interval,
+            config,
+        });
+    }
+
     /// Called by block prologue to trigger rotations.
     public(friend) fun on_new_block(vm: &signer) acquires TimelockState {
         system_addresses::assert_vm(vm);
 
+        if (!exists<TimelockState>(@aptos_framework)) {
+            return
+        };
+
+        let state = borrow_global_mut<TimelockState>(@aptos_framework);
+        let now = timestamp::now_microseconds();
+
+        // Initialize last_rotation_time if it's 0 (genesis/first run)
+        if (state.last_rotation_time == 0) {
+            state.last_rotation_time = now;
+            return
+        };
+
+        // Check if configured interval has passed (get from timelock_config)
+        let interval_micros = timelock_config::get_interval_microseconds();
+        if (now - state.last_rotation_time > interval_micros) {
+            perform_rotation(state);
+        }
+    }
+
+    /// Manual rotation trigger that can be called by anyone after the scheduled time.
+    /// This allows testing and emergency rotation when automatic rotation fails.
+    public entry fun trigger_rotation(account: &signer) acquires TimelockState {
+        if (!exists<TimelockState>(@aptos_framework)) {
+            return
+        };
+
+        let state = borrow_global_mut<TimelockState>(@aptos_framework);
+        let now = timestamp::now_microseconds();
+
+        // Initialize last_rotation_time if it's 0 (genesis/first run)
+        if (state.last_rotation_time == 0) {
+            state.last_rotation_time = now;
+            return
+        };
+
+        // Check if configured interval has passed (get from timelock_config)
+        let interval_micros = timelock_config::get_interval_microseconds();
+        assert!(now - state.last_rotation_time > interval_micros, EROTATION_TOO_EARLY);
+
+        perform_rotation(state);
+    }
         if (!exists<TimelockState>(@aptos_framework)) {
             return
         };
