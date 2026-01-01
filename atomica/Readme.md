@@ -13,11 +13,12 @@ The system uses **BLS12-381** cryptography and Identity-Based Encryption (IBE) t
 *   **Move Framework Integration**: Full Aptos blockchain integration with Move smart contracts.
 *   **Comprehensive Testing**: Automated Docker-based testnet infrastructure.
 *   **Framework Verification**: Ability to test custom framework loading vs Docker image defaults.
+*   **Custom Genesis**: Support for injecting modified Move frameworks (e.g., shorter intervals) into ephemeral testnets via `move-framework-fixtures/head.mrb`.
 
-### Status (as of Dec 31, 2024)
+### Status (as of Jan 1, 2026)
 
 *   **Core Logic**: ~85% Complete (MVP Assessment).
-*   **Infrastructure**: Fully functional automated Docker testnets.
+*   **Infrastructure**: Fully functional automated Docker testnets with custom genesis support.
 *   **Cryptographic Ops**: IBE encrypt/decrypt cycle functional using Boneh-Franklin scheme.
 *   **Pending**: Critical bug fixes (invalid share counting, threshold storage) and full verification flow.
 

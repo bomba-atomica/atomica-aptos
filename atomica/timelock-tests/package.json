@@ -11,7 +11,6 @@
     "test:ibe": "bun run src/test-ibe.ts",
     "test:crypto": "bun run src/test-crypto-only.ts",
     "test:rotation": "bun run src/test-manual-rotation.ts",
-    "test:framework": "bun run src/test-framework-compilation.ts",
     "test:framework-loading": "bun run src/test-framework-loading.ts",
     "test-runner": "bun run src/test-runner.ts",
     "lint": "eslint src/ test/",

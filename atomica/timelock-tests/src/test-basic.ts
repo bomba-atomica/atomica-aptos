@@ -1,6 +1,7 @@
 import { initializeTestnet, performCleanup } from "../../docker-test-harness/test/helpers/testnet-lifecycle";
 import { AptosClient, AptosAccount } from "aptos";
 import { TimelockTransactions, TimelockQueries, TimelockWaiters } from "./index";
+import { expect } from "bun:test";
 
 async function runBasicFlowTest() {
   console.log("🧪 Running Basic Timelock Flow Test");
@@ -84,7 +85,7 @@ async function runBasicFlowTest() {
 
     const timestamp2 = await queries.getCurrentTimestamp();
     console.log(`Later timestamp: ${timestamp2}`);
-    expect(timestamp2).toBeGreaterThan(timestamp1);
+    expect(Number(timestamp2)).toBeGreaterThan(Number(timestamp1));
     console.log("✅ Timestamp is advancing");
 
     // Step 6: Verify noop contract is available (confirms custom framework loaded)

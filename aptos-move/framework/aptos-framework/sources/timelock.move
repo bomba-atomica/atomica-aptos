@@ -260,18 +260,8 @@ module aptos_framework::timelock {
         });
 
         // 3. Check if threshold is met using VALID shares only
-        // Count valid shares for threshold calculation
-        let valid_count = 0;
-        let i = 0;
-        let len = vector::length(shares_list);
-        while (i < len) {
-            let s_bytes = &vector::borrow(shares_list, i).share;
-            let element_opt = deserialize<G1, FormatG1Compr>(s_bytes);
-            if (std::option::is_some(&element_opt)) {
-                valid_count = valid_count + 1;
-            };
-            i = i + 1;
-        };
+        // Since we validate on insertion (line 254), all stored shares are valid G1 points.
+        let valid_count = vector::length(shares_list);
 
         // Use stored interval config for threshold validation
         assert!(table::contains(&state.interval_configs, interval), EINVALID_INTERVAL);
@@ -280,17 +270,22 @@ module aptos_framework::timelock {
 
         if (valid_count >= threshold) {
             // 4. Aggregate VALID shares only
+            // 4. Aggregate shares
             let sum = zero<G1>();
             let i = 0;
-            let len = vector::length(shares_list);
-            let valid_added = 0;
-            while (i < len && valid_added < threshold) {
+            // distinct from valid_count, just loop iterator
+            let len = vector::length(shares_list); 
+            let aggregated_count = 0;
+            
+            while (i < len && aggregated_count < threshold) {
                 let s_bytes = &vector::borrow(shares_list, i).share;
+                // We must re-deserialize to add, but we can trust it is Some
                 let element_opt = deserialize<G1, FormatG1Compr>(s_bytes);
+                // Safety check, though redundant if storage is trusted
                 if (std::option::is_some(&element_opt)) {
                     let element = std::option::extract(&mut element_opt);
                     sum = add(&sum, &element);
-                    valid_added = valid_added + 1;
+                    aggregated_count = aggregated_count + 1;
                 };
                 i = i + 1;
             };

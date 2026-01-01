@@ -94,6 +94,9 @@ function runGenesisScript(config: ScriptConfig): Promise<void> {
             `${process.env.VALIDATOR_IMAGE_REPO || "ghcr.io/bomba-atomica/atomica-aptos/validator"}:${process.env.IMAGE_TAG || "latest"}`;
 
         // Find the framework.mrb file - try multiple possible locations relative to workspaceDir
+        // CRITICAL FOR TESTING: This allows injecting a custom framework (e.g. with shorter intervals)
+        // instead of using the default one baked into the Docker image.
+        // The generate-genesis.sh script will prioritize the file mounted at /framework.mrb.
         const possiblePaths = [
             pathResolve(workspaceDir, "..", "..", "..", "move-framework-fixtures", "test-head.mrb"),
             pathResolve(workspaceDir, "..", "..", "..", "move-framework-fixtures", "head.mrb"),

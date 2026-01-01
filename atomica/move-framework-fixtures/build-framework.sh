@@ -1,15 +1,25 @@
 #!/bin/bash
 # Build Aptos framework release bundle with content-addressable caching
 #
-# Usage:
+# PURPOSE
+# This script compiles the Aptos Move framework into a single `.mrb` (Move Released Bundle) file.
+# It is used by the test infrastructure to generate "Custom Genesis" artifacts with modified
+# framework logic (e.g., shorter timelock intervals).
+#
+# FEATURES
+# 1. Content-Addressable Caching: computes a hash of the input source files.
+#    - If a valid build artifact (`head-{HASH}.mrb`) exists, it skips the expensive build.
+#    - This significantly speeds up test iterations.
+# 2. Symlink Management: Maintains a `head.mrb` symlink pointing to the latest valid build.
+#    - The test runner (`genesis.ts`) simply looks for `head.mrb`.
+# 3. Custom Compilation: Uses `aptos-framework custom` to build specific packages (MoveStdlib, AptosFramework, etc.).
+#
+# USAGE
 #   ./build-framework.sh [FRAMEWORK_PATH] [OUTPUT_DIR]
 #
-# Output:
-#   - head-{HASH}.mrb  (the actual build artifact)
-#   - head.mrb         (symlink to latest build)
-#
-# Caching:
-#   If head-{HASH}.mrb already exists, the build is skipped.
+# ARGS
+#   FRAMEWORK_PATH: Path to the root of the aptos-framework source (e.g., aptos-core/aptos-move/framework)
+#   OUTPUT_DIR: Where to save the build artifacts (default: script directory)
 #
 set -euo pipefail
 

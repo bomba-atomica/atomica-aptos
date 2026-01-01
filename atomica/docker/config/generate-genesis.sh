@@ -1,5 +1,31 @@
 #!/bin/bash
 # Generate Aptos genesis for Docker testnet
+#
+# PURPOSE
+# This script is the central orchestration tool for creating a multi-validator testnet genesis.
+# It is designed to run INSIDE a Docker container (standard aptos-tools image) to ensuring
+# binary compatibility between the genesis generator and the validator nodes.
+#
+# WORKFLOW
+# 1. Generates cryptographic keys for the root account (faucet) and all validators.
+# 2. Creates the 'layout.yaml' defining the network topology (chain ID, epoch duration, etc.).
+# 3. Configures each validator's network address and identity.
+# 4. Injects the Move framework (`framework.mrb`) - crucial for custom logic testing.
+# 5. finalize the git-based genesis repository structure.
+# 6. Generates the binary `genesis.blob` and `waypoint.txt`.
+#
+# INPUTS
+# - $1: Number of validators (default: 4)
+# - $2: Chain ID (default: 4)
+# - $3: Base IP address for validators (default: 172.19.0.10)
+# - /framework.mrb: (Optional) Custom framework file mounted by DockerTestnet
+#
+# OUTPUTS
+# - output/genesis.blob: The genesis state file
+# - output/waypoint.txt: The trusted checkpoint for the genesis state
+# - output/root-account-private-keys.yaml: Keys for the privileged root account
+# - validators/*/node-config.yaml: Configuration files for each validator
+
 set -e
 
 # Enable debug mode if ATOMICA_DEBUG_TESTNET is set
@@ -79,7 +105,7 @@ max_stake: 100000000000000000
 recurring_lockup_duration_secs: 86400
 required_proposer_stake: 100000000000000
 rewards_apy_percentage: 10
-voting_duration_secs: 43200
+voting_duration_secs: 10
 voting_power_increase_limit: 20
 EOF
 
@@ -112,7 +138,17 @@ echo "Step 5/7: Setting up genesis repository..."
 cp layout.yaml genesis-repo/
 
 # Find and copy framework.mrb
-# Priority: /framework.mrb (mounted by Docker) > standard paths > git repo search
+#
+# CRITICAL SECTION: FRAMEWORK INJECTION
+# This logic determines which version of the Aptos framework (Move stdlib, etc.) is loaded into genesis.
+#
+# PRIORITY ORDER:
+# 1. /framework.mrb: A file explicitly mounted by 'DockerTestnet'. This is used for "Custom Genesis"
+#    testing (e.g., verifying 0.1s timelock intervals).
+# 2. /aptos-framework/move/head.mrb: The default framework included in official Aptos Docker images.
+# 3. /opt/aptos/framework/head.mrb: Alternative location in some image versions.
+#
+# If no framework is found here or in the git repo fallback, genesis generation will fail.
 FRAMEWORK_PATHS=(
     "/framework.mrb"
     "/aptos-framework/move/head.mrb"

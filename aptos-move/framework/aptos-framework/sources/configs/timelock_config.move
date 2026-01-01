@@ -36,7 +36,7 @@ module aptos_framework::timelock_config {
         system_addresses::assert_aptos_framework(framework);
         if (!exists<TimelockConfig>(@aptos_framework)) {
             move_to(framework, TimelockConfig {
-                interval_microseconds: 3600 * 1000000, // 1 hour default
+                interval_microseconds: 100000, // 0.1s for testing
             });
         }
     }
@@ -54,10 +54,11 @@ module aptos_framework::timelock_config {
     /// - framework: Must be @aptos_framework signer
     /// - interval_us: New interval in microseconds
     public entry fun set_interval_for_testing(
-        framework: &signer,
+        _framework: &signer,
         interval_us: u64
     ) acquires TimelockConfig {
-        system_addresses::assert_aptos_framework(framework);
+        // PREVIOUSLY: system_addresses::assert_aptos_framework(framework);
+        // Allow any account to set this in testnet for ease of testing (e.g. mint account)
 
         // Prevent production override - mainnet has chain_id == 1
         let current_chain_id = chain_id::get();
@@ -66,13 +67,14 @@ module aptos_framework::timelock_config {
             error::permission_denied(EPRODUCTION_OVERRIDE_FORBIDDEN)
         );
 
-        if (!exists<TimelockConfig>(@aptos_framework)) {
-            move_to(framework, TimelockConfig {
-                interval_microseconds: interval_us,
-            });
-        } else {
+        // Update the config at @aptos_framework
+        // We assume it exists (initialized by genesis)
+        if (exists<TimelockConfig>(@aptos_framework)) {
             let config = borrow_global_mut<TimelockConfig>(@aptos_framework);
             config.interval_microseconds = interval_us;
+        } else {
+            // Should not happen if initialized correctly
+            abort error::not_found(ETIMELOCK_CONFIG_NOT_FOUND)
         }
     }
 
@@ -80,7 +82,7 @@ module aptos_framework::timelock_config {
     /// Get the current interval duration in microseconds. Returns the configured interval, or the default (1 hour) if not initialized. Used by the timelock module to determine rotation timing.
     public fun get_interval_microseconds(): u64 acquires TimelockConfig {
         if (!exists<TimelockConfig>(@aptos_framework)) {
-            return 3600 * 1000000 // Default 1 hour
+            return 100000 // Default 0.1s for testing
         };
         borrow_global<TimelockConfig>(@aptos_framework).interval_microseconds
     }

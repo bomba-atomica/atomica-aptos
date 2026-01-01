@@ -1,70 +1,68 @@
 # Atomica Timelock Development Plan
 
-**Last Updated:** December 31, 2024
+**Last Updated:** January 1, 2026
 **Target:** Production-ready MVP
 
 ## Status Overview
 
-The timelock implementation is effectively **feature-complete** regarding the "Happy Path". The core infrastructure for DKG, interval rotation, and IBE encryption/decryption is working. However, critical bugs relating to security and correctness need to be addressed before production deployment.
+We have successfully established a reliable "custom genesis" testing workflow (Modify -> Rebuild -> Test), enabling us to test core framework changes (like 0.1s timelock intervals) without unreliable governance workarounds.
 
-### Current Achievement Level
-*   **95% Complete**: Core timelock + IBE system implemented.
-*   **Blockers**: Framework loading verification in Docker, specific security bugs.
+### Key Achievements (Completed)
+*   **Infrastructure**: `test:rotation` and `test:framework-loading` verify our ability to modify and inject custom Move frameworks into ephemeral Docker testnets.
+*   **Core Bug Fixes**:
+    *   Optimized Invalid Share Counting (Removed O(N) redundancy).
+    *   Fixed Historical Threshold Storage (Snapshotting at DKG start).
+*   **Workflow**: established the *Modify -> Rebuild -> Test* loop as the standard for framework development.
+
+### Current Focus
+*   The immediate priority is to verify the **End-to-End IBE Encryption/Decryption flow** (`test:ibe`) and harden the system against malformed inputs.
 
 ---
 
-## Roadmap
+## Roadmap (Revised Critical Path)
 
-### Phase 1: Critical Bug Fixes (Immediate Priority)
+### Phase 1: End-to-End Verification (Immediate Priority)
 
-*   **Task 1.1: Fix Invalid Share Counting**
-    *   *Issue*: Invalid shares are currently skipped but still counted towards the threshold.
-    *   *Fix*: Refactor `publish_secret_share` to validate shares before counting them.
-*   **Task 1.2: Fix Historical Threshold Storage**
-    *   *Issue*: Threshold is calculated using the *current* validator set at reveal time, not the set from the DKG time.
-    *   *Fix*: Store `IntervalConfig` (threshold, validator count) when `StartKeyGenEvent` is emitted.
-*   **Task 1.3: Fix Topic Mismatch**
-    *   *Fix*: Ensure Timelock DKG results use `Topic::TIMELOCK` instead of `Topic::DKG`.
+*   **Task 1.1: Verify IBE Roundtrip (`test:ibe`)**
+    *   *Goal*: Ensure the TypeScript SDK can successfully encrypt a message and decrypt it using shares aggregated from the validators.
+    *   *Dependencies*: `test:rotation` (Verified), `timelock.move` (Verified).
+    *   *Status*: **NEXT UP**.
 
-### Phase 2: Security Hardening
+### Phase 2: Security Hardening (Pre-Production)
 
-*   **Task 2.1: Share Pre-validation**: Add unit tests and Move logic to reject invalid G1 points immediately.
-*   **Task 2.2: Interval Validation**: Ensure shares can only be revealed for past intervals.
-*   **Task 2.3: Session Cleanup**: Implement cleanup for stale Timelock DKG sessions in `epoch_manager.rs`.
+*   **Task 2.1: Invalid Share Rejection**
+    *   *Issue*: Malformed G1 points must be rejected at the contract level to preventing DOS or calculation errors.
+    *   *Action*: Add unit tests + Move logic for point validation.
+*   **Task 2.2: Topic Mismatch**
+    *   *Fix*: Ensure Timelock DKG results use `Topic::TIMELOCK` specifically.
+*   **Task 2.3: Interval Validation**
+    *   *Action*: Ensure shares can only be revealed for *past* intervals, preventing attacks on future keys.
 
-### Phase 3: Code Quality & Testing
+### Phase 3: Robustness & Cleanup
 
-*   **Task 3.1**: Remove unused variables in Move contracts.
-*   **Task 3.2**: Improve threshold fallback logic (remove hardcoded `1` for production).
-*   **Task 4.1**: Add invalid share unit tests.
-*   **Task 4.2**: Add threshold edge case tests (exact threshold, threshold - 1).
+*   **Task 3.1: DKG Failure Recovery**
+    *   *Feature*: Retry mechanism if DKG fails for a specific interval.
+*   **Task 3.2: Session Cleanup**
+    *   *Optimization*: Implement cleanup for stale Timelock DKG sessions in `epoch_manager.rs`.
+*   **Task 3.3: Threshold Fallback**
+    *   *Refactor*: Remove hardcoded `1` threshold fallback used for testing; enforce strict thresholds in production.
 
-### Phase 4: TypeScript SDK & IBE
+---
 
-*   **Task 5.1**: Implement fully functional TypeScript IBE module (replace placeholders).
-*   **Task 5.2**: Add DKG transcript specific parsing.
-*   **Task 5.3**: Update `ibe-e2e.test.ts` to use real encryption/decryption.
+## Development Workflow
 
-### Phase 5: Future Enhancements
+We strictly adhere to the **Modify -> Rebuild -> Test** loop for framework changes:
 
-*   **DKG Failure Recovery**: Retry mechanism if DKG fails for an interval.
-*   **Validator Set Changes**: Robust handling of validator set changes during a DKG session.
+1.  **Modify** `aptos-framework` sources.
+2.  **Rebuild** using `./atomica/move-framework-fixtures/build-framework.sh`.
+3.  **Test** using `bun run test:rotation` (or similar), which injects the custom `head.mrb`.
+
+**⛔️ ANTIPATTERN**: Do not create runtime scripts (e.g., `set_interval.move`) to change core configs. This leads to signer permission errors and does not match production governance flows.
 
 ---
 
 ## Action Items
 
-1.  **Build Custom Docker Image**: Modify `Dockerfile` to remove the built-in `head.mrb` and strictly use the mounted one for accurate framework verification.
-2.  **Run Framework Loading Tests**: `bun run test:framework-loading` should pass.
-3.  **Fix Critical Bugs**: Start with Task 1.1 (Invalid Share Counting).
-4.  **Verify Complete Flow**: Run `bun run test:ibe` and `bun run test:rotation` after fixes.
-
----
-
-## Known Issues (Code Review Findings)
-
-*   **BUG-001 [Critical]**: Invalid Share Counting Vulnerability.
-*   **BUG-002 [High]**: Threshold functionality uses current validator set.
-*   **BUG-003 [Medium]**: DKG Topic Mismatch.
-*   **BUG-004 [Medium]**: First Share Selection Assumption.
-*   **BUG-005 [Low]**: Missing Timelock Session Cleanup.
+1.  **Execute `test:ibe`**: Identify any failures in the encryption/decryption cycle.
+2.  **Implement Invalid Share Tests**: Create specific test cases for malformed inputs.
+3.  **Audit SDK Parsing**: Ensure `timelock-tests` (and the production SDK) correctly parses DKG transcripts.

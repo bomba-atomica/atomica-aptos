@@ -52,8 +52,38 @@ bun test
 ### Key Components
 
 1.  **Testnet Lifecycle**: Automatically spins up 2-4 validator networks with custom genesis.
-2.  **Framework Verification**: Ensures that the compiled Move framework (`head.mrb`) is correctly loaded by the validators, rather than using the default Docker image framework.
+2.  **Framework Verification & Custom Genesis**:
+    *   **Goal**: Test modified Move framework code (e.g., shorter timelock intervals) without waiting for mainnet-like delays.
+    *   **Mechanism**: The test harness looks for a compiled framework artifact at `atomica/move-framework-fixtures/head.mrb`.
+    *   **Injection**: If found, this artifact is mounted into the Docker container and used during `aptos genesis generate-genesis`. This effectively replaces the default framework baked into the Docker image.
+    *   **Build Command**: Use `aptos-framework custom ... --output atomica/move-framework-fixtures/head.mrb` to generate this file.
 3.  **Manual Rotation**: Because automatic block production in Docker can be erratic for time-based triggers, a manual rotation trigger is used for deterministic testing.
+
+---
+
+## Framework Development Workflow
+
+### The Correct Loop (Modify -> Rebuild -> Test)
+
+When you need to test changes to the core Move framework (e.g., `timelock_config`, consensus logic), follow this loop. This ensures that your changes are baked into the genesis state, replicating how network upgrades actually work (or how a new chain starts).
+
+1.  **Modify Source**: Edit the Move files in `aptos-framework` (e.g., `aptos-move/framework/aptos-framework/sources/configs/timelock_config.move`).
+2.  **Rebuild Artifact**: Run the build script to update the testnet fixture.
+    ```bash
+    ./atomica/move-framework-fixtures/build-framework.sh
+    ```
+3.  **Run Test**: Execute your test command. The test runner (`genesis.ts`) automatically detects the updated `head.mrb` and injects it into the new testnet.
+    ```bash
+    bun run test:rotation
+    ```
+
+### ⛔️ Antipattern: Runtime Script Injection
+
+**Do NOT try to change core framework configurations using runtime scripts or transaction payloads (e.g., `set_interval.move`).**
+
+*   **Why?**: Core configurations often require special privileges (like `@aptos_framework` signer) that are difficult or impossible to obtain via standard transaction flows in a production-like environment.
+*   **Risk**: Tests might pass by hacking permissions (e.g., `0x1` signer) but fail in reality where those paths don't exist.
+*   **Correct Approach**: Use "Custom Genesis" as described above. If parameters need to be different for testing, use `#[test_only]` helpers within the framework itself, but apply them via the genesis configuration or specific governance proposals if testing upgrades.
 
 ---
 

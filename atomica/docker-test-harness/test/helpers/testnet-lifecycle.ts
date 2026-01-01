@@ -7,7 +7,13 @@ let globalTestnet: DockerTestnet | undefined;
 let cleanupInProgress = false;
 
 /**
- * Cleanup function that can be called from anywhere
+ * Cleanup function that can be called from anywhere.
+ * 
+ * Ensures that the global testnet instance is torn down.
+ * If no instance is tracked (e.g. crash during init), it attempts a manual
+ * 'docker compose down' to clean up any orphaned containers.
+ * 
+ * This is critical for CI/CD environments where leftover containers can cause port conflicts.
  */
 export async function performCleanup(reason: string): Promise<void> {
     if (cleanupInProgress) {
@@ -133,7 +139,13 @@ function findComposeDir(): string {
 
 /**
  * Initialize a testnet with the specified number of validators
- * and wait for consensus to start
+ * and wait for consensus to start.
+ * 
+ * This is the primary entry point for tests. It:
+ * 1. Creates a new DockerTestnet instance.
+ * 2. Sets it as the global testnet for cleanup (Singleton pattern).
+ * 3. Waits for the network to produce blocks and advance past genesis.
+ * 4. Checks for "stuck at genesis" scenarios which can happen with Docker IO lag.
  */
 export async function initializeTestnet(
     numValidators: number,

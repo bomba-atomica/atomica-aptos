@@ -33,11 +33,11 @@ function getAptosFrameworkBinary(): string {
     if (!existsSync(frameworkPath)) {
         throw new Error(
             `aptos-framework binary not found at ${frameworkPath}.\n\n` +
-                `Please build the aptos-framework binary:\n` +
-                `  cd /path/to/aptos-core && cargo build -p aptos-framework --release\n` +
-                `  # The binary will be available at ~/.cargo/bin/aptos-framework\n\n` +
-                `Or install globally:\n` +
-                `  cargo install --git https://github.com/aptos-labs/aptos-core aptos-framework`,
+            `Please build the aptos-framework binary:\n` +
+            `  cd /path/to/aptos-core && cargo build -p aptos-framework --release\n` +
+            `  # The binary will be available at ~/.cargo/bin/aptos-framework\n\n` +
+            `Or install globally:\n` +
+            `  cargo install --git https://github.com/aptos-labs/aptos-core aptos-framework`,
         );
     }
     return frameworkPath;
@@ -164,6 +164,16 @@ export interface LedgerInfo {
 
 /**
  * Docker Testnet - Automatic setup and teardown
+ * 
+ * This class serves as the main SDK for interacting with the ephemeral Docker-based testnet.
+ * It manages the entire lifecycle:
+ * 1. Prerequisite checks (Docker running).
+ * 2. cleanup of previous state.
+ * 3. Generation of genesis artifacts (via genesis.ts -> generate-genesis.sh).
+ * 4. Injection of custom Move frameworks (for testing specific chain params).
+ * 5. Startup of validator nodes via Docker Compose.
+ * 6. Health checking and readiness verification.
+ * 7. Graceful teardown on process exit.
  */
 export class DockerTestnet {
     private composeDir: string;
@@ -223,13 +233,20 @@ export class DockerTestnet {
         await new Promise((resolve) => setTimeout(resolve, 2000));
 
         // Generate genesis and validator configs
+        // This delegates to genesis.ts which runs 'generate-genesis.sh' inside a Docker container.
+        // We do this inside Docker to ensure the 'aptos' CLI version exactly matches the validator version.
+        // It outputs:
+        // - genesis.blob
+        // - waypoint.txt
+        // - validator-identity.yaml (for each validator)
+        // - validator-config.yaml (for each validator)
         const workspaceDir = pathResolve(composeDir, "..", "genesis-workspace");
         const genesisArtifactsDir = pathResolve(composeDir, "genesis-artifacts");
         const validatorsDir = pathResolve(composeDir, "validators");
 
         await generateGenesis({
             numValidators,
-            chainId: 4,
+            chainId: 4, // Testing chain ID
             workspaceDir,
         });
 
@@ -246,16 +263,24 @@ export class DockerTestnet {
             cpSync(validatorSrcDir, validatorDstDir, { recursive: true });
         }
 
-        // Copy custom framework to the location expected by genesis generation
+        // Copy custom framework to the location expected by genesis generation.
+        // This is the CRITICAL integration point for the "Custom Genesis" feature.
+        // If a customFrameworkPath is provided (e.g., 'atomica/move-framework-fixtures/head.mrb'),
+        // it is copied to 'docker/config/framework.mrb'.
+        // The 'generate-genesis.sh' script inside the Docker container detects this file
+        // at '/framework.mrb' (mounted volume) and uses it instead of the default framework 
+        // baked into the validator image.
+        // This allows us to test modified intervals (e.g., 0.1s) without rebuilding the huge Docker image.
         let frameworkSource: string;
         if (customFrameworkPath && existsSync(customFrameworkPath)) {
             frameworkSource = customFrameworkPath;
             console.log(`✅ Using custom test framework: ${customFrameworkPath}`);
         } else {
+            // Default fallback: Look for a pre-built head.mrb in standard fixtures location
             frameworkSource = pathResolve(__dirname, "../../move-framework-fixtures/head.mrb");
             if (!existsSync(frameworkSource)) {
                 console.log(`⚠️  No framework found, using Docker image default`);
-                frameworkSource = ""; // Skip copying
+                frameworkSource = ""; // Skip copying, let genesis script use image default
             }
         }
 
@@ -682,7 +707,7 @@ export class DockerTestnet {
         })();
 
         // Update lock to wait for this operation (catch errors so they don't block the queue)
-        this.faucetLock = currentOperation.catch(() => {});
+        this.faucetLock = currentOperation.catch(() => { });
 
         // Return the actual result (which may throw)
         return currentOperation;
