@@ -9,12 +9,12 @@
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **Move Contracts** | ✅ 95% | Needs interval validation fix |
+| **Move Contracts** | ✅ 98% | Interval validation complete |
 | **Validator DKG** | ✅ 90% | Session cleanup pending |
-| **IBE Crypto (Rust)** | ⚠️ 80% | Gt serialization fix needed |
+| **IBE Crypto (Rust)** | ✅ 95% | Gt serialization fixed |
 | **IBE Crypto (TS)** | ✅ 95% | Complete, tested locally |
 | **Testing Infrastructure** | ✅ 85% | IBE E2E tests need real crypto |
-| **Documentation** | ✅ 90% | Spec and code review complete |
+| **Documentation** | ✅ 95% | Spec and code review complete |
 
 ### Key Achievements
 - ✅ Custom genesis testing workflow (`Modify → Rebuild → Test`)
@@ -22,24 +22,24 @@
 - ✅ DKG transcript publication and aggregation
 - ✅ Share reveal and secret aggregation
 - ✅ Framework verification tests
+- ✅ **Bug #2 fixed:** Interval validation (`interval < current_interval`) in `publish_secret_share()`
+- ✅ **Bug #4 fixed:** Rust Gt serialization matches TypeScript `Fp12.toBytes()`
 
-### Known Critical Issues
-1. **Bug #2:** Missing `interval < current_interval` validation (security)
-2. **Bug #4:** Rust/TS Gt serialization mismatch (interop)
-3. **IBE E2E tests use placeholders** (quality)
+### Remaining Critical Issues
+1. **IBE E2E tests use placeholders** (quality) — needs real crypto implementation
 
 ---
 
 ## Roadmap
 
-### Phase 1: Critical Fixes (Week 1)
+### Phase 1: Critical Fixes (Week 1) — MOSTLY COMPLETE
 
-| Task | Priority | Est. Time | Owner |
-|------|----------|-----------|-------|
-| Fix interval validation in `publish_secret_share()` | 🔴 P0 | 0.5 day | — |
-| Fix Gt serialization in Rust IBE | 🔴 P0 | 2-3 days | — |
-| Implement real crypto in IBE E2E test | 🔴 P0 | 2 days | — |
-| Add cross-language compatibility tests | 🔴 P0 | 1 day | — |
+| Task | Priority | Status |
+|------|----------|--------|
+| Fix interval validation in `publish_secret_share()` | 🔴 P0 | ✅ Done |
+| Fix Gt serialization in Rust IBE | 🔴 P0 | ✅ Done |
+| Implement real crypto in IBE E2E test | 🔴 P0 | ⏳ Pending |
+| Add cross-language compatibility tests | 🔴 P0 | ⚠️ Partial (Rust test exists) |
 
 ### Phase 2: Security Hardening (Week 2)
 
@@ -71,9 +71,11 @@
 |-----------|----------|--------|
 | Move rotation logic | `timelock.move` tests | ✅ Done |
 | Move access control | `timelock.move` tests | ✅ Done |
-| Move share aggregation | `timelock.move` tests | ⚠️ Partial |
+| Move share aggregation | `timelock.move` tests | ✅ Done |
+| Move interval validation | `timelock.move` tests | ✅ Done |
 | Rust metadata construction | `epoch_manager.rs` tests | ✅ Done |
 | Rust DKG routing | `epoch_manager.rs` tests | ✅ Done |
+| Rust Gt serialization | `fp12_raw_serialization.rs` | ✅ Done |
 | TS identity derivation | `ibe-crypto.ts` | ✅ Done |
 | TS IBE encrypt/decrypt | `ibe-crypto.ts` | ✅ Done |
 
@@ -92,7 +94,7 @@
 | Test | Command | Status |
 |------|---------|--------|
 | IBE roundtrip | `bun run test:ibe` | ⚠️ Mocked |
-| Cross-language compat | — | ❌ Not implemented |
+| Cross-language compat | — | ⚠️ Rust-only test exists |
 | Invalid share rejection | — | ❌ Not implemented |
 | DKG failure recovery | — | ❌ Not implemented |
 
@@ -134,10 +136,10 @@ bun run test:framework-loading  # Custom framework verification
 
 ## Action Items (Immediate)
 
-1. [ ] **Fix Bug #2:** Add interval validation to `publish_secret_share()`
-2. [ ] **Fix Bug #4:** Implement canonical Gt serialization in Rust IBE
+1. [x] **Fix Bug #2:** Add interval validation to `publish_secret_share()` ✅
+2. [x] **Fix Bug #4:** Implement canonical Gt serialization in Rust IBE ✅
 3. [ ] **Implement real IBE E2E:** Replace placeholders with actual crypto
-4. [ ] **Add cross-language tests:** Verify Rust ↔ TS compatibility
+4. [ ] **Add cross-language tests:** Verify Rust ↔ TS compatibility in E2E test
 
 ---
 
@@ -146,3 +148,4 @@ bun run test:framework-loading  # Custom framework verification
 - **Specification:** [atomica-timelock-spec.md](./atomica-timelock-spec.md)
 - **Code Review:** [timelock-code-review.md](./timelock-code-review.md)
 - **Testing Guide:** [testing.md](./testing.md)
+

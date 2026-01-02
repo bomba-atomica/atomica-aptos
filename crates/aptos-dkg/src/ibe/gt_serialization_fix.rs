@@ -44,41 +44,20 @@ pub fn serialize_gt(gt: &Gt) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Serializes an Fp12 element to 576 bytes using BCS.
+/// Serializes an Fp12 element to 576 bytes in big-endian format.
 ///
-/// BCS (Binary Canonical Serialization) Layout:
-/// - 576 bytes total (12 Fp elements × 48 bytes each)
-/// - Deterministic and well-defined format
-/// - Compatible across Rust/Move ecosystems
+/// This matches TypeScript's @noble/curves Fp12.toBytes() format exactly,
+/// enabling cross-language compatibility.
 ///
 /// Structure:
 /// - bytes[0..288]: c0 (Fp6)
-///   - bytes[0..96]: c0.c0 (Fp2)
-///   - bytes[96..192]: c0.c1 (Fp2)
-///   - bytes[192..288]: c0.c2 (Fp2)
 /// - bytes[288..576]: c1 (Fp6)
-///   - bytes[288..384]: c1.c0 (Fp2)
-///   - bytes[384..480]: c1.c1 (Fp2)
-///   - bytes[480..576]: c1.c2 (Fp2)
 ///
-/// # Cross-Language Compatibility
-/// TypeScript implementations must use the SAME BCS serialization format.
-/// The @noble/curves Fp12.toBytes() produces a different format, so TypeScript
-/// must serialize to BCS instead. See cross-lang-ibe-verification.test.ts.
+/// Each Fp6 contains 3 Fp2 elements (96 bytes each).
+/// Each Fp2 contains 2 Fp elements (48 bytes each, big-endian).
 fn serialize_fp12(fp12: &Fp12) -> Result<Vec<u8>> {
-    // Use BCS serialization - standard for Aptos/Move ecosystem
-    let bytes = bcs::to_bytes(fp12)
-        .map_err(|e| anyhow!("Failed to serialize Fp12 with BCS: {}", e))?;
-
-    // Validate size (should be 576 bytes for Fp12)
-    if bytes.len() != 576 {
-        return Err(anyhow!(
-            "Unexpected Fp12 BCS serialization size: expected 576 bytes, got {}",
-            bytes.len()
-        ));
-    }
-
-    Ok(bytes)
+    // Use the raw big-endian serialization that matches TypeScript
+    super::fp12_raw_serialization::serialize_fp12_raw(fp12)
 }
 
 /// Hashes a Gt element to bytes for use as a symmetric key (fixed version).

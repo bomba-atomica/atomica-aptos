@@ -15,6 +15,7 @@
 //! - Uses pairing-based cryptography: e(G1, G2) -> Gt
 
 pub mod errors;
+mod fp12_raw_serialization;
 mod gt_serialization_fix;
 #[cfg(test)]
 mod gt_serialization_test;
