@@ -248,88 +248,88 @@ jobs:
            fi
 
   test-timelock-typescript:
-     name: Test Timelock TypeScript E2E
-     runs-on: ubuntu-latest
-     timeout-minutes: 120
+    name: Test Timelock TypeScript E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
 
-     steps:
-       - name: Checkout repository
-         uses: actions/checkout@v4
-         with:
-           fetch-depth: 0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-       - name: Setup Node.js
-         uses: actions/setup-node@v4
-         with:
-           node-version: "20"
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-       - name: Setup Bun
-         uses: oven-sh/setup-bun@v1
-         with:
-           bun-version: "1.3.5"
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: "1.3.5"
 
-       - name: Free up disk space
-         run: |
-           echo "Disk space before cleanup:"
-           df -h
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
 
-           # Remove unnecessary software to free up ~30GB
-           sudo rm -rf /usr/share/dotnet
-           sudo rm -rf /usr/local/lib/android
-           sudo rm -rf /opt/ghc
-           sudo rm -rf /opt/hostedtoolcache/CodeQL
-           sudo docker system prune -af
+          # Remove unnecessary software to free up ~30GB
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
 
-           echo "Disk space after cleanup:"
-           df -h
+          echo "Disk space after cleanup:"
+          df -h
 
-       - name: Install build dependencies
-         run: |
-           sudo apt-get update
-           sudo apt-get install -y \
-             build-essential \
-             cmake \
-             clang \
-             libssl-dev \
-             pkg-config \
-             libpq-dev \
-             lld \
-             libudev-dev \
-             libdw-dev \
-             docker.io
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev \
+            docker.io
 
-       - name: Start Docker daemon
-         run: |
-           sudo systemctl start docker
-           sudo systemctl enable docker
-           docker --version
+      - name: Start Docker daemon
+        run: |
+          sudo systemctl start docker
+          sudo systemctl enable docker
+          docker --version
 
-       - name: Build Timelock Tests
-         run: |
-           cd atomica/timelock-tests
-           bun install
-           bun run build
+      - name: Build Timelock Tests
+        run: |
+          cd atomica/timelock-tests
+          bun install
+          bun run build
 
-       - name: Run Timelock TypeScript Tests
-         run: |
-           cd atomica/timelock-tests
-           bun run test
-         continue-on-error: true  # Continue even if tests fail initially
+      - name: Run Timelock TypeScript Tests
+        run: |
+          cd atomica/timelock-tests
+          bun run test
+        continue-on-error: true  # Continue even if tests fail initially
 
-       - name: Check for test results
-         if: always()
-         run: |
-           if [ $? -eq 0 ]; then
-             echo "✅ Timelock TypeScript tests passed"
-           else
-             echo "❌ Timelock TypeScript tests failed or were skipped"
-             echo "This is expected during initial development"
-           fi
+      - name: Check for test results
+        if: always()
+        run: |
+          if [ $? -eq 0 ]; then
+            echo "✅ Timelock TypeScript tests passed"
+          else
+            echo "❌ Timelock TypeScript tests failed or were skipped"
+            echo "This is expected during initial development"
+          fi
 
-   test-validator-txn-timelock:
-     name: Test Validator Timelock Transaction Handler
-     runs-on: ubuntu-latest
-     timeout-minutes: 60
+  test-validator-txn-timelock:
+    name: Test Validator Timelock Transaction Handler
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
