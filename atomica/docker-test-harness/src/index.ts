@@ -1050,7 +1050,8 @@ export class DockerTestnet {
                 clearTimeout(timeout);
 
                 if (code === 0 || args[0] === "down") {
-                    resolve();
+                    // Give Docker a moment to register the new state
+                    setTimeout(() => resolve(), 2000);
                 } else {
                     reject(
                         new Error(

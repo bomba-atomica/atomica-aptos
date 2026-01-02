@@ -126,26 +126,28 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     }
 
     fn on_dkg_start_notification(&mut self, notification: EventNotification) -> Result<()> {
-        if let Some(tx) = self.dkg_start_event_tx.as_ref() {
-            let EventNotification {
-                subscribed_events, ..
-            } = notification;
-            for event in subscribed_events {
-                if let Ok(dkg_start_event) = DKGStartEvent::try_from(&event) {
+        let EventNotification {
+            subscribed_events, ..
+        } = notification;
+        for event in subscribed_events {
+            if let Ok(dkg_start_event) = DKGStartEvent::try_from(&event) {
+                if let Some(tx) = self.dkg_start_event_tx.as_ref() {
                     let _ = tx.push((), dkg_start_event);
                     return Ok(());
-                } else if let Ok(timelock_start) = StartKeyGenEvent::try_from(&event) {
-                    self.start_timelock_dkg(timelock_start);
-                    return Ok(());
-                } else if let Ok(timelock_key) = KeyPublishedEvent::try_from(&event) {
-                    self.process_timelock_key_published(timelock_key);
-                    return Ok(());
-                } else if let Ok(timelock_reveal) = RequestRevealEvent::try_from(&event) {
-                    self.process_timelock_reveal(timelock_reveal);
-                    return Ok(());
                 } else {
-                    debug!("[DKG] on_dkg_start_notification: failed in converting a contract event to a dkg start event!");
+                     debug!("[DKG] Received DKGStartEvent but DKG is disabled/not initialized");
                 }
+            } else if let Ok(timelock_start) = StartKeyGenEvent::try_from(&event) {
+                self.start_timelock_dkg(timelock_start);
+                return Ok(());
+            } else if let Ok(timelock_key) = KeyPublishedEvent::try_from(&event) {
+                self.process_timelock_key_published(timelock_key);
+                return Ok(());
+            } else if let Ok(timelock_reveal) = RequestRevealEvent::try_from(&event) {
+                self.process_timelock_reveal(timelock_reveal);
+                return Ok(());
+            } else {
+                debug!("[DKG] on_dkg_start_notification: failed in converting a contract event to a dkg start event!");
             }
         }
         Ok(())
@@ -724,7 +726,6 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 )
             })
     }
-    }
 }
 
 #[cfg(test)]
@@ -743,7 +744,7 @@ mod tests {
         // Setup EpochState (mocked with empty verifier for simplicity)
         let epoch_state = Arc::new(EpochState {
             epoch: 10,
-            verifier: aptos_types::validator_verifier::ValidatorVerifier::new(vec![]),
+            verifier: Arc::new(aptos_types::validator_verifier::ValidatorVerifier::new(vec![])),
         });
 
         let event = StartKeyGenEvent {
@@ -762,9 +763,13 @@ mod tests {
 
         // Verify randomness config derived from event
         let randomness_config = metadata.randomness_config_derived().expect("derived config");
-        // Threshold percentage = 3 * 100 / 4 = 75
-        assert_eq!(randomness_config.secrecy_threshold_in_percentage(), 75);
-        assert_eq!(randomness_config.reconstruct_threshold_in_percentage(), 75);
+        // Threshold percentage = 3 * 100 / 4 = 75. Decimal = 0.75
+        let secrecy = randomness_config.secrecy_threshold().expect("secrecy threshold");
+        let reconstruct = randomness_config.reconstruct_threshold().expect("reconstruct threshold");
+        
+        // U64F64 comparison
+        assert_eq!(secrecy, fixed::types::U64F64::from_num(0.75));
+        assert_eq!(reconstruct, fixed::types::U64F64::from_num(0.75));
         
         assert_eq!(metadata.dealer_epoch, 10);
     }

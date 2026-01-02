@@ -65,6 +65,7 @@ async fn test_dkg_state_transition() {
         Arc::new(epoch_state),
         Arc::new(agg_node_producer),
         vtxn_pool_handle.clone(),
+        false,
     );
 
     // Initial state should be `NotStarted`.
