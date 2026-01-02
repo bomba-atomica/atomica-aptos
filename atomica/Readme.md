@@ -2,137 +2,137 @@
 
 ## Overview
 
-This project implements a distributed key generation (DKG) based time-lock encryption system integrated into the Aptos blockchain for Atomica. It enables time-locked encryption where messages can only be decrypted after a specific blockchain interval has passed.
+Atomica Timelock is a **time-locked encryption system** for Aptos blockchain using Distributed Key Generation (DKG) and Identity-Based Encryption (IBE). Messages encrypted for a future interval can only be decrypted after that interval passes and validators reveal the decryption key.
 
-The system uses **BLS12-381** cryptography and Identity-Based Encryption (IBE) to derive keys based on time intervals.
+**Cryptography:** BLS12-381 + Boneh-Franklin IBE
 
-### Key Features
+### Use Cases
 
-*   **Timelock DKG**: Distributed key generation with time-based intervals.
-*   **IBE Encryption**: Messages encrypted with identity-based keys derived from timelock intervals.
-*   **Move Framework Integration**: Full Aptos blockchain integration with Move smart contracts.
-*   **Comprehensive Testing**: Automated Docker-based testnet infrastructure.
-*   **Framework Verification**: Ability to test custom framework loading vs Docker image defaults.
-*   **Custom Genesis**: Support for injecting modified Move frameworks (e.g., shorter intervals) into ephemeral testnets via `move-framework-fixtures/head.mrb`.
+- **Sealed Bid Auctions** — Bids hidden until auction closes
+- **Voting Systems** — Votes encrypted until poll ends
+- **Time-Delayed Transactions** — Execute only after delay
+- **Fair Randomness** — Commit-reveal with guaranteed reveals
 
-### Status (as of Jan 1, 2026)
+---
 
-*   **Core Logic**: ~85% Complete (MVP Assessment).
-*   **Infrastructure**: Fully functional automated Docker testnets with custom genesis support.
-*   **Cryptographic Ops**: IBE encrypt/decrypt cycle functional using Boneh-Franklin scheme.
-*   **Pending**: Critical bug fixes (invalid share counting, threshold storage) and full verification flow.
+## Status (January 2, 2026)
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Move Contracts | ✅ 95% | Spec complete, one security fix pending |
+| Validator DKG | ✅ 90% | Working, minor cleanup needed |
+| IBE Crypto | ⚠️ 85% | Rust/TS compatibility fix pending |
+| Testing | ⚠️ 85% | IBE E2E needs real crypto |
+| Documentation | ✅ 95% | Spec and code review complete |
+
+**Production Readiness:** Not ready — 2-3 weeks of work remaining
+
+---
+
+## Quick Start
+
+### Run Tests
+
+```bash
+cd atomica/timelock-tests
+bun install
+bun test              # All tests
+bun run test:basic    # Core DKG flow
+bun run test:rotation # Manual rotation
+bun run test:ibe      # IBE encryption (WIP)
+```
+
+### Encrypt a Message (TypeScript)
+
+```typescript
+import { IBECrypto } from "./ibe-crypto";
+import { AptosClient } from "aptos";
+
+const client = new AptosClient("https://fullnode.testnet.aptoslabs.com");
+
+// Get MPK for target interval
+const mpkBytes = await client.view({
+  function: "0x1::timelock::get_public_key",
+  arguments: ["42"],
+});
+
+// Encrypt
+const identity = IBECrypto.computeTimelockIdentity(42n, chainId);
+const ciphertext = IBECrypto.ibeEncrypt(mpkBytes, identity, message);
+
+// Later: Decrypt when secret is revealed
+const dkBytes = await client.view({
+  function: "0x1::timelock::get_secret",
+  arguments: ["42"],
+});
+const plaintext = IBECrypto.ibeDecrypt(dkBytes, identity, mpkBytes, ciphertext);
+```
 
 ---
 
 ## Architecture
 
-The system spans Move smart contracts, Rust validator node code, and cryptographic primitives.
-
-### Component Diagram
-
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         ON-CHAIN (Move)                          │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐    ┌──────────────────┐                    │
-│  │ timelock.move   │◄───│ timelock_config  │                    │
-│  │                 │    │     .move        │                    │
-│  │ - TimelockState │    │                  │                    │
-│  │ - Events        │    │ - Interval cfg   │                    │
-│  │ - Aggregation   │    │ - Mainnet guard  │                    │
-│  └────────┬────────┘    └──────────────────┘                    │
-│           │                                                      │
-│  ┌────────▼────────┐                                            │
-│  │   block.move    │ ◄── on_new_block() triggers rotation       │
-│  └─────────────────┘                                            │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼ Events
+│                      CLIENT (TypeScript)                         │
+│  IBECrypto.ibeEncrypt() / ibeDecrypt()                          │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ View Functions
+                         ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      VALIDATOR NODE (Rust)                       │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐    ┌──────────────────┐                    │
-│  │ epoch_manager   │───►│   dkg_manager    │                    │
-│  │     .rs         │    │      .rs         │                    │
-│  │                 │    │                  │                    │
-│  │ - Event handler │    │ - DKG execution  │                    │
-│  │ - Share storage │    │ - Aggregation    │                    │
-│  │ - Key extraction│    │ - Pool submit    │                    │
-│  └────────┬────────┘    └──────────────────┘                    │
-│           │                                                      │
-│  ┌────────▼────────┐    ┌──────────────────┐                    │
-│  │ persistent_     │    │ validator_txns/  │                    │
-│  │ safety_storage  │    │ timelock.rs      │                    │
-│  │                 │    │                  │                    │
-│  │ - Share persist │    │ - VM execution   │                    │
-│  └─────────────────┘    └──────────────────┘                    │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+│                      ON-CHAIN (Move)                             │
+│  timelock.move: TimelockState, Events, Aggregation              │
+│  timelock_config.move: Interval configuration                   │
+└────────────────────────┬────────────────────────────────────────┘
+                         │ Events
+                         ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      CRYPTOGRAPHY (Rust)                         │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                    aptos-dkg/src/ibe/                       ││
-│  │                                                              ││
-│  │  - ibe_encrypt(mpk, identity, message) -> Ciphertext        ││
-│  │  - ibe_decrypt(dk, ciphertext) -> Plaintext                 ││
-│  │  - compute_timelock_identity(interval, chain_id) -> bytes   ││
-│  │  - serialize_g1/g2, deserialize_g1/g2                       ││
-│  └─────────────────────────────────────────────────────────────┘│
+│                   VALIDATOR NODE (Rust)                          │
+│  epoch_manager.rs → dkg_manager.rs → validator_txns/timelock.rs │
+│  PersistentSafetyStorage (share persistence)                    │
+└────────────────────────┬────────────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   CRYPTOGRAPHY (Rust)                            │
+│  aptos-dkg/src/ibe/: ibe_encrypt, ibe_decrypt, serialize_g1/g2 │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
-### Data Flow
-
-1.  **Interval Rotation**: `on_new_block` triggers `StartKeyGenEvent`.
-2.  **DKG Execution**: Validators run DKG (`epoch_manager`).
-3.  **Submission**: Aggregated transcript submitted via `TimelockDKGResult`.
-4.  **Publication**: `publish_public_key` stores the Master Public Key (MPK) on-chain.
-5.  **Reveal Request**: Next rotation triggers `RequestRevealEvent` for previous interval.
-6.  **Share Reveal**: Validators reveal shares; `publish_secret_share` aggregates them.
-7.  **Final Secret**: `SecretRevealedEvent` emitted when threshold is met.
-
-Client usage involves fetching the MPK for interval `N`, encrypting for that identity, and waiting for interval `N+1` to fetch the revealed secret for decryption.
 
 ---
 
-## Data Structures
+## Documentation
 
-### Move: TimelockState
-
-```move
-struct TimelockState has key {
-    current_interval: u64,
-    last_rotation_time: u64,
-    public_keys: Table<u64, vector<u8>>,        // interval -> MPK (transcript)
-    validator_shares: Table<u64, vector<ValidatorShare>>,  // interval -> shares
-    revealed_secrets: Table<u64, vector<u8>>,   // interval -> aggregated DK
-    // Event handles...
-}
-```
-
-### Rust: TimelockShare
-
-```rust
-pub struct TimelockShare {
-    pub interval: u64,
-    pub author: AccountAddress,
-    pub share: Vec<u8>,  // Serialized G1 point (48 bytes compressed)
-}
-```
+| Document | Purpose |
+|----------|---------|
+| [atomica-timelock-spec.md](./atomica-timelock-spec.md) | **Reference specification** — cryptography, architecture, APIs |
+| [timelock-code-review.md](./timelock-code-review.md) | **Implementation review** — bugs found, verification status |
+| [development-and-verification.md](./development-and-verification.md) | **Roadmap** — tasks, timelines, test strategy |
+| [testing.md](./testing.md) | **Testing guide** — how to run tests, troubleshooting |
 
 ---
 
 ## Project Structure
 
-*   **`aptos-move/framework/aptos-framework/sources/timelock.move`**: Main timelock logic.
-*   **`atomica/`**: Project documentation and specific test suites.
-    *   `docker-test-harness/`: SDK for managing Docker testnets.
-    *   `timelock-tests/`: TypeScript-based integration tests.
-    *   `move-framework-fixtures/`: Test artifacts (compiled `.mrb` files).
+```
+atomica/
+├── docker-test-harness/     # Docker testnet SDK
+├── timelock-tests/          # TypeScript integration tests
+│   ├── src/                 # Test helpers, IBE crypto
+│   └── test/                # Test scenarios
+├── move-framework-fixtures/ # Compiled framework artifacts
+└── docs/                    # Additional documentation
+```
+
+**Core Implementation:**
+- `aptos-move/framework/aptos-framework/sources/timelock.move`
+- `aptos-move/framework/aptos-framework/sources/configs/timelock_config.move`
+- `dkg/src/epoch_manager.rs`
+- `crates/aptos-dkg/src/ibe/mod.rs`
 
 ---
 
-For further details on testing, see [`testing.md`](./testing.md).
-For development plans and roadmap, see [`development.plan`](./development.plan).
+## Contributing
+
+1. Read the [specification](./atomica-timelock-spec.md)
+2. Check the [development plan](./development-and-verification.md) for open tasks
+3. Follow the framework development workflow in [testing.md](./testing.md)
