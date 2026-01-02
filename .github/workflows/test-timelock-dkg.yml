@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - dev-atomica
+      - timelock-tests
     paths:
       - "aptos-move/framework/aptos-framework/sources/timelock.move"
       - "aptos-move/framework/aptos-framework/sources/timelock_config.move"
