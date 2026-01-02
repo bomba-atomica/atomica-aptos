@@ -12,6 +12,8 @@
     "test:crypto": "bun run src/test-crypto-only.ts",
     "test:rotation": "bun run src/test-manual-rotation.ts",
     "test:framework-loading": "bun run src/test-framework-loading.ts",
+    "test:transitions": "bun run src/test-transitions.ts",
+    "test:dkg-loop": "bun run src/test-dkg-loop.ts",
     "test-runner": "bun run src/test-runner.ts",
     "lint": "eslint src/ test/",
     "lint:fix": "eslint src/ test/ --fix"

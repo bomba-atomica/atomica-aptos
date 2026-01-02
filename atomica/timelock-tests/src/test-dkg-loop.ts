@@ -57,15 +57,20 @@ async function testDkgLoop() {
             const transcript = await waiters.waitForPublicKeyPublication(targetInterval, 60);
             console.log(`✅ Public key published for interval ${targetInterval}: ${transcript.length} bytes`);
 
-            // Note: In Phase 2, we might not have 'reveals' yet because reveals only happen
-            // when the interval ends (or is requested). 
-            // So for now, we only verify Key Generation.
+            // Step 4: Verify Secret Reveal
+            // To verify the secret is revealed, we must wait for the interval to END
+            // (i.e., rotate to targetInterval + 1).
+            const nextInterval = targetInterval + 1;
+            console.log(`Step 4: Waiting for rotation to ${nextInterval} to trigger reveal of ${targetInterval}`);
+            await waiters.waitForIntervalRotation(nextInterval, 60);
 
-            // However, if we wait for the interval to END, we can verify that the secret is reconstructed
-            // (assuming auto-reveal logic is implemented or we trigger it).
+            console.log(`Step 5: Waiting for secret aggregation for interval ${targetInterval}`);
+            // With 4 validators, threshold is 3. 
+            const secret = await waiters.waitForSecretAggregation(targetInterval, 3, 60);
+            console.log(`✅ Secret aggregated for interval ${targetInterval}: ${secret.length} bytes`);
 
             // Success!
-            console.log("✅ DKG loop test passed!");
+            console.log("✅ Full DKG-to-Reveal loop test passed!");
             await performCleanup("DKG loop test completed");
 
         } finally {

@@ -338,7 +338,7 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
         );
 
         let my_transcript = DKGTranscript::new(
-            self.epoch_state.epoch,
+            dkg_session_metadata.dealer_epoch,
             self.my_addr,
             bcs::to_bytes(&trx).map_err(|e| anyhow!("transcript serialization error: {e}"))?,
         );
@@ -396,7 +396,7 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
                 let txn = if self.is_timelock {
                     ValidatorTransaction::TimelockDKGResult(DKGTranscript {
                         metadata: DKGTranscriptMetadata {
-                            epoch: self.epoch_state.epoch,
+                            epoch: my_transcript.metadata.epoch,
                             author: self.my_addr,
                         },
                         transcript_bytes: bcs::to_bytes(&agg_trx)
@@ -405,15 +405,20 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
                 } else {
                     ValidatorTransaction::DKGResult(DKGTranscript {
                         metadata: DKGTranscriptMetadata {
-                            epoch: self.epoch_state.epoch,
+                            epoch: my_transcript.metadata.epoch,
                             author: self.my_addr,
                         },
                         transcript_bytes: bcs::to_bytes(&agg_trx)
                             .map_err(|e| anyhow!("transcript serialization error: {e}"))?,
                     })
                 };
+                let topic = if self.is_timelock {
+                    Topic::TIMELOCK
+                } else {
+                    Topic::DKG
+                };
                 let vtxn_guard = self.vtxn_pool.put(
-                    Topic::DKG,
+                    topic,
                     Arc::new(txn),
                     Some(self.pull_notification_tx.clone()),
                 );
@@ -449,7 +454,7 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
             matches!(&self.state, InnerState::NotStarted),
             "[DKG] dkg already started"
         );
-        if self.epoch_state.epoch != session_metadata.dealer_epoch {
+        if !self.is_timelock && self.epoch_state.epoch != session_metadata.dealer_epoch {
             warn!(
                 "[DKG] event (from epoch {}) not for current epoch ({}), ignoring",
                 session_metadata.dealer_epoch, self.epoch_state.epoch
@@ -467,10 +472,14 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
             mut response_sender,
             ..
         } = req;
-        ensure!(
-            msg.epoch() == self.epoch_state.epoch,
-            "[DKG] msg not for current epoch"
-        );
+        // For Timelock, the message epoch is the interval ID, not the blockchain epoch.
+        // If is_timelock is true, we should probably verify against the transcript epoch if it exists.
+        if !self.is_timelock {
+            ensure!(
+                msg.epoch() == self.epoch_state.epoch,
+                "[DKG] msg not for current epoch"
+            );
+        }
         let response = match (&self.state, &msg) {
             (InnerState::Finished { my_transcript, .. }, DKGMessage::TranscriptRequest(_))
             | (InnerState::InProgress { my_transcript, .. }, DKGMessage::TranscriptRequest(_)) => {

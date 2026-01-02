@@ -119,18 +119,19 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         peer_id: AccountAddress,
         dkg_request: IncomingRpcRequest,
     ) {
-        if Some(dkg_request.msg.epoch()) == current_epoch {
+        let msg_session_id = dkg_request.msg.epoch();
+
+        if Some(msg_session_id) == current_epoch {
             // Forward to DKGManager if it is alive.
             if let Some(tx) = dkg_tx {
                 let _ = tx.push(peer_id, (peer_id, dkg_request));
-            } else if let Some(tx) = timelock_txs.values().next() {
-                // If DKG V2 is disabled (randomness not enabled), we might still be running
-                // a Timelock DKG. In this case, route to the active Timelock session.
-                // Note: If multiple timelock sessions are running, this naive routing (picking one)
-                // might be insufficient if they share the same epoch in the message.
-                // However, for current usage (sequential sessions), this is sufficient.
-                let _ = tx.push(peer_id, (peer_id, dkg_request));
+                return;
             }
+        }
+
+        // Check if it's for an active Timelock DKG session (indexed by its interval/session_id)
+        if let Some(tx) = timelock_txs.get(&msg_session_id) {
+            let _ = tx.push(peer_id, (peer_id, dkg_request));
         }
     }
 
@@ -875,15 +876,16 @@ mod tests {
             }
         };
 
-        // 1. Test: Randomness V2 (Main DKG) is ACTIVE.
-        // Expect: msg routed to dkg_rpc_msg_tx.
+        // Scenario 1: Randomness V2 (Main DKG) is ACTIVE for current epoch.
+        // Expect: msg with current_epoch routed to dkg_rpc_msg_tx.
         {
             let (dkg_tx, mut dkg_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
             let (tl_tx, mut tl_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
             let mut timelock_txs = HashMap::new();
-            timelock_txs.insert(100, tl_tx);
+            let tl_session_id = 100;
+            timelock_txs.insert(tl_session_id, tl_tx);
 
-            // Both active
+            // Message for current epoch
             EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
                 Some(dkg_epoch),
                 &Some(dkg_tx),
@@ -892,47 +894,49 @@ mod tests {
                 make_req(dkg_epoch),
             );
 
-            // Should be in DKG rx
             assert!(dkg_rx.select_next_some().now_or_never().is_some());
-            // Timelock rx should be empty (Main DKG takes priority logic, or ambiguity handling)
-            // Current logic: if dkg_rpc_msg_tx is Some, it takes it.
             assert!(tl_rx.select_next_some().now_or_never().is_none());
         }
 
-        // 2. Test: Randomness V2 is DISABLED (None), Timelock ACTIVE.
-        // Expect: msg routed to timelock_txs fallback.
+        // Scenario 2: Timelock DKG is ACTIVE for a future interval/session.
+        // Expect: msg with tl_session_id routed to correct timelock_txs entry,
+        // even if Randomness V2 is also active for the current epoch.
         {
+            let (dkg_tx, mut dkg_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
             let (tl_tx, mut tl_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
             let mut timelock_txs = HashMap::new();
-            timelock_txs.insert(100, tl_tx);
+            let tl_session_id = 100;
+            timelock_txs.insert(tl_session_id, tl_tx);
+
+            // Message for Timelock interval
+            EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
+                Some(dkg_epoch),
+                &Some(dkg_tx),
+                &timelock_txs,
+                peer,
+                make_req(tl_session_id),
+            );
+
+            assert!(dkg_rx.select_next_some().now_or_never().is_none());
+            assert!(tl_rx.select_next_some().now_or_never().is_some());
+        }
+
+        // Scenario 3: Unknown Epoch/Session ID.
+        // Expect: msg dropped.
+        {
+            let (dkg_tx, mut dkg_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let mut timelock_txs = HashMap::new();
+            timelock_txs.insert(100, aptos_channel::new(QueueStyle::FIFO, 10, None).0);
 
             EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
                 Some(dkg_epoch),
-                &None, // Disabled
+                &Some(dkg_tx),
                 &timelock_txs,
                 peer,
-                make_req(dkg_epoch),
+                make_req(999), // Unknown
             );
 
-            // Should be in Timelock rx
-            assert!(tl_rx.select_next_some().now_or_never().is_some());
-        }
-        
-         // 3. Test: Wrong Epoch
-        {
-            let (tl_tx, mut tl_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
-            let mut timelock_txs = HashMap::new();
-            timelock_txs.insert(100, tl_tx);
-
-            EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
-                Some(dkg_epoch + 1), // Mismatch
-                &None,
-                &timelock_txs,
-                peer,
-                make_req(dkg_epoch),
-            );
-
-             assert!(tl_rx.select_next_some().now_or_never().is_none());
+            assert!(dkg_rx.select_next_some().now_or_never().is_none());
         }
     }
 
