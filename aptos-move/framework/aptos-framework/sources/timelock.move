@@ -242,7 +242,14 @@ module aptos_framework::timelock {
         assert!(stake::is_current_epoch_validator(validator_addr), ENOT_VALIDATOR);
 
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
-        
+
+        // CRITICAL SECURITY: Only allow revealing PAST intervals
+        // Validators must not be able to reveal the current interval's secret.
+        // The timelock guarantee is that secrets remain hidden until the interval rotates.
+        // Without this check, malicious validators could immediately reveal secrets for the
+        // current interval, completely breaking the timelock security model.
+        assert!(interval < state.current_interval, EINVALID_INTERVAL);
+
         // If already revealed, ignore (or could abort)
         if (table::contains(&state.revealed_secrets, interval)) {
             return
@@ -416,7 +423,7 @@ module aptos_framework::timelock {
 
     #[test(framework = @aptos_framework)]
     public fun test_share_aggregation_logic(framework: &signer) acquires TimelockState {
-        // Defines specific logic test for share math if possible, 
+        // Defines specific logic test for share math if possible,
         // but real G1 operations require valid bytes.
         // We can test that duplicate shares are rejected.
         timestamp::set_time_has_started_for_testing(framework);
@@ -430,5 +437,167 @@ module aptos_framework::timelock {
         table::add(&mut state.validator_shares, 1, shares);
 
         // Check deduplication relies on runtime logic, easier to verify in e2e
+    }
+
+    #[test(framework = @aptos_framework, validator = @0x123)]
+    #[expected_failure(abort_code = EINVALID_INTERVAL, location = Self)]
+    public fun test_cannot_reveal_current_interval(framework: &signer, validator: &signer) acquires TimelockState {
+        // Test Bug #2 Fix: Validators cannot reveal secrets for the CURRENT interval
+        // This is a critical security test - without this check, malicious validators
+        // could decrypt messages in the current interval, breaking the timelock guarantee.
+        timestamp::set_time_has_started_for_testing(framework);
+        account::create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+
+        // Setup validator with stake pool
+        let validator_addr = std::signer::address_of(validator);
+        account::create_account_for_test(validator_addr);
+        stake::initialize_stake_owner(validator, 0, validator_addr, validator_addr);
+        stake::mint_and_add_stake(validator, 100);
+
+        // Register validator using proper stake API (false = don't end epoch, we control time)
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, validator, validator_addr, false);
+
+        // End epoch to activate validator
+        stake::end_epoch();
+
+        initialize(framework);
+        let vm = create_signer_for_test(@0x0);
+
+        // Initialize time AFTER end_epoch (which sets time)
+        let start_time = timestamp::now_microseconds() + 1;
+        timestamp::update_global_time_for_test(start_time);
+        on_new_block(&vm);
+
+        // Advance time to trigger rotation to interval 1
+        timestamp::update_global_time_for_test(start_time + 3600 * 1000000 + 1);
+        on_new_block(&vm);
+
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        let current = state.current_interval;
+        assert!(current == 1, 101);
+
+        // Create valid G1 point (generator * 1, compressed format)
+        // This is the compressed encoding of the G1 generator point
+        let valid_g1_share = vector[
+            0x97, 0xf1, 0xd3, 0xa7, 0x33, 0x70, 0x96, 0x6a,
+            0x07, 0x71, 0xbf, 0x6e, 0x6e, 0x8f, 0x8e, 0xdb,
+            0xcd, 0xe7, 0x08, 0xd5, 0x89, 0x6f, 0xde, 0x0e,
+            0x0e, 0xa6, 0x64, 0x89, 0xa8, 0xed, 0xd1, 0x70,
+            0xe2, 0xef, 0x46, 0x48, 0xf8, 0x69, 0x8b, 0x24,
+            0xda, 0x5f, 0x3b, 0x01, 0x45, 0x63, 0x0f, 0x38
+        ];
+
+        // ATTACK: Try to reveal secret for CURRENT interval (interval 1)
+        // This should ABORT with EINVALID_INTERVAL
+        publish_secret_share(validator, current, valid_g1_share);
+        // If we reach here, the security check failed!
+    }
+
+    #[test(framework = @aptos_framework, validator = @0x123)]
+    #[expected_failure(abort_code = EINVALID_INTERVAL, location = Self)]
+    public fun test_cannot_reveal_future_interval(framework: &signer, validator: &signer) acquires TimelockState {
+        // Test Bug #2 Fix: Validators cannot reveal secrets for FUTURE intervals
+        timestamp::set_time_has_started_for_testing(framework);
+        account::create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+
+        // Setup validator with stake pool
+        let validator_addr = std::signer::address_of(validator);
+        account::create_account_for_test(validator_addr);
+        stake::initialize_stake_owner(validator, 0, validator_addr, validator_addr);
+        stake::mint_and_add_stake(validator, 100);
+
+        // Register validator using proper stake API (false = don't end epoch, we control time)
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, validator, validator_addr, false);
+
+        // End epoch to activate validator
+        stake::end_epoch();
+
+        initialize(framework);
+        let vm = create_signer_for_test(@0x0);
+
+        // Initialize time AFTER end_epoch (which sets time)
+        let start_time = timestamp::now_microseconds() + 1;
+        timestamp::update_global_time_for_test(start_time);
+        on_new_block(&vm);
+
+        // Advance time to trigger rotation to interval 1
+        timestamp::update_global_time_for_test(start_time + 3600 * 1000000 + 1);
+        on_new_block(&vm);
+
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        let current = state.current_interval;
+        assert!(current == 1, 102);
+
+        // Valid G1 point
+        let valid_g1_share = vector[
+            0x97, 0xf1, 0xd3, 0xa7, 0x33, 0x70, 0x96, 0x6a,
+            0x07, 0x71, 0xbf, 0x6e, 0x6e, 0x8f, 0x8e, 0xdb,
+            0xcd, 0xe7, 0x08, 0xd5, 0x89, 0x6f, 0xde, 0x0e,
+            0x0e, 0xa6, 0x64, 0x89, 0xa8, 0xed, 0xd1, 0x70,
+            0xe2, 0xef, 0x46, 0x48, 0xf8, 0x69, 0x8b, 0x24,
+            0xda, 0x5f, 0x3b, 0x01, 0x45, 0x63, 0x0f, 0x38
+        ];
+
+        // ATTACK: Try to reveal secret for FUTURE interval (interval 999)
+        // This should ABORT with EINVALID_INTERVAL
+        publish_secret_share(validator, 999, valid_g1_share);
+        // If we reach here, the security check failed!
+    }
+
+    #[test(framework = @aptos_framework, validator = @0x123)]
+    #[expected_failure(abort_code = EINVALID_SHARE, location = Self)]
+    public fun test_can_reveal_past_interval(framework: &signer, validator: &signer) acquires TimelockState {
+        // Test Bug #2 Fix: Validators CAN reveal secrets for PAST intervals (legitimate case)
+        // This test proves the interval validation PASSES (doesn't abort with EINVALID_INTERVAL)
+        // It will abort later with EINVALID_SHARE due to invalid crypto bytes, which is expected
+        timestamp::set_time_has_started_for_testing(framework);
+        account::create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+
+        // Setup validator with stake pool
+        let validator_addr = std::signer::address_of(validator);
+        account::create_account_for_test(validator_addr);
+        stake::initialize_stake_owner(validator, 0, validator_addr, validator_addr);
+        stake::mint_and_add_stake(validator, 100);
+
+        // Register validator using proper stake API (false = don't end epoch, we control time)
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, validator, validator_addr, false);
+
+        // End epoch to activate validator
+        stake::end_epoch();
+
+        initialize(framework);
+        let vm = create_signer_for_test(@0x0);
+
+        // Initialize time AFTER end_epoch (which sets time)
+        let start_time = timestamp::now_microseconds() + 1;
+        timestamp::update_global_time_for_test(start_time);
+        on_new_block(&vm);
+
+        // Manually setup state to have interval 0 config and rotate to interval 2
+        let state = borrow_global_mut<TimelockState>(@aptos_framework);
+        let config = IntervalConfig {
+            threshold: 999, // High threshold to prevent aggregation (we're just testing interval validation)
+            total_validators: 1,
+            created_at: 1,
+        };
+        table::add(&mut state.interval_configs, 0, config);
+        state.current_interval = 2; // We're now at interval 2
+
+        // Dummy G1 bytes (won't be aggregated due to high threshold)
+        // We're only testing that the interval validation PASSES, not the crypto
+        let dummy_share = vector[1, 2, 3];
+
+        // LEGITIMATE: Reveal secret for PAST interval (interval 0, current is 2)
+        // The interval validation check (interval < current_interval) should PASS
+        // Then it will abort with EINVALID_SHARE (expected) due to invalid G1 bytes
+        // This proves our security fix doesn't block legitimate reveals
+        publish_secret_share(validator, 0, dummy_share);
+        // Will abort with EINVALID_SHARE above, proving interval validation passed
     }
 }
