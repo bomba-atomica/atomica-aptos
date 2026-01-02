@@ -111,17 +111,40 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         }
     }
 
+    fn route_rpc_request_internal(
+        current_epoch: Option<u64>,
+        dkg_tx: &Option<aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
+        timelock_txs: &HashMap<u64, aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
+        peer_id: AccountAddress,
+        dkg_request: IncomingRpcRequest,
+    ) {
+        if Some(dkg_request.msg.epoch()) == current_epoch {
+            // Forward to DKGManager if it is alive.
+            if let Some(tx) = dkg_tx {
+                let _ = tx.push(peer_id, (peer_id, dkg_request));
+            } else if let Some(tx) = timelock_txs.values().next() {
+                // If DKG V2 is disabled (randomness not enabled), we might still be running
+                // a Timelock DKG. In this case, route to the active Timelock session.
+                // Note: If multiple timelock sessions are running, this naive routing (picking one)
+                // might be insufficient if they share the same epoch in the message.
+                // However, for current usage (sequential sessions), this is sufficient.
+                let _ = tx.push(peer_id, (peer_id, dkg_request));
+            }
+        }
+    }
+
     fn process_rpc_request(
         &mut self,
         peer_id: AccountAddress,
         dkg_request: IncomingRpcRequest,
     ) -> Result<()> {
-        if Some(dkg_request.msg.epoch()) == self.epoch_state.as_ref().map(|s| s.epoch) {
-            // Forward to DKGManager if it is alive.
-            if let Some(tx) = &self.dkg_rpc_msg_tx {
-                let _ = tx.push(peer_id, (peer_id, dkg_request));
-            }
-        }
+        Self::route_rpc_request_internal(
+            self.epoch_state.as_ref().map(|s| s.epoch),
+            &self.dkg_rpc_msg_tx,
+            &self.timelock_rpc_msg_txs,
+            peer_id,
+            dkg_request,
+        );
         Ok(())
     }
 
@@ -729,16 +752,27 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 }
 
 #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use aptos_types::{
-        validator_verifier::ValidatorConsensusInfo,
-        on_chain_config::OnChainRandomnessConfig,
-        dkg::TimelockConfig,
-    };
+    use aptos_types::dkg::TimelockConfig;
     use aptos_event_notifications::DbBackedOnChainConfig;
+    use futures::{FutureExt, StreamExt};
 
+    /// Verifies that `build_timelock_session_metadata` correctly converts a `StartKeyGenEvent` 
+    /// into a `DKGSessionMetadata` struct, specifically checking the derivation of `RandomnessConfig`.
+    ///
+    /// WHY:
+    /// This test ensures that the `TimelockConfig` (threshold and total validators) provided in the event
+    /// is accurately translated into the `secrecy_threshold` and `reconstruct_threshold` required by the BLS DKG.
+    /// Incorrect thresholds could lead to liveness failures (cannot carry out DKG) or security issues (threshold too low).
+    ///
+    /// WHAT:
+    /// - Mocks an `EpochState` and `StartKeyGenEvent` with known values (3/4 validators).
+    /// - Calls `build_timelock_session_metadata`.
+    /// - Asserts that the derived `RandomnessConfig` is enabled.
+    /// - Asserts that the derived secrecy and reconstruction thresholds match the expected 75% (0.75).
     #[test]
     fn test_build_timelock_session_metadata() {
         // Setup EpochState (mocked with empty verifier for simplicity)
@@ -747,6 +781,7 @@ mod tests {
             verifier: Arc::new(aptos_types::validator_verifier::ValidatorVerifier::new(vec![])),
         });
 
+        // 3 out of 4 is 75%
         let event = StartKeyGenEvent {
             interval: 100,
             config: TimelockConfig {
@@ -761,16 +796,116 @@ mod tests {
             &epoch_state,
         );
 
+        assert_eq!(metadata.dealer_epoch, 10);
+
         // Verify randomness config derived from event
         let randomness_config = metadata.randomness_config_derived().expect("derived config");
+        
+        // Should be enabled
+        assert!(randomness_config.randomness_enabled());
+
         // Threshold percentage = 3 * 100 / 4 = 75. Decimal = 0.75
-        let secrecy = randomness_config.secrecy_threshold().expect("secrecy threshold");
-        let reconstruct = randomness_config.reconstruct_threshold().expect("reconstruct threshold");
+        let secrecy = randomness_config.secrecy_threshold().expect("secrecy").to_num::<f64>();
+        let reconstruct = randomness_config.reconstruct_threshold().expect("reconstruct").to_num::<f64>();
         
-        // U64F64 comparison
-        assert_eq!(secrecy, fixed::types::U64F64::from_num(0.75));
-        assert_eq!(reconstruct, fixed::types::U64F64::from_num(0.75));
+        assert!((secrecy - 0.75).abs() < 1e-6, "Secrecy threshold {} != 0.75", secrecy);
+        assert!((reconstruct - 0.75).abs() < 1e-6, "Reconstruct threshold {} != 0.75", reconstruct);
+    }
+
+    /// Verifies the routing logic for incoming DKG RPC messages, specifically covering the
+    /// co-existence (or lack thereof) of Randomness V2 DKG and Timelock DKG.
+    ///
+    /// WHY:
+    /// `DKGMessage` currently only contains the `epoch` and does not distinguish between
+    /// Randomness V2 and Timelock. If both are active, there is a conflict. 
+    /// This test ensures that:
+    /// 1. We have a defined priority when both could be active (currently favoring Randomness V2).
+    /// 2. Unambiguous routing works correctly when only Timelock is active (fallback mechanism).
+    /// 3. Messages with incorrect epochs are ignored to prevent processing stale/future errors.
+    ///
+    /// WHAT:
+    /// - Tests Scenario 1: Randomness V2 is ACTIVE. Verifies messages go to `dkg_rpc_msg_tx` (V2) and NOT Timelock.
+    /// - Tests Scenario 2: Randomness V2 is DISABLED. Verifies messages fallback to `timelock_rpc_msg_txs`.
+    /// - Tests Scenario 3: Wrong Epoch. Verifies messages are dropped.
+    #[test]
+    fn test_dkg_routing() {
+        use crate::{
+            network::{IncomingRpcRequest, DummyRpcResponseSender},
+            types::{DKGMessage, DKGTranscriptRequest},
+        };
+        use aptos_infallible::RwLock;
+
+        let dkg_epoch = 10;
+        let peer = AccountAddress::random();
+
+        // Helper to create a request
+        let make_req = |epoch: u64| {
+             IncomingRpcRequest {
+                msg: DKGMessage::TranscriptRequest(DKGTranscriptRequest::new(epoch)),
+                sender: peer,
+                response_sender: Box::new(DummyRpcResponseSender::new(Arc::new(RwLock::new(vec![])))),
+            }
+        };
+
+        // 1. Test: Randomness V2 (Main DKG) is ACTIVE.
+        // Expect: msg routed to dkg_rpc_msg_tx.
+        {
+            let (dkg_tx, mut dkg_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let (tl_tx, mut tl_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let mut timelock_txs = HashMap::new();
+            timelock_txs.insert(100, tl_tx);
+
+            // Both active
+            EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
+                Some(dkg_epoch),
+                &Some(dkg_tx),
+                &timelock_txs,
+                peer,
+                make_req(dkg_epoch),
+            );
+
+            // Should be in DKG rx
+            assert!(dkg_rx.select_next_some().now_or_never().is_some());
+            // Timelock rx should be empty (Main DKG takes priority logic, or ambiguity handling)
+            // Current logic: if dkg_rpc_msg_tx is Some, it takes it.
+            assert!(tl_rx.select_next_some().now_or_never().is_none());
+        }
+
+        // 2. Test: Randomness V2 is DISABLED (None), Timelock ACTIVE.
+        // Expect: msg routed to timelock_txs fallback.
+        {
+            let (tl_tx, mut tl_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let mut timelock_txs = HashMap::new();
+            timelock_txs.insert(100, tl_tx);
+
+            EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
+                Some(dkg_epoch),
+                &None, // Disabled
+                &timelock_txs,
+                peer,
+                make_req(dkg_epoch),
+            );
+
+            // Should be in Timelock rx
+            assert!(tl_rx.select_next_some().now_or_never().is_some());
+        }
         
-        assert_eq!(metadata.dealer_epoch, 10);
+         // 3. Test: Wrong Epoch
+        {
+            let (tl_tx, mut tl_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let mut timelock_txs = HashMap::new();
+            timelock_txs.insert(100, tl_tx);
+
+            EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
+                Some(dkg_epoch + 1), // Mismatch
+                &None,
+                &timelock_txs,
+                peer,
+                make_req(dkg_epoch),
+            );
+
+             assert!(tl_rx.select_next_some().now_or_never().is_none());
+        }
     }
 }
+
