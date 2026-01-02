@@ -4,7 +4,9 @@
 
 #![forbid(unsafe_code)]
 
-use aptos_node::{utils::ERROR_MSG_BAD_FEATURE_FLAGS, AptosNodeArgs};
+#[cfg(not(feature = "testing"))]
+use aptos_node::utils::ERROR_MSG_BAD_FEATURE_FLAGS;
+use aptos_node::AptosNodeArgs;
 use clap::Parser;
 
 #[cfg(unix)]
