@@ -19,6 +19,8 @@ mod fp12_raw_serialization;
 mod gt_serialization_fix;
 #[cfg(test)]
 mod gt_serialization_test;
+#[cfg(test)]
+mod golden_vectors;
 
 use crate::weighted_vuf::bls::BLS_WVUF_DST;
 use anyhow::anyhow;

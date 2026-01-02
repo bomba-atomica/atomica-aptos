@@ -2,6 +2,54 @@ import { bls12_381 } from "@noble/curves/bls12-381.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 
 /**
+ * Minimal BCS Reader helper
+ */
+class BCSReader {
+  private view: DataView;
+  private offset: number = 0;
+
+  constructor(data: Uint8Array) {
+    this.view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  }
+
+  readU8(): number {
+    const val = this.view.getUint8(this.offset);
+    this.offset += 1;
+    return val;
+  }
+
+  readU64(): bigint {
+    const val = this.view.getBigUint64(this.offset, true); // Little endian
+    this.offset += 8;
+    return val;
+  }
+
+  readBytes(count: number): Uint8Array {
+    const val = new Uint8Array(this.view.buffer, this.view.byteOffset + this.offset, count);
+    this.offset += count;
+    return new Uint8Array(val); // copy to avoid buffer issues
+  }
+
+  // ULEB128 for vector lengths
+  readUleb128(): number {
+    let result = 0;
+    let shift = 0;
+    while (true) {
+      const byte = this.readU8();
+      result |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    return result;
+  }
+
+  readBytesVector(): Uint8Array {
+    const len = this.readUleb128();
+    return this.readBytes(len);
+  }
+}
+
+/**
  * IBE (Identity-Based Encryption) cryptographic operations using BLS12-381
  */
 
@@ -44,9 +92,27 @@ export class IBECrypto {
    * 5. V = message XOR H(g_id^r)
    * 6. Ciphertext = (U, V)
    */
+  // DST matches Rust BLS_WVUF_DST
+  static readonly DST = "APTOS_BLS_WVUF_DST";
+
+  /**
+   * Encrypts a message using IBE.
+   * 
+   * @param mpkG2 Master Public Key (G2 point)
+   * @param identity Identity bytes
+   * @param message Message to encrypt
+   * @returns Ciphertext
+   */
   static ibeEncrypt(mpkG2: Uint8Array, identity: Uint8Array, message: Uint8Array): Ciphertext {
     // 1. Map identity to G1
-    const pointId = bls12_381.G1.hashToCurve(identity);
+    // Rust uses hash_to_curve(identity, DST, b"H(m)") which implies augmentation.
+    // We must prepend "H(m)" to the identity.
+    const aug = new TextEncoder().encode("H(m)");
+    const msgToHash = new Uint8Array(aug.length + identity.length);
+    msgToHash.set(aug);
+    msgToHash.set(identity, aug.length);
+
+    const pointId = bls12_381.G1.hashToCurve(msgToHash, { DST: IBECrypto.DST });
 
     // 2. Parse MPK
     const mpkPoint = bls12_381.G2.Point.fromHex(Buffer.from(mpkG2).toString('hex'));
@@ -102,34 +168,100 @@ export class IBECrypto {
 
   /**
    * Deserialize a G1 point from compressed bytes (48 bytes)
+   * Handles both "compressed" (0x80|0x00 flag) and raw formats slightly more robustly if needed.
+   * For BLS12-381, compressed G1 is 48 bytes.
    */
   static deserializeG1(bytes: Uint8Array) {
-    if (bytes.length !== 48) {
-      if (bytes.length !== 96) {
-        throw new Error(`Invalid G1 length: expected 48 (compressed), got ${bytes.length}`);
-      }
-    }
+    // Ensure 48 bytes
+    if (bytes.length !== 48) throw new Error("G1 point must be 48 bytes");
     return bls12_381.G1.Point.fromHex(Buffer.from(bytes).toString('hex'));
   }
 
   static deserializeG2(bytes: Uint8Array) {
-    if (bytes.length !== 96) {
-      if (bytes.length !== 192) {
-        throw new Error(`Invalid G2 length: expected 96 (compressed), got ${bytes.length}`);
-      }
-    }
+    if (bytes.length !== 96) throw new Error("G2 point must be 96 bytes");
     return bls12_381.G2.Point.fromHex(Buffer.from(bytes).toString('hex'));
   }
 
   /**
-   * Extract G2 master public key from DKG transcript
+   * Extract G2 master public key from DKG transcript (BCS serialized)
+   * 
+   * Rust Structure:
+   * struct DKGTranscript {
+   *     metadata: DKGTranscriptMetadata, // epoch(u64), author(32 bytes)
+   *     transcript_bytes: vector<u8>,    // BCS bytes of Transcripts
+   * }
+   * 
+   * struct Transcripts {
+   *     main: WeightedTranscript,
+   *     fast: Option<WeightedTranscript>,
+   * }
+   * 
+   * struct WeightedTranscript {
+   *     soks: Vec<SoK>,
+   *     R: Vec<G1>,
+   *     R_hat: Vec<G2>,
+   *     V: Vec<G1>,
+   *     V_hat: Vec<G2>, // <--- Target: Last element of this vector is the MPK
+   *     C: Vec<G1>,
+   * }
    */
   static extractG2FromTranscript(transcriptBytes: Uint8Array): Uint8Array {
-    // Simplification for MVP: assume first 96 bytes are the MPK
-    if (transcriptBytes.length < 96) {
-      throw new Error(`Transcript too short for G2 extraction: ${transcriptBytes.length} bytes`);
+    const reader = new BCSReader(transcriptBytes);
+
+    // 1. DKGTranscript
+    // metadata.epoch (u64)
+    reader.readU64();
+    // metadata.author (32 bytes)
+    reader.readBytes(32);
+
+    // transcript_bytes (vector<u8>)
+    const innerBytes = reader.readBytesVector();
+
+    // 2. Transcripts
+    const innerReader = new BCSReader(innerBytes);
+
+    // main: WeightedTranscript
+    //   soks: Vec<SoK>
+    const numSoks = innerReader.readUleb128();
+    for (let i = 0; i < numSoks; i++) {
+      // SoK: (Player, G1, Signature, PoK)
+      // Player: id (usize -> u64 in BCS for Aptos?)
+      innerReader.readU64(); // id
+      innerReader.readBytes(48); // comm (G1)
+      innerReader.readBytes(96); // sig (Signature - G2 for min-pk)
+      // PoK: (G1, Scalar)
+      innerReader.readBytes(48); // G1
+      innerReader.readBytes(32); // Scalar
     }
-    return transcriptBytes.slice(0, 96);
+
+    //   R: Vec<G1>
+    const numR = innerReader.readUleb128();
+    for (let i = 0; i < numR; i++) innerReader.readBytes(48);
+
+    //   R_hat: Vec<G2>
+    const numRhat = innerReader.readUleb128();
+    for (let i = 0; i < numRhat; i++) innerReader.readBytes(96);
+
+    //   V: Vec<G1>
+    const numV = innerReader.readUleb128();
+    for (let i = 0; i < numV; i++) innerReader.readBytes(48);
+
+    //   V_hat: Vec<G2>
+    const numVhat = innerReader.readUleb128();
+    if (numVhat === 0) {
+      throw new Error("Invalid Transcript: V_hat is empty, cannot extract MPK");
+    }
+
+    // We need the LAST element of V_hat.
+    // Skip the first N-1 elements
+    for (let i = 0; i < numVhat - 1; i++) {
+      innerReader.readBytes(96);
+    }
+
+    // Read the last one (MPK)
+    const mpk = innerReader.readBytes(96);
+
+    return mpk;
   }
 
   /**
