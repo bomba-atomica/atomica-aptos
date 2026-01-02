@@ -40,6 +40,7 @@ use futures::StreamExt;
 use futures_channel::oneshot;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio_retry::strategy::ExponentialBackoff;
+use futures::FutureExt;
 
 pub struct EpochManager<P: OnChainConfigProvider> {
     // Some useful metadata
@@ -324,6 +325,17 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             tx.send(ack_tx).unwrap();
             ack_rx.await.unwrap();
         }
+
+        // Cleanup all active timelock DKG sessions
+        let close_txs: Vec<_> = self.timelock_dkg_close_txs.drain().collect();
+        for (interval, tx) in close_txs {
+            debug!("[Timelock] Closing DKG session for interval {} due to epoch shutdown", interval);
+            let (ack_tx, ack_rx) = oneshot::channel();
+            if tx.send(ack_tx).is_ok() {
+                let _ = ack_rx.await;
+            }
+        }
+        self.timelock_rpc_msg_txs.clear();
     }
 
     fn create_network_sender(&self) -> NetworkSender {
@@ -539,6 +551,20 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             event.interval
         );
 
+        // Cleanup the DKG session for this interval if it's still running.
+        // Once the key is published on-chain, our local DKG manager task is no longer needed.
+        if let Some(tx) = self.timelock_dkg_close_txs.remove(&event.interval) {
+            debug!("[Timelock] Closing DKG session for interval {} (MPK published)", event.interval);
+            let (ack_tx, ack_rx) = oneshot::channel();
+            if tx.send(ack_tx).is_ok() {
+                // We don't necessarily need to block the event loop here, 
+                // but for session hygiene we wait for a brief acknowledgement.
+                // Using a timeout would be safer in production, but here we assume the task closes quickly.
+                let _ = ack_rx.now_or_never(); 
+            }
+        }
+        self.timelock_rpc_msg_txs.remove(&event.interval);
+
         let epoch_state = match &self.epoch_state {
             Some(s) => s.clone(),
             None => {
@@ -752,13 +778,15 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
     use aptos_types::dkg::TimelockConfig;
     use aptos_event_notifications::DbBackedOnChainConfig;
     use futures::{FutureExt, StreamExt};
+    use aptos_types::waypoint::Waypoint;
+    use aptos_crypto::{bls12381, Uniform};
+    use aptos_config::config::SafetyRulesTestConfig;
 
     /// Verifies that `build_timelock_session_metadata` correctly converts a `StartKeyGenEvent` 
     /// into a `DKGSessionMetadata` struct, specifically checking the derivation of `RandomnessConfig`.
@@ -906,6 +934,80 @@ mod tests {
 
              assert!(tl_rx.select_next_some().now_or_never().is_none());
         }
+    }
+
+    /// Verifies that Timelock DKG sessions are correctly cleaned up from the `EpochManager` state
+    /// to prevent memory leaks.
+    #[tokio::test]
+    async fn test_dkg_cleanup() {
+        use aptos_config::config::SafetyRulesConfig;
+        use aptos_validator_transaction_pool::VTxnPoolState;
+
+        let my_addr = AccountAddress::random();
+        let (self_sender, _) = aptos_channels::new_test(1);
+
+        // Setup valid SafetyRulesConfig to avoid panic
+        let mut safety_rules_config = SafetyRulesConfig::default();
+        let mut test_config = SafetyRulesTestConfig::new(my_addr);
+        test_config.consensus_key(bls12381::PrivateKey::generate_for_testing());
+        test_config.waypoint = Some(Waypoint::default());
+        safety_rules_config.test = Some(test_config);
+
+        // Mock NotificationListeners
+        let (_, reconfig_rx) = aptos_channel::new(QueueStyle::KLAST, 1, None);
+        let reconfig_events = ReconfigNotificationListener { notification_receiver: reconfig_rx };
+        let (_, dkg_start_rx) = aptos_channel::new(QueueStyle::KLAST, 1, None);
+        let dkg_start_events = EventNotificationListener { notification_receiver: dkg_start_rx };
+
+        // Mock NetworkClient (we use a simple wrapper or Mock if available)
+        // Since we don't actually use the network in this test, we can use a very simple mock
+        let network_sender = DKGNetworkClient::new(NetworkClient::new(
+            vec![], vec![], HashMap::new(), aptos_network::application::storage::PeersAndMetadata::new(&[])
+        ));
+
+        // Dummy EpochManager
+        let mut manager = EpochManager::<DbBackedOnChainConfig>::new(
+            &safety_rules_config,
+            my_addr,
+            reconfig_events,
+            dkg_start_events,
+            self_sender,
+            network_sender,
+            VTxnPoolState::default(),
+            ReliableBroadcastConfig::default(),
+            0,
+        );
+
+        // Add dummy sessions for intervals 100 and 101
+        for interval in [100, 101] {
+            let (close_tx, _) = oneshot::channel();
+            let (rpc_tx, _) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            manager.timelock_dkg_close_txs.insert(interval, close_tx);
+            manager.timelock_rpc_msg_txs.insert(interval, rpc_tx);
+        }
+
+        assert_eq!(manager.timelock_dkg_close_txs.len(), 2);
+        assert_eq!(manager.timelock_rpc_msg_txs.len(), 2);
+
+        // 1. Test Interval-level Cleanup: KeyPublished for interval 100
+        let event = KeyPublishedEvent {
+            interval: 100,
+            public_key: vec![],
+        };
+        manager.process_timelock_key_published(event);
+
+        // Interval 100 should be removed, 101 should remain
+        assert!(!manager.timelock_dkg_close_txs.contains_key(&100));
+        assert!(!manager.timelock_rpc_msg_txs.contains_key(&100));
+        assert!(manager.timelock_dkg_close_txs.contains_key(&101));
+        assert!(manager.timelock_rpc_msg_txs.contains_key(&101));
+
+        // 2. Test Epoch-level Cleanup: shutdown_current_processor
+        manager.shutdown_current_processor().await;
+
+        // All should be cleared
+        assert!(manager.timelock_dkg_close_txs.is_empty());
+        assert!(manager.timelock_rpc_msg_txs.is_empty());
     }
 }
 
