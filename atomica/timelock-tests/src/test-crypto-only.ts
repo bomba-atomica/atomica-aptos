@@ -33,11 +33,10 @@ async function testIbeCrypto() {
       testMasterSecret[i] = i + 1; // Different from masterSecret
     }
 
-    // For testing, use fixed key material that both encrypt and decrypt can derive
-    const testMpkG2 = new Uint8Array(96);
-    for (let i = 0; i < testMpkG2.length; i++) {
-      testMpkG2[i] = i % 256;
-    }
+    // Generate a valid MPK using the scalar (master secret)
+    const scalar = BigInt("0x" + Buffer.from(testMasterSecret).toString('hex'));
+    const testMpkPoint = bls12_381.G2.Point.BASE.multiply(scalar);
+    const testMpkG2 = testMpkPoint.toBytes(true);
 
     // Encrypt using the test identity and fixed mpk
     console.log("Encrypting with IBE...");
@@ -46,8 +45,13 @@ async function testIbeCrypto() {
 
     // Decrypt using the same identity and mpk
     console.log("Decrypting with IBE...");
-    const dummySk = new Uint8Array(48);
-    const decrypted = IBECrypto.ibeDecrypt(dummySk, identity, testMpkG2, ciphertext);
+
+    // Compute valid SK for identity (sk = H(id)^s)
+    const pointId = bls12_381.G1.hashToCurve(identity);
+    const skPoint = pointId.multiply(scalar);
+    const validSk = skPoint.toBytes(true);
+
+    const decrypted = IBECrypto.ibeDecrypt(validSk, identity, testMpkG2, ciphertext);
     console.log(`Decrypted: ${decrypted.length} bytes`);
 
     // Verify the message

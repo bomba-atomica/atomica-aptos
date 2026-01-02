@@ -314,7 +314,6 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     /// For timelock DKG, we construct metadata from the current epoch state
     /// and the timelock configuration from the event.
     fn build_timelock_session_metadata(
-        &self,
         event: &StartKeyGenEvent,
         epoch_state: &Arc<EpochState>,
     ) -> DKGSessionMetadata {
@@ -449,7 +448,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Build DKGSessionMetadata for this timelock interval
         // Note: For timelock, we use a simplified metadata structure
         // The threshold/total come from the event.config
-        let session_metadata = self.build_timelock_session_metadata(&event, &epoch_state);
+        let session_metadata = Self::build_timelock_session_metadata(&event, &epoch_state);
 
         // Get current timestamp for DKG start
         let start_time_us = aptos_infallible::duration_since_epoch().as_micros() as u64;
@@ -537,7 +536,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             config,
         };
 
-        let metadata = self.build_timelock_session_metadata(&start_event, &epoch_state);
+        let metadata = Self::build_timelock_session_metadata(&start_event, &epoch_state);
         let pub_params = DefaultDKG::new_public_params(&metadata);
 
         // Deserialize transcript
@@ -724,5 +723,49 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                     interval, e
                 )
             })
+    }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use aptos_types::{
+        validator_verifier::ValidatorConsensusInfo,
+        on_chain_config::OnChainRandomnessConfig,
+        dkg::TimelockConfig,
+    };
+    use aptos_event_notifications::DbBackedOnChainConfig;
+
+    #[test]
+    fn test_build_timelock_session_metadata() {
+        // Setup EpochState (mocked with empty verifier for simplicity)
+        let epoch_state = Arc::new(EpochState {
+            epoch: 10,
+            verifier: aptos_types::validator_verifier::ValidatorVerifier::new(vec![]),
+        });
+
+        let event = StartKeyGenEvent {
+            interval: 100,
+            config: TimelockConfig {
+                threshold: 3,
+                total_validators: 4,
+            },
+        };
+
+        // We use DbBackedOnChainConfig as the generic parameter P
+        let metadata = EpochManager::<DbBackedOnChainConfig>::build_timelock_session_metadata(
+            &event,
+            &epoch_state,
+        );
+
+        // Verify randomness config derived from event
+        let randomness_config = metadata.randomness_config_derived().expect("derived config");
+        // Threshold percentage = 3 * 100 / 4 = 75
+        assert_eq!(randomness_config.secrecy_threshold_in_percentage(), 75);
+        assert_eq!(randomness_config.reconstruct_threshold_in_percentage(), 75);
+        
+        assert_eq!(metadata.dealer_epoch, 10);
     }
 }

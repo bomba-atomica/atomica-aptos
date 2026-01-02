@@ -36,7 +36,7 @@ module aptos_framework::timelock_config {
         system_addresses::assert_aptos_framework(framework);
         if (!exists<TimelockConfig>(@aptos_framework)) {
             move_to(framework, TimelockConfig {
-                interval_microseconds: 100000, // 0.1s for testing
+                interval_microseconds: 3600 * 1000000,
             });
         }
     }
@@ -82,7 +82,7 @@ module aptos_framework::timelock_config {
     /// Get the current interval duration in microseconds. Returns the configured interval, or the default (1 hour) if not initialized. Used by the timelock module to determine rotation timing.
     public fun get_interval_microseconds(): u64 acquires TimelockConfig {
         if (!exists<TimelockConfig>(@aptos_framework)) {
-            return 100000 // Default 0.1s for testing
+            return 3600 * 1000000
         };
         borrow_global<TimelockConfig>(@aptos_framework).interval_microseconds
     }

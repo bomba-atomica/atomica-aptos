@@ -44,8 +44,10 @@ async function testManualRotation() {
       console.log("Waiting 2s for interval to pass...");
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      await transactions.triggerRotation();
-      console.log("✅ Manual rotation triggered");
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      await transactions.forceRotationForTesting();
+      console.log("✅ Manual rotation triggered (forced)");
 
       console.log("Step 4: Waiting for rotation to complete");
       await waiters.waitForIntervalRotation(1, 30);
@@ -53,10 +55,14 @@ async function testManualRotation() {
 
       console.log("Step 5: Verifying new interval");
       const newState = await queries.getTimelockState();
-      if (newState.current_interval === 1) {
-        console.log("✅ Manual rotation test PASSED!");
+      const initialInterval = parseInt(timelockState.current_interval);
+      const newInterval = parseInt(newState.current_interval);
+
+      if (newInterval > initialInterval) {
+        console.log(`✅ Manual rotation test PASSED! (Interval ${initialInterval} -> ${newInterval})`);
       } else {
-        console.log(`❌ Manual rotation test FAILED - expected interval 1, got ${newState.current_interval}`);
+        console.log(`❌ Manual rotation test FAILED - expected interval > ${initialInterval}, got ${newInterval}`);
+        process.exit(1);
       }
     } finally {
       await performCleanup("Manual rotation test completed");

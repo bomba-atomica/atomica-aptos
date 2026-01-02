@@ -5,8 +5,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "bun run test-runner.ts round-robin",
-    "test:parallel": "bun run test-runner.ts breadth-first",
+    "test": "bun run src/test-runner.ts round-robin",
+    "test:parallel": "bun run src/test-runner.ts breadth-first",
     "test:basic": "bun run src/test-basic.ts",
     "test:ibe": "bun run src/test-ibe.ts",
     "test:crypto": "bun run src/test-crypto-only.ts",

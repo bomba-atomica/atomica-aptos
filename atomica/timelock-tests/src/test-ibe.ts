@@ -44,11 +44,11 @@ async function runIbeE2eTest() {
 
     // Step 5: Encrypt a message using IBE
     const message = new TextEncoder().encode("top_secret_bid_1000_atoms");
-    const identity = IBECrypto.computeTimelockIdentity(targetInterval, chainId);
+    const identity = IBECrypto.computeTimelockIdentity(BigInt(targetInterval), chainId);
     console.log(`✅ Computed identity for interval ${targetInterval}: ${identity.length} bytes`);
 
     const ciphertext = IBECrypto.ibeEncrypt(mpkG2, identity, message);
-    console.log(`✅ Encrypted message: ${ciphertext.length} bytes`);
+    console.log(`✅ Encrypted message: U=${ciphertext.u.length} bytes, V=${ciphertext.v.length} bytes`);
     console.log(`✅ Message encrypted for interval ${targetInterval}`);
 
     // Step 6: Wait for reveal (rotation to targetInterval + 1)
@@ -65,12 +65,9 @@ async function runIbeE2eTest() {
     }
     console.log(`✅ Decryption key received: ${dkBytes.length} bytes`);
 
-    // Step 7: Deserialize decryption key (G1 point)
-    const dkG1 = IBECrypto.deserializeG1(dkBytes);
-    console.log(`✅ Deserialized decryption key: ${dkG1.length} bytes`);
-
     // Step 8: Decrypt and verify
-    const decrypted = IBECrypto.ibeDecrypt(dkG1, ciphertext);
+    // Pass raw dkBytes as ibeDecrypt expects Uint8Array (and parses it internally)
+    const decrypted = IBECrypto.ibeDecrypt(dkBytes, identity, mpkG2, ciphertext);
     const decryptedText = new TextDecoder().decode(decrypted);
     const originalText = new TextDecoder().decode(message);
 
@@ -80,8 +77,13 @@ async function runIbeE2eTest() {
 
     console.log("🎉 IBE E2E test PASSED! Message successfully encrypted and decrypted.");
   } finally {
-    await performCleanup("IBE E2E test completed");
+    // await performCleanup("IBE E2E test completed");
   }
 }
 
-runIbeE2eTest().catch(console.error);
+runIbeE2eTest().catch(async (e) => {
+  console.error(e);
+  console.log("Debug mode: Keeping testnet alive for inspection. Check logs with 'docker logs validator-0'");
+  await new Promise(r => setTimeout(r, 600000)); // Wait 10 mins
+  process.exit(1);
+});

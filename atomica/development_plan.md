@@ -13,9 +13,13 @@ We have successfully established a reliable "custom genesis" testing workflow (M
     *   Optimized Invalid Share Counting (Removed O(N) redundancy).
     *   Fixed Historical Threshold Storage (Snapshotting at DKG start).
 *   **Workflow**: established the *Modify -> Rebuild -> Test* loop as the standard for framework development.
+*   **Testing Status**:
+    *   ✅ Basic DKG flow & Rotation tests implemented.
+    *   🔶 IBE E2E tests stubbed (crypto placeholders in place).
+    *   ❌ Security tests pending.
 
 ### Current Focus
-*   The immediate priority is to verify the **End-to-End IBE Encryption/Decryption flow** (`test:ibe`) and harden the system against malformed inputs.
+*   **Immediate Priority**: Implement BLS12-381 crypto helpers in `timelock-tests` to enable real IBE encryption/decryption verifying the `test:ibe` flow.
 
 ---
 
@@ -26,7 +30,7 @@ We have successfully established a reliable "custom genesis" testing workflow (M
 *   **Task 1.1: Verify IBE Roundtrip (`test:ibe`)**
     *   *Goal*: Ensure the TypeScript SDK can successfully encrypt a message and decrypt it using shares aggregated from the validators.
     *   *Dependencies*: `test:rotation` (Verified), `timelock.move` (Verified).
-    *   *Status*: **NEXT UP**.
+    *   *Status*: **IN PROGRESS** (Implementing `ibe-crypto.ts`).
 
 ### Phase 2: Security Hardening (Pre-Production)
 
@@ -63,6 +67,6 @@ We strictly adhere to the **Modify -> Rebuild -> Test** loop for framework chang
 
 ## Action Items
 
-1.  **Execute `test:ibe`**: Identify any failures in the encryption/decryption cycle.
-2.  **Implement Invalid Share Tests**: Create specific test cases for malformed inputs.
-3.  **Audit SDK Parsing**: Ensure `timelock-tests` (and the production SDK) correctly parses DKG transcripts.
+1.  **Implement `ibe-crypto.ts`**: Add BLS12-381 G1/G2 deserialization and IBE encrypt/decrypt logic.
+2.  **Update `test:ibe`**: Connect test to real crypto implementation.
+3.  **Implement Invalid Share Tests**: Create specific test cases for malformed inputs.
