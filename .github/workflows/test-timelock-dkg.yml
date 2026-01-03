@@ -193,6 +193,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -231,6 +236,26 @@ jobs:
             lld \
             libudev-dev \
             libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "atomica-test"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+
+      - name: Build Aptos Framework CLI
+        run: |
+          echo "Building aptos-framework CLI..."
+          cargo build -p aptos-framework --bin aptos-framework --release
+
+      - name: Build Move Framework Bundle
+        run: |
+          echo "Building Move framework bundle (head.mrb)..."
+          export APTOS_FRAMEWORK_BIN=$(pwd)/target/release/aptos-framework
+          ./atomica/move-framework-fixtures/build-framework.sh
 
       - name: Start Docker daemon
         run: |
