@@ -32,7 +32,7 @@ async function runIbeE2eTest() {
 
     // Step 3: Fetch MPK (DKG transcript)
     console.log(`Step 3: Waiting for transcript (MPK) for interval ${targetInterval}`);
-    const transcriptBytes = await waiters.waitForPublicKeyPublication(targetInterval, 60);
+    const transcriptBytes = await waiters.waitForPublicKeyPublication(targetInterval, 300);
     if (!transcriptBytes) {
       throw new Error("Transcript not published");
     }

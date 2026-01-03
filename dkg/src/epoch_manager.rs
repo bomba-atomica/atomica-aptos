@@ -402,7 +402,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         let randomness_config = RandomnessConfigMoveStruct::from(randomness_config_enum);
 
         DKGSessionMetadata {
-            dealer_epoch: epoch_state.epoch,
+            dealer_epoch: event.interval,
             randomness_config,
             dealer_validator_set: validator_consensus_infos.clone(),
             target_validator_set: validator_consensus_infos,
@@ -825,7 +825,7 @@ mod tests {
             &epoch_state,
         );
 
-        assert_eq!(metadata.dealer_epoch, 10);
+        assert_eq!(metadata.dealer_epoch, 100);
 
         // Verify randomness config derived from event
         let randomness_config = metadata.randomness_config_derived().expect("derived config");
