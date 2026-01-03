@@ -7,6 +7,7 @@ use anyhow::{anyhow, Result};
 use aptos_channels::{aptos_channel, message_queues::QueueStyle};
 use aptos_id_generator::{IdGenerator, U64IdGenerator};
 use aptos_infallible::RwLock;
+use aptos_logger::{debug, info, warn};
 use aptos_storage_interface::{
     state_store::state_view::db_state_view::DbStateViewAtVersion, DbReader, DbReaderWriter,
 };
@@ -113,6 +114,13 @@ impl EventSubscriptionService {
         event_keys: Vec<EventKey>,
         event_v2_tags: Vec<String>,
     ) -> Result<EventNotificationListener, Error> {
+        info!(
+            "[EventSub] subscribe_to_events called with {} event_keys, {} v2_tags: {:?}",
+            event_keys.len(),
+            event_v2_tags.len(),
+            event_v2_tags
+        );
+
         if event_keys.is_empty() && event_v2_tags.is_empty() {
             return Err(Error::CannotSubscribeToZeroEventKeys);
         }
@@ -122,6 +130,10 @@ impl EventSubscriptionService {
 
         // Create a new event subscription
         let subscription_id = self.get_new_subscription_id();
+        info!(
+            "[EventSub] Created subscription ID {} for tags: {:?}",
+            subscription_id, event_v2_tags
+        );
         let event_subscription = EventSubscription {
             notification_sender,
             event_buffer: vec![],
@@ -150,6 +162,7 @@ impl EventSubscriptionService {
 
         // Update the event v2 tag subscriptions to include the new subscription
         for event_tag in event_v2_tags {
+            debug!("[EventSub] Registering v2 tag subscription: {}", event_tag);
             self.event_v2_tag_subscriptions
                 .entry(event_tag)
                 .and_modify(|subscriptions| {
@@ -157,6 +170,11 @@ impl EventSubscriptionService {
                 })
                 .or_insert_with(|| HashSet::from_iter([subscription_id].iter().cloned()));
         }
+
+        info!(
+            "[EventSub] Total v2_tag_subscriptions now: {:?}",
+            self.event_v2_tag_subscriptions.keys().collect::<Vec<_>>()
+        );
 
         Ok(EventNotificationListener {
             notification_receiver,
@@ -210,19 +228,40 @@ impl EventSubscriptionService {
         version: Version,
         events: Vec<ContractEvent>,
     ) -> Result<bool, Error> {
+        debug!(
+            "[EventSub] notify_event_subscribers: version={}, {} events",
+            version,
+            events.len()
+        );
+
         let mut reconfig_event_found = false;
         let mut event_subscription_ids_to_notify = HashSet::new();
 
         for event in events.iter() {
             // Process all subscriptions for the current event
-            let maybe_subscription_ids = match event {
-                ContractEvent::V1(evt) => self.event_key_subscriptions.get(evt.key()),
+            let (event_tag_str, maybe_subscription_ids) = match event {
+                ContractEvent::V1(evt) => {
+                    let key_str = format!("{:?}", evt.key());
+                    (key_str, self.event_key_subscriptions.get(evt.key()))
+                },
                 ContractEvent::V2(evt) => {
                     let tag = evt.type_tag().to_canonical_string();
-                    self.event_v2_tag_subscriptions.get(&tag)
+                    let subs = self.event_v2_tag_subscriptions.get(&tag);
+                    debug!(
+                        "[EventSub] V2 event tag='{}', has_subscription={}",
+                        tag,
+                        subs.is_some()
+                    );
+                    (tag.clone(), subs)
                 },
             };
+
             if let Some(subscription_ids) = maybe_subscription_ids {
+                debug!(
+                    "[EventSub] MATCH! Event '{}' matched {} subscriptions",
+                    event_tag_str,
+                    subscription_ids.len()
+                );
                 // Add the event to the subscription's pending event buffer
                 // and store the subscriptions that will need to notified once all
                 // events have been processed.
@@ -237,6 +276,15 @@ impl EventSubscriptionService {
                         return Err(Error::MissingEventSubscription(*subscription_id));
                     }
                 }
+            } else {
+                // Log unmatched events for debugging (only V2 events with timelock in the tag)
+                if event_tag_str.contains("timelock") || event_tag_str.contains("dkg") {
+                    warn!(
+                        "[EventSub] NO MATCH for relevant event! tag='{}', registered_tags={:?}",
+                        event_tag_str,
+                        self.event_v2_tag_subscriptions.keys().collect::<Vec<_>>()
+                    );
+                }
             }
 
             // Take note if a reconfiguration (new epoch) has occurred
@@ -246,6 +294,10 @@ impl EventSubscriptionService {
         }
 
         // Notify event subscribers of the new events
+        debug!(
+            "[EventSub] Notifying {} subscriptions",
+            event_subscription_ids_to_notify.len()
+        );
         for event_subscription_id in event_subscription_ids_to_notify {
             if let Some(event_subscription) = self
                 .subscription_id_to_event_subscription
@@ -314,6 +366,25 @@ impl EventNotificationSender for EventSubscriptionService {
             return Ok(()); // No events!
         }
 
+        // Log all incoming events for debugging
+        debug!(
+            "[EventSub] notify_events called: version={}, num_events={}",
+            version,
+            events.len()
+        );
+        for (i, event) in events.iter().enumerate() {
+            let tag = match event {
+                ContractEvent::V1(e) => format!("V1:{:?}", e.key()),
+                ContractEvent::V2(e) => format!("V2:{}", e.type_tag().to_canonical_string()),
+            };
+            // Log timelock/dkg events at info level, others at debug
+            if tag.contains("timelock") || tag.contains("dkg") {
+                info!("[EventSub] Event[{}] = {}", i, tag);
+            } else {
+                debug!("[EventSub] Event[{}] = {}", i, tag);
+            }
+        }
+
         // Notify event subscribers and check if a reconfiguration event was processed
         let reconfig_event_processed = self.notify_event_subscribers(version, events)?;
 
@@ -348,14 +419,31 @@ impl EventSubscription {
     }
 
     fn notify_subscriber_of_events(&mut self, version: Version) -> Result<(), Error> {
+        let events: Vec<ContractEvent> = self.event_buffer.drain(..).collect();
+        debug!(
+            "[EventSub] notify_subscriber_of_events: version={}, sending {} events",
+            version,
+            events.len()
+        );
+        for event in events.iter() {
+            let tag = match event {
+                ContractEvent::V1(e) => format!("V1:{:?}", e.key()),
+                ContractEvent::V2(e) => format!("V2:{}", e.type_tag().to_canonical_string()),
+            };
+            debug!("[EventSub]   -> Sending event: {}", tag);
+        }
+
         let event_notification = EventNotification {
-            subscribed_events: self.event_buffer.drain(..).collect(),
+            subscribed_events: events,
             version,
         };
 
         self.notification_sender
             .push((), event_notification)
-            .map_err(|error| Error::UnexpectedErrorEncountered(format!("{:?}", error)))
+            .map_err(|error| {
+                warn!("[EventSub] Failed to push notification: {:?}", error);
+                Error::UnexpectedErrorEncountered(format!("{:?}", error))
+            })
     }
 }
 

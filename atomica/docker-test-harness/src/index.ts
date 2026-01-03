@@ -985,7 +985,11 @@ export class DockerTestnet {
         timeoutMs: number = 60000,
     ): Promise<void> {
         return new Promise((resolve, reject) => {
-            const env = { ...process.env, ...envVars };
+            const env = {
+                ...process.env,
+                RUST_LOG: "info,dkg=debug,consensus=debug",
+                ...envVars
+            };
             const proc = spawn(DOCKER_BIN, ["compose", ...args], { cwd, env });
 
             let stdout = "";

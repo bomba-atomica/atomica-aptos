@@ -53,6 +53,22 @@ async function runIbeTranscriptTest() {
         }
         console.log("🎉 IBE Step 1 Test PASSED: Transcript published successfully.");
 
+    } catch (e) {
+        console.error("❌ Test failed:", e);
+        if (testnet) {
+            console.log("Dumping validator logs to file...");
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const logPath = path.resolve(__dirname, '../../validator-logs.txt');
+                const p = require("child_process").spawnSync("docker", ["logs", "atomica-validator-0", "--tail", "1000"]);
+                fs.writeFileSync(logPath, "=== VALIDATOR 0 LOGS ===\n" + p.stdout.toString() + "\n" + p.stderr.toString());
+                console.log(`Logs written to ${logPath}`);
+            } catch (err) {
+                console.error("Failed to dump logs", err);
+            }
+        }
+        throw e;
     } finally {
         await performCleanup("IBE Step 1: Transcript test completed");
     }

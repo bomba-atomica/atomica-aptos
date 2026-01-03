@@ -154,38 +154,98 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         let EventNotification {
             subscribed_events, ..
         } = notification;
+        info!(
+            "[DKG] on_dkg_start_notification: Received {} events",
+            subscribed_events.len()
+        );
         for event in subscribed_events {
-            if let Ok(dkg_start_event) = DKGStartEvent::try_from(&event) {
-                if let Some(tx) = self.dkg_start_event_tx.as_ref() {
-                    let _ = tx.push((), dkg_start_event);
-                    return Ok(());
-                } else {
-                     debug!("[DKG] Received DKGStartEvent but DKG is disabled/not initialized");
+            info!(
+                "[DKG] Processing event with type tag: {:?}",
+                event.type_tag()
+            );
+
+            // Try DKGStartEvent first
+            match DKGStartEvent::try_from(&event) {
+                Ok(dkg_start_event) => {
+                    info!("[DKG] Successfully parsed DKGStartEvent");
+                    if let Some(tx) = self.dkg_start_event_tx.as_ref() {
+                        let _ = tx.push((), dkg_start_event);
+                        return Ok(());
+                    } else {
+                        warn!("[DKG] Received DKGStartEvent but DKG is disabled/not initialized");
+                    }
+                    continue;
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a DKGStartEvent: {:?}", e);
                 }
-            } else if let Ok(timelock_start) = StartKeyGenEvent::try_from(&event) {
-                self.start_timelock_dkg(timelock_start);
-                return Ok(());
-            } else if let Ok(timelock_key) = KeyPublishedEvent::try_from(&event) {
-                self.process_timelock_key_published(timelock_key);
-                return Ok(());
-            } else if let Ok(timelock_reveal) = RequestRevealEvent::try_from(&event) {
-                self.process_timelock_reveal(timelock_reveal);
-                return Ok(());
-            } else {
-                debug!("[DKG] on_dkg_start_notification: failed in converting a contract event to a dkg start event!");
             }
+
+            // Try StartKeyGenEvent (timelock)
+            match StartKeyGenEvent::try_from(&event) {
+                Ok(timelock_start) => {
+                    info!(
+                        "[DKG] Successfully parsed StartKeyGenEvent for interval {}",
+                        timelock_start.interval
+                    );
+                    self.start_timelock_dkg(timelock_start);
+                    return Ok(());
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a StartKeyGenEvent: {:?}", e);
+                }
+            }
+
+            // Try KeyPublishedEvent (timelock)
+            match KeyPublishedEvent::try_from(&event) {
+                Ok(timelock_key) => {
+                    info!(
+                        "[DKG] Successfully parsed KeyPublishedEvent for interval {}",
+                        timelock_key.interval
+                    );
+                    self.process_timelock_key_published(timelock_key);
+                    return Ok(());
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a KeyPublishedEvent: {:?}", e);
+                }
+            }
+
+            // Try RequestRevealEvent (timelock)
+            match RequestRevealEvent::try_from(&event) {
+                Ok(timelock_reveal) => {
+                    info!(
+                        "[DKG] Successfully parsed RequestRevealEvent for interval {}",
+                        timelock_reveal.interval
+                    );
+                    self.process_timelock_reveal(timelock_reveal);
+                    return Ok(());
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a RequestRevealEvent: {:?}", e);
+                }
+            }
+
+            warn!(
+                "[DKG] Event type {:?} did not match any known DKG event type!",
+                event.type_tag()
+            );
         }
         Ok(())
     }
 
     pub async fn start(mut self, mut network_receivers: NetworkReceivers) {
+        info!("[DKG] EpochManager starting, waiting for initial reconfig notification");
         self.await_reconfig_notification().await;
+        info!("[DKG] EpochManager main loop started, listening for events");
         loop {
             let handling_result = tokio::select! {
                 notification = self.dkg_start_events.select_next_some() => {
+                    debug!("[DKG] Received dkg_start_events notification");
                     self.on_dkg_start_notification(notification)
                 },
                 reconfig_notification = self.reconfig_events.select_next_some() => {
+                    info!("[DKG] Received reconfig notification");
                     self.on_new_epoch(reconfig_notification).await
                 },
                 (peer, rpc_request) = network_receivers.rpc_rx.select_next_some() => {
@@ -200,11 +260,16 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     }
 
     async fn await_reconfig_notification(&mut self) {
+        info!("[DKG] await_reconfig_notification: waiting for first reconfig event");
         let reconfig_notification = self
             .reconfig_events
             .next()
             .await
             .expect("Reconfig sender dropped, unable to start new epoch");
+        info!(
+            "[DKG] await_reconfig_notification: received reconfig for epoch {}",
+            reconfig_notification.on_chain_configs.epoch()
+        );
         self.start_new_epoch(reconfig_notification.on_chain_configs)
             .await
             .unwrap();
@@ -254,6 +319,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Check both validator txn and randomness features are enabled
         let randomness_enabled =
             consensus_config.is_vtxn_enabled() && onchain_randomness_config.randomness_enabled();
+        info!(
+            "[DKG] start_new_epoch: epoch={}, vtxn_enabled={}, randomness_enabled={}, my_index={:?}",
+            epoch_state.epoch,
+            consensus_config.is_vtxn_enabled(),
+            onchain_randomness_config.randomness_enabled(),
+            my_index
+        );
         if let (true, Some(my_index)) = (randomness_enabled, my_index) {
             let DKGState {
                 in_progress: in_progress_session,
@@ -309,6 +381,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 dkg_rpc_msg_rx,
                 dkg_manager_close_rx,
             ));
+        } else {
+            warn!(
+                "[DKG] DKG not started for epoch {} - randomness_enabled={}, in_validator_set={}",
+                epoch_state.epoch,
+                randomness_enabled,
+                my_index.is_some()
+            );
         };
         Ok(())
     }
