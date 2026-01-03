@@ -47,9 +47,7 @@ async function testIbeCrypto() {
     console.log("Decrypting with IBE...");
 
     // Compute valid SK for identity (sk = H(id)^s)
-    const pointId = bls12_381.G1.hashToCurve(identity);
-    const skPoint = pointId.multiply(scalar);
-    const validSk = skPoint.toBytes(true);
+    const validSk = IBECrypto.getDecryptionKey(testMasterSecret, identity);
 
     const decrypted = IBECrypto.ibeDecrypt(validSk, identity, testMpkG2, ciphertext);
     console.log(`Decrypted: ${decrypted.length} bytes`);

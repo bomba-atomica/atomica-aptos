@@ -105,14 +105,8 @@ export class IBECrypto {
    */
   static ibeEncrypt(mpkG2: Uint8Array, identity: Uint8Array, message: Uint8Array): Ciphertext {
     // 1. Map identity to G1
-    // Rust uses hash_to_curve(identity, DST, b"H(m)") which implies augmentation.
-    // We must prepend "H(m)" to the identity.
-    const aug = new TextEncoder().encode("H(m)");
-    const msgToHash = new Uint8Array(aug.length + identity.length);
-    msgToHash.set(aug);
-    msgToHash.set(identity, aug.length);
-
-    const pointId = bls12_381.G1.hashToCurve(msgToHash, { DST: IBECrypto.DST });
+    // Timelock IBE uses identity = H(interval...), no "H(m)" augmentation.
+    const pointId = bls12_381.G1.hashToCurve(identity, { DST: IBECrypto.DST });
 
     // 2. Parse MPK
     const mpkPoint = bls12_381.G2.Point.fromHex(Buffer.from(mpkG2).toString('hex'));
@@ -131,7 +125,7 @@ export class IBECrypto {
 
     // Convert Fp12 shared secret to bytes for hashing
     // @ts-ignore
-    const sharedSecretBytes = bls12_381.fields.Fp12.toBytes(sharedSecret);
+    const sharedSecretBytes = IBECrypto.canonicalSerializeFp12(sharedSecret);
 
     const symmetricKey = keccak_256(sharedSecretBytes).slice(0, 32);
 
@@ -159,7 +153,7 @@ export class IBECrypto {
 
     // 3. Derive symmetric key
     // @ts-ignore
-    const sharedSecretBytes = bls12_381.fields.Fp12.toBytes(sharedSecret);
+    const sharedSecretBytes = IBECrypto.canonicalSerializeFp12(sharedSecret);
     const symmetricKey = keccak_256(sharedSecretBytes).slice(0, 32);
 
     // 4. Decrypt
@@ -265,6 +259,39 @@ export class IBECrypto {
   }
 
   /**
+   * Serialize Fp12 element to bytes in Little Endian format to match Rust/Arkworks
+   * Order: c0.c0.c0, c0.c0.c1, c0.c1.c0 ... c1.c2.c1
+   * Each Fp element is 48 bytes, Little Endian.
+   */
+  static canonicalSerializeFp12(fp12: any): Uint8Array {
+    const result = new Uint8Array(576); // 12 * 48
+    let offset = 0;
+
+    const coeffs = [
+      fp12.c0.c0.c0, fp12.c0.c0.c1, // Fp2 c0
+      fp12.c0.c1.c0, fp12.c0.c1.c1, // Fp2 c1
+      fp12.c0.c2.c0, fp12.c0.c2.c1, // Fp2 c2
+      fp12.c1.c0.c0, fp12.c1.c0.c1, // Fp2 c0 (of c1)
+      fp12.c1.c1.c0, fp12.c1.c1.c1, // Fp2 c1 (of c1)
+      fp12.c1.c2.c0, fp12.c1.c2.c1, // Fp2 c2 (of c1)
+    ];
+
+    for (const val of coeffs) {
+      let hex = val.toString(16);
+      if (hex.length % 2 !== 0) hex = '0' + hex;
+      const padding = 96 - hex.length; // 48 bytes = 96 hex chars
+      if (padding > 0) hex = '0'.repeat(padding) + hex;
+
+      const buffer = Buffer.from(hex, 'hex');
+      // Reverse for Little Endian
+      result.set(buffer.reverse(), offset);
+      offset += 48;
+    }
+
+    return result;
+  }
+
+  /**
    * XOR two byte arrays for symmetric encryption
    */
   private static xorBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
@@ -300,7 +327,7 @@ export class IBECrypto {
    */
   static getDecryptionKey(msk: Uint8Array, identity: Uint8Array): Uint8Array {
     const s = BigInt("0x" + Buffer.from(msk).toString("hex"));
-    const pointId = bls12_381.G1.hashToCurve(identity);
+    const pointId = bls12_381.G1.hashToCurve(identity, { DST: IBECrypto.DST });
     const dk = pointId.multiply(s);
     return dk.toBytes(true);
   }

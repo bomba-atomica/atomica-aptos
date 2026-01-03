@@ -11,8 +11,8 @@ describe("Cross-Language IBE Verification", () => {
 
     const pairing = bls12_381.pairing(g1, g2);
 
-    // @ts-ignore - Fp12.toBytes is not in type definitions but exists
-    const serialized = bls12_381.fields.Fp12.toBytes(pairing);
+    // Use our canonical serialization (Little Endian)
+    const serialized = IBECrypto.canonicalSerializeFp12(pairing);
 
     console.log("\n=== TypeScript Cross-Language Verification Data ===");
     console.log("Input: e(G1_BASE, G2_BASE)");

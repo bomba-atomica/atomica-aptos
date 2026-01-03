@@ -87,12 +87,13 @@ Restart Docker daemon: `docker restart`
 
 | Test | Status |
 |------|--------|
-| ✅ DKG transcript publication | Passing |
-| ✅ Share reveal and aggregation | Passing |
+| ✅ DKG transcript publication | Passing (Basic) |
+| ✅ Share reveal and aggregation | Passing (Basic) |
 | ✅ Manual rotation trigger | Passing |
 | ✅ Custom framework loading | Passing |
-| ⚠️ IBE encrypt/decrypt | Mocked (needs real crypto) |
-| ❌ Invalid share rejection | Not implemented |
-| ❌ DKG failure recovery | Not implemented |
+| ✅ IBE crypto vectors | **Passing** (Real Crypto Fixed) |
+| ⚠️ IBE E2E Flow | **Timeout** (Validator DKG publication) |
+| ✅ Docker Faucet | **Passing** (Fixed: Using SDK CoinClient) |
+| ❌ invalid share rejection | Not implemented |
 
 See [development-and-verification.md](./development-and-verification.md) for roadmap.
