@@ -230,8 +230,7 @@ jobs:
             libpq-dev \
             lld \
             libudev-dev \
-            libdw-dev \
-            docker.io
+            libdw-dev
 
       - name: Start Docker daemon
         run: |
