@@ -9,6 +9,9 @@
     "test:parallel": "bun run src/test-runner.ts breadth-first",
     "test:basic": "bun run src/test-basic.ts",
     "test:ibe": "bun run src/test-ibe.ts",
+    "test:ibe:transcript": "bun run src/test-ibe-01-transcript.ts",
+    "test:ibe:mpk": "bun run src/test-ibe-02-mpk-extraction.ts",
+    "test:ibe:full": "bun run src/test-ibe-03-full-flow.ts",
     "test:crypto": "bun run src/test-crypto-only.ts",
     "test:rotation": "bun run src/test-manual-rotation.ts",
     "test:framework-loading": "bun run src/test-framework-loading.ts",
@@ -57,6 +60,7 @@
     "typescript": "^5.3.3",
     "eslint": "^9.39.2",
     "@typescript-eslint/eslint-plugin": "^8.51.0",
-    "@typescript-eslint/parser": "^8.51.0"
+    "@typescript-eslint/parser": "^8.51.0",
+    "dotenv": "^16.4.5"
   }
 }

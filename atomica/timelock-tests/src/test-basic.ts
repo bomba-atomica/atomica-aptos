@@ -62,7 +62,7 @@ async function runBasicFlowTest() {
     expect(timelockState).toBeDefined();
     // Since we set a short interval (0.1s), automatic rotation might have occurred
     const currentInterval = parseInt(timelockState.current_interval);
-    expect(currentInterval).toBeGreaterThanOrEqual(parseInt(initialInterval));
+    expect(currentInterval).toBeGreaterThanOrEqual(parseInt(String(initialInterval)));
     console.log(
       `✅ Timelock state: interval=${currentInterval} (initially ${initialInterval}), last_rotation_time=${timelockState.last_rotation_time}`,
     );
@@ -101,7 +101,7 @@ async function runBasicFlowTest() {
       console.log(`✅ Noop contract available: ${noopResult[0]}`);
       console.log("✅ Custom framework is loaded correctly!");
     } catch (error) {
-      console.log(`❌ Noop contract not found: ${error.message}`);
+      console.log(`❌ Noop contract not found: ${error instanceof Error ? error.message : String(error)}`);
       console.log("❌ This indicates the custom framework is NOT loaded!");
       console.log("The validators are likely using the default Docker image framework.");
     }

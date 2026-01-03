@@ -238,6 +238,12 @@ jobs:
           sudo systemctl enable docker
           docker --version
 
+      - name: Build Docker Test Harness
+        run: |
+          cd atomica/docker-test-harness
+          bun install
+          bun run build
+
       - name: Build Timelock Tests
         run: |
           cd atomica/timelock-tests
