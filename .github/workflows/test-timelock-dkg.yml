@@ -254,17 +254,6 @@ jobs:
         run: |
           cd atomica/timelock-tests
           bun run test
-        continue-on-error: true  # Continue even if tests fail initially
-
-      - name: Check for test results
-        if: always()
-        run: |
-          if [ $? -eq 0 ]; then
-            echo "✅ Timelock TypeScript tests passed"
-          else
-            echo "❌ Timelock TypeScript tests failed or were skipped"
-            echo "This is expected during initial development"
-          fi
 
   test-validator-txn-timelock:
     name: Test Validator Timelock Transaction Handler
