@@ -1488,6 +1488,7 @@ dependencies = [
  "aptos-executor-test-helpers",
  "aptos-id-generator",
  "aptos-infallible",
+ "aptos-logger",
  "aptos-storage-interface",
  "aptos-temppath",
  "aptos-types",

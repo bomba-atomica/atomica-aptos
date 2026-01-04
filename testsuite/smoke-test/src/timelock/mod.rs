@@ -8,7 +8,12 @@
 //! for sealed bid auctions.
 
 pub mod basic_flow;
+pub mod dkg_startup;
 pub mod ibe_e2e;
+pub mod test_dkg;
+pub mod test_helpers;
+pub mod test_ibe;
+pub mod test_timelock;
 
 use anyhow::{anyhow, Result};
 use aptos_api_types::ViewFunction;

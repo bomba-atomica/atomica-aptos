@@ -61,7 +61,7 @@ services:
       retries: 10
       start_period: 30s
     environment:
-      - RUST_LOG=info,aptos_event_notifications=debug,aptos_dkg_runtime=debug,consensus=debug
+      - RUST_LOG=debug
       - RUST_BACKTRACE=1
 
   # Validator 1

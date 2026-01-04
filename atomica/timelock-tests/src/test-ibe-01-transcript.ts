@@ -70,7 +70,8 @@ async function runIbeTranscriptTest() {
         }
         throw e;
     } finally {
-        await performCleanup("IBE Step 1: Transcript test completed");
+        // await performCleanup("IBE Step 1: Transcript test completed");
+        console.log("⚠️  Skipping teardown for debugging. Run 'docker compose down' manually.");
     }
 }
 
