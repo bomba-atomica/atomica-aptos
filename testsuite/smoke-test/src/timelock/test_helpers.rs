@@ -1,7 +1,7 @@
 //! Common test helpers for timelock smoke tests
 
 use crate::smoke_test_environment::SwarmBuilder;
-use aptos_forge::Swarm;
+use aptos_forge::{NodeExt, Swarm};
 use aptos_logger::info;
 use aptos_types::on_chain_config::OnChainRandomnessConfig;
 use move_core_types::identifier::Identifier;
@@ -71,15 +71,15 @@ pub async fn create_timelock_swarm(
             .expect("Failed to configure timelock interval");
     }
 
-    (swarm, client, chain_id)
+    (Box::new(swarm), client, chain_id)
 }
 
 /// Configures the timelock interval for testing.
 ///
 /// This calls the `timelock_config::set_interval_for_testing` entry function
 /// to override the default interval duration.
-pub async fn configure_timelock_interval(
-    swarm: &dyn Swarm,
+pub async fn configure_timelock_interval<S: Swarm>(
+    swarm: &S,
     client: &aptos_rest_client::Client,
     interval_secs: u64,
 ) -> anyhow::Result<()> {
@@ -101,7 +101,7 @@ pub async fn configure_timelock_interval(
     );
 
     let signed_txn = root_account.sign_with_transaction_builder(
-        aptos_sdk::transaction_builder::TransactionFactory::new(swarm.chain_id())
+        aptos_sdk::transaction_builder::TransactionFactory::new(swarm.chain_info().chain_id)
             .payload(payload)
             .max_gas_amount(2_000_000)
             .gas_unit_price(100),

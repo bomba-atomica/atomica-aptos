@@ -51,6 +51,8 @@ aptos-types = { workspace = true }
 aptos-vm = { workspace = true }
 bcs = { workspace = true }
 blake2-rfc = { workspace = true }
+blstrs = { workspace = true }
+group = { workspace = true }
 diesel = { workspace = true, features = [
     "chrono",
     "postgres",
