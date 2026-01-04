@@ -38,6 +38,7 @@
 <b>use</b> <a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra">0x1::bls12381_algebra</a>;
 <b>use</b> <a href="chain_id.md#0x1_chain_id">0x1::chain_id</a>;
 <b>use</b> <a href="../../aptos-stdlib/doc/crypto_algebra.md#0x1_crypto_algebra">0x1::crypto_algebra</a>;
+<b>use</b> <a href="../../aptos-stdlib/doc/debug.md#0x1_debug">0x1::debug</a>;
 <b>use</b> <a href="event.md#0x1_event">0x1::event</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option">0x1::option</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">0x1::signer</a>;
@@ -528,6 +529,10 @@ Internal function to perform rotation logic
     state.current_interval = state.current_interval + 1;
     state.last_rotation_time = now;
 
+    // DEBUG: Log interval rotation
+    std::debug::print(&b"[TIMELOCK] Interval rotated <b>to</b>");
+    std::debug::print(&state.current_interval);
+
     // Get current validator set <b>to</b> determine threshold
     <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
     <b>let</b> validator_addresses = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;<b>address</b>&gt;();
@@ -751,6 +756,11 @@ validators call this to publish the secret share/signature for a past interval
     share: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;
 ) <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
     <b>let</b> validator_addr = std::signer::address_of(validator);
+    // DEBUG: Log secret share publication attempt
+    std::debug::print(&b"[TIMELOCK] publish_secret_share called");
+    std::debug::print(&interval);
+    std::debug::print(&validator_addr);
+
     // 1. Verify validator authorization
     <b>assert</b>!(<a href="stake.md#0x1_stake_is_current_epoch_validator">stake::is_current_epoch_validator</a>(validator_addr), <a href="timelock.md#0x1_timelock_ENOT_VALIDATOR">ENOT_VALIDATOR</a>);
 
