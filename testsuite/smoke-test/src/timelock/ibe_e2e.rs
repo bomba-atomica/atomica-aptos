@@ -16,6 +16,7 @@ use aptos_dkg::pvss::traits::Transcript;
 use aptos_forge::{NodeExt, Swarm};
 use aptos_logger::info;
 use aptos_types::dkg::real_dkg::Transcripts;
+use aptos_types::on_chain_config::OnChainRandomnessConfig;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use std::{sync::Arc, time::Duration};
@@ -33,6 +34,9 @@ async fn test_ibe_encrypt_decrypt_e2e() {
         .with_init_genesis_config(Arc::new(move |conf| {
             // Enable validator transactions (required for timelock)
             conf.consensus_config.enable_validator_txns();
+
+            // Enable randomness config (required for DKG manager to start)
+            conf.randomness_config_override = Some(OnChainRandomnessConfig::default_enabled());
         }))
         .build_with_cli(0)
         .await;

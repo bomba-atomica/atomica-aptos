@@ -145,9 +145,14 @@ pub async fn verify_public_key_published(client: &Client, _interval: u64) -> Res
     // Get DKG state which contains the transcript
     let dkg_state = get_on_chain_resource::<DKGState>(&client).await;
 
+    // Check if DKG has completed
+    let last_completed = dkg_state
+        .last_completed
+        .ok_or_else(|| anyhow!("DKG has not completed yet"))?;
+
     // Return the raw transcript bytes
     // Tests will deserialize this to extract the public key
-    Ok(dkg_state.last_complete().transcript.clone())
+    Ok(last_completed.transcript.clone())
 }
 
 /// Verify secret is aggregated for interval.
