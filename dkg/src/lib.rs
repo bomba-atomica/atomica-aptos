@@ -7,6 +7,7 @@ mod dkg_manager;
 pub mod epoch_manager;
 pub mod network;
 pub mod network_interface;
+pub mod timelock_revelation;
 pub mod transcript_aggregation;
 pub mod types;
 
