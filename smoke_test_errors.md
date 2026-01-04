@@ -32,3 +32,24 @@ The tests now progress further but fail at secret reveal step. This indicates:
 - The original DKG transcript publication issues are FIXED
 - A separate issue exists with the secret aggregation/reveal mechanism
 - This is likely a timing or on-chain state issue, not related to the original bugs
+
+## CI/CD Integration
+
+Created a dedicated GitHub Actions workflow for timelock smoke tests:
+
+**File:** `.github/workflows/smoke-test-timelock.yml`
+
+**Test Jobs:**
+1. `smoke-test-timelock-basic` - Basic timelock flow tests
+2. `smoke-test-dkg` - DKG startup and key publication tests
+3. `smoke-test-timelock` - Timelock module functionality tests
+4. `smoke-test-ibe` - IBE encryption/decryption tests (includes ibe_e2e)
+
+**Features:**
+- Runs on push to main, dev-atomica, and timelock-tests branches
+- Triggers on relevant file path changes (Move files, DKG crates, smoke tests)
+- 90-minute timeout per job to accommodate long-running integration tests
+- Sequential execution (--test-threads=1) to prevent resource conflicts
+- Shared Rust cache for faster builds
+
+**Status:** Active and monitoring all timelock-related code changes
