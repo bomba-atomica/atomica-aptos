@@ -1,6 +1,3 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
-
 //! Timelock secret revelation manager
 //!
 //! This module is responsible for monitoring timelock interval rotations
