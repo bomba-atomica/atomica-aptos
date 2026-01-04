@@ -106,16 +106,6 @@ jobs:
           cargo test -p smoke-test --lib timelock::basic_flow -- --nocapture --test-threads=1
         timeout-minutes: 60
 
-      - name: Check for test results
-        if: always()
-        run: |
-          if [ $? -eq 0 ]; then
-            echo "✅ Timelock basic flow smoke tests passed"
-          else
-            echo "❌ Timelock basic flow smoke tests failed"
-            exit 1
-          fi
-
   smoke-test-dkg:
     name: Smoke Test - DKG Startup & Key Publication
     runs-on: ubuntu-latest
@@ -181,16 +171,6 @@ jobs:
           cargo test -p smoke-test --lib timelock::test_dkg -- --nocapture --test-threads=1
         timeout-minutes: 60
 
-      - name: Check for test results
-        if: always()
-        run: |
-          if [ $? -eq 0 ]; then
-            echo "✅ DKG smoke tests passed"
-          else
-            echo "❌ DKG smoke tests failed"
-            exit 1
-          fi
-
   smoke-test-timelock:
     name: Smoke Test - Timelock Module
     runs-on: ubuntu-latest
@@ -249,16 +229,6 @@ jobs:
           echo "Running timelock module smoke tests..."
           cargo test -p smoke-test --lib timelock::test_timelock -- --nocapture --test-threads=1
         timeout-minutes: 60
-
-      - name: Check for test results
-        if: always()
-        run: |
-          if [ $? -eq 0 ]; then
-            echo "✅ Timelock module smoke tests passed"
-          else
-            echo "❌ Timelock module smoke tests failed"
-            exit 1
-          fi
 
   smoke-test-ibe:
     name: Smoke Test - IBE (Identity-Based Encryption)
@@ -324,13 +294,3 @@ jobs:
           echo "Running IBE E2E smoke test..."
           cargo test -p smoke-test --lib timelock::ibe_e2e -- --nocapture --test-threads=1
         timeout-minutes: 60
-
-      - name: Check for test results
-        if: always()
-        run: |
-          if [ $? -eq 0 ]; then
-            echo "✅ IBE smoke tests passed"
-          else
-            echo "❌ IBE smoke tests failed"
-            exit 1
-          fi

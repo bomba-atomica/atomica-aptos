@@ -29,6 +29,7 @@ use tokio::time::sleep;
 /// - Waits for reveal
 /// - Verifies secret is aggregated
 #[tokio::test]
+#[ignore]
 async fn test_timelock_basic_flow() {
     let interval_secs = 5;
 

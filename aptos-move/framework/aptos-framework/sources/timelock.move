@@ -137,6 +137,10 @@ module aptos_framework::timelock {
         state.current_interval = state.current_interval + 1;
         state.last_rotation_time = now;
 
+        // DEBUG: Log interval rotation
+        std::debug::print(&b"[TIMELOCK] Interval rotated to");
+        std::debug::print(&state.current_interval);
+
         // Get current validator set to determine threshold
         let validators = stake::cur_validator_consensus_infos();
         let validator_addresses = vector::empty<address>();
@@ -260,6 +264,11 @@ module aptos_framework::timelock {
         share: vector<u8>
     ) acquires TimelockState {
         let validator_addr = std::signer::address_of(validator);
+        // DEBUG: Log secret share publication attempt
+        std::debug::print(&b"[TIMELOCK] publish_secret_share called");
+        std::debug::print(&interval);
+        std::debug::print(&validator_addr);
+
         // 1. Verify validator authorization
         assert!(stake::is_current_epoch_validator(validator_addr), ENOT_VALIDATOR);
 
