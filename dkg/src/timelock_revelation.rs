@@ -1,15 +1,27 @@
-//! Timelock secret revelation manager
+//! Timelock IBE decryption key revelation manager
 //!
 //! This module is responsible for monitoring timelock interval rotations
-//! and publishing secret shares for past intervals to enable decryption.
+//! and publishing IBE decryption key components for past intervals.
 //!
-//! ## Design
+//! ## Design - IBE Threshold Decryption
 //!
-//! When a timelock interval rotates (e.g., from interval N to N+1):
-//! 1. Validators should compute their signature share for interval N
-//! 2. Each validator publishes a TimelockShare validator transaction
-//! 3. The timelock Move module aggregates these shares on-chain
-//! 4. Once threshold shares are received, the decryption key is revealed
+//! Each validator holds a share of the **master secret key** (from DKG).
+//! To reveal the decryption key for a past interval:
+//!
+//! 1. **Compute signature**: Each validator computes `sig_i = BLS_Sign(sk_i, interval_id)`
+//!    - `sk_i` is their master secret key share (NEVER exposed)
+//!    - `interval_id` is the interval number being revealed
+//!    - `sig_i` is a G1 point (BLS signature share)
+//!
+//! 2. **Publish**: Each validator broadcasts `TimelockShare { interval, sig_i }`
+//!
+//! 3. **Aggregate**: Timelock Move module sums the G1 points:
+//!    `decryption_key = sum(sig_1, sig_2, ..., sig_t)`
+//!
+//! 4. **Decrypt**: This aggregated G1 point IS the IBE decryption key for that interval
+//!
+//! **Security**: Validators publish derived cryptographic material (signatures),
+//! NOT their actual secret key shares. The secret shares remain private.
 //!
 //! ## Implementation Status
 //!
@@ -18,16 +30,25 @@
 //! 1. **Monitor interval rotations**: Subscribe to StartKeyGenEvent or poll
 //!    timelock module state to detect when intervals rotate
 //!
-//! 2. **Compute signature shares**: For each past interval that needs revelation:
-//!    - Retrieve the DKG secret key share for this validator
-//!    - Compute BLS signature share on the interval ID
-//!    - The signature is a G1 point that serves as the decryption key share
+//! 2. **Compute BLS signatures** (IBE decryption key components):
+//!    - Retrieve the DKG master secret key share for this validator (kept private!)
+//!    - Compute: `sig = BLS_Sign(secret_key_share, interval_id)`
+//!    - The signature is a G1 point representing this validator's contribution
+//!      to the decryption key
 //!
-//! 3. **Publish shares**: Create and broadcast TimelockShare validator transactions
-//!    containing the serialized G1 signature shares
+//! 3. **Publish decryption key components**: Create and broadcast TimelockShare
+//!    validator transactions containing the serialized G1 signature (not the secret!)
 //!
 //! 4. **Integration**: Hook this into the DKG manager or create a separate
 //!    timelock manager that runs alongside DKG
+//!
+//! ## Why This Is Secure
+//!
+//! Publishing BLS signature shares does NOT compromise the master secret:
+//! - The signature `H(m)^sk` reveals nothing about `sk` (discrete log problem)
+//! - This is the same principle used in threshold BLS signatures
+//! - The aggregated signatures form the IBE decryption key without exposing
+//!   the underlying master secret key
 
 use aptos_logger::{debug, info, warn};
 use aptos_types::{dkg::TimelockShare, validator_txn::ValidatorTransaction};
@@ -48,7 +69,7 @@ impl TimelockRevelationManager {
         Self { my_addr }
     }
 
-    /// Check if a new interval has started and publish shares for the previous interval
+    /// Check if a new interval has started and publish decryption key components for the previous interval
     pub fn maybe_reveal_for_past_interval(&mut self, current_interval: u64) {
         if current_interval == 0 {
             return;
@@ -56,41 +77,47 @@ impl TimelockRevelationManager {
 
         let past_interval = current_interval - 1;
         debug!(
-            "[TIMELOCK] Should reveal secret for interval {} (current: {})",
+            "[TIMELOCK] Should reveal decryption key for interval {} (current: {})",
             past_interval, current_interval
         );
 
         // TODO: Implement actual revelation logic
         warn!(
-            "[TIMELOCK] TODO: Compute and publish signature share for interval {}",
+            "[TIMELOCK] TODO: Compute and publish IBE decryption key component (BLS signature) for interval {}",
             past_interval
         );
 
         // Pseudocode for what needs to happen:
-        // 1. let secret_key_share = self.get_my_secret_key_share();
-        // 2. let signature_share = bls_sign(secret_key_share, interval_id);
-        // 3. let share_bytes = serialize_g1_point(signature_share);
-        // 4. let vtxn = ValidatorTransaction::TimelockShare(TimelockShare {
+        // 1. let secret_key_share = self.get_my_dkg_secret_key_share(); // NEVER expose this!
+        // 2. let interval_id_bytes = bcs::to_bytes(&past_interval);
+        // 3. let signature_g1 = bls_sign_g1(secret_key_share, interval_id_bytes);
+        //    ^ This signature is SAFE to publish - it's derived crypto, not the raw secret
+        // 4. let signature_bytes = serialize_g1_compressed(signature_g1);
+        // 5. let vtxn = ValidatorTransaction::TimelockShare(TimelockShare {
         //        interval: past_interval,
         //        author: self.my_addr,
-        //        share: share_bytes,
+        //        share: signature_bytes,  // G1 point bytes
         //    });
-        // 5. self.vtxn_pool.push(vtxn);
+        // 6. self.vtxn_pool.push(vtxn);
+        //
+        // When threshold validators publish, Move module aggregates:
+        //   decryption_key = sum(sig_1, sig_2, ..., sig_t)
+        // This is the IBE decryption key for the interval.
     }
 
-    /// Create a timelock share for the given interval
+    /// Create a timelock decryption key component for the given interval
     ///
     /// TODO: This is a stub - needs actual BLS signature implementation
-    fn _create_share_stub(&self, interval: u64) -> TimelockShare {
+    fn _create_decryption_key_component_stub(&self, interval: u64) -> TimelockShare {
         info!(
-            "[TIMELOCK] Creating share for interval {} (STUB - will not work!)",
+            "[TIMELOCK] Creating IBE decryption key component (BLS signature) for interval {} (STUB - will not work!)",
             interval
         );
 
         TimelockShare {
             interval,
             author: self.my_addr,
-            share: vec![], // TODO: Replace with actual BLS signature
+            share: vec![], // TODO: Replace with actual BLS signature on interval_id (G1 point)
         }
     }
 }
