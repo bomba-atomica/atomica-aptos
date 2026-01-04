@@ -16,6 +16,7 @@ module aptos_framework::timelock {
 
     friend aptos_framework::block;
     friend aptos_framework::genesis;
+    friend aptos_framework::reconfiguration_with_dkg;
 
     /// The singleton was not initialized.
     const ETIMELOCK_NOT_INITIALIZED: u64 = 1;
@@ -100,6 +101,27 @@ module aptos_framework::timelock {
             request_reveal_events: account::new_event_handle<RequestRevealEvent>(framework),
             secret_revealed_events: account::new_event_handle<SecretRevealedEvent>(framework),
         });
+    }
+
+    /// Called when DKG completes to publish the transcript for timelock use.
+    /// This is a friend function called from reconfiguration_with_dkg module.
+    public(friend) fun on_dkg_complete(transcript: vector<u8>) acquires TimelockState {
+        if (!exists<TimelockState>(@aptos_framework)) {
+            return
+        };
+
+        let state = borrow_global_mut<TimelockState>(@aptos_framework);
+        let current_interval = state.current_interval;
+
+        // Only publish if not already present
+        if (!table::contains(&state.public_keys, current_interval)) {
+            table::add(&mut state.public_keys, current_interval, transcript);
+
+            event::emit_event(&mut state.key_published_events, KeyPublishedEvent {
+                interval: current_interval,
+                public_key: transcript,
+            });
+        };
     }
 
     /// Internal function to perform rotation logic
@@ -223,7 +245,7 @@ module aptos_framework::timelock {
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
         if (!table::contains(&state.public_keys, interval)) {
             table::add(&mut state.public_keys, interval, pk);
-            
+
             event::emit_event(&mut state.key_published_events, KeyPublishedEvent {
                 interval,
                 public_key: pk,

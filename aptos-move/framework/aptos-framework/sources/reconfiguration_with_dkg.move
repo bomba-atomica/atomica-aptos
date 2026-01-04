@@ -16,6 +16,7 @@ module aptos_framework::reconfiguration_with_dkg {
     use aptos_framework::reconfiguration_state;
     use aptos_framework::stake;
     use aptos_framework::system_addresses;
+    use aptos_framework::timelock;
     friend aptos_framework::block;
     friend aptos_framework::aptos_governance;
 
@@ -63,7 +64,9 @@ module aptos_framework::reconfiguration_with_dkg {
     /// Complete the current reconfiguration with DKG.
     /// Abort if no DKG is in progress.
     fun finish_with_dkg_result(account: &signer, dkg_result: vector<u8>) {
+        // Publish DKG transcript for both randomness and timelock
         dkg::finish(dkg_result);
+        timelock::on_dkg_complete(dkg_result);
         finish(account);
     }
 }
