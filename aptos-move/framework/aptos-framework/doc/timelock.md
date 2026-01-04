@@ -15,6 +15,7 @@
 -  [Struct `SecretRevealedEvent`](#0x1_timelock_SecretRevealedEvent)
 -  [Constants](#@Constants_0)
 -  [Function `initialize`](#0x1_timelock_initialize)
+-  [Function `on_dkg_complete`](#0x1_timelock_on_dkg_complete)
 -  [Function `perform_rotation`](#0x1_timelock_perform_rotation)
 -  [Function `on_new_block`](#0x1_timelock_on_new_block)
 -  [Function `trigger_rotation`](#0x1_timelock_trigger_rotation)
@@ -451,6 +452,47 @@ Initialize the timelock system.
         request_reveal_events: <a href="account.md#0x1_account_new_event_handle">account::new_event_handle</a>&lt;<a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a>&gt;(framework),
         secret_revealed_events: <a href="account.md#0x1_account_new_event_handle">account::new_event_handle</a>&lt;<a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a>&gt;(framework),
     });
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_timelock_on_dkg_complete"></a>
+
+## Function `on_dkg_complete`
+
+Called when DKG completes to publish the transcript for timelock use.
+This is a friend function called from reconfiguration_with_dkg module.
+
+
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_on_dkg_complete">on_dkg_complete</a>(transcript: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;)
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_on_dkg_complete">on_dkg_complete</a>(transcript: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;) <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
+    <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
+        <b>return</b>
+    };
+
+    <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
+    <b>let</b> current_interval = state.current_interval;
+
+    // Only publish <b>if</b> not already present
+    <b>if</b> (!<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.public_keys, current_interval)) {
+        <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.public_keys, current_interval, transcript);
+
+        <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> state.key_published_events, <a href="timelock.md#0x1_timelock_KeyPublishedEvent">KeyPublishedEvent</a> {
+            interval: current_interval,
+            public_key: transcript,
+        });
+    };
 }
 </code></pre>
 
