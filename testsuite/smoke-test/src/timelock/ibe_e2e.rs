@@ -26,10 +26,10 @@ use tokio::time::sleep;
 async fn test_ibe_encrypt_decrypt_e2e() {
     let interval_secs = 5;
 
-    info!("Starting IBE E2E test with 4 validators");
+    info!("Starting IBE E2E test with 3 validators");
 
-    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(4)
-        .with_num_fullnodes(1)
+    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(3)
+        .with_num_fullnodes(0)
         .with_aptos()
         .with_init_genesis_config(Arc::new(move |conf| {
             // Enable validator transactions (required for timelock)

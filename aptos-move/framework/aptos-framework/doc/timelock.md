@@ -478,9 +478,8 @@ This is a friend function called from reconfiguration_with_dkg module.
 
 
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_on_dkg_complete">on_dkg_complete</a>(transcript: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;) <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
-    <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
-        <b>return</b>
-    };
+    // <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> must exist - it's initialized in <a href="genesis.md#0x1_genesis">genesis</a>
+    <b>assert</b>!(<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework), <a href="timelock.md#0x1_timelock_ETIMELOCK_NOT_INITIALIZED">ETIMELOCK_NOT_INITIALIZED</a>);
 
     <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
     <b>let</b> current_interval = state.current_interval;

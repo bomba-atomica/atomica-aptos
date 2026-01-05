@@ -110,9 +110,8 @@ module aptos_framework::timelock {
     /// Called when DKG completes to publish the transcript for timelock use.
     /// This is a friend function called from reconfiguration_with_dkg module.
     public(friend) fun on_dkg_complete(transcript: vector<u8>) acquires TimelockState {
-        if (!exists<TimelockState>(@aptos_framework)) {
-            return
-        };
+        // TimelockState must exist - it's initialized in genesis
+        assert!(exists<TimelockState>(@aptos_framework), ETIMELOCK_NOT_INITIALIZED);
 
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
         let current_interval = state.current_interval;

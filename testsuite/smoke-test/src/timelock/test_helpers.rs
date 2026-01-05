@@ -19,8 +19,8 @@ pub struct TimelockTestConfig {
 impl Default for TimelockTestConfig {
     fn default() -> Self {
         Self {
-            num_validators: 4,
-            num_fullnodes: 1,
+            num_validators: 3,
+            num_fullnodes: 0,
             epoch_duration_secs: 20,
             timelock_interval_secs: Some(5),
         }
@@ -33,6 +33,8 @@ impl Default for TimelockTestConfig {
 /// - Validator transactions are enabled
 /// - Randomness config is enabled (required for DKG)
 /// - Optional custom epoch duration
+///
+/// Default configuration uses 3 validators and 0 fullnodes for faster test execution.
 pub async fn create_timelock_swarm(
     config: TimelockTestConfig,
 ) -> (

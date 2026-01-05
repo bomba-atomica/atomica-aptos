@@ -21,10 +21,10 @@ use std::{sync::Arc, time::Duration};
 async fn test_dkg_manager_startup() {
     let epoch_duration_secs = 20;
 
-    info!("Building swarm with 4 validators");
+    info!("Building swarm with 3 validators");
 
-    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(4)
-        .with_num_fullnodes(1)
+    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(3)
+        .with_num_fullnodes(0)
         .with_aptos()
         .with_init_genesis_config(Arc::new(move |conf| {
             conf.epoch_duration_secs = epoch_duration_secs;

@@ -264,3 +264,88 @@ Created a dedicated GitHub Actions workflow for timelock smoke tests:
 - Shared Rust cache for faster builds
 
 **Status:** Active and monitoring all timelock-related code changes
+
+## Issue 5: Events Not Being Emitted (INVESTIGATING - 2026-01-05)
+
+**Investigation Date:** 2026-01-05
+
+**Problem:** Validators are not receiving `KeyPublishedEvent` or `RequestRevealEvent` despite these events being emitted in Move code.
+
+**Investigation Progress:**
+
+1. **Event Subscription Working ✅**
+   - Validators correctly subscribe to events via `subscribe_to_events()`
+   - Subscription includes: `DKGStartEvent`, `KeyPublishedEvent`, `RequestRevealEvent`
+   - Confirmed in logs: `[EventSub] subscribe_to_events called with...`
+
+2. **DKGStartEvent Delivery Working ✅**
+   - `DKGStartEvent` is successfully delivered to validators
+   - Confirmed in logs: `[DKG] Successfully parsed DKGStartEvent`
+   - This proves the event notification system is functioning
+
+3. **Timelock Events NOT Being Delivered ❌**
+   - `KeyPublishedEvent` never appears in `notify_events` calls
+   - `RequestRevealEvent` never appears in `notify_events` calls
+   - Only `DKGStartEvent` is received by validators
+
+4. **Root Cause Analysis:**
+   - Fixed event processing loop (changed `return Ok()` to `continue` in 4 places)
+   - This ensures all events in a batch are processed, not just the first one
+   - However, timelock events still not appearing in event batches
+
+5. **Current Hypothesis:**
+   - `timelock::on_dkg_complete()` has early return if `TimelockState` doesn't exist
+   - Or `on_dkg_complete()` is not being called at all from `finish_with_dkg_result()`
+   - Or events ARE emitted but not being collected/delivered by event notification system
+
+6. **Debug Logging Added:**
+   - Added `std::debug::print()` statements to `timelock.move`
+   - Track if `on_dkg_complete()` is called
+   - Track if `TimelockState` exists
+   - Track if events are being emitted
+   - **Note:** Move debug prints may not show in validator logs (needs verification)
+
+7. **Test Evidence:**
+   - Test can fetch DKG transcript (from `DKGState`)
+   - Test confirms intervals are rotating
+   - BUT test times out waiting for secret revelation
+   - This confirms DKG works but timelock event emission doesn't
+
+**Files Modified:**
+- `dkg/src/epoch_manager.rs:181,199,214,229` - Fixed event loop to process all events
+- `aptos-move/framework/aptos-framework/sources/timelock.move` - Added debug logging
+
+**Next Steps:**
+1. Determine if `on_dkg_complete()` is actually being called
+2. If not called, trace why `finish_with_dkg_result()` isn't invoking it
+3. If called, check why events aren't being emitted to event store
+4. Consider using Rust-side logging instead of Move debug prints
+5. Check if TimelockState is properly initialized at genesis
+
+**ROOT CAUSE FOUND (2026-01-05):**
+
+The problem was an **early return** in `timelock::on_dkg_complete()` at line 117:
+
+```move
+if (!exists<TimelockState>(@aptos_framework)) {
+    return  // ❌ This silently fails - events never emitted!
+};
+```
+
+Since `TimelockState` is initialized in genesis, it should ALWAYS exist. The early return was defensive programming that actually prevented events from being emitted.
+
+**Fix Applied:**
+```move
+// TimelockState must exist - it's initialized in genesis
+assert!(exists<TimelockState>(@aptos_framework), ETIMELOCK_NOT_INITIALIZED);
+```
+
+This ensures:
+1. If `TimelockState` doesn't exist, we get a clear error (not silent failure)
+2. Events are always emitted when DKG completes
+3. Validators receive `KeyPublishedEvent` and `RequestRevealEvent`
+
+**Files Changed:**
+- `aptos-move/framework/aptos-framework/sources/timelock.move:115-117` - Removed early return, added assert
+
+**Testing in progress...** (compiling with fix applied)

@@ -34,12 +34,12 @@ async fn test_timelock_basic_flow() {
     let interval_secs = 5;
 
     info!(
-        "Building swarm with 4 validators and {}-second interval",
+        "Building swarm with 3 validators and {}-second interval",
         interval_secs
     );
 
-    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(4)
-        .with_num_fullnodes(1)
+    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(3)
+        .with_num_fullnodes(0)
         .with_aptos()
         .with_init_genesis_config(Arc::new(move |conf| {
             // Enable validator transactions (required for timelock)
@@ -200,7 +200,7 @@ async fn test_timelock_config_override() {
 #[tokio::test]
 #[ignore]
 async fn test_timelock_with_validator_changes() {
-    // TODO: Start with 4 validators
+    // TODO: Start with 3 validators
     // TODO: Trigger DKG for interval 1
     // TODO: Add validator during DKG
     // TODO: Verify new validator doesn't break DKG
@@ -213,8 +213,8 @@ async fn test_timelock_with_validator_changes() {
 #[tokio::test]
 #[ignore]
 async fn test_timelock_dkg_failure_recovery() {
-    // TODO: Start with 4 validators
-    // TODO: Kill 2 validators during DKG
+    // TODO: Start with 3 validators
+    // TODO: Kill 1 validator during DKG (below threshold of 3)
     // TODO: Verify DKG fails (below threshold)
     // TODO: Restart validators
     // TODO: Verify next interval DKG succeeds

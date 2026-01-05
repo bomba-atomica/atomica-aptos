@@ -178,7 +178,6 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                     info!("[DKG] Successfully parsed DKGStartEvent");
                     if let Some(tx) = self.dkg_start_event_tx.as_ref() {
                         let _ = tx.push((), dkg_start_event);
-                        return Ok(());
                     } else {
                         warn!("[DKG] Received DKGStartEvent but DKG is disabled/not initialized");
                     }
@@ -197,7 +196,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                         timelock_start.interval
                     );
                     self.start_timelock_dkg(timelock_start);
-                    return Ok(());
+                    continue;
                 },
                 Err(e) => {
                     debug!("[DKG] Not a StartKeyGenEvent: {:?}", e);
@@ -212,7 +211,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                         timelock_key.interval
                     );
                     self.process_timelock_key_published(timelock_key);
-                    return Ok(());
+                    continue;
                 },
                 Err(e) => {
                     debug!("[DKG] Not a KeyPublishedEvent: {:?}", e);
@@ -227,7 +226,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                         timelock_reveal.interval
                     );
                     self.process_timelock_reveal(timelock_reveal);
-                    return Ok(());
+                    continue;
                 },
                 Err(e) => {
                     debug!("[DKG] Not a RequestRevealEvent: {:?}", e);
