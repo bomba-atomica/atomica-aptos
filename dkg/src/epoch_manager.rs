@@ -154,11 +154,19 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         let EventNotification {
             subscribed_events, ..
         } = notification;
+        aptos_logger::warn!(
+            "[DKG] DEBUG: on_dkg_start_notification ENTRY. Events count: {}",
+            subscribed_events.len()
+        );
         info!(
             "[DKG] on_dkg_start_notification: Received {} events",
             subscribed_events.len()
         );
         for event in subscribed_events {
+            aptos_logger::warn!(
+                "[DKG] Processing event with type tag: {:?}",
+                event.type_tag()
+            );
             info!(
                 "[DKG] Processing event with type tag: {:?}",
                 event.type_tag()
@@ -751,6 +759,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
     fn process_timelock_reveal(&self, event: RequestRevealEvent) {
         info!("[Timelock] Revealing share for interval {}", event.interval);
+        aptos_logger::warn!("[DKG] DEBUG: process_timelock_reveal called for interval {}", event.interval);
 
         // 1. Retrieve secret share from storage
         let share_bytes = match self.retrieve_timelock_share(event.interval) {

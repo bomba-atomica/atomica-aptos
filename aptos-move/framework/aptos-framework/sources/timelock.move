@@ -64,23 +64,27 @@ module aptos_framework::timelock {
     }
 
     /// Event emitted to tell validators: "Please generate keys for interval X"
+    #[event]
     struct StartKeyGenEvent has drop, store {
         interval: u64,
         config: TimelockConfig,
     }
 
     /// Event emitted when MPK (transcript) is published
+    #[event]
     struct KeyPublishedEvent has drop, store {
         interval: u64,
         public_key: vector<u8>,
     }
 
     /// Event emitted to tell validators: "Please reveal the secret for interval X"
+    #[event]
     struct RequestRevealEvent has drop, store {
         interval: u64,
     }
 
     /// Event emitted when a secret is fully reconstructed
+    #[event]
     struct SecretRevealedEvent has drop, store {
         interval: u64,
         secret: vector<u8>,
@@ -117,7 +121,7 @@ module aptos_framework::timelock {
         if (!table::contains(&state.public_keys, current_interval)) {
             table::add(&mut state.public_keys, current_interval, transcript);
 
-            event::emit_event(&mut state.key_published_events, KeyPublishedEvent {
+            event::emit(KeyPublishedEvent {
                 interval: current_interval,
                 public_key: transcript,
             });
@@ -130,7 +134,7 @@ module aptos_framework::timelock {
         let old_interval = state.current_interval;
 
         // Emit reveal event for the old interval
-        event::emit_event(&mut state.request_reveal_events, RequestRevealEvent {
+        event::emit(RequestRevealEvent {
             interval: old_interval,
         });
 
@@ -170,7 +174,7 @@ module aptos_framework::timelock {
         };
         table::add(&mut state.interval_configs, state.current_interval, interval_config);
 
-        event::emit_event(&mut state.start_keygen_events, StartKeyGenEvent {
+        event::emit(StartKeyGenEvent {
             interval: state.current_interval,
             config,
         });
@@ -250,7 +254,7 @@ module aptos_framework::timelock {
         if (!table::contains(&state.public_keys, interval)) {
             table::add(&mut state.public_keys, interval, pk);
 
-            event::emit_event(&mut state.key_published_events, KeyPublishedEvent {
+            event::emit(KeyPublishedEvent {
                 interval,
                 public_key: pk,
             });
@@ -346,7 +350,7 @@ module aptos_framework::timelock {
             table::add(&mut state.revealed_secrets, interval, aggregated_bytes);
 
             // Emit event
-            event::emit_event(&mut state.secret_revealed_events, SecretRevealedEvent {
+            event::emit(SecretRevealedEvent {
                 interval,
                 secret: aggregated_bytes,
             });

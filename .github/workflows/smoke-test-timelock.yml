@@ -46,10 +46,10 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  smoke-test-timelock-basic:
-    name: Smoke Test - Timelock Basic Flow
+  smoke-test-timelock:
+    name: Timelock Smoke Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -94,70 +94,23 @@ jobs:
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "smoke-test-timelock"
+          shared-key: "atomica-test"
           cache-on-failure: true
           cache-all-crates: true
           workspaces: "."
           add-job-id-key: false
+
+      - name: Build aptos-node with smoke test features
+        run: |
+          echo "Building aptos-node with smoke test features..."
+          cargo build -p aptos-node --features=failpoints,indexer,smoke-test
+        timeout-minutes: 60
 
       - name: Run timelock basic flow smoke tests
         run: |
           echo "Running timelock basic flow smoke tests..."
           cargo test -p smoke-test --lib timelock::basic_flow -- --nocapture --test-threads=1
         timeout-minutes: 60
-
-  smoke-test-dkg:
-    name: Smoke Test - DKG Startup & Key Publication
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.75.0
-
-      - name: Free up disk space
-        run: |
-          echo "Disk space before cleanup:"
-          df -h
-
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker system prune -af
-
-          echo "Disk space after cleanup:"
-          df -h
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            clang \
-            libssl-dev \
-            pkg-config \
-            libpq-dev \
-            lld \
-            libudev-dev \
-            libdw-dev
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "smoke-test-timelock"
-          cache-on-failure: true
-          cache-all-crates: true
-          workspaces: "."
-          add-job-id-key: false
 
       - name: Run DKG startup smoke tests
         run: |
@@ -171,117 +124,11 @@ jobs:
           cargo test -p smoke-test --lib timelock::test_dkg -- --nocapture --test-threads=1
         timeout-minutes: 60
 
-  smoke-test-timelock:
-    name: Smoke Test - Timelock Module
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.75.0
-
-      - name: Free up disk space
-        run: |
-          echo "Disk space before cleanup:"
-          df -h
-
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker system prune -af
-
-          echo "Disk space after cleanup:"
-          df -h
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            clang \
-            libssl-dev \
-            pkg-config \
-            libpq-dev \
-            lld \
-            libudev-dev \
-            libdw-dev
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "smoke-test-timelock"
-          cache-on-failure: true
-          cache-all-crates: true
-          workspaces: "."
-          add-job-id-key: false
-
       - name: Run timelock module smoke tests
         run: |
           echo "Running timelock module smoke tests..."
           cargo test -p smoke-test --lib timelock::test_timelock -- --nocapture --test-threads=1
         timeout-minutes: 60
-
-  smoke-test-ibe:
-    name: Smoke Test - IBE (Identity-Based Encryption)
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.75.0
-
-      - name: Free up disk space
-        run: |
-          echo "Disk space before cleanup:"
-          df -h
-
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker system prune -af
-
-          echo "Disk space after cleanup:"
-          df -h
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            clang \
-            libssl-dev \
-            pkg-config \
-            libpq-dev \
-            lld \
-            libudev-dev \
-            libdw-dev
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "smoke-test-timelock"
-          cache-on-failure: true
-          cache-all-crates: true
-          workspaces: "."
-          add-job-id-key: false
 
       - name: Run IBE smoke tests
         run: |

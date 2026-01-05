@@ -242,10 +242,10 @@
 
 ## Struct `StartKeyGenEvent`
 
-Event emitted to tell validators: "Please generate keys for interval X"
 
 
-<pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> <b>has</b> drop, store
+<pre><code>#[<a href="event.md#0x1_event">event</a>]
+<b>struct</b> <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> <b>has</b> drop, store
 </code></pre>
 
 
@@ -276,10 +276,10 @@ Event emitted to tell validators: "Please generate keys for interval X"
 
 ## Struct `KeyPublishedEvent`
 
-Event emitted when MPK (transcript) is published
 
 
-<pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_KeyPublishedEvent">KeyPublishedEvent</a> <b>has</b> drop, store
+<pre><code>#[<a href="event.md#0x1_event">event</a>]
+<b>struct</b> <a href="timelock.md#0x1_timelock_KeyPublishedEvent">KeyPublishedEvent</a> <b>has</b> drop, store
 </code></pre>
 
 
@@ -310,10 +310,10 @@ Event emitted when MPK (transcript) is published
 
 ## Struct `RequestRevealEvent`
 
-Event emitted to tell validators: "Please reveal the secret for interval X"
 
 
-<pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> <b>has</b> drop, store
+<pre><code>#[<a href="event.md#0x1_event">event</a>]
+<b>struct</b> <a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> <b>has</b> drop, store
 </code></pre>
 
 
@@ -338,10 +338,10 @@ Event emitted to tell validators: "Please reveal the secret for interval X"
 
 ## Struct `SecretRevealedEvent`
 
-Event emitted when a secret is fully reconstructed
 
 
-<pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a> <b>has</b> drop, store
+<pre><code>#[<a href="event.md#0x1_event">event</a>]
+<b>struct</b> <a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a> <b>has</b> drop, store
 </code></pre>
 
 
@@ -489,7 +489,7 @@ This is a friend function called from reconfiguration_with_dkg module.
     <b>if</b> (!<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.public_keys, current_interval)) {
         <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.public_keys, current_interval, transcript);
 
-        <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> state.key_published_events, <a href="timelock.md#0x1_timelock_KeyPublishedEvent">KeyPublishedEvent</a> {
+        <a href="event.md#0x1_event_emit">event::emit</a>(<a href="timelock.md#0x1_timelock_KeyPublishedEvent">KeyPublishedEvent</a> {
             interval: current_interval,
             public_key: transcript,
         });
@@ -522,7 +522,7 @@ Internal function to perform rotation logic
     <b>let</b> old_interval = state.current_interval;
 
     // Emit reveal <a href="event.md#0x1_event">event</a> for the <b>old</b> interval
-    <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> state.request_reveal_events, <a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> {
+    <a href="event.md#0x1_event_emit">event::emit</a>(<a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> {
         interval: old_interval,
     });
 
@@ -562,7 +562,7 @@ Internal function to perform rotation logic
     };
     <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.interval_configs, state.current_interval, interval_config);
 
-    <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> state.start_keygen_events, <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
+    <a href="event.md#0x1_event_emit">event::emit</a>(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
         interval: state.current_interval,
         config,
     });
@@ -722,7 +722,7 @@ validators call this to publish the public key for a future interval
     <b>if</b> (!<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.public_keys, interval)) {
         <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.public_keys, interval, pk);
 
-        <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> state.key_published_events, <a href="timelock.md#0x1_timelock_KeyPublishedEvent">KeyPublishedEvent</a> {
+        <a href="event.md#0x1_event_emit">event::emit</a>(<a href="timelock.md#0x1_timelock_KeyPublishedEvent">KeyPublishedEvent</a> {
             interval,
             public_key: pk,
         });
@@ -838,7 +838,7 @@ validators call this to publish the secret share/signature for a past interval
         <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.revealed_secrets, interval, aggregated_bytes);
 
         // Emit <a href="event.md#0x1_event">event</a>
-        <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> state.secret_revealed_events, <a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a> {
+        <a href="event.md#0x1_event_emit">event::emit</a>(<a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a> {
             interval,
             secret: aggregated_bytes,
         });
