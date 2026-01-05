@@ -90,6 +90,11 @@ pub async fn configure_timelock_interval<S: Swarm>(
     let root_account = swarm.chain_info().root_account();
     let interval_us: u64 = interval_secs * 1_000_000;
 
+    info!(
+        "Creating transaction to set interval to {} microseconds",
+        interval_us
+    );
+
     let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
         aptos_types::transaction::EntryFunction::new(
             ModuleId::new(
@@ -109,8 +114,27 @@ pub async fn configure_timelock_interval<S: Swarm>(
             .gas_unit_price(100),
     );
 
-    client.submit_and_wait(&signed_txn).await?;
-    info!("Timelock interval configured successfully");
+    info!("Submitting timelock config transaction...");
+    let response = client.submit_and_wait(&signed_txn).await?;
+    info!(
+        "Timelock config transaction completed: success={}",
+        response.inner().success()
+    );
+
+    if !response.inner().success() {
+        anyhow::bail!(
+            "Timelock config transaction failed: {:?}",
+            response.inner().vm_status()
+        );
+    }
+
+    // Give it a moment to be applied
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    info!(
+        "Timelock interval configured successfully to {} seconds",
+        interval_secs
+    );
 
     Ok(())
 }

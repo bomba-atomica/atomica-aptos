@@ -97,7 +97,7 @@ default = []
 failpoints = ["fail/failpoints", "aptos-consensus/failpoints", "aptos-executor/failpoints", "aptos-mempool/failpoints", "aptos-api/failpoints", "aptos-config/failpoints"]
 indexer = ["aptos-indexer"]
 tokio-console = ["aptos-logger/tokio-console", "aptos-config/tokio-console"]
-smoke-test = ["aptos-jwk-consensus/smoke-test", "aptos-dkg-runtime/smoke-test"]
+smoke-test = ["testing", "aptos-jwk-consensus/smoke-test", "aptos-dkg-runtime/smoke-test"]
 testing = ["aptos-vm/testing", "aptos-framework/testing", "aptos-dkg-runtime/smoke-test"]
 
 [package.metadata.cargo-machete]

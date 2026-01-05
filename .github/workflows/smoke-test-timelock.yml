@@ -112,11 +112,33 @@ jobs:
           cargo test -p smoke-test --lib timelock::basic_flow -- --nocapture --test-threads=1
         timeout-minutes: 60
 
+      - name: Upload validator logs for basic flow
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validator-logs-basic-flow-${{ github.run_id }}
+          path: |
+            /tmp/**/*.log
+            /tmp/**/log/*.log
+            /tmp/**/logs/*.log
+            /var/tmp/**/*.log
+
       - name: Run DKG startup smoke tests
         run: |
           echo "Running DKG startup smoke tests..."
           cargo test -p smoke-test --lib timelock::dkg_startup -- --nocapture --test-threads=1
         timeout-minutes: 60
+
+      - name: Upload validator logs for DKG startup
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validator-logs-dkg-startup-${{ github.run_id }}
+          path: |
+            /tmp/**/*.log
+            /tmp/**/log/*.log
+            /tmp/**/logs/*.log
+            /var/tmp/**/*.log
 
       - name: Run DKG tests
         run: |
@@ -124,11 +146,33 @@ jobs:
           cargo test -p smoke-test --lib timelock::test_dkg -- --nocapture --test-threads=1
         timeout-minutes: 60
 
+      - name: Upload validator logs for DKG tests
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validator-logs-dkg-tests-${{ github.run_id }}
+          path: |
+            /tmp/**/*.log
+            /tmp/**/log/*.log
+            /tmp/**/logs/*.log
+            /var/tmp/**/*.log
+
       - name: Run timelock module smoke tests
         run: |
           echo "Running timelock module smoke tests..."
           cargo test -p smoke-test --lib timelock::test_timelock -- --nocapture --test-threads=1
         timeout-minutes: 60
+
+      - name: Upload validator logs for timelock module
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validator-logs-timelock-module-${{ github.run_id }}
+          path: |
+            /tmp/**/*.log
+            /tmp/**/log/*.log
+            /tmp/**/logs/*.log
+            /var/tmp/**/*.log
 
       - name: Run IBE smoke tests
         run: |
@@ -136,8 +180,30 @@ jobs:
           cargo test -p smoke-test --lib timelock::test_ibe -- --nocapture --test-threads=1
         timeout-minutes: 60
 
+      - name: Upload validator logs for IBE tests
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validator-logs-ibe-tests-${{ github.run_id }}
+          path: |
+            /tmp/**/*.log
+            /tmp/**/log/*.log
+            /tmp/**/logs/*.log
+            /var/tmp/**/*.log
+
       - name: Run IBE E2E smoke test
         run: |
           echo "Running IBE E2E smoke test..."
           cargo test -p smoke-test --lib timelock::ibe_e2e -- --nocapture --test-threads=1
         timeout-minutes: 60
+
+      - name: Upload validator logs for IBE E2E
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validator-logs-ibe-e2e-${{ github.run_id }}
+          path: |
+            /tmp/**/*.log
+            /tmp/**/log/*.log
+            /tmp/**/logs/*.log
+            /var/tmp/**/*.log

@@ -25,18 +25,21 @@ module aptos_framework::timelock_config {
     /// Global configuration for timelock intervals.
     struct TimelockConfig has key {
         /// Interval duration in microseconds.
-        /// Default: 1 hour = 3600 * 1_000_000 microseconds
-        /// Test: 5 seconds = 5 * 1_000_000 microseconds (for fast testing)
+        /// Default: 5 seconds = 5 * 1_000_000 microseconds
+        /// TODO: Change to 1 hour (3600 * 1_000_000) for production deployment
         interval_microseconds: u64,
     }
 
-    /// Initialize with default 1-hour interval.
+    /// Initialize with default 5-second interval.
     /// Called during genesis to set up the timelock configuration.
+    ///
+    /// NOTE: Currently set to 5 seconds for testing/development.
+    /// TODO: Change to 1 hour for production mainnet deployment.
     public(friend) fun initialize(framework: &signer) {
         system_addresses::assert_aptos_framework(framework);
         if (!exists<TimelockConfig>(@aptos_framework)) {
             move_to(framework, TimelockConfig {
-                interval_microseconds: 3600 * 1000000,
+                interval_microseconds: 5 * 1000000,  // 5 seconds (was 3600 * 1000000 = 1 hour)
             });
         }
     }
@@ -79,10 +82,13 @@ module aptos_framework::timelock_config {
     }
 
     #[view]
-    /// Get the current interval duration in microseconds. Returns the configured interval, or the default (1 hour) if not initialized. Used by the timelock module to determine rotation timing.
+    /// Get the current interval duration in microseconds. Returns the configured interval, or the default (5 seconds) if not initialized. Used by the timelock module to determine rotation timing.
+    ///
+    /// NOTE: Default is 5 seconds for testing/development.
+    /// TODO: Change to 1 hour for production mainnet deployment.
     public fun get_interval_microseconds(): u64 acquires TimelockConfig {
         if (!exists<TimelockConfig>(@aptos_framework)) {
-            return 3600 * 1000000
+            return 5 * 1000000  // 5 seconds (was 3600 * 1000000 = 1 hour)
         };
         borrow_global<TimelockConfig>(@aptos_framework).interval_microseconds
     }
@@ -94,7 +100,7 @@ module aptos_framework::timelock_config {
     fun test_initialize_and_get(framework: &signer) acquires TimelockConfig {
         chain_id::initialize_for_test(framework, 4); // testnet
         initialize(framework);
-        assert!(get_interval_microseconds() == 3600 * 1000000, 0);
+        assert!(get_interval_microseconds() == 5 * 1000000, 0);  // Now defaults to 5 seconds
     }
 
     #[test(framework = @aptos_framework)]
@@ -120,6 +126,6 @@ module aptos_framework::timelock_config {
     #[test]
     fun test_get_default_when_not_initialized() acquires TimelockConfig {
         // Should return default even if not initialized
-        assert!(get_interval_microseconds() == 3600 * 1000000, 0);
+        assert!(get_interval_microseconds() == 5 * 1000000, 0);  // Now defaults to 5 seconds
     }
 }

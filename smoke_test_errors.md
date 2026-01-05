@@ -349,3 +349,73 @@ This ensures:
 - `aptos-move/framework/aptos-framework/sources/timelock.move:115-117` - Removed early return, added assert
 
 **Testing in progress...** (compiling with fix applied)
+---
+
+## Issue 6: Interval Rotation Not Happening (ACTIVE - 2026-01-05)
+
+**Test**: `test_timelock_secret_revelation`
+**Status**: FAILING  
+**Error**: Test times out waiting for secret revelation
+
+### Investigation
+
+**Symptoms**:
+- Test waits 60 seconds for secret to be revealed
+- Secret never appears
+- No `RequestRevealEvent` received by validators
+
+**Root Cause Found**:
+Timelock intervals are not rotating because the interval duration configuration is not being applied.
+
+**Evidence**:
+1. ✅ Events subscribed correctly
+2. ✅ `DKGStartEvent` received and processed
+3. ✅ `finish_with_dkg_result()` called and succeeds
+4. ❌ **NO interval rotations happening** (no `perform_rotation()` calls)
+5. ❌ **NO `KeyPublishedEvent` or `RequestRevealEvent` delivered**
+
+**Analysis**:
+
+The `timelock_config::get_interval_microseconds()` function returns:
+- **Default**: 3600 * 1000000 (1 hour) if `TimelockConfig` not initialized  
+- **Test expects**: 5 * 1000000 (5 seconds)
+
+The test helper calls `configure_timelock_interval()` to set 5 seconds, but this configuration is NOT taking effect.
+
+**Logs Evidence**:
+```bash
+# No configuration message in logs:
+$ grep "Configuring timelock interval" /var/folders/.../validator.log
+(no output)
+
+# No interval rotations:
+$ grep "perform_rotation\|Interval rotated" /var/folders/.../validator.log
+(no output)
+
+# finish_with_dkg_result succeeds but events not delivered:
+$ grep "finish_with_dkg_result" /var/folders/.../validator.log  
+[TIMELOCK] About to call finish_with_dkg_result Move function
+[TIMELOCK] finish_with_dkg_result execution result: true
+```
+
+### Possible Causes
+
+1. **Configuration transaction not executed**: The `configure_timelock_interval()` transaction may not be submitted
+2. **Configuration transaction fails**: Transaction aborts but error not caught
+3. **Configuration transaction not finalized**: Transaction submitted but not yet applied when test starts
+4. **Timing issue**: Configuration happens after swarm starts, but state already initialized with default
+
+### Next Steps
+
+1. Add logging to `configure_timelock_interval()` helper to verify transaction submission
+2. Check transaction result/status for errors
+3. Verify `TimelockConfig` resource exists and has correct value via view function
+4. Add retry logic or wait for configuration to apply before starting test
+5. Consider alternative: use `force_rotation_for_testing()` entry function to bypass time check
+
+### Files Involved
+
+- `testsuite/smoke-test/src/timelock/test_helpers.rs:81-114` - Configuration helper
+- `aptos-move/framework/aptos-framework/sources/configs/timelock_config.move:83-88` - get_interval_microseconds()
+- `aptos-move/framework/aptos-framework/sources/timelock.move:199-203` - Rotation check
+

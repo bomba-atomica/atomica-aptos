@@ -117,18 +117,20 @@ impl AptosVM {
         ];
 
         let traversal_storage = TraversalStorage::new();
-        let result = session
-            .execute_function_bypass_visibility(
-                &RECONFIGURATION_WITH_DKG_MODULE,
-                FINISH_WITH_DKG_RESULT,
-                vec![],
-                serialize_values(&args),
-                &mut gas_meter,
-                &mut TraversalContext::new(&traversal_storage),
-                module_storage,
-            );
+        let result = session.execute_function_bypass_visibility(
+            &RECONFIGURATION_WITH_DKG_MODULE,
+            FINISH_WITH_DKG_RESULT,
+            vec![],
+            serialize_values(&args),
+            &mut gas_meter,
+            &mut TraversalContext::new(&traversal_storage),
+            module_storage,
+        );
 
-        aptos_logger::info!("[TIMELOCK] finish_with_dkg_result execution result: {:?}", result.is_ok());
+        aptos_logger::info!(
+            "[TIMELOCK] finish_with_dkg_result execution result: {:?}",
+            result.is_ok()
+        );
 
         result
             .map_err(|e| {

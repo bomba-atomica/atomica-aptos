@@ -51,8 +51,8 @@ Global configuration for timelock intervals.
 </dt>
 <dd>
  Interval duration in microseconds.
- Default: 1 hour = 3600 * 1_000_000 microseconds
- Test: 5 seconds = 5 * 1_000_000 microseconds (for fast testing)
+ Default: 5 seconds = 5 * 1_000_000 microseconds
+ TODO: Change to 1 hour (3600 * 1_000_000) for production deployment
 </dd>
 </dl>
 
@@ -88,8 +88,11 @@ Timelock interval configuration is not initialized
 
 ## Function `initialize`
 
-Initialize with default 1-hour interval.
+Initialize with default 5-second interval.
 Called during genesis to set up the timelock configuration.
+
+NOTE: Currently set to 5 seconds for testing/development.
+TODO: Change to 1 hour for production mainnet deployment.
 
 
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock_config.md#0x1_timelock_config_initialize">initialize</a>(framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>)
@@ -105,7 +108,7 @@ Called during genesis to set up the timelock configuration.
     <a href="system_addresses.md#0x1_system_addresses_assert_aptos_framework">system_addresses::assert_aptos_framework</a>(framework);
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a>&gt;(@aptos_framework)) {
         <b>move_to</b>(framework, <a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a> {
-            interval_microseconds: 3600 * 1000000,
+            interval_microseconds: 5 * 1000000,  // 5 seconds (was 3600 * 1000000 = 1 hour)
         });
     }
 }
@@ -184,7 +187,10 @@ production misconfigurations.
 
 ## Function `get_interval_microseconds`
 
-Get the current interval duration in microseconds. Returns the configured interval, or the default (1 hour) if not initialized. Used by the timelock module to determine rotation timing.
+Get the current interval duration in microseconds. Returns the configured interval, or the default (5 seconds) if not initialized. Used by the timelock module to determine rotation timing.
+
+NOTE: Default is 5 seconds for testing/development.
+TODO: Change to 1 hour for production mainnet deployment.
 
 
 <pre><code>#[view]
@@ -199,7 +205,7 @@ Get the current interval duration in microseconds. Returns the configured interv
 
 <pre><code><b>public</b> <b>fun</b> <a href="timelock_config.md#0x1_timelock_config_get_interval_microseconds">get_interval_microseconds</a>(): u64 <b>acquires</b> <a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a> {
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a>&gt;(@aptos_framework)) {
-        <b>return</b> 3600 * 1000000
+        <b>return</b> 5 * 1000000  // 5 seconds (was 3600 * 1000000 = 1 hour)
     };
     <b>borrow_global</b>&lt;<a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a>&gt;(@aptos_framework).interval_microseconds
 }

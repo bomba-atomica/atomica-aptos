@@ -295,3 +295,98 @@ async fn test_timelock_full_flow() {
 
     info!("✅ Full timelock flow completed successfully");
 }
+
+/// Test force_rotation_for_testing entry function.
+///
+/// This test verifies that manual rotation works correctly by bypassing
+/// the time check, which is useful for testing scenarios where we don't
+/// want to wait for the configured interval duration.
+#[tokio::test]
+async fn test_force_rotation_for_testing() {
+    let config = TimelockTestConfig {
+        // Use a long interval so automatic rotation won't happen
+        timelock_interval_secs: Some(3600),  // 1 hour
+        ..Default::default()
+    };
+    let (swarm, client, chain_id) = create_timelock_swarm(config).await;
+
+    let initial_interval = super::get_current_interval(&client).await.unwrap();
+    info!("Initial interval: {}", initial_interval);
+
+    // Get root account to call force_rotation
+    let root_account = swarm.chain_info().root_account();
+
+    // Force rotation from interval 0 to interval 1
+    info!("Forcing rotation to interval {}", initial_interval + 1);
+
+    let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
+        aptos_types::transaction::EntryFunction::new(
+            move_core_types::language_storage::ModuleId::new(
+                aptos_types::account_address::AccountAddress::ONE,
+                move_core_types::identifier::Identifier::new("timelock").unwrap(),
+            ),
+            move_core_types::identifier::Identifier::new("force_rotation_for_testing").unwrap(),
+            vec![],
+            vec![],
+        ),
+    );
+
+    let signed_txn = root_account.sign_with_transaction_builder(
+        aptos_sdk::transaction_builder::TransactionFactory::new(chain_id)
+            .payload(payload)
+            .max_gas_amount(2_000_000)
+            .gas_unit_price(100),
+    );
+
+    info!("Submitting force_rotation transaction...");
+    let response = client.submit_and_wait(&signed_txn).await.unwrap();
+    assert!(response.inner().success(), "Force rotation transaction should succeed");
+    info!("Force rotation transaction succeeded");
+
+    // Verify interval incremented
+    let new_interval = super::get_current_interval(&client).await.unwrap();
+    info!("New interval after force rotation: {}", new_interval);
+    
+    assert_eq!(
+        new_interval,
+        initial_interval + 1,
+        "Interval should have incremented by 1"
+    );
+
+    // Force another rotation
+    info!("Forcing second rotation to interval {}", new_interval + 1);
+    
+    let payload2 = aptos_types::transaction::TransactionPayload::EntryFunction(
+        aptos_types::transaction::EntryFunction::new(
+            move_core_types::language_storage::ModuleId::new(
+                aptos_types::account_address::AccountAddress::ONE,
+                move_core_types::identifier::Identifier::new("timelock").unwrap(),
+            ),
+            move_core_types::identifier::Identifier::new("force_rotation_for_testing").unwrap(),
+            vec![],
+            vec![],
+        ),
+    );
+
+    let signed_txn2 = root_account.sign_with_transaction_builder(
+        aptos_sdk::transaction_builder::TransactionFactory::new(chain_id)
+            .payload(payload2)
+            .max_gas_amount(2_000_000)
+            .gas_unit_price(100),
+    );
+
+    let response2 = client.submit_and_wait(&signed_txn2).await.unwrap();
+    assert!(response2.inner().success(), "Second force rotation should succeed");
+
+    let final_interval = super::get_current_interval(&client).await.unwrap();
+    info!("Final interval: {}", final_interval);
+    
+    assert_eq!(
+        final_interval,
+        initial_interval + 2,
+        "Interval should have incremented by 2 total"
+    );
+
+    info!("✅ Force rotation working correctly: {} -> {} -> {}", 
+          initial_interval, new_interval, final_interval);
+}
