@@ -43,6 +43,7 @@
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option">0x1::option</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">0x1::signer</a>;
 <b>use</b> <a href="stake.md#0x1_stake">0x1::stake</a>;
+<b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string">0x1::string</a>;
 <b>use</b> <a href="system_addresses.md#0x1_system_addresses">0x1::system_addresses</a>;
 <b>use</b> <a href="../../aptos-stdlib/doc/table.md#0x1_table">0x1::table</a>;
 <b>use</b> <a href="timelock_config.md#0x1_timelock_config">0x1::timelock_config</a>;
@@ -529,8 +530,8 @@ Internal function to perform rotation logic
     state.last_rotation_time = now;
 
     // DEBUG: Log interval rotation
-    std::debug::print(&b"[TIMELOCK] Interval rotated <b>to</b>");
-    std::debug::print(&state.current_interval);
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Interval rotated <b>to</b>"));
+    aptos_std::debug::print(&state.current_interval);
 
     // Get current validator set <b>to</b> determine threshold
     <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
@@ -591,22 +592,43 @@ Called by block prologue to trigger rotations.
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_on_new_block">on_new_block</a>(vm: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>) <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
     <a href="system_addresses.md#0x1_system_addresses_assert_vm">system_addresses::assert_vm</a>(vm);
 
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block called"));
+
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> does not exist - returning"));
         <b>return</b>
     };
 
     <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
     <b>let</b> now = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
 
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block: current_interval="));
+    aptos_std::debug::print(&state.current_interval);
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block: now="));
+    aptos_std::debug::print(&now);
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block: last_rotation_time="));
+    aptos_std::debug::print(&state.last_rotation_time);
+
     // Initialize last_rotation_time <b>if</b> it's 0 (<a href="genesis.md#0x1_genesis">genesis</a>/first run)
     <b>if</b> (state.last_rotation_time == 0) {
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Initializing last_rotation_time <b>to</b> current time"));
         state.last_rotation_time = now;
         <b>return</b>
     };
 
     // Check <b>if</b> configured interval <b>has</b> passed (get from <a href="timelock_config.md#0x1_timelock_config">timelock_config</a>)
     <b>let</b> interval_micros = <a href="timelock_config.md#0x1_timelock_config_get_interval_microseconds">timelock_config::get_interval_microseconds</a>();
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] interval_micros="));
+    aptos_std::debug::print(&interval_micros);
+
+    <b>let</b> elapsed = now - state.last_rotation_time;
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] elapsed="));
+    aptos_std::debug::print(&elapsed);
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] should_rotate="));
+    aptos_std::debug::print(&(elapsed &gt; interval_micros));
+
     <b>if</b> (now - state.last_rotation_time &gt; interval_micros) {
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Calling perform_rotation"));
         <a href="timelock.md#0x1_timelock_perform_rotation">perform_rotation</a>(state);
     }
 }

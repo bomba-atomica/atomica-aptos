@@ -115,6 +115,80 @@ tail -f /path/to/logs/0/log | grep -E "Timelock|DKG"
 
 **Missing logs indicate where the problem is!**
 
+### Adding Move Debug Prints
+
+When debugging Move contract logic (like `timelock.move` or `dkg.move`), you can add debug prints that will appear in validator logs:
+
+**✅ CORRECT - Use `aptos_std::debug::print()` with `std::string::utf8()`:**
+
+```move
+// For string messages
+aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block called"));
+
+// For numeric values (u64, u128, etc.)
+aptos_std::debug::print(&interval_micros);
+
+// For booleans
+aptos_std::debug::print(&(elapsed > interval_micros));
+```
+
+**❌ INCORRECT - Don't use `std::debug::print()` with bare byte strings:**
+
+```move
+// This will print as hex codes (0x5b54494d454c4f434b5d...), not readable strings!
+std::debug::print(&b"[TIMELOCK] message");
+```
+
+**How debug prints appear in validator logs:**
+
+```bash
+# After adding prints to Move code, recompile and run the test
+cargo test -p smoke-test --lib timelock::test_timelock::test_timelock_secret_revelation \
+  -- --test-threads=1 --nocapture 2>&1 | tee /tmp/test.txt
+
+# Extract log directory
+LOG_DIR=$(grep "Logs located" /tmp/test.txt | tail -1 | awk '{print $NF}')
+
+# Check for your debug prints (they appear in [debug] lines)
+grep -i "timelock.*on_new_block\|timelock.*interval" $LOG_DIR/0/log
+
+# Example output:
+# [debug] "[TIMELOCK] on_new_block called"
+# [debug] "[TIMELOCK] on_new_block: current_interval="
+# [debug] 2
+# [debug] "[TIMELOCK] on_new_block: now="
+# [debug] 1736116545378113
+```
+
+**Common debugging scenarios:**
+
+```move
+// Check if function is being called
+aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block called"));
+
+// Check timing and intervals
+aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] interval_micros="));
+aptos_std::debug::print(&interval_micros);
+aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] elapsed="));
+aptos_std::debug::print(&elapsed);
+
+// Check boolean conditions
+aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] should_rotate="));
+aptos_std::debug::print(&(elapsed > interval_micros));
+
+// Check state existence
+if (!exists<TimelockState>(@aptos_framework)) {
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] TimelockState does not exist!"));
+    return
+};
+```
+
+**Important notes:**
+- Debug prints must be added **before** compiling the Move code into the genesis/framework packages
+- Changes to `aptos-move/framework/*/sources/*.move` require recompiling `aptos-cached-packages`
+- Debug prints appear under `[debug]` log level in validator logs
+- String messages should be wrapped with `std::string::utf8()` to display as readable text
+
 ## Debugging Workflow
 
 ### Step 1: Run Test and Capture Logs

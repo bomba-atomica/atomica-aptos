@@ -4,6 +4,7 @@
 use aptos_logger::warn;
 use move_core_types::account_address::AccountAddress;
 
+#[allow(unused)]
 pub struct TimelockRevelationManager {
     my_addr: AccountAddress,
 }

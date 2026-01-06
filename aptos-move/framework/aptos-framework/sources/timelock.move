@@ -141,8 +141,8 @@ module aptos_framework::timelock {
         state.last_rotation_time = now;
 
         // DEBUG: Log interval rotation
-        std::debug::print(&b"[TIMELOCK] Interval rotated to");
-        std::debug::print(&state.current_interval);
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Interval rotated to"));
+        aptos_std::debug::print(&state.current_interval);
 
         // Get current validator set to determine threshold
         let validators = stake::cur_validator_consensus_infos();
@@ -183,22 +183,43 @@ module aptos_framework::timelock {
     public(friend) fun on_new_block(vm: &signer) acquires TimelockState {
         system_addresses::assert_vm(vm);
 
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block called"));
+
         if (!exists<TimelockState>(@aptos_framework)) {
+            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] TimelockState does not exist - returning"));
             return
         };
 
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
         let now = timestamp::now_microseconds();
 
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block: current_interval="));
+        aptos_std::debug::print(&state.current_interval);
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block: now="));
+        aptos_std::debug::print(&now);
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block: last_rotation_time="));
+        aptos_std::debug::print(&state.last_rotation_time);
+
         // Initialize last_rotation_time if it's 0 (genesis/first run)
         if (state.last_rotation_time == 0) {
+            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Initializing last_rotation_time to current time"));
             state.last_rotation_time = now;
             return
         };
 
         // Check if configured interval has passed (get from timelock_config)
         let interval_micros = timelock_config::get_interval_microseconds();
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] interval_micros="));
+        aptos_std::debug::print(&interval_micros);
+
+        let elapsed = now - state.last_rotation_time;
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] elapsed="));
+        aptos_std::debug::print(&elapsed);
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] should_rotate="));
+        aptos_std::debug::print(&(elapsed > interval_micros));
+
         if (now - state.last_rotation_time > interval_micros) {
+            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Calling perform_rotation"));
             perform_rotation(state);
         }
     }
