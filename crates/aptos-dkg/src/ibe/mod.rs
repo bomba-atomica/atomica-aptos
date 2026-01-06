@@ -255,35 +255,37 @@ fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// Computes the canonical timelock identity for a given interval.
+/// Computes the canonical timelock identity for a given timelock.
 ///
-/// Format: sha3_256(interval_u64_le || chain_id_u8 || "atomica_timelock")
+/// Format: Keccak256("timelock_id:{id}:deadline_timestamp_microseconds:{deadline}")
+///
+/// This is an **application-agnostic** identity format. It contains no auction,
+/// bid, or other application-specific semantics.
 ///
 /// # Arguments
-/// * `interval` - Timelock interval number
-/// * `chain_id` - Chain ID (to prevent cross-chain replay)
+/// * `timelock_id` - Unique identifier for this timelock
+/// * `deadline_timestamp_microseconds` - Unix epoch timestamp in MICROSECONDS when decryption becomes available
 ///
 /// # Returns
 /// 32-byte identity for IBE encryption
 ///
 /// # Example
 /// ```ignore
-/// let identity = compute_timelock_identity(1000, 1);
+/// // Timelock ID 42 with deadline 2024-01-01 01:00:00 UTC
+/// let identity = compute_timelock_identity(42, 1704070800000000);
 /// // identity will be a deterministic 32-byte hash
 /// ```
 #[allow(dead_code)]
-pub fn compute_timelock_identity(interval: u64, chain_id: u8) -> Vec<u8> {
-    // Construct canonical identity using Keccak256 (SHA3-256)
+pub fn compute_timelock_identity(timelock_id: u64, deadline_timestamp_microseconds: u64) -> Vec<u8> {
+    // Construct canonical identity using Keccak256
+    // Format is a human-readable string for debuggability
+    let identity_string = format!(
+        "timelock_id:{}:deadline_timestamp_microseconds:{}",
+        timelock_id, deadline_timestamp_microseconds
+    );
+
     let mut hasher = Keccak256::new();
-
-    // Add interval as little-endian bytes
-    hasher.update(interval.to_le_bytes());
-
-    // Add chain ID
-    hasher.update([chain_id]);
-
-    // Add domain separator to prevent collisions
-    hasher.update(b"atomica_timelock");
+    hasher.update(identity_string.as_bytes());
 
     // Return 32-byte hash as identity
     hasher.finalize().to_vec()
@@ -386,8 +388,11 @@ mod tests {
     #[test]
     fn test_compute_timelock_identity() {
         // Test determinism: same inputs produce same output
-        let identity1 = compute_timelock_identity(1000, 1);
-        let identity2 = compute_timelock_identity(1000, 1);
+        let timelock_id = 42u64;
+        let deadline = 1704070800000000u64; // 2024-01-01 01:00:00 UTC in microseconds
+
+        let identity1 = compute_timelock_identity(timelock_id, deadline);
+        let identity2 = compute_timelock_identity(timelock_id, deadline);
         assert_eq!(
             identity1, identity2,
             "Same inputs should produce same identity"
@@ -396,20 +401,32 @@ mod tests {
         // Verify output length (32 bytes from Keccak256)
         assert_eq!(identity1.len(), 32, "Identity should be 32 bytes");
 
-        // Test different intervals produce different outputs
-        let identity_interval_1000 = compute_timelock_identity(1000, 1);
-        let identity_interval_2000 = compute_timelock_identity(2000, 1);
+        // Test different timelock_ids produce different outputs
+        let identity_id_42 = compute_timelock_identity(42, deadline);
+        let identity_id_43 = compute_timelock_identity(43, deadline);
         assert_ne!(
-            identity_interval_1000, identity_interval_2000,
-            "Different intervals should produce different identities"
+            identity_id_42, identity_id_43,
+            "Different timelock_ids should produce different identities"
         );
 
-        // Test different chain IDs produce different outputs
-        let identity_chain_1 = compute_timelock_identity(1000, 1);
-        let identity_chain_2 = compute_timelock_identity(1000, 2);
+        // Test different deadlines produce different outputs
+        let identity_deadline_1 = compute_timelock_identity(timelock_id, 1704070800000000);
+        let identity_deadline_2 = compute_timelock_identity(timelock_id, 1704074400000000);
         assert_ne!(
-            identity_chain_1, identity_chain_2,
-            "Different chain IDs should produce different identities"
+            identity_deadline_1, identity_deadline_2,
+            "Different deadlines should produce different identities"
+        );
+
+        // Verify the format is what we expect (human-readable string)
+        // Identity for timelock_id=42, deadline=1704070800000000 should be:
+        // Keccak256("timelock_id:42:deadline_timestamp_microseconds:1704070800000000")
+        let expected_input = "timelock_id:42:deadline_timestamp_microseconds:1704070800000000";
+        let mut hasher = Keccak256::new();
+        hasher.update(expected_input.as_bytes());
+        let expected_hash = hasher.finalize().to_vec();
+        assert_eq!(
+            identity_id_42, expected_hash,
+            "Identity should match expected Keccak256 hash of formatted string"
         );
     }
 }

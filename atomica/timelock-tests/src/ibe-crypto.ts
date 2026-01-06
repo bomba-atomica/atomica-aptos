@@ -60,25 +60,22 @@ export interface Ciphertext {
 
 export class IBECrypto {
   /**
-   * Compute timelock identity from interval and chain ID
-   * Identity = H(interval || chain_id || "atomica_timelock")
+   * Compute timelock identity from timelock ID and deadline.
+   * 
+   * Format: Keccak256("timelock_id:{id}:deadline_timestamp_microseconds:{deadline}")
+   * 
+   * This is an **application-agnostic** identity format. It contains no auction,
+   * bid, or other application-specific semantics.
+   * 
+   * @param timelockId - Unique identifier for this timelock
+   * @param deadlineTimestampMicroseconds - Unix epoch timestamp in MICROSECONDS when decryption becomes available
+   * @returns 32-byte Keccak256 hash
    */
-  static computeTimelockIdentity(interval: bigint, chainId: number): Uint8Array {
-    const hasher = keccak_256.create();
-
-    // Add interval as little-endian bytes (8 bytes)
-    const intervalBytes = new Uint8Array(8);
-    const view = new DataView(intervalBytes.buffer);
-    view.setBigUint64(0, interval, true);
-    hasher.update(intervalBytes);
-
-    // Add chain ID (1 byte - assuming < 256 for testnet)
-    hasher.update(new Uint8Array([chainId]));
-
-    // Add domain separator
-    hasher.update(new TextEncoder().encode("atomica_timelock"));
-
-    return hasher.digest();
+  static computeTimelockIdentity(timelockId: bigint, deadlineTimestampMicroseconds: bigint): Uint8Array {
+    // Construct canonical identity using human-readable string format
+    // Must match Rust implementation exactly
+    const identityString = `timelock_id:${timelockId}:deadline_timestamp_microseconds:${deadlineTimestampMicroseconds}`;
+    return keccak_256(new TextEncoder().encode(identityString));
   }
 
   /**

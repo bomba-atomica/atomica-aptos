@@ -17,8 +17,8 @@ struct GoldenVectors {
 
 #[derive(Serialize, Deserialize)]
 struct Parameters {
-    chain_id: u8,
-    interval: u64,
+    timelock_id: u64,
+    deadline_timestamp_microseconds: u64,
     message_string: String,
 }
 
@@ -49,10 +49,10 @@ fn generate_and_save_golden_vectors() {
     let msk = random_scalar(&mut rng);
     let mpk = G2Projective::generator() * msk;
 
-    // 2. Identity
-    let chain_id = 4;
-    let interval = 1000;
-    let identity = compute_timelock_identity(interval, chain_id);
+    // 2. Identity - using new application-agnostic format
+    let timelock_id = 42u64;
+    let deadline_timestamp_microseconds = 1704070800000000u64; // 2024-01-01 01:00:00 UTC
+    let identity = compute_timelock_identity(timelock_id, deadline_timestamp_microseconds);
 
     // 3. Decryption Key
     let dk = derive_decryption_key(&msk, &identity).expect("Derivation failed");
@@ -74,11 +74,11 @@ fn generate_and_save_golden_vectors() {
     let u_bytes = serialize_g2(&ciphertext.u).unwrap();
         
     let fixtures = GoldenVectors {
-        description: "IBE Golden Vectors for Atomica Timelock (Rust Generated)".to_string(),
+        description: "IBE Golden Vectors for Atomica Timelock (Rust Generated) - v2 identity format".to_string(),
         timestamp: format!("{:?}", std::time::SystemTime::now()),
         parameters: Parameters {
-            chain_id,
-            interval,
+            timelock_id,
+            deadline_timestamp_microseconds,
             message_string: message_str.to_string(),
         },
         keys: Keys {
@@ -134,9 +134,9 @@ fn verify_golden_vectors_roundtrip() {
     println!("Loaded fixture: {}", fixture.description);
 
     // 2. Verify Identity Param Computation
-    let chain_id = fixture.parameters.chain_id;
-    let interval = fixture.parameters.interval;
-    let computed_identity = compute_timelock_identity(interval, chain_id);
+    let timelock_id = fixture.parameters.timelock_id;
+    let deadline = fixture.parameters.deadline_timestamp_microseconds;
+    let computed_identity = compute_timelock_identity(timelock_id, deadline);
     let expected_identity = hex::decode(&fixture.keys.identity_hash_hex).unwrap();
     
     assert_eq!(computed_identity, expected_identity, "Identity calculation mismatch");

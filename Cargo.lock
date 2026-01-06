@@ -1674,6 +1674,7 @@ dependencies = [
  "criterion",
  "derive_more 0.99.17",
  "itertools 0.13.0",
+ "move-core-types",
  "once_cell",
  "ouroboros",
  "rayon",

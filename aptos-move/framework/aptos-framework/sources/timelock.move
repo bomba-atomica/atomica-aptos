@@ -183,11 +183,11 @@ module aptos_framework::timelock {
         };
         table::add(&mut state.interval_configs, state.current_interval, interval_config);
 
-        emit(StartKeyGenEvent {
-            interval: state.current_interval,
-            config,
-        });
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted StartKeyGenEvent"));
+        // NOTE: DKG (StartKeyGenEvent) is NOT emitted on interval rotation.
+        // The MPK corresponds to the validator set, which changes on epoch boundaries.
+        // IBE allows the same MPK to encrypt for any interval via identity derivation.
+        // DKG is triggered separately via reconfiguration/epoch change events.
+        let _ = config; // Suppress unused warning
     }
 
     /// Called by block prologue to trigger rotations.

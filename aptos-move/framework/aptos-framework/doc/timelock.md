@@ -523,11 +523,11 @@ Internal function to perform rotation logic
     };
     <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.interval_configs, state.current_interval, interval_config);
 
-    emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
-        interval: state.current_interval,
-        config,
-    });
-    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a>"));
+    // NOTE: DKG (<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a>) is NOT emitted on interval rotation.
+    // The MPK corresponds <b>to</b> the validator set, which changes on epoch boundaries.
+    // IBE allows the same MPK <b>to</b> encrypt for <a href="../../aptos-stdlib/doc/any.md#0x1_any">any</a> interval via identity derivation.
+    // DKG is triggered separately via <a href="reconfiguration.md#0x1_reconfiguration">reconfiguration</a>/epoch change events.
+    <b>let</b> _ = config; // Suppress unused warning
 }
 </code></pre>
 
