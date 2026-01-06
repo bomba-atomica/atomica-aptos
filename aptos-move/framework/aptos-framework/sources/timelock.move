@@ -3,7 +3,7 @@ module aptos_framework::timelock {
     use std::option::{Self, Option};
     use std::vector;
     use aptos_std::table::{Self, Table};
-    use aptos_framework::event::{Self, EventHandle};
+    use aptos_framework::event::{Self, EventHandle, emit};
     use aptos_framework::timestamp;
     use aptos_framework::system_addresses;
     use aptos_framework::account;
@@ -143,7 +143,7 @@ module aptos_framework::timelock {
         let old_interval = state.current_interval;
 
         // Emit reveal event for the old interval
-        event::emit(RequestRevealEvent {
+        emit(RequestRevealEvent {
             interval: old_interval,
         });
 
@@ -183,7 +183,7 @@ module aptos_framework::timelock {
         };
         table::add(&mut state.interval_configs, state.current_interval, interval_config);
 
-        event::emit(StartKeyGenEvent {
+        emit(StartKeyGenEvent {
             interval: state.current_interval,
             config,
         });
@@ -384,7 +384,7 @@ module aptos_framework::timelock {
             table::add(&mut state.decryption_keys, interval, aggregated_bytes);
 
             // Emit event
-            event::emit(DecryptionKeyRevealedEvent {
+            emit(DecryptionKeyRevealedEvent {
                 interval,
                 decryption_key: aggregated_bytes,
             });

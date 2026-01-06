@@ -377,12 +377,7 @@ impl EventNotificationSender for EventSubscriptionService {
                 ContractEvent::V1(e) => format!("V1:{:?}", e.key()),
                 ContractEvent::V2(e) => format!("V2:{}", e.type_tag().to_canonical_string()),
             };
-            // Log timelock/dkg events at info level, others at debug
-            if tag.contains("timelock") || tag.contains("dkg") {
-                info!("[EventSub] Event[{}] = {}", i, tag);
-            } else {
-                debug!("[EventSub] Event[{}] = {}", i, tag);
-            }
+            info!("[EventSub] INSPECT Event[{}] = {}", i, tag);
         }
 
         // Notify event subscribers and check if a reconfiguration event was processed

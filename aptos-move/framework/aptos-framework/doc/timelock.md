@@ -483,7 +483,7 @@ Internal function to perform rotation logic
     <b>let</b> old_interval = state.current_interval;
 
     // Emit reveal <a href="event.md#0x1_event">event</a> for the <b>old</b> interval
-    <a href="event.md#0x1_event_emit">event::emit</a>(<a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> {
+    emit(<a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> {
         interval: old_interval,
     });
 
@@ -523,7 +523,7 @@ Internal function to perform rotation logic
     };
     <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.interval_configs, state.current_interval, interval_config);
 
-    <a href="event.md#0x1_event_emit">event::emit</a>(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
+    emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
         interval: state.current_interval,
         config,
     });
@@ -832,7 +832,7 @@ Once $d_{ID}$ is published, any ciphertext encrypted for $ID$ can be decrypted.
         <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.decryption_keys, interval, aggregated_bytes);
 
         // Emit <a href="event.md#0x1_event">event</a>
-        <a href="event.md#0x1_event_emit">event::emit</a>(<a href="timelock.md#0x1_timelock_DecryptionKeyRevealedEvent">DecryptionKeyRevealedEvent</a> {
+        emit(<a href="timelock.md#0x1_timelock_DecryptionKeyRevealedEvent">DecryptionKeyRevealedEvent</a> {
             interval,
             decryption_key: aggregated_bytes,
         });
