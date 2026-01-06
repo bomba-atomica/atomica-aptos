@@ -58,8 +58,8 @@ describe("Cross-Language IBE Verification", () => {
     const msk = IBECrypto.generateMasterSecret();
     const mpk = IBECrypto.getMasterPublicKey(msk);
 
-    // Create identity for interval 100, chain 1
-    const identity = IBECrypto.computeTimelockIdentity(100n, 1);
+    // Create identity for timelock ID 100, deadline 1704070800000000 (2024-01-01 01:00 UTC)
+    const identity = IBECrypto.computeTimelockIdentity(100n, 1704070800000000n);
 
     // Generate decryption key
     const dk = IBECrypto.getDecryptionKey(msk, identity);
@@ -78,20 +78,23 @@ describe("Cross-Language IBE Verification", () => {
     console.log("✅ IBE encrypt/decrypt roundtrip successful");
   });
 
-  it("should verify identity computation matches Rust", () => {
+  it("should verify identity computation determinism", () => {
     // Test deterministic identity generation
-    const identity1 = IBECrypto.computeTimelockIdentity(1000n, 1);
-    const identity2 = IBECrypto.computeTimelockIdentity(1000n, 1);
+    const timelockId = 42n;
+    const deadline = 1704070800000000n;
+
+    const identity1 = IBECrypto.computeTimelockIdentity(timelockId, deadline);
+    const identity2 = IBECrypto.computeTimelockIdentity(timelockId, deadline);
 
     expect(identity1).toEqual(identity2);
     expect(identity1.length).toBe(32);
 
-    // Different intervals should produce different identities
-    const identity3 = IBECrypto.computeTimelockIdentity(2000n, 1);
+    // Different timelock IDs should produce different identities
+    const identity3 = IBECrypto.computeTimelockIdentity(43n, deadline);
     expect(identity1).not.toEqual(identity3);
 
-    // Different chain IDs should produce different identities
-    const identity4 = IBECrypto.computeTimelockIdentity(1000n, 2);
+    // Different deadlines should produce different identities
+    const identity4 = IBECrypto.computeTimelockIdentity(timelockId, 1704074400000000n);
     expect(identity1).not.toEqual(identity4);
 
     console.log("✅ Identity computation verified");

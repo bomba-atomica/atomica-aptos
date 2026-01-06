@@ -10,12 +10,12 @@ async function testIbeCrypto() {
   try {
     // Test data
     const message = new Uint8Array([1, 2, 3, 4, 5]);
-    const chainId = 4;
-    const interval = 1n; // Use bigint
+    const timelockId = 42n;
+    const deadline = 1704070800000000n; // 2024-01-01 01:00:00 UTC in microseconds
 
     // Compute identity
     console.log("Computing identity...");
-    const identity = IBECrypto.computeTimelockIdentity(interval, chainId);
+    const identity = IBECrypto.computeTimelockIdentity(timelockId, deadline);
     console.log(`Identity: ${identity.length} bytes`);
 
     // Mock master secret key (32 bytes)

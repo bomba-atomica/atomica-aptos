@@ -15,7 +15,6 @@ async function runIbeFullFlowTest() {
         const waiters = new TimelockWaiters(queries);
 
         const intervalSeconds = 5;
-        const chainId = 4; // testnet chain id
 
         // Step 1: Configure shorter interval for testing
         console.log(`Step 1: Setting timelock interval to ${intervalSeconds} seconds`);
@@ -38,22 +37,11 @@ async function runIbeFullFlowTest() {
         // Step 3: Encrypt a message using IBE
         console.log("Step 3: Encrypting message");
         const message = new TextEncoder().encode("top_secret_bid_1000_atoms");
-        const identity = IBECrypto.computeTimelockIdentity(BigInt(targetInterval), chainId); // Use same interval ID for immediate decryption check?
-        // Wait, DKG creates MPK for FUTURE use usually, but in this simplified testnet flow, 
-        // the MPK might be valid for the current epoch?
-        // Actually, identity relies on the interval ID. The decryption key for `targetInterval` 
-        // should be revealed when we rotate TO `targetInterval + 1`.
+        const timelockId = BigInt(targetInterval);
+        const deadlineTimestampMicroseconds = BigInt(Date.now() * 1000 + 3600_000_000); // 1 hour from now
+        const identity = IBECrypto.computeTimelockIdentity(timelockId, deadlineTimestampMicroseconds);
 
-        // Check logic: DKG runs at `targetInterval`. The MPK generated is valid for the system?
-        // Actually, in standard timelock, MPK is long-term. Here it's generated per-validator-set-change (epoch)?
-        // Assuming MPK is consistent. Let's encrypt for `targetInterval`.
-
-        // We want the decryption key for THIS identity. 
-        // In our simplified flow:
-        // Interval T: Validators produce MPK (if new epoch) or use existing.
-        // Interval T+1: Validators reveal key for T.
-
-        console.log(`✅ Computed identity for interval ${targetInterval}: ${identity.length} bytes`);
+        console.log(`✅ Computed identity for timelock ${timelockId}: ${identity.length} bytes`);
 
         const ciphertext = IBECrypto.ibeEncrypt(mpkG2, identity, message);
         console.log(`✅ Encrypted message: U=${ciphertext.u.length} bytes, V=${ciphertext.v.length} bytes`);

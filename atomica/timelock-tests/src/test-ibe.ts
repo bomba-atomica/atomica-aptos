@@ -15,7 +15,6 @@ async function runIbeE2eTest() {
     const waiters = new TimelockWaiters(queries);
 
     const intervalSeconds = 5;
-    const chainId = 4; // testnet chain id
 
     // Step 1: Configure shorter interval for testing
     console.log(`Step 1: Setting timelock interval to ${intervalSeconds} seconds`);
@@ -44,12 +43,14 @@ async function runIbeE2eTest() {
 
     // Step 5: Encrypt a message using IBE
     const message = new TextEncoder().encode("top_secret_bid_1000_atoms");
-    const identity = IBECrypto.computeTimelockIdentity(BigInt(targetInterval), chainId);
-    console.log(`✅ Computed identity for interval ${targetInterval}: ${identity.length} bytes`);
+    const timelockId = BigInt(targetInterval);
+    const deadlineTimestampMicroseconds = BigInt(Date.now() * 1000 + 3600_000_000); // 1 hour from now
+    const identity = IBECrypto.computeTimelockIdentity(timelockId, deadlineTimestampMicroseconds);
+    console.log(`✅ Computed identity for timelock ${timelockId}: ${identity.length} bytes`);
 
     const ciphertext = IBECrypto.ibeEncrypt(mpkG2, identity, message);
     console.log(`✅ Encrypted message: U=${ciphertext.u.length} bytes, V=${ciphertext.v.length} bytes`);
-    console.log(`✅ Message encrypted for interval ${targetInterval}`);
+    console.log(`✅ Message encrypted for timelock ${timelockId}`);
 
     // Step 6: Wait for reveal (rotation to targetInterval + 1)
     const revealInterval = targetInterval + 1;
