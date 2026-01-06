@@ -48,8 +48,16 @@ export class TimelockQueries {
    */
   async verifyPublicKeyPublished(interval: number): Promise<Uint8Array | null> {
     try {
-      const state = await this.getTimelockState();
-      const handle = state.public_keys.handle;
+      const resources = await this.client.getAccountResources("0x1");
+      const dsaResource = resources.find((r: any) => r.type.includes("threshold_dsa::State"));
+
+      if (!dsaResource) {
+        // Fallback for transition period or if test setup hasn't init dsa yet?
+        // But initialize() does it.
+        return null;
+      }
+
+      const handle = (dsaResource.data as any).master_public_keys.handle;
 
       const item = await this.client.getTableItem(handle, {
         key_type: "u64",
@@ -86,7 +94,7 @@ export class TimelockQueries {
   async verifySecretAggregated(interval: number, threshold: number): Promise<Uint8Array | null> {
     try {
       const state = await this.getTimelockState();
-      const handle = state.revealed_secrets.handle;
+      const handle = (state as any).decryption_keys.handle;
 
       const item = await this.client.getTableItem(handle, {
         key_type: "u64",

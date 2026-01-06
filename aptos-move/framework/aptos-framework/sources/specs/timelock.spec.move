@@ -34,12 +34,12 @@ spec aptos_framework::timelock {
         // For PoC verification, we focus on safety vs availability
     }
 
-    spec publish_public_key {
+    spec publish_master_public_key {
         // TODO: access control spec
         // pragma verify = false; // Until access control is implemented
     }
 
-    spec publish_secret_share {
+    spec publish_decryption_key_share {
         // pragma verify = false;
     }
 }
