@@ -14,7 +14,8 @@ pub struct TimelockTestConfig {
     pub num_fullnodes: usize,
     pub epoch_duration_secs: u64,
 }
-
+impl TimelockTestConfig {
+    pub fn default() -> Self {
         Self {
             num_validators: 3,
             num_fullnodes: 0,
@@ -66,7 +67,7 @@ pub async fn create_timelock_swarm(
 }
 
 /// Registers a timelock with the given deadline
-pub async fn register_timelock<S: Swarm>(
+pub async fn register_timelock<S: Swarm + ?Sized>(
     swarm: &S,
     client: &aptos_rest_client::Client,
     deadline_micros: u64,

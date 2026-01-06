@@ -1,22 +1,24 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::{bail};
+use anyhow::{bail, Result};
 use aptos_crypto::{
     bls12381,
     CryptoMaterialError, ValidCryptoMaterial,
-    traits::Uniform,
 };
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
 use aptos_dkg::{
     pvss::{
         das::{self, WeightedTranscript},
         traits::{
-            self, transcript::MalleableTranscript, Reconstructable, Convert, Transcript,
+            self, transcript::MalleableTranscript, Reconstructable,
+            HasEncryptionPublicParams, SecretSharingConfig, Transcript,
         },
         Player, WeightedConfig,
     },
+    utils::hash_to_scalar,
 };
+use ff::PrimeField;
 use aptos_types::{
     dkg::{
         real_dkg::{RealDKG, RealDKGPublicParams},
@@ -25,9 +27,11 @@ use aptos_types::{
     },
     validator_verifier::ValidatorVerifier,
 };
-use rand::{CryptoRng, RngCore};
+use rand::{CryptoRng, Rng, RngCore, SeedableRng};
+use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Mul;
 
 // Use blstrs crate directly
 use blstrs::{G1Projective, G2Projective, Scalar};
@@ -101,17 +105,47 @@ impl traits::Transcript for TimelockTranscript {
         dealer: &Player,
         rng: &mut R,
     ) -> Self {
-        let weighted_transcript = WeightedTranscript::deal(sc, pp, ssk, eks, s, aux, dealer, rng);
+        // 1. Create a deterministic sub-rng for consistency
+        let seed = rng.r#gen::<[u8; 32]>();
+        let mut sub_rng = StdRng::from_seed(seed);
+        let mut sub_rng_copy = StdRng::from_seed(seed);
+
+        // 2. Call the black-box WeightedTranscript::deal
+        let weighted_transcript = WeightedTranscript::deal(
+            sc, pp, ssk, eks, s, aux, dealer, &mut sub_rng
+        );
+
+        // 3. Recover the exact same f_evals and r vector by re-running sub_rng
+        let (_f_coeff, f_evals) = aptos_dkg::algebra::polynomials::shamir_secret_share(
+            sc.get_threshold_config(), s, &mut sub_rng_copy
+        );
+        let W = sc.get_total_weight();
+        let r = aptos_dkg::utils::random::random_scalars(W, &mut sub_rng_copy);
+
+        // 4. Encrypt scalar shares
+        let mut encrypted_scalars = Vec::with_capacity(W);
+        let g1 = pp.get_encryption_public_params().pubkey_base();
         
-        // TODO: Implement scalar dealing logic here.
-        // For now, return empty scalar transcript.
-        // We will need to:
-        // 1. Generate random polynomial for scalar (matching the grouping element polynomial coefficients but as scalars)
-        // 2. Encrypt scalar shares
-        
+        let R_vec = r.iter().map(|ri| g1 * ri).collect::<Vec<G1Projective>>();
+
+        let dst = b"APTOS_TIMELOCK_SCALAR_ENC_DST";
+        for i in 0..sc.get_total_num_players() {
+             let weight = sc.get_player_weight(&Player { id: i });
+             for j in 0..weight {
+                 let k = sc.get_share_index(i, j).unwrap();
+                 let shared_secret = Into::<G1Projective>::into(&eks[i]) * r[k];
+                 let mask = hash_to_scalar(&bcs::to_bytes(&shared_secret).unwrap(), dst);
+                 let encrypted = f_evals[k] + mask;
+                 encrypted_scalars.push(encrypted.to_repr());
+             }
+        }
+
+        let mut scalar_transcripts = BTreeMap::new();
+        scalar_transcripts.insert(dealer.id as u64, (R_vec, encrypted_scalars));
+
         TimelockTranscript {
             weighted_transcript,
-            scalar_transcripts: BTreeMap::new(),
+            scalar_transcripts,
         }
     }
 
@@ -122,11 +156,12 @@ impl traits::Transcript for TimelockTranscript {
         spks: &Vec<Self::SigningPubKey>,
         eks: &Vec<Self::EncryptPubKey>,
         auxs: &Vec<A>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         // Verify the underlying weighted transcript
         self.weighted_transcript.verify(sc, pp, spks, eks, auxs)?;
         
-        // TODO: Verify scalar transcript consistency
+        // TODO: Verify scalar transcript consistency if needed.
+        // For now, we rely on revelation-time verification.
         Ok(())
     }
     
@@ -161,16 +196,32 @@ impl traits::Transcript for TimelockTranscript {
         dk: &Self::DecryptPrivKey,
         pp: &Self::PublicParameters,
     ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
-        let (_group_shares, pub_shares) = self.weighted_transcript.decrypt_own_share(sc, player, dk, pp);
-        
-        // TODO: Decrypt scalar shares
-        // Validate against group shares (optional but good for robustness)
+        let (group_shares, pub_shares) = self.weighted_transcript.decrypt_own_share(sc, player, dk, pp);
         
         let weight = sc.get_player_weight(player);
-        let mut sk_shares = Vec::with_capacity(weight);
-        for _ in 0..weight {
-             sk_shares.push(TimelockShare::new(Scalar::ZERO));
+        let mut scalar_shares = vec![Scalar::ZERO; weight];
+        
+        let dst = b"APTOS_TIMELOCK_SCALAR_ENC_DST";
+        let dk_scalar = Scalar::from_bytes_le(&dk.to_bytes()).unwrap();
+        for (R_vec, encrypted_scalars) in self.scalar_transcripts.values() {
+             let s_i_dealer = sc.get_player_starting_index(player);
+             for j in 0..weight {
+                 let k = s_i_dealer + j;
+                 let shared_secret = R_vec[k] * dk_scalar;
+                 let mask = hash_to_scalar(&bcs::to_bytes(&shared_secret).unwrap(), dst);
+                 let encrypted = Scalar::from_repr(encrypted_scalars[k]).unwrap();
+                 scalar_shares[j] += encrypted - mask;
+             }
         }
+        
+        let sk_shares = group_shares.into_iter().zip(scalar_shares.into_iter())
+            .map(|(gs, ss)| {
+                 // We don't have easy access to gs.share (it's private).
+                 // But we can get it via shadow if we really needed it for verification.
+                 // For now, just wrap the scalar.
+                 TimelockShare::new(ss)
+            })
+            .collect();
         
         (sk_shares, pub_shares)
     }
@@ -229,10 +280,25 @@ impl DKGTrait for TimelockDKG {
     }
     
     fn reconstruct_secret_from_shares(
-        _pub_params: &Self::PublicParams,
-        _input_player_share_pairs: Vec<(u64, Self::DealtSecretShare)>,
-    ) -> anyhow::Result<Self::DealtSecret> {
-          bail!("Reconstruction not supported")
+        pub_params: &Self::PublicParams,
+        input_player_share_pairs: Vec<(u64, Self::DealtSecretShare)>,
+    ) -> Result<Self::DealtSecret> {
+          // Flatten shares
+          let mut shares = Vec::new();
+          for (player_id, weight_shares) in input_player_share_pairs {
+              for (j, share) in weight_shares.into_iter().enumerate() {
+                  let player = Player { id: player_id as usize };
+                  let k = pub_params.pvss_config.wconfig.get_share_index(player.id, j).unwrap();
+                  // We use k as the "Player ID" for Shamir reconstruction of the scalar polynomial
+                  shares.push((Player { id: k }, *share.as_scalar()));
+              }
+          }
+          
+          let secret_scalar = <Scalar as Reconstructable<aptos_dkg::pvss::ThresholdConfigBlstrs>>::reconstruct(
+              &pub_params.pvss_config.wconfig.get_threshold_config(),
+              &shares
+          );
+          Ok(TimelockSecret(secret_scalar))
     }
     
     fn get_dealers(transcript: &Self::Transcript) -> BTreeSet<u64> {
@@ -268,14 +334,14 @@ impl DKGTrait for TimelockDKG {
         _verifier: &ValidatorVerifier, 
         _checks_voting_power: bool,
         _ensures_single_dealer: Option<move_core_types::account_address::AccountAddress>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         Ok(())
     }
 
     fn verify_transcript(
         _params: &Self::PublicParams,
         _trx: &Self::Transcript,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -292,7 +358,7 @@ impl DKGTrait for TimelockDKG {
         trx: &Self::Transcript,
         player_idx: u64,
         dk: &Self::NewValidatorDecryptKey,
-    ) -> anyhow::Result<(Self::DealtSecretShare, Self::DealtPubKeyShare)> {
+    ) -> Result<(Self::DealtSecretShare, Self::DealtPubKeyShare)> {
          let (sk, pk) = trx.decrypt_own_share(
             &pub_params.pvss_config.wconfig,
             &Player { id: player_idx as usize },
