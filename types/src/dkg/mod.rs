@@ -292,24 +292,46 @@ impl TryFrom<&ContractEvent> for RequestRevealEvent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KeyPublishedEvent {
-    pub interval: u64,
-    pub public_key: Vec<u8>,
+pub struct MasterPublicKeyPublishedEvent {
+    pub id: u64,
+    pub master_public_key: Vec<u8>,
 }
 
-impl MoveStructType for KeyPublishedEvent {
-    const MODULE_NAME: &'static IdentStr = ident_str!("timelock");
-    const STRUCT_NAME: &'static IdentStr = ident_str!("KeyPublishedEvent");
+impl MoveStructType for MasterPublicKeyPublishedEvent {
+    const MODULE_NAME: &'static IdentStr = ident_str!("threshold_dsa");
+    const STRUCT_NAME: &'static IdentStr = ident_str!("MasterPublicKeyPublishedEvent");
 }
 
-impl TryFrom<&ContractEvent> for KeyPublishedEvent {
+impl TryFrom<&ContractEvent> for MasterPublicKeyPublishedEvent {
     type Error = anyhow::Error;
 
     fn try_from(event: &ContractEvent) -> Result<Self> {
         if event.type_tag() != &TypeTag::Struct(Box::new(Self::struct_tag())) {
-            bail!("Expected KeyPublishedEvent tag");
+            bail!("Expected MasterPublicKeyPublishedEvent tag");
         }
-        bcs::from_bytes(event.event_data()).context("Failed to deserialize KeyPublishedEvent")
+        bcs::from_bytes(event.event_data()).context("Failed to deserialize MasterPublicKeyPublishedEvent")
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DecryptionKeyRevealedEvent {
+    pub interval: u64,
+    pub decryption_key: Vec<u8>,
+}
+
+impl MoveStructType for DecryptionKeyRevealedEvent {
+    const MODULE_NAME: &'static IdentStr = ident_str!("timelock");
+    const STRUCT_NAME: &'static IdentStr = ident_str!("DecryptionKeyRevealedEvent");
+}
+
+impl TryFrom<&ContractEvent> for DecryptionKeyRevealedEvent {
+    type Error = anyhow::Error;
+
+    fn try_from(event: &ContractEvent) -> Result<Self> {
+        if event.type_tag() != &TypeTag::Struct(Box::new(Self::struct_tag())) {
+            bail!("Expected DecryptionKeyRevealedEvent tag");
+        }
+        bcs::from_bytes(event.event_data()).context("Failed to deserialize DecryptionKeyRevealedEvent")
     }
 }
 

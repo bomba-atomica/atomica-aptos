@@ -25,8 +25,8 @@ use aptos_safety_rules::{safety_rules_manager::storage, PersistentSafetyStorage}
 use aptos_types::{
     account_address::AccountAddress,
     dkg::{
-        DKGSessionMetadata, DKGStartEvent, DKGState, DefaultDKG, KeyPublishedEvent,
-        RequestRevealEvent, StartKeyGenEvent,
+        DKGSessionMetadata, DKGStartEvent, DKGState, DecryptionKeyRevealedEvent, DefaultDKG,
+        MasterPublicKeyPublishedEvent, RequestRevealEvent, StartKeyGenEvent,
     },
     epoch_state::EpochState,
     on_chain_config::{
@@ -203,18 +203,18 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 }
             }
 
-            // Try KeyPublishedEvent (timelock)
-            match KeyPublishedEvent::try_from(&event) {
+            // Try MasterPublicKeyPublishedEvent (threshold_dsa)
+            match MasterPublicKeyPublishedEvent::try_from(&event) {
                 Ok(timelock_key) => {
                     info!(
-                        "[DKG] Successfully parsed KeyPublishedEvent for interval {}",
-                        timelock_key.interval
+                        "[DKG] Successfully parsed MasterPublicKeyPublishedEvent for ID {}",
+                        timelock_key.id
                     );
                     self.process_timelock_key_published(timelock_key);
                     continue;
                 },
                 Err(e) => {
-                    debug!("[DKG] Not a KeyPublishedEvent: {:?}", e);
+                    debug!("[DKG] Not a MasterPublicKeyPublishedEvent: {:?}", e);
                 }
             }
 
@@ -230,6 +230,21 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 },
                 Err(e) => {
                     debug!("[DKG] Not a RequestRevealEvent: {:?}", e);
+                }
+            }
+
+            // Try DecryptionKeyRevealedEvent (timelock)
+            match DecryptionKeyRevealedEvent::try_from(&event) {
+                Ok(timelock_revealed) => {
+                    info!(
+                        "[DKG] Successfully parsed DecryptionKeyRevealedEvent for interval {}",
+                        timelock_revealed.interval
+                    );
+                    // Currently we just log it. In future we might want to stop trying to reveal if we haven't already.
+                    continue;
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a DecryptionKeyRevealedEvent: {:?}", e);
                 }
             }
 
@@ -630,18 +645,19 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // For now, this secret share extraction is deferred
     }
 
-    fn process_timelock_key_published(&mut self, event: KeyPublishedEvent) {
+    fn process_timelock_key_published(&mut self, event: MasterPublicKeyPublishedEvent) {
         use aptos_types::dkg::{real_dkg::maybe_dk_from_bls_sk, DKGTrait, TimelockConfig};
 
+        // Note: event.id corresponds to the timelock interval
         info!(
-            "[Timelock] Processing KeyPublishedEvent for interval {}",
-            event.interval
+            "[Timelock] Processing MasterPublicKeyPublishedEvent for interval {}",
+            event.id
         );
 
         // Cleanup the DKG session for this interval if it's still running.
         // Once the key is published on-chain, our local DKG manager task is no longer needed.
-        if let Some(tx) = self.timelock_dkg_close_txs.remove(&event.interval) {
-            debug!("[Timelock] Closing DKG session for interval {} (MPK published)", event.interval);
+        if let Some(tx) = self.timelock_dkg_close_txs.remove(&event.id) {
+            debug!("[Timelock] Closing DKG session for interval {} (MPK published)", event.id);
             let (ack_tx, ack_rx) = oneshot::channel();
             if tx.send(ack_tx).is_ok() {
                 // We don't necessarily need to block the event loop here, 
@@ -650,7 +666,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 let _ = ack_rx.now_or_never(); 
             }
         }
-        self.timelock_rpc_msg_txs.remove(&event.interval);
+        self.timelock_rpc_msg_txs.remove(&event.id);
 
         let epoch_state = match &self.epoch_state {
             Some(s) => s.clone(),
@@ -670,7 +686,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         };
         // Create a dummy StartKeyGenEvent to reuse the metadata builder
         let start_event = StartKeyGenEvent {
-            interval: event.interval,
+            interval: event.id,
             config,
         };
 
@@ -679,12 +695,12 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
         // Deserialize transcript
         let transcript: <DefaultDKG as DKGTrait>::Transcript =
-            match bcs::from_bytes(&event.public_key) {
+            match bcs::from_bytes(&event.master_public_key) {
                 Ok(t) => t,
                 Err(e) => {
                     error!(
                         "[Timelock] Failed to deserialize transcript for interval {}: {}",
-                        event.interval, e
+                        event.id, e
                     );
                     return;
                 },
@@ -730,7 +746,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Err(e) => {
                 error!(
                     "[Timelock] Failed to decrypt share for interval {}: {}",
-                    event.interval, e
+                    event.id, e
                 );
                 return;
             },
@@ -745,20 +761,19 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Err(e) => {
                 error!(
                     "[Timelock] Failed to serialize share for interval {}: {}",
-                    event.interval, e
+                    event.id, e
                 );
                 return;
             },
         };
 
-        if let Err(e) = self.store_timelock_share(event.interval, &share_bytes) {
+        if let Err(e) = self.store_timelock_share(event.id, &share_bytes) {
             error!("[Timelock] Failed to store share: {}", e);
         }
     }
 
     fn process_timelock_reveal(&self, event: RequestRevealEvent) {
         info!("[Timelock] Revealing share for interval {}", event.interval);
-        aptos_logger::warn!("[DKG] DEBUG: process_timelock_reveal called for interval {}", event.interval);
 
         // 1. Retrieve secret share from storage
         let share_bytes = match self.retrieve_timelock_share(event.interval) {
@@ -1080,10 +1095,10 @@ mod tests {
         assert_eq!(manager.timelock_dkg_close_txs.len(), 2);
         assert_eq!(manager.timelock_rpc_msg_txs.len(), 2);
 
-        // 1. Test Interval-level Cleanup: KeyPublished for interval 100
-        let event = KeyPublishedEvent {
-            interval: 100,
-            public_key: vec![],
+        // 1. Test Interval-level Cleanup: MasterPublicKeyPublishedEvent for interval 100
+        let event = MasterPublicKeyPublishedEvent {
+            id: 100,
+            master_public_key: vec![],
         };
         manager.process_timelock_key_published(event);
 
