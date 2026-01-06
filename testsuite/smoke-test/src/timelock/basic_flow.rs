@@ -116,15 +116,15 @@ async fn test_timelock_basic_flow() {
     let mut pub_key_published = false;
     for _ in 0..60 {
         // Wait up to 60 seconds
-        match super::verify_public_key_published(&client, target_interval).await {
+        match super::verify_master_public_key_on_chain(&client, target_interval).await {
             Ok(public_key) => {
                 info!(
                     "Public key published for interval {}: {} bytes",
                     target_interval,
                     public_key.len()
                 );
-                // For now, we store the full transcript, so it's large.
-                assert!(public_key.len() > 0);
+                // MPK is a compressed G2 point (96 bytes)
+                assert_eq!(public_key.len(), 96, "MPK should be 96 bytes");
                 pub_key_published = true;
                 break;
             },

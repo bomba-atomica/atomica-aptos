@@ -12,10 +12,8 @@
 
 use crate::smoke_test_environment::SwarmBuilder;
 use aptos_dkg::ibe;
-use aptos_dkg::pvss::traits::Transcript;
 use aptos_forge::{NodeExt, Swarm};
 use aptos_logger::info;
-use aptos_types::dkg::real_dkg::Transcripts;
 use aptos_types::on_chain_config::OnChainRandomnessConfig;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
@@ -83,29 +81,24 @@ async fn test_ibe_encrypt_decrypt_e2e() {
         .await
         .unwrap();
 
-    // 3. Fetch MPK (DKG transcript)
+    // 3. Fetch MPK from threshold_dsa module
     info!(
-        "Waiting for public key (transcript) for interval {}",
+        "Waiting for Master Public Key for interval {}",
         target_interval
     );
-    let mut transcript_bytes = Vec::new();
+    let mut mpk_bytes = Vec::new();
     for _ in 0..60 {
-        if let Ok(bytes) = super::verify_public_key_published(&client, target_interval).await {
-            transcript_bytes = bytes;
+        if let Ok(bytes) = super::verify_master_public_key_on_chain(&client, target_interval).await {
+            mpk_bytes = bytes;
             break;
         }
         sleep(Duration::from_secs(1)).await;
     }
-    assert!(!transcript_bytes.is_empty(), "Failed to get transcript");
+    assert!(!mpk_bytes.is_empty(), "Failed to get MPK");
 
-    // 4. Extract IBE Public Key (G2 point) from transcript
-    let transcripts: Transcripts =
-        bcs::from_bytes(&transcript_bytes).expect("Failed to deserialize transcripts");
-    let mpk_g2 = transcripts
-        .main
-        .get_dealt_public_key()
-        .as_group_element()
-        .clone();
+    // 4. Extract IBE Public Key (G2 point) from bytes
+    // Note: The bytes stored in threshold_dsa are already the compressed G2 point
+    let mpk_g2 = ibe::deserialize_g2(&mpk_bytes).expect("Failed to deserialize MPK");
     info!("Extracted MPK G2 point successfully");
 
     // 5. Encrypt a message using IBE

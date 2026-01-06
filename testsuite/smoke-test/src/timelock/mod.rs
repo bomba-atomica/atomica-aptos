@@ -177,7 +177,7 @@ pub async fn verify_secret_aggregated(
 ) -> Result<Vec<u8>> {
     let view_function = ViewFunction {
         module: ModuleId::from_str("0x1::timelock").map_err(|e| anyhow!("{}", e))?,
-        function: Identifier::from_str("get_secret").map_err(|e| anyhow!("{}", e))?,
+        function: Identifier::from_str("get_decryption_key").map_err(|e| anyhow!("{}", e))?,
         ty_args: vec![],
         args: vec![bcs::to_bytes(&interval)?],
     };
@@ -194,4 +194,31 @@ pub async fn verify_secret_aggregated(
         .cloned()
         .flatten()
         .ok_or_else(|| anyhow!("Secret not aggregated for interval {}", interval))
+}
+
+/// Verify master public key is published in threshold_dsa module.
+///
+/// Queries `0x1::threshold_dsa::get_master_public_key`.
+pub async fn verify_master_public_key_on_chain(
+    client: &Client,
+    interval: u64,
+) -> Result<Vec<u8>> {
+    let view_function = ViewFunction {
+        module: ModuleId::from_str("0x1::threshold_dsa").map_err(|e| anyhow!("{}", e))?,
+        function: Identifier::from_str("get_master_public_key").map_err(|e| anyhow!("{}", e))?,
+        ty_args: vec![],
+        args: vec![bcs::to_bytes(&interval)?],
+    };
+
+    let result: Vec<Option<Vec<u8>>> = client
+        .view_bcs(&view_function, None)
+        .await
+        .map_err(|e| anyhow!("Failed to call get_master_public_key: {}", e))?
+        .into_inner();
+
+    result
+        .first()
+        .cloned()
+        .flatten()
+        .ok_or_else(|| anyhow!("Master Public Key not found for interval {}", interval))
 }
