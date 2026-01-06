@@ -43,7 +43,8 @@ async fn test_ibe_registry_e2e() {
 
     let transcripts: Transcripts = bcs::from_bytes(&transcript_bytes).unwrap();
     // Use main transcript for MPK
-    let mpk_g2 = transcripts.main.get_dealt_public_key().as_group_element();
+    let mpk = transcripts.main.get_dealt_public_key();
+    let mpk_g2 = mpk.as_group_element();
 
     // 2. Register Timelock
     let now = get_chain_time(&client).await;
