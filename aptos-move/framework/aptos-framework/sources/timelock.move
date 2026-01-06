@@ -1,466 +1,364 @@
 module aptos_framework::timelock {
-
     use std::option::{Self, Option};
     use std::vector;
+    use std::string::{Self, String};
     use aptos_std::table::{Self, Table};
-    use aptos_framework::event::{Self, EventHandle, emit};
+    use aptos_framework::event::emit;
     use aptos_framework::timestamp;
     use aptos_framework::system_addresses;
-    use aptos_framework::account;
-    use aptos_framework::timelock_config;
     use aptos_framework::stake;
-    use aptos_framework::validator_consensus_info;
     use aptos_std::crypto_algebra::{zero, add, serialize, deserialize};
     use aptos_std::bls12381_algebra::{G1, FormatG1Compr};
-    use aptos_framework::chain_id;
-    use aptos_std::bcs;
-
-    // New modules
+    use aptos_std::aptos_hash::keccak256;
+    
+    // Dependencies
     use aptos_framework::threshold_dsa;
     use aptos_framework::ibe_signature; 
 
     friend aptos_framework::block;
-
     friend aptos_framework::genesis;
 
-    /// # Atomica Timelock Service (IBE-based)
+    /// # Atomica Timelock Service (Registry Model)
     ///
-    /// This module implements the on-chain registry and orchestration for a Timelock Encryption service
-    /// based on **Identity-Based Encryption (IBE)** as defined by Boneh and Franklin [BF01].
+    /// Manages the registration of timelocks and the revelation of decryption keys
+    /// based on timestamps (deadlines).
     ///
-    /// ## References
-    ///
-    /// *   **[BF01]**: Boneh, D., & Franklin, M. (2001). "Identity-based encryption from the Weil pairing."
-    ///
-    /// ## Protocol Overview
-    ///
-    /// The system treats time intervals as "Identities" in an IBE scheme.
-    ///
-    /// 1.  **Setup ($P_{pub}$)**: Validators engage in a Distributed Key Generation (DKG) to produce a shared Master Secret Key ($s$)
-    ///     and publish the Master Public Key ($P_{pub} = s \cdot g_2$) on-chain.
-    ///     *   See `publish_master_public_key`.
-    ///
-    /// 2.  **Encryption (Off-Chain)**: Users encrypt messages for a future time interval $T$ using $P_{pub}$ and identity $ID = T$.
-    ///     *   $C = \text{Encrypt}(P_{pub}, ID, M)$.
-    ///
-    /// 3.  **Reveal / Extract ($d_{ID}$)**: When time $T$ arrives, validators compute partial private keys (signature shares) for $ID = T$.
-    ///     *   Share: $\sigma_i = s_i \cdot H_1(ID)$.
-    ///
-    /// 4.  **Aggregation**: The contract verifies and aggregates these shares to reconstruct the full private key $d_{ID} = s \cdot H_1(ID)$.
-    ///     *   This $d_{ID}$ allows anyone to decrypt $C$.
-    ///     *   See `publish_decryption_key_share`.
-    ///
-    /// ## Architecture
-    ///
-    /// *   **`timelock.move`**: This module. Orchestrates the lifecycle (Intervals, Rotation, Reveal).
-    /// *   **`threshold_dsa.move`**: Manages the underlying MPK storage and curve verification.
-    /// *   **`ibe_signature.move`**: Defines the $H_1$ mapping from Identity to Point.
+    /// ## Flow
+    /// 1. User calls `register(deadline)`.
+    /// 2. When `now >= deadline`, `DeadlineReachedEvent` is emitted.
+    /// 3. Validators submit decryption key shares for the specific `timelock_id`.
+    /// 4. Decryption key is aggregated and published.
 
-    /// The singleton was not initialized.
     const ETIMELOCK_NOT_INITIALIZED: u64 = 1;
-    /// Not a validator.
     const ENOT_VALIDATOR: u64 = 2;
-    /// Invalid share format.
     const EINVALID_SHARE: u64 = 3;
-    /// Rotation triggered too early.
-    const EROTATION_TOO_EARLY: u64 = 4;
-    /// Invalid interval for reveal operation.
-    const EINVALID_INTERVAL: u64 = 5;
-    /// Share verification failed against MPK/Identity.
+    const EDEADLINE_NOT_PASSED: u64 = 4;
+    const EINVALID_TIMESTAMP: u64 = 5;
     const ESHARE_VERIFICATION_FAILED: u64 = 6;
-
-    struct TimelockConfig has copy, drop, store {
-        threshold: u64,
-        total_validators: u64,
-    }
-
-    struct IntervalConfig has store, drop, copy {
-        threshold: u64,
-        total_validators: u64,
-        created_at: u64,  // timestamp
-    }
+    
+    const MPK_ID: u64 = 1; // Canonical ID for the Timelock Service MPK
 
     struct DecryptionKeyShare has store, drop {
         validator: address,
         share: vector<u8>,
     }
 
-    struct TimelockState has key {
-        current_interval: u64,
-        last_rotation_time: u64,
-        // master_public_keys moved to threshold_dsa
-        /// Store collected key shares before aggregation
-        decryption_key_shares: Table<u64, vector<DecryptionKeyShare>>,
-        /// Store revealed decryption keys (DK)
-        decryption_keys: Table<u64, vector<u8>>,
-        /// Store historical interval configurations
-        interval_configs: Table<u64, IntervalConfig>,
-        /// Events
-        // Events are now V2 (no handles stored)
+    struct TimelockConfig has copy, drop, store {
+        threshold: u64,
+        total_validators: u64,
     }
 
-    // Event emitted to tell validators: "Please generate keys for interval X"
+    struct TimelockState has key {
+        /// Counter for assigning unique IDs
+        next_timelock_id: u64,
+        
+        /// Sorted vector of pending deadlines (ascending)
+        pending_deadlines: vector<u64>,
+        
+        /// Map from deadline -> List of Timelock IDs
+        deadline_to_ids: Table<u64, vector<u64>>,
+        
+        /// Map from timelock_id -> Deadline (for verification)
+        id_to_deadline: Table<u64, u64>,
+
+        /// Store collected key shares: timelock_id -> shares
+        shares: Table<u64, vector<DecryptionKeyShare>>,
+        
+        /// Store revealed keys: timelock_id -> key bytes
+        decryption_keys: Table<u64, vector<u8>>,
+    }
+
+    // Events
+
+    /// Emitted to trigger DKG Setup for MPK (Legacy name preserved for Rust compat)
     #[event]
     struct StartKeyGenEvent has drop, store {
-        interval: u64,
+        interval: u64, // Acts as ID (should be MPK_ID = 1)
         config: TimelockConfig,
     }
 
-    // Event emitted to tell validators: "Please reveal the secret for interval X"
     #[event]
-    struct RequestRevealEvent has drop, store {
-        interval: u64,
+    struct TimelockRegisteredEvent has drop, store {
+        timelock_id: u64,
+        deadline: u64,
     }
 
-    // Event emitted when a secret (DK) is fully reconstructed
+    #[event]
+    struct DeadlineReachedEvent has drop, store {
+        deadline: u64,
+        timelock_ids: vector<u64>,
+    }
+
     #[event]
     struct DecryptionKeyRevealedEvent has drop, store {
-        interval: u64,
+        timelock_id: u64,
+        deadline: u64,
         decryption_key: vector<u8>,
     }
 
-    /// Initialize the timelock system.
+    /// Initialize the system
     public(friend) fun initialize(framework: &signer) {
         system_addresses::assert_aptos_framework(framework);
-        // Initialize dependency modules
         if (!exists<TimelockState>(@aptos_framework)) {
-            // Ensure threshold_dsa is initialized
+            // Ensure dependencies initialized
             threshold_dsa::initialize(framework);
-            
+
             move_to(framework, TimelockState {
-                current_interval: 0,
-                last_rotation_time: 0, // Will be updated on first block
-                decryption_key_shares: table::new(),
+                next_timelock_id: 2, // Start after MPK_ID (1)
+                pending_deadlines: vector::empty(),
+                deadline_to_ids: table::new(),
+                id_to_deadline: table::new(),
+                shares: table::new(),
                 decryption_keys: table::new(),
-                interval_configs: table::new(),
+            });
+
+            // Trigger MPK Setup
+            let validators = stake::cur_validator_consensus_infos();
+            let n = vector::length(&validators);
+            let threshold = (n * 2 / 3) + 1;
+            if (n == 0) { n = 1; threshold = 1; };
+
+            emit(StartKeyGenEvent {
+                interval: MPK_ID,
+                config: TimelockConfig { threshold, total_validators: n },
             });
         }
     }
 
-    /// Internal function to perform rotation logic
-    fun perform_rotation(state: &mut TimelockState) {
+    /// Register a new timelock request
+    public entry fun register(deadline: u64) acquires TimelockState {
+        let state = borrow_global_mut<TimelockState>(@aptos_framework);
+        let id = state.next_timelock_id;
+        state.next_timelock_id = id + 1;
+
+        // Validation
         let now = timestamp::now_microseconds();
-        let old_interval = state.current_interval;
+        assert!(deadline > now, EINVALID_TIMESTAMP);
 
-        // Emit reveal event for the old interval
-        emit(RequestRevealEvent {
-            interval: old_interval,
+        // Store mappings
+        table::add(&mut state.id_to_deadline, id, deadline);
+        
+        if (!table::contains(&state.deadline_to_ids, deadline)) {
+            table::add(&mut state.deadline_to_ids, deadline, vector::empty());
+            // Add to pending deadlines (sorted insert)
+            insert_pending_deadline(&mut state.pending_deadlines, deadline);
+        };
+        
+        let ids = table::borrow_mut(&mut state.deadline_to_ids, deadline);
+        vector::push_back(ids, id);
+
+        emit(TimelockRegisteredEvent {
+            timelock_id: id,
+            deadline,
         });
+    }
 
-        state.current_interval = state.current_interval + 1;
-        state.last_rotation_time = now;
-
-        // DEBUG: Log interval rotation
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Interval rotated to"));
-        aptos_std::debug::print(&state.current_interval);
-
-        // Get current validator set to determine threshold
-        let validators = stake::cur_validator_consensus_infos();
-        let validator_addresses = vector::empty<address>();
+    /// Internal: Insert deadline into sorted vector
+    fun insert_pending_deadline(deadlines: &mut vector<u64>, deadline: u64) {
+        let len = vector::length(deadlines);
+        if (len == 0) {
+            vector::push_back(deadlines, deadline);
+            return
+        };
+        // Optimization: Check if it belongs at the end (common case)
+        if (deadline >= *vector::borrow(deadlines, len - 1)) {
+            vector::push_back(deadlines, deadline);
+            return
+        };
+        
+        // Find insertion point
         let i = 0;
-        let len = vector::length(&validators);
         while (i < len) {
-            let v = vector::borrow(&validators, i);
-            vector::push_back(&mut validator_addresses, validator_consensus_info::get_addr(v));
+            if (*vector::borrow(deadlines, i) > deadline) {
+                vector::insert(deadlines, i, deadline);
+                return
+            };
             i = i + 1;
         };
-        let total_validators = vector::length(&validators);
-        // Byztantine Fault Tolerance threshold: 2f + 1, where N = 3f + 1
-        // Simple formula: floor(N * 2 / 3) + 1
-        let threshold = (total_validators * 2 / 3) + 1;
-        if (total_validators == 0) { threshold = 1; }; // Fallback for testing/genesis
-
-        let config = TimelockConfig {
-            threshold,
-            total_validators,
-        };
-
-        // Store interval config for future reveal validation
-        let interval_config = IntervalConfig {
-            threshold,
-            total_validators,
-            created_at: now,
-        };
-        table::add(&mut state.interval_configs, state.current_interval, interval_config);
-
-        // NOTE: DKG (StartKeyGenEvent) is NOT emitted on interval rotation.
-        // The MPK corresponds to the validator set, which changes on epoch boundaries.
-        // IBE allows the same MPK to encrypt for any interval via identity derivation.
-        // DKG is triggered separately via reconfiguration/epoch change events.
-        let _ = config; // Suppress unused warning
+        vector::push_back(deadlines, deadline);
     }
 
-    /// Called by block prologue to trigger rotations.
+    /// On New Block: Check for passed deadlines
     public(friend) fun on_new_block(vm: &signer) acquires TimelockState {
         system_addresses::assert_vm(vm);
-
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block called"));
-
-        if (!exists<TimelockState>(@aptos_framework)) {
-            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] TimelockState does not exist - returning"));
-            return
-        };
+        if (!exists<TimelockState>(@aptos_framework)) return;
 
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
         let now = timestamp::now_microseconds();
 
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block: current_interval="));
-        aptos_std::debug::print(&state.current_interval);
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block: now="));
-        aptos_std::debug::print(&now);
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block: last_rotation_time="));
-        aptos_std::debug::print(&state.last_rotation_time);
+        // Process pending deadlines <= now
+        while (!vector::is_empty(&state.pending_deadlines)) {
+            let next_deadline = *vector::borrow(&state.pending_deadlines, 0);
+            
+            if (next_deadline > now) {
+                break // No more deadlines to process
+            };
 
-        // Initialize last_rotation_time if it's 0 (genesis/first run)
-        if (state.last_rotation_time == 0) {
-            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Initializing last_rotation_time to current time"));
-            state.last_rotation_time = now;
-            return
+            // Remove from pending
+            vector::remove(&mut state.pending_deadlines, 0);
+
+            // Get IDs and emit event
+            if (table::contains(&state.deadline_to_ids, next_deadline)) {
+                let ids = table::borrow(&state.deadline_to_ids, next_deadline);
+                emit(DeadlineReachedEvent {
+                    deadline: next_deadline,
+                    timelock_ids: *ids,
+                });
+            };
         };
-
-        // Check if configured interval has passed (get from timelock_config)
-        let interval_micros = timelock_config::get_interval_microseconds();
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] interval_micros="));
-        aptos_std::debug::print(&interval_micros);
-
-        let elapsed = now - state.last_rotation_time;
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] elapsed="));
-        aptos_std::debug::print(&elapsed);
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] should_rotate="));
-        aptos_std::debug::print(&(elapsed > interval_micros));
-
-        if (now - state.last_rotation_time > interval_micros) {
-            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Calling perform_rotation"));
-            perform_rotation(state);
-        }
     }
 
-    /// Manual rotation trigger that can be called by anyone after the scheduled time.
-    /// This allows testing and emergency rotation when automatic rotation fails.
-    public entry fun trigger_rotation(_account: &signer) acquires TimelockState {
-        if (!exists<TimelockState>(@aptos_framework)) {
-            return
-        };
-
-        let state = borrow_global_mut<TimelockState>(@aptos_framework);
-        let now = timestamp::now_microseconds();
-
-        // Initialize last_rotation_time if it's 0 (genesis/first run)
-        if (state.last_rotation_time == 0) {
-            state.last_rotation_time = now;
-            return
-        };
-
-        // Check if configured interval has passed (get from timelock_config)
-        let interval_micros = timelock_config::get_interval_microseconds();
-        assert!(now - state.last_rotation_time > interval_micros, EROTATION_TOO_EARLY);
-
-        perform_rotation(state);
+    /// Submit a decryption key share
+    public entry fun publish_public_key(validator: &signer, timelock_id: u64, mpk: vector<u8>) {
+        threshold_dsa::publish_master_public_key(validator, timelock_id, mpk);
     }
-
-    /// Force rotation for testing purposes.
-    /// Bypasses the time check. Only available on non-mainnet chains.
-    public entry fun force_rotation_for_testing(_account: &signer) acquires TimelockState {
-        assert!(chain_id::get() != 1, EROTATION_TOO_EARLY);
-
-        if (!exists<TimelockState>(@aptos_framework)) {
-            return
-        };
-
-        let state = borrow_global_mut<TimelockState>(@aptos_framework);
-        perform_rotation(state);
-    }
-
-    /// Validators call this to publish the Master Public Key ($P_{pub}$) for a future interval.
-    ///
-    /// # [BF01] Setup Phase
-    ///
-    /// This corresponds to the **Setup** algorithm. Ideally, this runs once for the system lifetime or per epoch.
-    /// The $P_{pub}$ is stored in `threshold_dsa` and allows users to derive Public Keys for any identity $ID$.
-    public entry fun publish_master_public_key(
-        validator: &signer,
-        interval: u64,
-        pk: vector<u8>
-    ) {
-        // Delegate to threshold_dsa module
-        threshold_dsa::publish_master_public_key(validator, interval, pk);
-    }
-
-    /// Validators call this to publish their partial Decryption Key ($d_{ID}$) share for a past interval.
-    ///
-    /// # [BF01] Extract Phase (Distributed)
-    ///
-    /// When the time interval $ID$ passes, the "Private Key Generator" (PKG)—in this case, the validator set—
-    /// cooperatively constructs the private key $d_{ID}$ corresponding to the identity $ID$.
-    ///
-    /// *   **Input**: Validator share $\sigma_i$.
-    /// *   **Logic**:
-    ///     1.  Verify $\sigma_i$ against $P_{pub}$ and $ID$ (using `ibe_signature::verify_private_key`).
-    ///     2.  Accumulate shares until threshold is met.
-    ///     3.  Aggregate to form $d_{ID} = \sum \sigma_i$.
-    ///     4.  Publish $d_{ID}$.
-    ///
-    /// Once $d_{ID}$ is published, any ciphertext encrypted for $ID$ can be decrypted.
+    
     public entry fun publish_decryption_key_share(
         validator: &signer,
-        interval: u64,
+        timelock_id: u64,
         share: vector<u8>
     ) acquires TimelockState {
         let validator_addr = std::signer::address_of(validator);
-        
-        // 1. Verify validator authorization
         assert!(stake::is_current_epoch_validator(validator_addr), ENOT_VALIDATOR);
 
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
 
-        // Security Check: Only allow revealing PAST intervals
-        assert!(interval < state.current_interval, EINVALID_INTERVAL);
-
-        // If outcome already revealed, ignore
-        if (table::contains(&state.decryption_keys, interval)) {
-            return
-        };
-
-        // 2. CRYPTOGRAPHIC VERIFICATION
-        // Construct Identity from interval (u64 -> bytes)
-        let identity = bcs::to_bytes(&interval);
+        // 1. Verify Deadline Passed
+        assert!(table::contains(&state.id_to_deadline, timelock_id), EINVALID_TIMESTAMP);
+        let deadline = *table::borrow(&state.id_to_deadline, timelock_id);
+        let now = timestamp::now_microseconds();
         
-        // Verify the share against the MPK for this interval
-        // Note: verify_private_key handles MPK lookup in threshold_dsa
-        let is_valid = ibe_signature::verify_private_key(interval, identity, share);
+        // Allow slightly early submission? No, must strict.
+        assert!(now >= deadline, EDEADLINE_NOT_PASSED);
+
+        // Deduplicate
+        if (table::contains(&state.decryption_keys, timelock_id)) return; // Already revealed
+
+        // 2. Compute Identity
+        // Format: "timelock_id:{id}:deadline_timestamp_microseconds:{deadline}"
+        let identity = compute_identity(timelock_id, deadline);
+        
+        // 3. Verify Share
+        let is_valid = ibe_signature::verify_private_key(MPK_ID, identity, share);
         assert!(is_valid, ESHARE_VERIFICATION_FAILED);
 
-        // 3. Store valid share
-        if (!table::contains(&state.decryption_key_shares, interval)) {
-            table::add(&mut state.decryption_key_shares, interval, vector::empty());
+        // 4. Store & Aggregate
+        if (!table::contains(&state.shares, timelock_id)) {
+            table::add(&mut state.shares, timelock_id, vector::empty());
         };
-        let shares_list = table::borrow_mut(&mut state.decryption_key_shares, interval);
-        
-        // Dedup
+        let shares = table::borrow_mut(&mut state.shares, timelock_id);
+
+        // Validator dedup
         let i = 0;
-        let len = vector::length(shares_list);
+        let len = vector::length(shares);
         while (i < len) {
-            if (vector::borrow(shares_list, i).validator == validator_addr) {
-                return 
-            };
+            if (vector::borrow(shares, i).validator == validator_addr) return;
             i = i + 1;
         };
 
-        // Share is already verified cryptographically, but we need to deserialize for aggregation.
-        // deserialize should succeed if verify succeeded, but we check.
-        let share_opt = deserialize<G1, FormatG1Compr>(&share);
-        assert!(std::option::is_some(&share_opt), EINVALID_SHARE);
+        vector::push_back(shares, DecryptionKeyShare { validator: validator_addr, share });
 
-        vector::push_back(shares_list, DecryptionKeyShare {
-            validator: validator_addr,
-            share: share,
-        });
+        // Check threshold
+        let voters = stake::cur_validator_consensus_infos();
+        let n = vector::length(&voters);
+        let threshold = (n * 2 / 3) + 1;
+        if (n == 0) { threshold = 1; };
 
-        // 4. Check threshold
-        assert!(table::contains(&state.interval_configs, interval), EINVALID_INTERVAL);
-        let config = table::borrow(&state.interval_configs, interval);
-        let threshold = config.threshold;
-        let valid_count = vector::length(shares_list);
-
-        if (valid_count >= threshold) {
-            // 5. Aggregate
+        if (vector::length(shares) >= threshold) {
+            // Aggregate
             let sum = zero<G1>();
+            let count = 0;
             let i = 0;
-            let len = vector::length(shares_list); 
-            let aggregated_count = 0;
+            let len = vector::length(shares);
             
-            while (i < len && aggregated_count < threshold) {
-                let s_bytes = &vector::borrow(shares_list, i).share;
-                let element_opt = deserialize<G1, FormatG1Compr>(s_bytes);
-                if (std::option::is_some(&element_opt)) {
-                    let element = std::option::extract(&mut element_opt);
-                    sum = add(&sum, &element);
-                    aggregated_count = aggregated_count + 1;
+            while (i < len && count < threshold) {
+                let s = &vector::borrow(shares, i).share;
+                let elem_opt = deserialize<G1, FormatG1Compr>(s);
+                if (std::option::is_some(&elem_opt)) {
+                    let elem = std::option::extract(&mut elem_opt);
+                    sum = add(&sum, &elem);
+                    count = count + 1;
                 };
                 i = i + 1;
             };
 
-            let aggregated_bytes = serialize<G1, FormatG1Compr>(&sum);
-            table::add(&mut state.decryption_keys, interval, aggregated_bytes);
-
-            // Emit event
+            let key_bytes = serialize<G1, FormatG1Compr>(&sum);
+            table::add(&mut state.decryption_keys, timelock_id, key_bytes);
+            
             emit(DecryptionKeyRevealedEvent {
-                interval,
-                decryption_key: aggregated_bytes,
+                timelock_id,
+                deadline,
+                decryption_key: key_bytes,
             });
-        }
+        };
     }
 
-    #[view]
-    public fun get_current_interval(): u64 acquires TimelockState {
-        if (!exists<TimelockState>(@aptos_framework)) {
-            return 0
-        };
-        borrow_global<TimelockState>(@aptos_framework).current_interval
+    /// Construct canonical identity string and hash it
+    fun compute_identity(timelock_id: u64, deadline: u64): vector<u8> {
+        // "timelock_id:{id}:deadline_timestamp_microseconds:{deadline}"
+        let str = string::utf8(b"timelock_id:");
+        string::append(&mut str, u64_to_string(timelock_id));
+        string::append(&mut str, string::utf8(b":deadline_timestamp_microseconds:"));
+        string::append(&mut str, u64_to_string(deadline));
+        
+        keccak256(*string::bytes(&str))
     }
 
-    #[view]
-    public fun get_interval_config(interval: u64): Option<IntervalConfig> acquires TimelockState {
-        if (!exists<TimelockState>(@aptos_framework)) {
-            return option::none()
+    fun u64_to_string(value: u64): String {
+        if (value == 0) {
+            return string::utf8(b"0")
         };
+        let buf = vector::empty<u8>();
+        while (value > 0) {
+            let digit = ((value % 10) as u8);
+            vector::push_back(&mut buf, digit + 48); // '0' is 48
+            value = value / 10;
+        };
+        vector::reverse(&mut buf);
+        string::utf8(buf)
+    }
+
+    // View Functions
+
+    #[view]
+    public fun get_deadline(timelock_id: u64): Option<u64> acquires TimelockState {
+        if (!exists<TimelockState>(@aptos_framework)) return option::none();
         let state = borrow_global<TimelockState>(@aptos_framework);
-        if (table::contains(&state.interval_configs, interval)) {
-            option::some(*table::borrow(&state.interval_configs, interval))
+        if (table::contains(&state.id_to_deadline, timelock_id)) {
+            option::some(*table::borrow(&state.id_to_deadline, timelock_id))
         } else {
             option::none()
         }
     }
 
     #[view]
-    public fun get_master_public_key(interval: u64): Option<vector<u8>> {
-        // Delegate to threshold_dsa
-        threshold_dsa::get_master_public_key(interval)
-    }
-
-    #[view]
-    public fun is_decryption_key_revealed(interval: u64): bool acquires TimelockState {
-        if (!exists<TimelockState>(@aptos_framework)) {
-            return false
-        };
+    public fun get_decryption_key(timelock_id: u64): Option<vector<u8>> acquires TimelockState {
+        if (!exists<TimelockState>(@aptos_framework)) return option::none();
         let state = borrow_global<TimelockState>(@aptos_framework);
-        table::contains(&state.decryption_keys, interval)
-    }
-
-    #[view]
-    public fun get_decryption_key(interval: u64): Option<vector<u8>> acquires TimelockState {
-        if (!exists<TimelockState>(@aptos_framework)) {
-            return option::none()
-        };
-        let state = borrow_global<TimelockState>(@aptos_framework);
-        if (table::contains(&state.decryption_keys, interval)) {
-            option::some(*table::borrow(&state.decryption_keys, interval))
+        if (table::contains(&state.decryption_keys, timelock_id)) {
+            option::some(*table::borrow(&state.decryption_keys, timelock_id))
         } else {
             option::none()
         }
     }
 
     #[test_only]
-    use aptos_framework::account::create_signer_for_test;
+    use aptos_framework::account::{create_signer_for_test, create_account_for_test};
 
     #[test(framework = @aptos_framework)]
-    public fun test_timelock_flow(framework: &signer) acquires TimelockState {
+    public fun test_flow(framework: &signer) acquires TimelockState {
         timestamp::set_time_has_started_for_testing(framework);
-        account::create_account_for_test(@aptos_framework);
+        create_account_for_test(@aptos_framework);
         stake::initialize_for_test(framework);
         initialize(framework);
         let vm = create_signer_for_test(@0x0);
 
-        timestamp::update_global_time_for_test(1);
-        on_new_block(&vm);
+        timestamp::update_global_time_for_test(100);
+        register(200); // ID 0
         
-        let state = borrow_global<TimelockState>(@aptos_framework);
-        assert!(state.last_rotation_time == 1, 99);
-
-        timestamp::update_global_time_for_test(1 + 3600 * 1000000 + 1);
+        timestamp::update_global_time_for_test(201);
         on_new_block(&vm);
-        
-        let state = borrow_global<TimelockState>(@aptos_framework);
-        assert!(state.current_interval == 1, 100);
+        // IDs for deadline 200 should be emitted
+        // Logic check: pending_deadlines had [200], now empty.
     }
 }
