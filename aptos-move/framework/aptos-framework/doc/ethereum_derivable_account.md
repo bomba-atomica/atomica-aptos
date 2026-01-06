@@ -174,6 +174,16 @@ Issued At: <issued_at>
 ## Constants
 
 
+<a id="0x1_ethereum_derivable_account_EINVALID_SIGNATURE"></a>
+
+Signature failed to verify.
+
+
+<pre><code><b>const</b> <a href="ethereum_derivable_account.md#0x1_ethereum_derivable_account_EINVALID_SIGNATURE">EINVALID_SIGNATURE</a>: u64 = 1;
+</code></pre>
+
+
+
 <a id="0x1_ethereum_derivable_account_EMISSING_ENTRY_FUNCTION_PAYLOAD"></a>
 
 Entry function payload is missing.
@@ -190,16 +200,6 @@ Address mismatch.
 
 
 <pre><code><b>const</b> <a href="ethereum_derivable_account.md#0x1_ethereum_derivable_account_EADDR_MISMATCH">EADDR_MISMATCH</a>: u64 = 4;
-</code></pre>
-
-
-
-<a id="0x1_ethereum_derivable_account_EINVALID_SIGNATURE"></a>
-
-Signature failed to verify.
-
-
-<pre><code><b>const</b> <a href="ethereum_derivable_account.md#0x1_ethereum_derivable_account_EINVALID_SIGNATURE">EINVALID_SIGNATURE</a>: u64 = 1;
 </code></pre>
 
 

@@ -96,10 +96,7 @@ module aptos_framework::timelock {
         /// Store historical interval configurations
         interval_configs: Table<u64, IntervalConfig>,
         /// Events
-        start_keygen_events: EventHandle<StartKeyGenEvent>,
-        // master_public_key_published_events moved to threshold_dsa
-        request_reveal_events: EventHandle<RequestRevealEvent>,
-        decryption_key_revealed_events: EventHandle<DecryptionKeyRevealedEvent>,
+        // Events are now V2 (no handles stored)
     }
 
     // Event emitted to tell validators: "Please generate keys for interval X"
@@ -136,9 +133,6 @@ module aptos_framework::timelock {
                 decryption_key_shares: table::new(),
                 decryption_keys: table::new(),
                 interval_configs: table::new(),
-                start_keygen_events: account::new_event_handle<StartKeyGenEvent>(framework),
-                request_reveal_events: account::new_event_handle<RequestRevealEvent>(framework),
-                decryption_key_revealed_events: account::new_event_handle<DecryptionKeyRevealedEvent>(framework),
             });
         }
     }
@@ -193,6 +187,7 @@ module aptos_framework::timelock {
             interval: state.current_interval,
             config,
         });
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted StartKeyGenEvent"));
     }
 
     /// Called by block prologue to trigger rotations.

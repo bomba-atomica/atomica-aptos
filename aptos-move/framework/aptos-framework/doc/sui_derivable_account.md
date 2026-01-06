@@ -408,22 +408,22 @@ Invalid public key.
 
 
 
-<a id="0x1_sui_derivable_account_EMISSING_ENTRY_FUNCTION_PAYLOAD"></a>
-
-Entry function payload is missing.
-
-
-<pre><code><b>const</b> <a href="sui_derivable_account.md#0x1_sui_derivable_account_EMISSING_ENTRY_FUNCTION_PAYLOAD">EMISSING_ENTRY_FUNCTION_PAYLOAD</a>: u64 = 1;
-</code></pre>
-
-
-
 <a id="0x1_sui_derivable_account_EINVALID_SIGNATURE"></a>
 
 Invalid signature.
 
 
 <pre><code><b>const</b> <a href="sui_derivable_account.md#0x1_sui_derivable_account_EINVALID_SIGNATURE">EINVALID_SIGNATURE</a>: u64 = 5;
+</code></pre>
+
+
+
+<a id="0x1_sui_derivable_account_EMISSING_ENTRY_FUNCTION_PAYLOAD"></a>
+
+Entry function payload is missing.
+
+
+<pre><code><b>const</b> <a href="sui_derivable_account.md#0x1_sui_derivable_account_EMISSING_ENTRY_FUNCTION_PAYLOAD">EMISSING_ENTRY_FUNCTION_PAYLOAD</a>: u64 = 1;
 </code></pre>
 
 
