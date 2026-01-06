@@ -80,7 +80,7 @@ impl AptosVM {
 
         let args = vec![
             MoveValue::Signer(share.author),
-            MoveValue::U64(share.interval),
+            MoveValue::U64(share.timelock_id),
             share.share.as_move_value(),
         ];
 

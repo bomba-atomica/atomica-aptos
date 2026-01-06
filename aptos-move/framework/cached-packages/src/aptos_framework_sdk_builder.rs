@@ -1152,44 +1152,21 @@ pub enum EntryFunctionCall {
         pk: Vec<u8>,
     },
 
-    /// Force rotation for testing purposes.
-    /// Bypasses the time check. Only available on non-mainnet chains.
-    TimelockForceRotationForTesting {},
-
-    /// Validators call this to publish their partial Decryption Key ($d_{ID}$) share for a past interval.
-    ///
-    /// # [BF01] Extract Phase (Distributed)
-    ///
-    /// When the time interval $ID$ passes, the "Private Key Generator" (PKG)—in this case, the validator set—
-    /// cooperatively constructs the private key $d_{ID}$ corresponding to the identity $ID$.
-    ///
-    /// *   **Input**: Validator share $\sigma_i$.
-    /// *   **Logic**:
-    ///     1.  Verify $\sigma_i$ against $P_{pub}$ and $ID$ (using `ibe_signature::verify_private_key`).
-    ///     2.  Accumulate shares until threshold is met.
-    ///     3.  Aggregate to form $d_{ID} = \sum \sigma_i$.
-    ///     4.  Publish $d_{ID}$.
-    ///
-    /// Once $d_{ID}$ is published, any ciphertext encrypted for $ID$ can be decrypted.
     TimelockPublishDecryptionKeyShare {
-        interval: u64,
+        timelock_id: u64,
         share: Vec<u8>,
     },
 
-    /// Validators call this to publish the Master Public Key ($P_{pub}$) for a future interval.
-    ///
-    /// # [BF01] Setup Phase
-    ///
-    /// This corresponds to the **Setup** algorithm. Ideally, this runs once for the system lifetime or per epoch.
-    /// The $P_{pub}$ is stored in `threshold_dsa` and allows users to derive Public Keys for any identity $ID$.
-    TimelockPublishMasterPublicKey {
-        interval: u64,
-        pk: Vec<u8>,
+    /// Submit a decryption key share
+    TimelockPublishPublicKey {
+        timelock_id: u64,
+        mpk: Vec<u8>,
     },
 
-    /// Manual rotation trigger that can be called by anyone after the scheduled time.
-    /// This allows testing and emergency rotation when automatic rotation fails.
-    TimelockTriggerRotation {},
+    /// Register a new timelock request
+    TimelockRegister {
+        deadline: u64,
+    },
 
     /// Set interval for testing (devnet/testnet only).
     ///
@@ -1981,14 +1958,13 @@ impl EntryFunctionCall {
             ThresholdDsaPublishMasterPublicKey { id, pk } => {
                 threshold_dsa_publish_master_public_key(id, pk)
             },
-            TimelockForceRotationForTesting {} => timelock_force_rotation_for_testing(),
-            TimelockPublishDecryptionKeyShare { interval, share } => {
-                timelock_publish_decryption_key_share(interval, share)
+            TimelockPublishDecryptionKeyShare { timelock_id, share } => {
+                timelock_publish_decryption_key_share(timelock_id, share)
             },
-            TimelockPublishMasterPublicKey { interval, pk } => {
-                timelock_publish_master_public_key(interval, pk)
+            TimelockPublishPublicKey { timelock_id, mpk } => {
+                timelock_publish_public_key(timelock_id, mpk)
             },
-            TimelockTriggerRotation {} => timelock_trigger_rotation(),
+            TimelockRegister { deadline } => timelock_register(deadline),
             TimelockConfigSetIntervalForTesting { interval_us } => {
                 timelock_config_set_interval_for_testing(interval_us)
             },
@@ -5231,39 +5207,10 @@ pub fn threshold_dsa_publish_master_public_key(id: u64, pk: Vec<u8>) -> Transact
     ))
 }
 
-/// Force rotation for testing purposes.
-/// Bypasses the time check. Only available on non-mainnet chains.
-pub fn timelock_force_rotation_for_testing() -> TransactionPayload {
-    TransactionPayload::EntryFunction(EntryFunction::new(
-        ModuleId::new(
-            AccountAddress::new([
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 1,
-            ]),
-            ident_str!("timelock").to_owned(),
-        ),
-        ident_str!("force_rotation_for_testing").to_owned(),
-        vec![],
-        vec![],
-    ))
-}
-
-/// Validators call this to publish their partial Decryption Key ($d_{ID}$) share for a past interval.
-///
-/// # [BF01] Extract Phase (Distributed)
-///
-/// When the time interval $ID$ passes, the "Private Key Generator" (PKG)—in this case, the validator set—
-/// cooperatively constructs the private key $d_{ID}$ corresponding to the identity $ID$.
-///
-/// *   **Input**: Validator share $\sigma_i$.
-/// *   **Logic**:
-///     1.  Verify $\sigma_i$ against $P_{pub}$ and $ID$ (using `ibe_signature::verify_private_key`).
-///     2.  Accumulate shares until threshold is met.
-///     3.  Aggregate to form $d_{ID} = \sum \sigma_i$.
-///     4.  Publish $d_{ID}$.
-///
-/// Once $d_{ID}$ is published, any ciphertext encrypted for $ID$ can be decrypted.
-pub fn timelock_publish_decryption_key_share(interval: u64, share: Vec<u8>) -> TransactionPayload {
+pub fn timelock_publish_decryption_key_share(
+    timelock_id: u64,
+    share: Vec<u8>,
+) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
             AccountAddress::new([
@@ -5275,19 +5222,14 @@ pub fn timelock_publish_decryption_key_share(interval: u64, share: Vec<u8>) -> T
         ident_str!("publish_decryption_key_share").to_owned(),
         vec![],
         vec![
-            bcs::to_bytes(&interval).unwrap(),
+            bcs::to_bytes(&timelock_id).unwrap(),
             bcs::to_bytes(&share).unwrap(),
         ],
     ))
 }
 
-/// Validators call this to publish the Master Public Key ($P_{pub}$) for a future interval.
-///
-/// # [BF01] Setup Phase
-///
-/// This corresponds to the **Setup** algorithm. Ideally, this runs once for the system lifetime or per epoch.
-/// The $P_{pub}$ is stored in `threshold_dsa` and allows users to derive Public Keys for any identity $ID$.
-pub fn timelock_publish_master_public_key(interval: u64, pk: Vec<u8>) -> TransactionPayload {
+/// Submit a decryption key share
+pub fn timelock_publish_public_key(timelock_id: u64, mpk: Vec<u8>) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
             AccountAddress::new([
@@ -5296,18 +5238,17 @@ pub fn timelock_publish_master_public_key(interval: u64, pk: Vec<u8>) -> Transac
             ]),
             ident_str!("timelock").to_owned(),
         ),
-        ident_str!("publish_master_public_key").to_owned(),
+        ident_str!("publish_public_key").to_owned(),
         vec![],
         vec![
-            bcs::to_bytes(&interval).unwrap(),
-            bcs::to_bytes(&pk).unwrap(),
+            bcs::to_bytes(&timelock_id).unwrap(),
+            bcs::to_bytes(&mpk).unwrap(),
         ],
     ))
 }
 
-/// Manual rotation trigger that can be called by anyone after the scheduled time.
-/// This allows testing and emergency rotation when automatic rotation fails.
-pub fn timelock_trigger_rotation() -> TransactionPayload {
+/// Register a new timelock request
+pub fn timelock_register(deadline: u64) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
             AccountAddress::new([
@@ -5316,9 +5257,9 @@ pub fn timelock_trigger_rotation() -> TransactionPayload {
             ]),
             ident_str!("timelock").to_owned(),
         ),
-        ident_str!("trigger_rotation").to_owned(),
+        ident_str!("register").to_owned(),
         vec![],
-        vec![],
+        vec![bcs::to_bytes(&deadline).unwrap()],
     ))
 }
 
@@ -7540,22 +7481,12 @@ mod decoder {
         }
     }
 
-    pub fn timelock_force_rotation_for_testing(
-        payload: &TransactionPayload,
-    ) -> Option<EntryFunctionCall> {
-        if let TransactionPayload::EntryFunction(_script) = payload {
-            Some(EntryFunctionCall::TimelockForceRotationForTesting {})
-        } else {
-            None
-        }
-    }
-
     pub fn timelock_publish_decryption_key_share(
         payload: &TransactionPayload,
     ) -> Option<EntryFunctionCall> {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(EntryFunctionCall::TimelockPublishDecryptionKeyShare {
-                interval: bcs::from_bytes(script.args().get(0)?).ok()?,
+                timelock_id: bcs::from_bytes(script.args().get(0)?).ok()?,
                 share: bcs::from_bytes(script.args().get(1)?).ok()?,
             })
         } else {
@@ -7563,22 +7494,22 @@ mod decoder {
         }
     }
 
-    pub fn timelock_publish_master_public_key(
-        payload: &TransactionPayload,
-    ) -> Option<EntryFunctionCall> {
+    pub fn timelock_publish_public_key(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
         if let TransactionPayload::EntryFunction(script) = payload {
-            Some(EntryFunctionCall::TimelockPublishMasterPublicKey {
-                interval: bcs::from_bytes(script.args().get(0)?).ok()?,
-                pk: bcs::from_bytes(script.args().get(1)?).ok()?,
+            Some(EntryFunctionCall::TimelockPublishPublicKey {
+                timelock_id: bcs::from_bytes(script.args().get(0)?).ok()?,
+                mpk: bcs::from_bytes(script.args().get(1)?).ok()?,
             })
         } else {
             None
         }
     }
 
-    pub fn timelock_trigger_rotation(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
-        if let TransactionPayload::EntryFunction(_script) = payload {
-            Some(EntryFunctionCall::TimelockTriggerRotation {})
+    pub fn timelock_register(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(EntryFunctionCall::TimelockRegister {
+                deadline: bcs::from_bytes(script.args().get(0)?).ok()?,
+            })
         } else {
             None
         }
@@ -8408,20 +8339,16 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
             Box::new(decoder::threshold_dsa_publish_master_public_key),
         );
         map.insert(
-            "timelock_force_rotation_for_testing".to_string(),
-            Box::new(decoder::timelock_force_rotation_for_testing),
-        );
-        map.insert(
             "timelock_publish_decryption_key_share".to_string(),
             Box::new(decoder::timelock_publish_decryption_key_share),
         );
         map.insert(
-            "timelock_publish_master_public_key".to_string(),
-            Box::new(decoder::timelock_publish_master_public_key),
+            "timelock_publish_public_key".to_string(),
+            Box::new(decoder::timelock_publish_public_key),
         );
         map.insert(
-            "timelock_trigger_rotation".to_string(),
-            Box::new(decoder::timelock_trigger_rotation),
+            "timelock_register".to_string(),
+            Box::new(decoder::timelock_register),
         );
         map.insert(
             "timelock_config_set_interval_for_testing".to_string(),

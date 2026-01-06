@@ -13,16 +13,12 @@ pub struct TimelockTestConfig {
     pub num_validators: usize,
     pub num_fullnodes: usize,
     pub epoch_duration_secs: u64,
-    pub timelock_interval_secs: Option<u64>,
 }
 
-impl Default for TimelockTestConfig {
-    fn default() -> Self {
         Self {
             num_validators: 3,
             num_fullnodes: 0,
             epoch_duration_secs: 20,
-            timelock_interval_secs: Some(5),
         }
     }
 }
@@ -66,75 +62,39 @@ pub async fn create_timelock_swarm(
     let client = swarm.validators().next().unwrap().rest_client();
     let chain_id = swarm.chain_id();
 
-    // Configure timelock interval if requested
-    if let Some(interval_secs) = config.timelock_interval_secs {
-        configure_timelock_interval(&swarm, &client, interval_secs)
-            .await
-            .expect("Failed to configure timelock interval");
-    }
-
     (Box::new(swarm), client, chain_id)
 }
 
-/// Configures the timelock interval for testing.
-///
-/// This calls the `timelock_config::set_interval_for_testing` entry function
-/// to override the default interval duration.
-pub async fn configure_timelock_interval<S: Swarm>(
+/// Registers a timelock with the given deadline
+pub async fn register_timelock<S: Swarm>(
     swarm: &S,
     client: &aptos_rest_client::Client,
-    interval_secs: u64,
+    deadline_micros: u64,
 ) -> anyhow::Result<()> {
-    info!("Configuring timelock interval to {} seconds", interval_secs);
-
+    info!("Registering timelock with dealine {}", deadline_micros);
     let root_account = swarm.chain_info().root_account();
-    let interval_us: u64 = interval_secs * 1_000_000;
-
-    info!(
-        "Creating transaction to set interval to {} microseconds",
-        interval_us
-    );
-
     let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
         aptos_types::transaction::EntryFunction::new(
             ModuleId::new(
                 aptos_types::account_address::AccountAddress::ONE,
-                Identifier::new("timelock_config").unwrap(),
+                Identifier::new("timelock").unwrap(),
             ),
-            Identifier::new("set_interval_for_testing").unwrap(),
-            vec![],
-            vec![bcs::to_bytes(&interval_us)?],
+            Identifier::new("register").unwrap(),
+            vec![], // Type args
+            vec![bcs::to_bytes(&deadline_micros)?], // Args
         ),
     );
-
     let signed_txn = root_account.sign_with_transaction_builder(
         aptos_sdk::transaction_builder::TransactionFactory::new(swarm.chain_info().chain_id)
             .payload(payload)
             .max_gas_amount(2_000_000)
             .gas_unit_price(100),
     );
-
-    info!("Submitting timelock config transaction...");
     let response = client.submit_and_wait(&signed_txn).await?;
-    info!(
-        "Timelock config transaction completed: success={}",
-        response.inner().success()
-    );
-
     if !response.inner().success() {
-        anyhow::bail!(
-            "Timelock config transaction failed: {:?}",
-            response.inner().vm_status()
-        );
+         anyhow::bail!("Register failed: {:?}", response.inner().vm_status());
     }
-
-    // Give it a moment to be applied
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-    info!(
-        "Timelock interval configured successfully to {} seconds",
-        interval_secs
-    );
-
     Ok(())
 }
+
+

@@ -881,14 +881,14 @@ pub struct TimelockShareTransaction {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
 pub struct ExportedTimelockShare {
-    pub interval: U64,
+    pub timelock_id: U64,
     pub share: HexEncodedBytes,
 }
 
 impl From<TimelockShare> for ExportedTimelockShare {
     fn from(value: TimelockShare) -> Self {
         Self {
-            interval: value.interval.into(),
+            timelock_id: value.timelock_id.into(),
             share: HexEncodedBytes::from(value.share),
         }
     }

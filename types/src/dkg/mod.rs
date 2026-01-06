@@ -237,7 +237,7 @@ pub type DefaultDKG = RealDKG;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct TimelockShare {
-    pub interval: u64,
+    pub timelock_id: u64,
     pub author: AccountAddress,
     pub share: Vec<u8>,
 }
@@ -271,23 +271,24 @@ impl TryFrom<&ContractEvent> for StartKeyGenEvent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RequestRevealEvent {
-    pub interval: u64,
+pub struct DeadlineReachedEvent {
+    pub deadline: u64,
+    pub timelock_ids: Vec<u64>,
 }
 
-impl MoveStructType for RequestRevealEvent {
+impl MoveStructType for DeadlineReachedEvent {
     const MODULE_NAME: &'static IdentStr = ident_str!("timelock");
-    const STRUCT_NAME: &'static IdentStr = ident_str!("RequestRevealEvent");
+    const STRUCT_NAME: &'static IdentStr = ident_str!("DeadlineReachedEvent");
 }
 
-impl TryFrom<&ContractEvent> for RequestRevealEvent {
+impl TryFrom<&ContractEvent> for DeadlineReachedEvent {
     type Error = anyhow::Error;
 
     fn try_from(event: &ContractEvent) -> Result<Self> {
         if event.type_tag() != &TypeTag::Struct(Box::new(Self::struct_tag())) {
-            bail!("Expected RequestRevealEvent tag");
+            bail!("Expected DeadlineReachedEvent tag");
         }
-        bcs::from_bytes(event.event_data()).context("Failed to deserialize RequestRevealEvent")
+        bcs::from_bytes(event.event_data()).context("Failed to deserialize DeadlineReachedEvent")
     }
 }
 
@@ -315,7 +316,8 @@ impl TryFrom<&ContractEvent> for MasterPublicKeyPublishedEvent {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DecryptionKeyRevealedEvent {
-    pub interval: u64,
+    pub timelock_id: u64,
+    pub deadline: u64,
     pub decryption_key: Vec<u8>,
 }
 
@@ -342,7 +344,7 @@ mod tests {
     #[test]
     fn test_timelock_share_bcs() {
         let share = TimelockShare {
-            interval: 100,
+            timelock_id: 100,
             author: AccountAddress::ONE,
             share: vec![1, 2, 3, 4],
         };

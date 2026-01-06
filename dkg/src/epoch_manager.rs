@@ -25,8 +25,8 @@ use aptos_safety_rules::{safety_rules_manager::storage, PersistentSafetyStorage}
 use aptos_types::{
     account_address::AccountAddress,
     dkg::{
-        DKGSessionMetadata, DKGStartEvent, DKGState, DecryptionKeyRevealedEvent, DefaultDKG,
-        MasterPublicKeyPublishedEvent, RequestRevealEvent, StartKeyGenEvent,
+        DKGSessionMetadata, DKGStartEvent, DKGState, DeadlineReachedEvent, DecryptionKeyRevealedEvent,
+        DefaultDKG, MasterPublicKeyPublishedEvent, StartKeyGenEvent,
     },
     epoch_state::EpochState,
     on_chain_config::{
@@ -218,18 +218,18 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 }
             }
 
-            // Try RequestRevealEvent (timelock)
-            match RequestRevealEvent::try_from(&event) {
-                Ok(timelock_reveal) => {
+            // Try DeadlineReachedEvent (timelock)
+            match DeadlineReachedEvent::try_from(&event) {
+                Ok(deadline_reached) => {
                     info!(
-                        "[DKG] Successfully parsed RequestRevealEvent for interval {}",
-                        timelock_reveal.interval
+                        "[DKG] Successfully parsed DeadlineReachedEvent for deadline {}",
+                        deadline_reached.deadline
                     );
-                    self.process_timelock_reveal(timelock_reveal);
+                    self.process_deadline_reached(deadline_reached);
                     continue;
                 },
                 Err(e) => {
-                    debug!("[DKG] Not a RequestRevealEvent: {:?}", e);
+                    debug!("[DKG] Not a DeadlineReachedEvent: {:?}", e);
                 }
             }
 
@@ -237,8 +237,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             match DecryptionKeyRevealedEvent::try_from(&event) {
                 Ok(timelock_revealed) => {
                     info!(
-                        "[DKG] Successfully parsed DecryptionKeyRevealedEvent for interval {}",
-                        timelock_revealed.interval
+                        "[DKG] Successfully parsed DecryptionKeyRevealedEvent for timelock_id {}",
+                        timelock_revealed.timelock_id
                     );
                     // Currently we just log it. In future we might want to stop trying to reveal if we haven't already.
                     continue;
@@ -772,16 +772,27 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         }
     }
 
-    fn process_timelock_reveal(&self, event: RequestRevealEvent) {
-        info!("[Timelock] Revealing share for interval {}", event.interval);
+    fn process_deadline_reached(&self, event: DeadlineReachedEvent) {
+        info!(
+            "[Timelock] Deadline {} reached for {} timelocks",
+            event.deadline,
+            event.timelock_ids.len()
+        );
+        for timelock_id in event.timelock_ids {
+            self.reveal_one_timelock(timelock_id, event.deadline);
+        }
+    }
 
-        // 1. Retrieve secret share from storage
-        let share_bytes = match self.retrieve_timelock_share(event.interval) {
+    fn reveal_one_timelock(&self, timelock_id: u64, deadline: u64) {
+        // 1. Retrieve secret share for MPK_ID (Constant 1)
+        // Note: The logic assumes that MPK DKG (Setup) was run for interval 1.
+        let mpk_id = 1;
+        let share_bytes = match self.retrieve_timelock_share(mpk_id) {
             Ok(bytes) => bytes,
             Err(e) => {
                 warn!(
-                    "[Timelock] Cannot reveal share for interval {}: {}",
-                    event.interval, e
+                    "[Timelock] Cannot reveal for timelock {}: Missing MPK share (id=1): {}",
+                    timelock_id, e
                 );
                 return;
             },
@@ -793,41 +804,46 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Ok(s) => s,
             Err(e) => {
                 error!(
-                    "[Timelock] Failed to deserialize secret shares for interval {}: {}",
-                    event.interval, e
+                    "[Timelock] Failed to deserialize secret shares for MPK setup: {}",
+                    e
                 );
                 return;
             },
         };
 
-        // 3. Extract the G1 point from the first share
-        // For timelock, we use the main path share
-        // The share is already the decryption key component (G1 point)
         if shares.main.is_empty() {
-            error!(
-                "[Timelock] No main shares available for interval {}",
-                event.interval
-            );
-            return;
+             error!("[Timelock] No main shares available for MPK setup");
+             return;
         }
 
-        let dk_g1 = shares.main[0].as_group_element().clone();
+        let dealer_sk_share_g1 = shares.main[0].as_group_element();
 
-        // 4. Serialize decryption key to bytes (G1 compressed = 48 bytes)
-        let dk_bytes = match aptos_dkg::ibe::serialize_g1(&dk_g1) {
+        // 3. Compute Identity (Application-Agnostic Format)
+        let identity = aptos_dkg::ibe::compute_timelock_identity(timelock_id, deadline);
+
+        // 4. Compute Decryption Key Share (Sign Identity with Secret Share)
+        // BLS IBE: Share = SK * H(ID)
+        // aptos_dkg::ibe::derive_decryption_key implements this.
+        let dk_share_g1 = match aptos_dkg::ibe::derive_decryption_key(dealer_sk_share_g1, &identity) {
+             Ok(g1) => g1,
+             Err(e) => {
+                 error!("[Timelock] Failed to derive decryption key share: {}", e);
+                 return;
+             }
+        };
+
+        // 5. Serialize Share
+        let dk_bytes = match aptos_dkg::ibe::serialize_g1(&dk_share_g1) {
             Ok(bytes) => bytes,
             Err(e) => {
-                error!(
-                    "[Timelock] Failed to serialize decryption key for interval {}: {}",
-                    event.interval, e
-                );
+                error!("[Timelock] Failed to serialize derived share: {}", e);
                 return;
             },
         };
 
-        // 5. Create and submit TimelockShare transaction
+        // 6. Submit Share
         let share = aptos_types::dkg::TimelockShare {
-            interval: event.interval,
+            timelock_id,
             author: self.my_addr,
             share: dk_bytes,
         };
@@ -836,8 +852,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         let _guard = self.vtxn_pool.put(Topic::TIMELOCK, Arc::new(txn), None);
 
         info!(
-            "[Timelock] Successfully computed and submitted decryption key share for interval {}",
-            event.interval
+            "[Timelock] Successfully submitted key share for timelock_id {} (deadline {})",
+            timelock_id, deadline
         );
     }
 
