@@ -66,8 +66,12 @@ where s = master secret (generated via DKG)
 
 **Identity Derivation:**
 ```
-identity = Keccak256(interval || chain_id || "atomica_timelock")
+identity = Keccak256("timelock_id:" || timelock_id || ":deadline_timestamp_microseconds:" || deadline)
 ```
+
+> [!IMPORTANT]
+> The identity is **application-agnostic**. It contains no auction, bid, or other application semantics.
+> The `deadline_timestamp_microseconds` is the Unix epoch timestamp when decryption becomes available.
 
 *Note: Uses Keccak256 (original SHA-3 competition winner, same as Ethereum) rather than SHA3-256 (NIST FIPS 202 standard). This is an intentional design choice for developer familiarity and ecosystem tool compatibility. While Aptos Move framework provides multiple hash options (SHA2-256, SHA3-256, Keccak256, BLAKE2b-256), Keccak256 was selected for consistency with the broader blockchain ecosystem. The pre-hashing step provides fixed-length 32-byte identities; cryptographic security comes from the subsequent hash-to-curve operation.*
 
@@ -129,6 +133,70 @@ where Gt_bytes = canonical 576-byte serialization
 
 > [!CAUTION]
 > Using non-canonical serialization (e.g., debug format strings) will cause decryption failures when encrypting with one implementation and decrypting with another.
+
+---
+
+## Timestamp Specification
+
+### Timestamp Format
+
+**All timelock deadlines use Unix epoch time in MICROSECONDS (u64).**
+
+### Why Microseconds?
+
+- **Aptos native**: `timestamp::now_microseconds()` returns u64 microseconds
+- **Precision**: Avoids ambiguity between seconds/milliseconds/microseconds
+- **Range**: u64 microseconds supports dates up to year 586,524 AD
+
+### Examples
+
+| Date/Time (UTC) | Microseconds (u64) |
+|-----------------|-------------------|
+| 2024-01-01 00:00:00 | 1704067200000000 |
+| 2024-01-01 01:00:00 | 1704070800000000 |
+| 2024-12-31 23:59:59 | 1735689599000000 |
+
+### Conversion
+
+```rust
+// Seconds → Microseconds
+let seconds = 1704067200_u64;
+let microseconds = seconds * 1_000_000;
+
+// Microseconds → Seconds
+let microseconds = 1704067200000000_u64;
+let seconds = microseconds / 1_000_000;
+```
+
+### Checkpoint Alignment
+
+Deadlines must be aligned to `checkpoint_period_microseconds`:
+
+```rust
+// Valid if deadline is multiple of checkpoint period
+deadline_timestamp_microseconds % checkpoint_period_microseconds == 0
+
+// Example: 1-hour checkpoints
+checkpoint_period_microseconds = 3_600_000_000  // 1 hour in microseconds
+
+// Valid deadlines:
+// 1704067200000000 (2024-01-01 00:00:00) ✓ aligned
+// 1704070800000000 (2024-01-01 01:00:00) ✓ aligned
+
+// Invalid deadline:
+// 1704071234567890 (arbitrary timestamp)  ✗ not aligned
+```
+
+### Field Naming Convention
+
+> [!IMPORTANT]
+> All deadline fields MUST use the suffix `_microseconds` to avoid ambiguity.
+
+```
+✓ deadline_timestamp_microseconds: u64
+✗ deadline: u64                         // Ambiguous!
+✗ deadline_timestamp: u64               // Ambiguous units!
+```
 
 ---
 
@@ -614,21 +682,18 @@ import { IBECrypto } from "./ibe-crypto";
 
 const client = new AptosClient("https://fullnode.mainnet.aptoslabs.com");
 
-// Get current interval + 1 (encrypt for next interval)
-const currentInterval = await client.view({
-  function: "0x1::timelock::get_current_interval",
-  type_arguments: [],
-  arguments: [],
-});
-const targetInterval = BigInt(currentInterval) + 1n;
+// Register a timelock (returns timelock_id and deadline)
+// In practice, call 0x1::timelock::register_timelock
+const timelockId = 42n; // From registration
+const deadlineTimestampMicroseconds = 1704070800000000n; // 2024-01-01 01:00:00 UTC
 
 // Wait for MPK to be published (poll or event listener)
 let mpkBytes: Uint8Array;
 while (true) {
   const result = await client.view({
-    function: "0x1::timelock::get_public_key",
+    function: "0x1::timelock::get_public_key_for_deadline",
     type_arguments: [],
-    arguments: [targetInterval.toString()],
+    arguments: [deadlineTimestampMicroseconds.toString()],
   });
   if (result) {
     mpkBytes = new Uint8Array(result as number[]);
@@ -637,12 +702,11 @@ while (true) {
   await new Promise(resolve => setTimeout(resolve, 5000)); // Poll every 5s
 }
 
-// Compute identity
-const chainId = await client.getChainId();
-const identity = IBECrypto.computeTimelockIdentity(targetInterval, chainId);
+// Compute identity (application-agnostic)
+const identity = IBECrypto.computeTimelockIdentity(timelockId, deadlineTimestampMicroseconds);
 
 // Encrypt message
-const message = new TextEncoder().encode("My secret bid: 100 APT");
+const message = new TextEncoder().encode("My secret data");
 const ciphertext = IBECrypto.ibeEncrypt(mpkBytes, identity, message);
 
 // Store ciphertext off-chain or on-chain
@@ -655,13 +719,13 @@ const serialized = {
 
 **2. Decrypt a Message**
 ```typescript
-// Wait for secret to be revealed
+// Wait for secret to be revealed (after deadline passes)
 let dkBytes: Uint8Array;
 while (true) {
   const result = await client.view({
-    function: "0x1::timelock::get_secret",
+    function: "0x1::timelock::get_secret_for_deadline",
     type_arguments: [],
-    arguments: [targetInterval.toString()],
+    arguments: [deadlineTimestampMicroseconds.toString()],
   });
   if (result) {
     dkBytes = new Uint8Array(result as number[]);
@@ -678,7 +742,7 @@ const plaintext = IBECrypto.ibeDecrypt(
   ciphertext
 );
 const message = new TextDecoder().decode(plaintext);
-console.log(message); // "My secret bid: 100 APT"
+console.log(message); // "My secret data"
 ```
 
 ### TypeScript IBE Implementation
@@ -694,21 +758,21 @@ export interface Ciphertext {
 }
 
 export class IBECrypto {
-  static computeTimelockIdentity(interval: bigint, chainId: number): Uint8Array {
-    const hasher = keccak_256.create();
-
-    // Interval (little-endian)
-    const intervalBytes = new Uint8Array(8);
-    new DataView(intervalBytes.buffer).setBigUint64(0, interval, true);
-    hasher.update(intervalBytes);
-
-    // Chain ID
-    hasher.update(new Uint8Array([chainId]));
-
-    // Domain separator
-    hasher.update(new TextEncoder().encode("atomica_timelock"));
-
-    return hasher.digest();
+  /**
+   * Compute the IBE identity for a timelock.
+   * 
+   * @param timelockId - Unique identifier for this timelock
+   * @param deadlineTimestampMicroseconds - Unix epoch timestamp in MICROSECONDS when decryption becomes available
+   * @returns 32-byte Keccak256 hash
+   */
+  static computeTimelockIdentity(
+    timelockId: bigint,
+    deadlineTimestampMicroseconds: bigint
+  ): Uint8Array {
+    // Canonical identity format (application-agnostic)
+    // Format: "timelock_id:{id}:deadline_timestamp_microseconds:{deadline}"
+    const identityString = `timelock_id:${timelockId}:deadline_timestamp_microseconds:${deadlineTimestampMicroseconds}`;
+    return keccak_256(new TextEncoder().encode(identityString));
   }
 
   static ibeEncrypt(

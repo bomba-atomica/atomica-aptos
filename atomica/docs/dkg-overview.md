@@ -80,7 +80,7 @@ Implemented in `crates/aptos-dkg/src/ibe/mod.rs`.
 - **Encryption**: Boneh-Franklin Identity-Based Encryption (IBE).
 - **MPK**: G2 Point (96 bytes).
 - **Decryption Key**: G1 Point (48 bytes).
-- **Identity**: `Keccak256(interval || chain_id || "atomica_timelock")`.
+- **Identity**: `Keccak256("timelock_id:" || id || ":deadline_timestamp_microseconds:" || deadline)` (application-agnostic).
 
 ## 6. Testnet Implementation Notes
 
