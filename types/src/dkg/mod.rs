@@ -232,6 +232,7 @@ pub trait DKGTrait: Debug {
 
 pub mod dummy_dkg;
 pub mod real_dkg;
+pub mod timelock_dkg;
 
 pub type DefaultDKG = RealDKG;
 

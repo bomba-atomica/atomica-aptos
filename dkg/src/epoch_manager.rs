@@ -601,19 +601,16 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Store channels for routing future messages to this interval's DKG
         self.timelock_rpc_msg_txs.insert(event.interval, rpc_msg_tx);
 
-        // Create DKG manager with is_timelock=true
-        let dkg_manager = DKGManager::<DefaultDKG>::new(
+        let dkg_manager = DKGManager::<crate::timelock_dkg::TimelockDKG>::new(
             dealer_sk,
             my_index,
             self.my_addr,
             epoch_state,
             agg_trx_producer,
             self.vtxn_pool.clone(),
-            true, // is_timelock flag - tells DKGManager to submit TimelockDKGResult
+            true, // is_timelock
         );
 
-        // Spawn the DKG manager task
-        // Note: in_progress_session is None since this is a fresh timelock DKG start
         let interval = event.interval;
         tokio::spawn(dkg_manager.run(None, start_event_rx, rpc_msg_rx, close_rx));
 
@@ -647,6 +644,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
     fn process_timelock_key_published(&mut self, event: MasterPublicKeyPublishedEvent) {
         use aptos_types::dkg::{real_dkg::maybe_dk_from_bls_sk, DKGTrait, TimelockConfig};
+        use crate::timelock_dkg::TimelockDKG;
 
         // Note: event.id corresponds to the timelock interval
         info!(
@@ -691,10 +689,10 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         };
 
         let metadata = Self::build_timelock_session_metadata(&start_event, &epoch_state);
-        let pub_params = DefaultDKG::new_public_params(&metadata);
+        let pub_params = TimelockDKG::new_public_params(&metadata);
 
         // Deserialize transcript
-        let transcript: <DefaultDKG as DKGTrait>::Transcript =
+        let transcript: <TimelockDKG as DKGTrait>::Transcript =
             match bcs::from_bytes(&event.master_public_key) {
                 Ok(t) => t,
                 Err(e) => {
@@ -736,7 +734,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             .get(&self.my_addr)
             .unwrap() as u64;
 
-        let (share, _pk_share) = match DefaultDKG::decrypt_secret_share_from_transcript(
+        let (share, _pk_share) = match TimelockDKG::decrypt_secret_share_from_transcript(
             &pub_params,
             &transcript,
             my_index,
@@ -799,8 +797,9 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         };
 
         // 2. Deserialize the secret key shares
-        use aptos_types::dkg::real_dkg::DealtSecretKeyShares;
-        let shares: DealtSecretKeyShares = match bcs::from_bytes(&share_bytes) {
+        use aptos_types::dkg::timelock_dkg::TimelockShare;
+        // TimelockDKG shares are Vec<TimelockShare>
+        let shares: Vec<TimelockShare> = match bcs::from_bytes(&share_bytes) {
             Ok(s) => s,
             Err(e) => {
                 error!(
@@ -811,12 +810,12 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             },
         };
 
-        if shares.main.is_empty() {
+        if shares.is_empty() {
              error!("[Timelock] No main shares available for MPK setup");
              return;
         }
 
-        let dealer_sk_share_g1 = shares.main[0].as_group_element();
+        let dealer_sk_share = shares[0].as_scalar();
 
         // 3. Compute Identity (Application-Agnostic Format)
         let identity = aptos_dkg::ibe::compute_timelock_identity(timelock_id, deadline);
@@ -824,7 +823,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // 4. Compute Decryption Key Share (Sign Identity with Secret Share)
         // BLS IBE: Share = SK * H(ID)
         // aptos_dkg::ibe::derive_decryption_key implements this.
-        let dk_share_g1 = match aptos_dkg::ibe::derive_decryption_key(dealer_sk_share_g1, &identity) {
+        let dk_share_g1 = match aptos_dkg::ibe::derive_decryption_key(dealer_sk_share, &identity) {
              Ok(g1) => g1,
              Err(e) => {
                  error!("[Timelock] Failed to derive decryption key share: {}", e);

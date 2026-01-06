@@ -29,12 +29,15 @@ ark-serialize = { workspace = true }
 ark-std = { workspace = true }
 base64 = { workspace = true }
 bcs = { workspace = true }
+blstrs = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 dashmap = { workspace = true }
 derivative = { workspace = true }
+ff = { workspace = true }
 fixed = { workspace = true }
+group = { workspace = true }
 fxhash = { workspace = true }
 hashbrown = { workspace = true }
 hex = { workspace = true }

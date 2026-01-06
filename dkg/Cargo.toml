@@ -35,7 +35,9 @@ aptos-types = { workspace = true }
 aptos-validator-transaction-pool = { workspace = true }
 async-trait = { workspace = true }
 bcs = { workspace = true }
+blstrs = { workspace = true }
 bytes = { workspace = true }
+ff = { workspace = true }
 fail = { workspace = true }
 fixed = { workspace = true }
 futures = { workspace = true }
