@@ -164,6 +164,12 @@
 <dd>
  Store revealed keys: timelock_id -> key bytes
 </dd>
+<dt>
+<code>mpk_dkg_started: bool</code>
+</dt>
+<dd>
+ Flag to track if MPK DKG was started
+</dd>
 </dl>
 
 
@@ -426,6 +432,7 @@ Initialize the system
             id_to_deadline: <a href="../../aptos-stdlib/doc/table.md#0x1_table_new">table::new</a>(),
             shares: <a href="../../aptos-stdlib/doc/table.md#0x1_table_new">table::new</a>(),
             decryption_keys: <a href="../../aptos-stdlib/doc/table.md#0x1_table_new">table::new</a>(),
+            mpk_dkg_started: <b>false</b>,
         });
 
         // Trigger MPK Setup
@@ -561,6 +568,20 @@ On New Block: Check for passed deadlines
 
     <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
     <b>let</b> now = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
+
+    // One-time DKG trigger <b>if</b> missed during <a href="genesis.md#0x1_genesis">genesis</a>
+    <b>if</b> (!state.mpk_dkg_started) {
+        <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
+        <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&validators);
+        <b>if</b> (n &gt; 0) {
+            <b>let</b> threshold = (n * 2 / 3) + 1;
+            emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
+                interval: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
+                config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
+            });
+            state.mpk_dkg_started = <b>true</b>;
+        };
+    };
 
     // Process pending deadlines &lt;= now
     <b>while</b> (!<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_is_empty">vector::is_empty</a>(&state.pending_deadlines)) {

@@ -66,6 +66,9 @@ module aptos_framework::timelock {
         
         /// Store revealed keys: timelock_id -> key bytes
         decryption_keys: Table<u64, vector<u8>>,
+        
+        /// Flag to track if MPK DKG was started
+        mpk_dkg_started: bool,
     }
 
     // Events
@@ -110,6 +113,7 @@ module aptos_framework::timelock {
                 id_to_deadline: table::new(),
                 shares: table::new(),
                 decryption_keys: table::new(),
+                mpk_dkg_started: false,
             });
 
             // Trigger MPK Setup
@@ -185,6 +189,20 @@ module aptos_framework::timelock {
 
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
         let now = timestamp::now_microseconds();
+
+        // One-time DKG trigger if missed during genesis
+        if (!state.mpk_dkg_started) {
+            let validators = stake::cur_validator_consensus_infos();
+            let n = vector::length(&validators);
+            if (n > 0) {
+                let threshold = (n * 2 / 3) + 1;
+                emit(StartKeyGenEvent {
+                    interval: MPK_ID,
+                    config: TimelockConfig { threshold, total_validators: n },
+                });
+                state.mpk_dkg_started = true;
+            };
+        };
 
         // Process pending deadlines <= now
         while (!vector::is_empty(&state.pending_deadlines)) {
