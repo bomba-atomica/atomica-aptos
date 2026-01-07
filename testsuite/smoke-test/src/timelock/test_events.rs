@@ -36,19 +36,28 @@ async fn test_start_keygen_event_triggers_dkg() {
     let (_swarm, client, _chain_id) = create_timelock_swarm(config).await;
 
     info!("Waiting for MPK to be published (indicates StartKeyGenEvent was processed)...");
-    
+
     let mut success = false;
     for attempt in 0..60 {
-        if super::verify_master_public_key_on_chain(&client, 1).await.is_ok() {
-            info!("✅ StartKeyGenEvent successfully triggered DKG after {}s", attempt);
+        if super::verify_master_public_key_on_chain(&client, 1)
+            .await
+            .is_ok()
+        {
+            info!(
+                "✅ StartKeyGenEvent successfully triggered DKG after {}s",
+                attempt
+            );
             success = true;
             break;
         }
         sleep(Duration::from_secs(1)).await;
     }
-    
+
     // If MPK is published, StartKeyGenEvent was processed correctly
-    assert!(success, "StartKeyGenEvent should trigger MPK DKG within 60s");
+    assert!(
+        success,
+        "StartKeyGenEvent should trigger MPK DKG within 60s"
+    );
 }
 
 /// Test: Verify that DeadlineReachedEvent is emitted when deadline passes
@@ -65,7 +74,10 @@ async fn test_deadline_triggers_event() {
 
     // Wait for MPK first
     for _ in 0..60 {
-        if super::verify_master_public_key_on_chain(&client, 1).await.is_ok() {
+        if super::verify_master_public_key_on_chain(&client, 1)
+            .await
+            .is_ok()
+        {
             break;
         }
         sleep(Duration::from_secs(1)).await;
@@ -74,7 +86,7 @@ async fn test_deadline_triggers_event() {
     // Register with very short deadline
     let now = get_chain_time(&client).await;
     let deadline = now + 3_000_000; // 3 seconds
-    
+
     info!("Registering timelock with deadline in 3s");
     register_timelock(&*swarm, &client, deadline).await.unwrap();
 
@@ -84,20 +96,31 @@ async fn test_deadline_triggers_event() {
     // Force block production
     let root_account = swarm.chain_info().root_account();
     for _ in 0..3 {
-        let _ = client.submit_and_wait(&root_account.sign_with_transaction_builder(
-            aptos_sdk::transaction_builder::TransactionFactory::new(swarm.chain_info().chain_id)
-                .payload(aptos_types::transaction::TransactionPayload::EntryFunction(
-                    aptos_types::transaction::EntryFunction::new(
-                        ModuleId::from_str("0x1::aptos_account").unwrap(),
-                        Identifier::from_str("transfer").unwrap(),
-                        vec![],
-                        vec![
-                            bcs::to_bytes(&aptos_types::account_address::AccountAddress::ONE).unwrap(),
-                            bcs::to_bytes(&100u64).unwrap(),
-                        ],
+        let _ = client
+            .submit_and_wait(
+                &root_account.sign_with_transaction_builder(
+                    aptos_sdk::transaction_builder::TransactionFactory::new(
+                        swarm.chain_info().chain_id,
                     )
-                ))
-        )).await;
+                    .payload(
+                        aptos_types::transaction::TransactionPayload::EntryFunction(
+                            aptos_types::transaction::EntryFunction::new(
+                                ModuleId::from_str("0x1::aptos_account").unwrap(),
+                                Identifier::from_str("transfer").unwrap(),
+                                vec![],
+                                vec![
+                                    bcs::to_bytes(
+                                        &aptos_types::account_address::AccountAddress::ONE,
+                                    )
+                                    .unwrap(),
+                                    bcs::to_bytes(&100u64).unwrap(),
+                                ],
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await;
         sleep(Duration::from_millis(500)).await;
     }
 
@@ -105,7 +128,10 @@ async fn test_deadline_triggers_event() {
     let mut found = false;
     for attempt in 0..30 {
         if super::verify_secret_aggregated(&client, 2, 1).await.is_ok() {
-            info!("✅ DeadlineReachedEvent processed, secret available after {}s", attempt);
+            info!(
+                "✅ DeadlineReachedEvent processed, secret available after {}s",
+                attempt
+            );
             found = true;
             break;
         }
@@ -113,18 +139,21 @@ async fn test_deadline_triggers_event() {
     }
 
     // Note: If this fails, check validator logs for DeadlineReachedEvent
-    assert!(found, "DeadlineReachedEvent should trigger secret revelation");
+    assert!(
+        found,
+        "DeadlineReachedEvent should trigger secret revelation"
+    );
 }
 
 /// Test: Verify threshold enforcement
 ///
 /// This test verifies that the aggregation requires at least
 /// threshold (2/3 + 1) shares before revealing the decryption key.
-#[tokio::test] 
+#[tokio::test]
 async fn test_threshold_enforcement() {
     // This test primarily verifies the threshold calculation in Move code
     // by checking that when we have 3 validators, we need 3 shares (3*2/3+1=3)
-    
+
     let config = TimelockTestConfig {
         num_validators: 3,
         num_fullnodes: 0,
@@ -134,7 +163,10 @@ async fn test_threshold_enforcement() {
 
     // Wait for MPK
     for _ in 0..60 {
-        if super::verify_master_public_key_on_chain(&client, 1).await.is_ok() {
+        if super::verify_master_public_key_on_chain(&client, 1)
+            .await
+            .is_ok()
+        {
             break;
         }
         sleep(Duration::from_secs(1)).await;
@@ -143,26 +175,39 @@ async fn test_threshold_enforcement() {
 
     // Register and wait
     let now = get_chain_time(&client).await;
-    register_timelock(&*swarm, &client, now + 3_000_000).await.unwrap();
+    register_timelock(&*swarm, &client, now + 3_000_000)
+        .await
+        .unwrap();
     sleep(Duration::from_secs(8)).await;
 
     // Force blocks
     let root_account = swarm.chain_info().root_account();
     for _ in 0..5 {
-        let _ = client.submit_and_wait(&root_account.sign_with_transaction_builder(
-            aptos_sdk::transaction_builder::TransactionFactory::new(swarm.chain_info().chain_id)
-                .payload(aptos_types::transaction::TransactionPayload::EntryFunction(
-                    aptos_types::transaction::EntryFunction::new(
-                        ModuleId::from_str("0x1::aptos_account").unwrap(),
-                        Identifier::from_str("transfer").unwrap(),
-                        vec![],
-                        vec![
-                            bcs::to_bytes(&aptos_types::account_address::AccountAddress::ONE).unwrap(),
-                            bcs::to_bytes(&100u64).unwrap(),
-                        ],
+        let _ = client
+            .submit_and_wait(
+                &root_account.sign_with_transaction_builder(
+                    aptos_sdk::transaction_builder::TransactionFactory::new(
+                        swarm.chain_info().chain_id,
                     )
-                ))
-        )).await;
+                    .payload(
+                        aptos_types::transaction::TransactionPayload::EntryFunction(
+                            aptos_types::transaction::EntryFunction::new(
+                                ModuleId::from_str("0x1::aptos_account").unwrap(),
+                                Identifier::from_str("transfer").unwrap(),
+                                vec![],
+                                vec![
+                                    bcs::to_bytes(
+                                        &aptos_types::account_address::AccountAddress::ONE,
+                                    )
+                                    .unwrap(),
+                                    bcs::to_bytes(&100u64).unwrap(),
+                                ],
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await;
     }
 
     // Check that secret is revealed (proves threshold was met)
@@ -176,5 +221,8 @@ async fn test_threshold_enforcement() {
         sleep(Duration::from_secs(1)).await;
     }
 
-    assert!(revealed, "Secret should be revealed when threshold (3/3) is met");
+    assert!(
+        revealed,
+        "Secret should be revealed when threshold (3/3) is met"
+    );
 }

@@ -30,7 +30,7 @@ use tokio::time::sleep;
 ///
 /// This checks that the standard DKG process completes and stores
 /// the transcript in the `dkg::DKGState` resource.
-/// 
+///
 /// This is the "upstream" check. If this fails, the MPK publication will definitely fail.
 #[tokio::test]
 async fn test_dkg_transcript_available() {
@@ -38,30 +38,37 @@ async fn test_dkg_transcript_available() {
     let (_swarm, client, _chain_id) = create_timelock_swarm(config).await;
 
     info!("Waiting for DKG transcript to be available...");
-    
+
     let mut transcript_available = false;
     let mut last_error = String::new();
-    
+
     for attempt in 0..60 {
         match super::verify_public_key_published(&client, 1).await {
             Ok(bytes) => {
-                info!("✅ DKG transcript available after {}s: {} bytes", attempt, bytes.len());
+                info!(
+                    "✅ DKG transcript available after {}s: {} bytes",
+                    attempt,
+                    bytes.len()
+                );
                 transcript_available = true;
                 break;
-            }
+            },
             Err(e) => {
                 last_error = e.to_string();
                 if attempt % 10 == 0 {
-                    info!("Attempt {}/60: DKG transcript not yet available - {}", attempt, e);
+                    info!(
+                        "Attempt {}/60: DKG transcript not yet available - {}",
+                        attempt, e
+                    );
                 }
-            }
+            },
         }
         sleep(Duration::from_secs(1)).await;
     }
-    
+
     assert!(
-        transcript_available, 
-        "DKG transcript should be available within 60s. Last error: {}", 
+        transcript_available,
+        "DKG transcript should be available within 60s. Last error: {}",
         last_error
     );
 }

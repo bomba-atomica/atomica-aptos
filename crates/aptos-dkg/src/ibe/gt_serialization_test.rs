@@ -20,7 +20,10 @@ mod tests {
 
         // Check if we can convert back
         let gt_back: Gt = fp12.into();
-        assert_eq!(gt, gt_back, "Gt <-> Fp12 conversion should be bidirectional");
+        assert_eq!(
+            gt, gt_back,
+            "Gt <-> Fp12 conversion should be bidirectional"
+        );
 
         println!("Gt: {:?}", gt);
         println!("Fp12: {:?}", fp12);
@@ -28,7 +31,10 @@ mod tests {
         // Check debug format length (this is what current code uses)
         let debug_str = format!("{:?}", gt);
         println!("Debug string length: {}", debug_str.len());
-        println!("Debug string (first 100 chars): {}", &debug_str[..100.min(debug_str.len())]);
+        println!(
+            "Debug string (first 100 chars): {}",
+            &debug_str[..100.min(debug_str.len())]
+        );
     }
 
     #[test]

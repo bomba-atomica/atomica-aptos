@@ -22,7 +22,7 @@ pub fn is_vtxn_expected(
         ValidatorTransaction::DKGResult(_) => randomness_config.randomness_enabled(),
         ValidatorTransaction::ObservedJWKUpdate(_) => jwk_consensus_config.jwk_consensus_enabled(),
         ValidatorTransaction::TimelockDKGResult(_) => true, // Permissive for PoC
-        ValidatorTransaction::TimelockShare(_) => true, // Permissive for PoC
+        ValidatorTransaction::TimelockShare(_) => true,     // Permissive for PoC
     }
 }
 

@@ -81,7 +81,7 @@ pub async fn register_timelock<S: Swarm + ?Sized>(
                 Identifier::new("timelock").unwrap(),
             ),
             Identifier::new("register").unwrap(),
-            vec![], // Type args
+            vec![],                                 // Type args
             vec![bcs::to_bytes(&deadline_micros)?], // Args
         ),
     );
@@ -93,9 +93,7 @@ pub async fn register_timelock<S: Swarm + ?Sized>(
     );
     let response = client.submit_and_wait(&signed_txn).await?;
     if !response.inner().success() {
-         anyhow::bail!("Register failed: {:?}", response.inner().vm_status());
+        anyhow::bail!("Register failed: {:?}", response.inner().vm_status());
     }
     Ok(())
 }
-
-

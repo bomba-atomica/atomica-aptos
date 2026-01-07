@@ -1,4 +1,3 @@
-
 use super::*;
 use aptos_crypto::blstrs::random_scalar;
 use rand::thread_rng;
@@ -68,13 +67,15 @@ fn generate_and_save_golden_vectors() {
 
     // 6. Serialize to JSON Struct
     // Note: Rust scalars/points to hex
-    let msk_bytes = msk.to_bytes_le(); 
+    let msk_bytes = msk.to_bytes_le();
     let mpk_bytes = serialize_g2(&mpk).unwrap();
     let dk_bytes = serialize_g1(&dk).unwrap();
     let u_bytes = serialize_g2(&ciphertext.u).unwrap();
-        
+
     let fixtures = GoldenVectors {
-        description: "IBE Golden Vectors for Atomica Timelock (Rust Generated) - v2 identity format".to_string(),
+        description:
+            "IBE Golden Vectors for Atomica Timelock (Rust Generated) - v2 identity format"
+                .to_string(),
         timestamp: format!("{:?}", std::time::SystemTime::now()),
         parameters: Parameters {
             timelock_id,
@@ -101,7 +102,7 @@ fn generate_and_save_golden_vectors() {
     // We want `atomica/golden-vectors/ibe_fixtures_rust.json`
     // Assuming run from workspace root:
     let output_path = PathBuf::from("atomica/golden-vectors/ibe_fixtures.json");
-    
+
     // Ensure directory exists (it should, but safety first)
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -109,9 +110,13 @@ fn generate_and_save_golden_vectors() {
 
     let json = serde_json::to_string_pretty(&fixtures).unwrap();
     let mut file = File::create(&output_path).expect("Failed to create golden vectors file");
-    file.write_all(json.as_bytes()).expect("Failed to write golden vectors");
+    file.write_all(json.as_bytes())
+        .expect("Failed to write golden vectors");
 
-    println!("Saved golden vectors to {:?}", output_path.canonicalize().unwrap_or(output_path));
+    println!(
+        "Saved golden vectors to {:?}",
+        output_path.canonicalize().unwrap_or(output_path)
+    );
 }
 
 #[test]
@@ -125,9 +130,12 @@ fn verify_golden_vectors_roundtrip() {
     path.push("atomica/golden-vectors/ibe_fixtures.json");
 
     if !path.exists() {
-        panic!("Golden vectors file not found at {:?}. Run generate_and_save_golden_vectors first.", path);
+        panic!(
+            "Golden vectors file not found at {:?}. Run generate_and_save_golden_vectors first.",
+            path
+        );
     }
-    
+
     let file = File::open(&path).expect("Failed to open golden vectors file");
     let fixture: GoldenVectors = serde_json::from_reader(file).expect("Failed to parse JSON");
 
@@ -138,14 +146,17 @@ fn verify_golden_vectors_roundtrip() {
     let deadline = fixture.parameters.deadline_timestamp_microseconds;
     let computed_identity = compute_timelock_identity(timelock_id, deadline);
     let expected_identity = hex::decode(&fixture.keys.identity_hash_hex).unwrap();
-    
-    assert_eq!(computed_identity, expected_identity, "Identity calculation mismatch");
+
+    assert_eq!(
+        computed_identity, expected_identity,
+        "Identity calculation mismatch"
+    );
     println!("✅ Identity calculation matches");
 
     // 3. Deserialize Keys
     let mpk_bytes = hex::decode(&fixture.keys.mpk_g2_hex).unwrap();
     let mpk = deserialize_g2(&mpk_bytes).expect("Failed to deserialize MPK");
-    
+
     let dk_bytes = hex::decode(&fixture.keys.decryption_key_g1_hex).unwrap();
     let dk = deserialize_g1(&dk_bytes).expect("Failed to deserialize DK");
     println!("✅ Keys deserialized successfully");
@@ -154,22 +165,29 @@ fn verify_golden_vectors_roundtrip() {
     let u_bytes = hex::decode(&fixture.ciphertext.u_g2_hex).unwrap();
     let u = deserialize_g2(&u_bytes).expect("Failed to deserialize ciphertext U");
     let v = hex::decode(&fixture.ciphertext.v_bytes_hex).unwrap();
-    
+
     let ciphertext = Ciphertext { u, v };
-    
+
     let decrypted = ibe_decrypt(&dk, &ciphertext).expect("Decryption failed");
     let decrypted_hex = hex::encode(&decrypted);
-    
-    assert_eq!(decrypted_hex, fixture.verification.decrypted_hex, "Decryption verification failed");
-    
+
+    assert_eq!(
+        decrypted_hex, fixture.verification.decrypted_hex,
+        "Decryption verification failed"
+    );
+
     let message = std::str::from_utf8(&decrypted).unwrap();
-    assert_eq!(message, fixture.parameters.message_string, "Decrypted message text mismatch");
+    assert_eq!(
+        message, fixture.parameters.message_string,
+        "Decrypted message text mismatch"
+    );
     println!("✅ Decryption of golden vector successful: {:?}", message);
 
     // 5. Roundtrip Test (Encrypt -> Decrypt with restored keys)
-    let new_ciphertext = ibe_encrypt(&mpk, &computed_identity, message.as_bytes()).expect("Encryption failed");
+    let new_ciphertext =
+        ibe_encrypt(&mpk, &computed_identity, message.as_bytes()).expect("Encryption failed");
     let new_decrypted = ibe_decrypt(&dk, &new_ciphertext).expect("Roundtrip decryption failed");
-    
+
     assert_eq!(new_decrypted, decrypted, "Roundtrip data mismatch");
     println!("✅ Roundtrip (Encrypt -> Decrypt) successful");
 }

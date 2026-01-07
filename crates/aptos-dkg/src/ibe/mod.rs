@@ -16,11 +16,11 @@
 
 pub mod errors;
 mod fp12_raw_serialization;
+#[cfg(test)]
+mod golden_vectors;
 mod gt_serialization_fix;
 #[cfg(test)]
 mod gt_serialization_test;
-#[cfg(test)]
-mod golden_vectors;
 
 use crate::weighted_vuf::bls::BLS_WVUF_DST;
 use anyhow::anyhow;
@@ -276,7 +276,10 @@ fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
 /// // identity will be a deterministic 32-byte hash
 /// ```
 #[allow(dead_code)]
-pub fn compute_timelock_identity(timelock_id: u64, deadline_timestamp_microseconds: u64) -> Vec<u8> {
+pub fn compute_timelock_identity(
+    timelock_id: u64,
+    deadline_timestamp_microseconds: u64,
+) -> Vec<u8> {
     // Construct canonical identity using Keccak256
     // Format is a human-readable string for debuggability
     let identity_string = format!(

@@ -275,9 +275,9 @@ pub struct ChunkCommitNotification {
 /// Used in both state sync and consensus to filter the txn events that should be subscribable by node components.
 pub fn should_forward_to_subscription_service(event: &ContractEvent) -> bool {
     use move_core_types::language_storage::TypeTag;
-    
+
     let type_tag = event.type_tag();
-    
+
     // First check the pre-defined constants
     if type_tag == OBSERVED_JWK_UPDATED_MOVE_TYPE_TAG.deref()
         || type_tag == DKG_START_EVENT_MOVE_TYPE_TAG.deref()
@@ -287,23 +287,26 @@ pub fn should_forward_to_subscription_service(event: &ContractEvent) -> bool {
     {
         return true;
     }
-    
+
     // Check for timelock and threshold_dsa events by struct tag name
     if let TypeTag::Struct(struct_tag) = type_tag {
         let module_name = struct_tag.module.as_str();
         let struct_name = struct_tag.name.as_str();
-        
+
         // Timelock events
         if module_name == "timelock" {
-            return matches!(struct_name, "StartKeyGenEvent" | "RequestRevealEvent" | "DecryptionKeyRevealedEvent");
+            return matches!(
+                struct_name,
+                "StartKeyGenEvent" | "RequestRevealEvent" | "DecryptionKeyRevealedEvent"
+            );
         }
-        
+
         // Threshold DSA events
         if module_name == "threshold_dsa" && struct_name == "MasterPublicKeyPublishedEvent" {
             return true;
         }
     }
-    
+
     false
 }
 

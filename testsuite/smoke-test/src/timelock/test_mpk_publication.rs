@@ -36,27 +36,31 @@ async fn test_mpk_published_on_chain() {
     let (_swarm, client, _chain_id) = create_timelock_swarm(config).await;
 
     info!("Waiting for Master Public Key (ID=1) to be published...");
-    
+
     let mut mpk_published = false;
     let mut last_error = String::new();
-    
+
     for attempt in 0..60 {
         match super::verify_master_public_key_on_chain(&client, 1).await {
             Ok(mpk_bytes) => {
-                info!("✅ Master Public Key published after {}s: {} bytes", attempt, mpk_bytes.len());
+                info!(
+                    "✅ Master Public Key published after {}s: {} bytes",
+                    attempt,
+                    mpk_bytes.len()
+                );
                 mpk_published = true;
                 break;
-            }
+            },
             Err(e) => {
                 last_error = e.to_string();
                 if attempt % 10 == 0 {
                     info!("Attempt {}/60: MPK not yet available - {}", attempt, e);
                 }
-            }
+            },
         }
         sleep(Duration::from_secs(1)).await;
     }
-    
+
     assert!(
         mpk_published,
         "MPK should be published within 60s. Last error: {}",

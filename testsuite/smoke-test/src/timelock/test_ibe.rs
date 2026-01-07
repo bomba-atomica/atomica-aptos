@@ -1,18 +1,17 @@
 //! IBE (Identity-Based Encryption) tests for timelock (Registry Model)
 
 use super::test_helpers::{create_timelock_swarm, register_timelock, TimelockTestConfig};
+use aptos_api_types::ViewFunction;
 use aptos_dkg::ibe::{compute_timelock_identity, ibe_decrypt, ibe_encrypt};
 use aptos_dkg::pvss::traits::Transcript;
 use aptos_logger::info;
 use aptos_types::dkg::real_dkg::Transcripts;
 use blstrs::G1Projective;
-use group::Group;
-use std::time::Duration;
-use tokio::time::sleep;
-use std::str::FromStr;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
-use aptos_api_types::ViewFunction;
+use std::str::FromStr;
+use std::time::Duration;
+use tokio::time::sleep;
 
 async fn get_chain_time(client: &aptos_rest_client::Client) -> u64 {
     let view = ViewFunction {
@@ -50,16 +49,19 @@ async fn test_ibe_registry_e2e() {
     let now = get_chain_time(&client).await;
     let deadline = now + 10_000_000; // 10s
     let timelock_id = 2; // Expected ID
-    
-    info!("2. Registering Timelock ID {} Deadline {}", timelock_id, deadline);
+
+    info!(
+        "2. Registering Timelock ID {} Deadline {}",
+        timelock_id, deadline
+    );
     register_timelock(&*swarm, &client, deadline).await.unwrap();
-    
+
     // 3. Encrypt Message
     info!("3. Encrypting...");
     let identity = compute_timelock_identity(timelock_id, deadline);
     let plaintext = b"Atomic Timelock Secret";
     let ciphertext = ibe_encrypt(&mpk_g2, &identity, plaintext).unwrap();
-    
+
     // 4. Wait for deadline
     info!("4. Waiting for deadline...");
     sleep(Duration::from_secs(15)).await;
@@ -74,22 +76,26 @@ async fn test_ibe_registry_e2e() {
         }
         sleep(Duration::from_secs(1)).await;
     }
-    
+
     if dk_bytes.is_none() {
-         // Debug check
-         for id in 0..10 {
-            if let Ok(s) = super::verify_secret_aggregated(&client, id, 1).await {
+        // Debug check
+        for id in 0..10 {
+            if let Ok(_s) = super::verify_secret_aggregated(&client, id, 1).await {
                 info!("WARN: Secret found at ID {} instead of {}", id, timelock_id);
             }
-         }
+        }
     }
-    assert!(dk_bytes.is_some(), "Secret not revealed for ID {}", timelock_id);
-    
+    assert!(
+        dk_bytes.is_some(),
+        "Secret not revealed for ID {}",
+        timelock_id
+    );
+
     // 6. Decrypt
     info!("6. Decrypting...");
     let dk_g1: G1Projective = bcs::from_bytes(&dk_bytes.unwrap()).unwrap();
     let decrypted = ibe_decrypt(&dk_g1, &ciphertext).unwrap();
-    
+
     assert_eq!(decrypted, plaintext, "Decryption failed matching plaintext");
     info!("✅ IBE Registry Flow Verified Successfully!");
 }

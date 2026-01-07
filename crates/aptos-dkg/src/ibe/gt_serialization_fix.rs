@@ -3,9 +3,8 @@
 //! This module provides consistent Gt serialization that matches the TypeScript
 //! implementation using @noble/curves Fp12.toBytes()
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use blstrs::{Fp12, Gt};
-use ff::PrimeField;
 use sha3::{Digest, Keccak256};
 
 /// Serializes a Gt element to bytes via Fp12 representation.
@@ -138,7 +137,10 @@ mod tests {
         println!("\n=== Cross-Language Verification Data ===");
         println!("Input: e(G1_generator, G2_generator)");
         println!("Serialized Gt (first 64 bytes): {:02x?}", &serialized[..64]);
-        println!("Serialized Gt (last 64 bytes): {:02x?}", &serialized[serialized.len()-64..]);
+        println!(
+            "Serialized Gt (last 64 bytes): {:02x?}",
+            &serialized[serialized.len() - 64..]
+        );
         println!("Serialized Gt length: {} bytes", serialized.len());
         println!("Hash (Keccak256): {:02x?}", hash);
         println!("========================================\n");

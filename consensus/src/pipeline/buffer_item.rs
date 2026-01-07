@@ -576,9 +576,10 @@ mod test {
 
         match executed_item {
             BufferItem::Executed(ref executed_item_inner) => {
-                assert_eq!(executed_item_inner.executed_blocks, vec![
-                    pipelined_block.clone()
-                ]);
+                assert_eq!(
+                    executed_item_inner.executed_blocks,
+                    vec![pipelined_block.clone()]
+                );
                 assert_eq!(executed_item_inner.commit_info, block_info);
                 assert_eq!(
                     executed_item_inner
@@ -681,9 +682,10 @@ mod test {
 
         match executed_item {
             BufferItem::Executed(ref executed_item_inner) => {
-                assert_eq!(executed_item_inner.executed_blocks, vec![
-                    pipelined_block.clone()
-                ]);
+                assert_eq!(
+                    executed_item_inner.executed_blocks,
+                    vec![pipelined_block.clone()]
+                );
                 assert_eq!(executed_item_inner.commit_info, block_info);
                 assert_eq!(
                     executed_item_inner
@@ -704,9 +706,10 @@ mod test {
         let mut executed_item = executed_item.try_advance_to_aggregated(&validator_verifier);
         match executed_item {
             BufferItem::Executed(ref executed_item_inner) => {
-                assert_eq!(executed_item_inner.executed_blocks, vec![
-                    pipelined_block.clone()
-                ]);
+                assert_eq!(
+                    executed_item_inner.executed_blocks,
+                    vec![pipelined_block.clone()]
+                );
                 assert_eq!(executed_item_inner.commit_info, block_info);
                 assert_eq!(
                     executed_item_inner
@@ -728,9 +731,10 @@ mod test {
         let mut executed_item = executed_item.try_advance_to_aggregated(&validator_verifier);
         match executed_item {
             BufferItem::Executed(ref executed_item_inner) => {
-                assert_eq!(executed_item_inner.executed_blocks, vec![
-                    pipelined_block.clone()
-                ]);
+                assert_eq!(
+                    executed_item_inner.executed_blocks,
+                    vec![pipelined_block.clone()]
+                );
                 assert_eq!(executed_item_inner.commit_info, block_info);
                 assert_eq!(
                     executed_item_inner

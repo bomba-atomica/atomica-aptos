@@ -25,8 +25,8 @@ use aptos_safety_rules::{safety_rules_manager::storage, PersistentSafetyStorage}
 use aptos_types::{
     account_address::AccountAddress,
     dkg::{
-        DKGSessionMetadata, DKGStartEvent, DKGState, DeadlineReachedEvent, DecryptionKeyRevealedEvent,
-        DefaultDKG, MasterPublicKeyPublishedEvent, StartKeyGenEvent,
+        DKGSessionMetadata, DKGStartEvent, DKGState, DeadlineReachedEvent,
+        DecryptionKeyRevealedEvent, DefaultDKG, MasterPublicKeyPublishedEvent, StartKeyGenEvent,
     },
     epoch_state::EpochState,
     on_chain_config::{
@@ -36,11 +36,11 @@ use aptos_types::{
     validator_txn::{Topic, ValidatorTransaction},
 };
 use aptos_validator_transaction_pool::VTxnPoolState;
+use futures::FutureExt;
 use futures::StreamExt;
 use futures_channel::oneshot;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio_retry::strategy::ExponentialBackoff;
-use futures::FutureExt;
 
 pub struct EpochManager<P: OnChainConfigProvider> {
     // Some useful metadata
@@ -114,8 +114,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
     fn route_rpc_request_internal(
         current_epoch: Option<u64>,
-        dkg_tx: &Option<aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
-        timelock_txs: &HashMap<u64, aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
+        dkg_tx: &Option<
+            aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>,
+        >,
+        timelock_txs: &HashMap<
+            u64,
+            aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>,
+        >,
         peer_id: AccountAddress,
         dkg_request: IncomingRpcRequest,
     ) {
@@ -185,7 +190,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 },
                 Err(e) => {
                     debug!("[DKG] Not a DKGStartEvent: {:?}", e);
-                }
+                },
             }
 
             // Try StartKeyGenEvent (timelock)
@@ -200,7 +205,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 },
                 Err(e) => {
                     debug!("[DKG] Not a StartKeyGenEvent: {:?}", e);
-                }
+                },
             }
 
             // Try MasterPublicKeyPublishedEvent (threshold_dsa)
@@ -215,7 +220,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 },
                 Err(e) => {
                     debug!("[DKG] Not a MasterPublicKeyPublishedEvent: {:?}", e);
-                }
+                },
             }
 
             // Try DeadlineReachedEvent (timelock)
@@ -230,7 +235,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 },
                 Err(e) => {
                     debug!("[DKG] Not a DeadlineReachedEvent: {:?}", e);
-                }
+                },
             }
 
             // Try DecryptionKeyRevealedEvent (timelock)
@@ -245,7 +250,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 },
                 Err(e) => {
                     debug!("[DKG] Not a DecryptionKeyRevealedEvent: {:?}", e);
-                }
+                },
             }
 
             warn!(
@@ -431,7 +436,10 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Cleanup all active timelock DKG sessions
         let close_txs: Vec<_> = self.timelock_dkg_close_txs.drain().collect();
         for (interval, tx) in close_txs {
-            debug!("[Timelock] Closing DKG session for interval {} due to epoch shutdown", interval);
+            debug!(
+                "[Timelock] Closing DKG session for interval {} due to epoch shutdown",
+                interval
+            );
             let (ack_tx, ack_rx) = oneshot::channel();
             if tx.send(ack_tx).is_ok() {
                 let _ = ack_rx.await;
@@ -643,8 +651,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     }
 
     fn process_timelock_key_published(&mut self, event: MasterPublicKeyPublishedEvent) {
-        use aptos_types::dkg::{real_dkg::maybe_dk_from_bls_sk, DKGTrait, TimelockConfig};
         use crate::timelock_dkg::TimelockDKG;
+        use aptos_types::dkg::{real_dkg::maybe_dk_from_bls_sk, DKGTrait, TimelockConfig};
 
         // Note: event.id corresponds to the timelock interval
         info!(
@@ -655,13 +663,16 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Cleanup the DKG session for this interval if it's still running.
         // Once the key is published on-chain, our local DKG manager task is no longer needed.
         if let Some(tx) = self.timelock_dkg_close_txs.remove(&event.id) {
-            debug!("[Timelock] Closing DKG session for interval {} (MPK published)", event.id);
+            debug!(
+                "[Timelock] Closing DKG session for interval {} (MPK published)",
+                event.id
+            );
             let (ack_tx, ack_rx) = oneshot::channel();
             if tx.send(ack_tx).is_ok() {
-                // We don't necessarily need to block the event loop here, 
+                // We don't necessarily need to block the event loop here,
                 // but for session hygiene we wait for a brief acknowledgement.
                 // Using a timeout would be safer in production, but here we assume the task closes quickly.
-                let _ = ack_rx.now_or_never(); 
+                let _ = ack_rx.now_or_never();
             }
         }
         self.timelock_rpc_msg_txs.remove(&event.id);
@@ -811,8 +822,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         };
 
         if shares.is_empty() {
-             error!("[Timelock] No main shares available for MPK setup");
-             return;
+            error!("[Timelock] No main shares available for MPK setup");
+            return;
         }
 
         let dealer_sk_share = shares[0].as_scalar();
@@ -824,11 +835,11 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // BLS IBE: Share = SK * H(ID)
         // aptos_dkg::ibe::derive_decryption_key implements this.
         let dk_share_g1 = match aptos_dkg::ibe::derive_decryption_key(dealer_sk_share, &identity) {
-             Ok(g1) => g1,
-             Err(e) => {
-                 error!("[Timelock] Failed to derive decryption key share: {}", e);
-                 return;
-             }
+            Ok(g1) => g1,
+            Err(e) => {
+                error!("[Timelock] Failed to derive decryption key share: {}", e);
+                return;
+            },
         };
 
         // 5. Serialize Share
@@ -898,15 +909,15 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use aptos_types::dkg::TimelockConfig;
-    use aptos_event_notifications::DbBackedOnChainConfig;
-    use futures::{FutureExt, StreamExt};
-    use aptos_types::waypoint::Waypoint;
-    use aptos_crypto::{bls12381, Uniform};
     use aptos_config::config::SafetyRulesTestConfig;
+    use aptos_crypto::{bls12381, Uniform};
+    use aptos_event_notifications::DbBackedOnChainConfig;
+    use aptos_types::dkg::TimelockConfig;
+    use aptos_types::waypoint::Waypoint;
+    use futures::{FutureExt, StreamExt};
+    use std::sync::Arc;
 
-    /// Verifies that `build_timelock_session_metadata` correctly converts a `StartKeyGenEvent` 
+    /// Verifies that `build_timelock_session_metadata` correctly converts a `StartKeyGenEvent`
     /// into a `DKGSessionMetadata` struct, specifically checking the derivation of `RandomnessConfig`.
     ///
     /// WHY:
@@ -924,7 +935,9 @@ mod tests {
         // Setup EpochState (mocked with empty verifier for simplicity)
         let epoch_state = Arc::new(EpochState {
             epoch: 10,
-            verifier: Arc::new(aptos_types::validator_verifier::ValidatorVerifier::new(vec![])),
+            verifier: Arc::new(aptos_types::validator_verifier::ValidatorVerifier::new(
+                vec![],
+            )),
         });
 
         // 3 out of 4 is 75%
@@ -945,17 +958,33 @@ mod tests {
         assert_eq!(metadata.dealer_epoch, 100);
 
         // Verify randomness config derived from event
-        let randomness_config = metadata.randomness_config_derived().expect("derived config");
-        
+        let randomness_config = metadata
+            .randomness_config_derived()
+            .expect("derived config");
+
         // Should be enabled
         assert!(randomness_config.randomness_enabled());
 
         // Threshold percentage = 3 * 100 / 4 = 75. Decimal = 0.75
-        let secrecy = randomness_config.secrecy_threshold().expect("secrecy").to_num::<f64>();
-        let reconstruct = randomness_config.reconstruct_threshold().expect("reconstruct").to_num::<f64>();
-        
-        assert!((secrecy - 0.75).abs() < 1e-6, "Secrecy threshold {} != 0.75", secrecy);
-        assert!((reconstruct - 0.75).abs() < 1e-6, "Reconstruct threshold {} != 0.75", reconstruct);
+        let secrecy = randomness_config
+            .secrecy_threshold()
+            .expect("secrecy")
+            .to_num::<f64>();
+        let reconstruct = randomness_config
+            .reconstruct_threshold()
+            .expect("reconstruct")
+            .to_num::<f64>();
+
+        assert!(
+            (secrecy - 0.75).abs() < 1e-6,
+            "Secrecy threshold {} != 0.75",
+            secrecy
+        );
+        assert!(
+            (reconstruct - 0.75).abs() < 1e-6,
+            "Reconstruct threshold {} != 0.75",
+            reconstruct
+        );
     }
 
     /// Verifies the routing logic for incoming DKG RPC messages, specifically covering the
@@ -963,7 +992,7 @@ mod tests {
     ///
     /// WHY:
     /// `DKGMessage` currently only contains the `epoch` and does not distinguish between
-    /// Randomness V2 and Timelock. If both are active, there is a conflict. 
+    /// Randomness V2 and Timelock. If both are active, there is a conflict.
     /// This test ensures that:
     /// 1. We have a defined priority when both could be active (currently favoring Randomness V2).
     /// 2. Unambiguous routing works correctly when only Timelock is active (fallback mechanism).
@@ -976,7 +1005,7 @@ mod tests {
     #[test]
     fn test_dkg_routing() {
         use crate::{
-            network::{IncomingRpcRequest, DummyRpcResponseSender},
+            network::{DummyRpcResponseSender, IncomingRpcRequest},
             types::{DKGMessage, DKGTranscriptRequest},
         };
         use aptos_infallible::RwLock;
@@ -985,12 +1014,10 @@ mod tests {
         let peer = AccountAddress::random();
 
         // Helper to create a request
-        let make_req = |epoch: u64| {
-             IncomingRpcRequest {
-                msg: DKGMessage::TranscriptRequest(DKGTranscriptRequest::new(epoch)),
-                sender: peer,
-                response_sender: Box::new(DummyRpcResponseSender::new(Arc::new(RwLock::new(vec![])))),
-            }
+        let make_req = |epoch: u64| IncomingRpcRequest {
+            msg: DKGMessage::TranscriptRequest(DKGTranscriptRequest::new(epoch)),
+            sender: peer,
+            response_sender: Box::new(DummyRpcResponseSender::new(Arc::new(RwLock::new(vec![])))),
         };
 
         // Scenario 1: Randomness V2 (Main DKG) is ACTIVE for current epoch.
@@ -1076,14 +1103,21 @@ mod tests {
 
         // Mock NotificationListeners
         let (_, reconfig_rx) = aptos_channel::new(QueueStyle::KLAST, 1, None);
-        let reconfig_events = ReconfigNotificationListener { notification_receiver: reconfig_rx };
+        let reconfig_events = ReconfigNotificationListener {
+            notification_receiver: reconfig_rx,
+        };
         let (_, dkg_start_rx) = aptos_channel::new(QueueStyle::KLAST, 1, None);
-        let dkg_start_events = EventNotificationListener { notification_receiver: dkg_start_rx };
+        let dkg_start_events = EventNotificationListener {
+            notification_receiver: dkg_start_rx,
+        };
 
         // Mock NetworkClient (we use a simple wrapper or Mock if available)
         // Since we don't actually use the network in this test, we can use a very simple mock
         let network_sender = DKGNetworkClient::new(NetworkClient::new(
-            vec![], vec![], HashMap::new(), aptos_network::application::storage::PeersAndMetadata::new(&[])
+            vec![],
+            vec![],
+            HashMap::new(),
+            aptos_network::application::storage::PeersAndMetadata::new(&[]),
         ));
 
         // Dummy EpochManager
@@ -1131,4 +1165,3 @@ mod tests {
         assert!(manager.timelock_rpc_msg_txs.is_empty());
     }
 }
-

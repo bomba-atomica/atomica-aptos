@@ -7,14 +7,12 @@
 //! which uses distributed key generation (DKG) to enable time-based encryption
 //! for sealed bid auctions.
 
-
 pub mod dkg_startup;
 
-
-pub mod test_helpers;
-pub mod test_events;
-pub mod test_ibe;
 pub mod test_dkg_transcript;
+pub mod test_events;
+pub mod test_helpers;
+pub mod test_ibe;
 pub mod test_mpk_publication;
 pub mod test_registration;
 pub mod test_secret_revelation;
@@ -22,13 +20,9 @@ pub mod test_timelock;
 
 use anyhow::{anyhow, Result};
 use aptos_api_types::ViewFunction;
-use aptos_logger::info;
 use aptos_rest_client::Client;
 use move_core_types::{identifier::Identifier, language_storage::ModuleId};
-use std::{str::FromStr, time::Duration};
-use tokio::time::{sleep, Instant};
-
-
+use std::str::FromStr;
 
 /// Verify public key is published for interval.
 ///
@@ -105,10 +99,7 @@ pub async fn verify_secret_aggregated(
 /// Verify master public key is published in threshold_dsa module.
 ///
 /// Queries `0x1::threshold_dsa::get_master_public_key`.
-pub async fn verify_master_public_key_on_chain(
-    client: &Client,
-    interval: u64,
-) -> Result<Vec<u8>> {
+pub async fn verify_master_public_key_on_chain(client: &Client, interval: u64) -> Result<Vec<u8>> {
     let view_function = ViewFunction {
         module: ModuleId::from_str("0x1::threshold_dsa").map_err(|e| anyhow!("{}", e))?,
         function: Identifier::from_str("get_master_public_key").map_err(|e| anyhow!("{}", e))?,

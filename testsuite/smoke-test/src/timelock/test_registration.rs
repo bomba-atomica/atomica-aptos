@@ -45,19 +45,19 @@ async fn test_register_timelock_stores_deadline() {
     // Get chain time and register
     let now = get_chain_time(&client).await;
     let deadline = now + 60_000_000; // 60 seconds from now
-    
+
     info!("Current chain time: {}", now);
     info!("Registering deadline: {}", deadline);
 
     register_timelock(&*swarm, &client, deadline).await.unwrap();
-    
+
     // Verify via view function - timelock_id should be 2 (1 is MPK)
     let timelock_id = 2;
     let stored_deadline = get_deadline(&client, timelock_id).await;
-    
+
     assert!(
         stored_deadline.is_some(),
-        "Deadline should be stored for timelock_id {}", 
+        "Deadline should be stored for timelock_id {}",
         timelock_id
     );
     assert_eq!(
@@ -65,8 +65,11 @@ async fn test_register_timelock_stores_deadline() {
         deadline,
         "Stored deadline should match registered deadline"
     );
-    
-    info!("✅ Timelock {} registered with deadline {}", timelock_id, deadline);
+
+    info!(
+        "✅ Timelock {} registered with deadline {}",
+        timelock_id, deadline
+    );
 }
 
 /// Test 2: Verify that multiple timelocks get sequential IDs
@@ -78,20 +81,26 @@ async fn test_register_multiple_timelocks() {
     sleep(Duration::from_secs(5)).await;
 
     let now = get_chain_time(&client).await;
-    
+
     // Register 3 timelocks with different deadlines
     let deadline1 = now + 30_000_000;
     let deadline2 = now + 60_000_000;
     let deadline3 = now + 90_000_000;
-    
-    register_timelock(&*swarm, &client, deadline1).await.unwrap();
-    register_timelock(&*swarm, &client, deadline2).await.unwrap();
-    register_timelock(&*swarm, &client, deadline3).await.unwrap();
-    
+
+    register_timelock(&*swarm, &client, deadline1)
+        .await
+        .unwrap();
+    register_timelock(&*swarm, &client, deadline2)
+        .await
+        .unwrap();
+    register_timelock(&*swarm, &client, deadline3)
+        .await
+        .unwrap();
+
     // Verify all three (IDs 2, 3, 4)
     assert_eq!(get_deadline(&client, 2).await, Some(deadline1));
     assert_eq!(get_deadline(&client, 3).await, Some(deadline2));
     assert_eq!(get_deadline(&client, 4).await, Some(deadline3));
-    
+
     info!("✅ Multiple timelocks registered with sequential IDs");
 }

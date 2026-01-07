@@ -175,96 +175,95 @@ fn new_rpc_node_request(
     }
 }
 
-    #[tokio::test]
-    async fn test_timelock_dkg_state_transition() {
-        // Setup a validator set of 4 validators.
-        let private_keys: Vec<Arc<PrivateKey>> = (0..4)
-            .map(|_| Arc::new(PrivateKey::generate_for_testing()))
-            .collect();
-        let public_keys: Vec<PublicKey> = private_keys
-            .iter()
-            .map(|sk| PublicKey::from(sk.as_ref()))
-            .collect();
-        let addrs: Vec<AccountAddress> = (0..4).map(|_| AccountAddress::random()).collect();
-        let voting_powers: Vec<u64> = vec![1, 1, 1, 1];
-        let vtxn_pool_handle = VTxnPoolState::default();
-        let validator_consensus_infos: Vec<ValidatorConsensusInfo> = (0..4)
-            .map(|i| ValidatorConsensusInfo::new(addrs[i], public_keys[i].clone(), voting_powers[i]))
-            .collect();
-        let validator_consensus_info_move_structs = validator_consensus_infos
-            .clone()
-            .into_iter()
-            .map(ValidatorConsensusInfoMoveStruct::from)
-            .collect::<Vec<_>>();
-        let epoch_state = EpochState {
-            epoch: 999,
-            verifier: Arc::new(ValidatorVerifier::new(validator_consensus_infos.clone())),
-        };
-        let agg_node_producer = DummyAggTranscriptProducer {};
-        
-        // CRITICAL CHECK: is_timelock = true
-        let mut dkg_manager: DKGManager<DummyDKG> = DKGManager::new(
-            private_keys[0].clone(),
-            0,
-            addrs[0],
-            Arc::new(epoch_state),
-            Arc::new(agg_node_producer),
-            vtxn_pool_handle.clone(),
-            true, // is_timelock = true
-        );
+#[tokio::test]
+async fn test_timelock_dkg_state_transition() {
+    // Setup a validator set of 4 validators.
+    let private_keys: Vec<Arc<PrivateKey>> = (0..4)
+        .map(|_| Arc::new(PrivateKey::generate_for_testing()))
+        .collect();
+    let public_keys: Vec<PublicKey> = private_keys
+        .iter()
+        .map(|sk| PublicKey::from(sk.as_ref()))
+        .collect();
+    let addrs: Vec<AccountAddress> = (0..4).map(|_| AccountAddress::random()).collect();
+    let voting_powers: Vec<u64> = vec![1, 1, 1, 1];
+    let vtxn_pool_handle = VTxnPoolState::default();
+    let validator_consensus_infos: Vec<ValidatorConsensusInfo> = (0..4)
+        .map(|i| ValidatorConsensusInfo::new(addrs[i], public_keys[i].clone(), voting_powers[i]))
+        .collect();
+    let validator_consensus_info_move_structs = validator_consensus_infos
+        .clone()
+        .into_iter()
+        .map(ValidatorConsensusInfoMoveStruct::from)
+        .collect::<Vec<_>>();
+    let epoch_state = EpochState {
+        epoch: 999,
+        verifier: Arc::new(ValidatorVerifier::new(validator_consensus_infos.clone())),
+    };
+    let agg_node_producer = DummyAggTranscriptProducer {};
 
-        // Initial state should be `NotStarted`.
-        assert!(matches!(&dkg_manager.state, InnerState::NotStarted));
+    // CRITICAL CHECK: is_timelock = true
+    let mut dkg_manager: DKGManager<DummyDKG> = DKGManager::new(
+        private_keys[0].clone(),
+        0,
+        addrs[0],
+        Arc::new(epoch_state),
+        Arc::new(agg_node_producer),
+        vtxn_pool_handle.clone(),
+        true, // is_timelock = true
+    );
 
-        // Start DKG
-        let start_time_1 = Duration::from_secs(1700000000);
-        
-        // For Timelock, dealer_epoch should be the INTERVAL (e.g., 100)
-        let interval = 100;
-        let event = DKGStartEvent {
-            session_metadata: DKGSessionMetadata {
-                dealer_epoch: interval,
-                randomness_config: OnChainRandomnessConfig::default_enabled().into(),
-                dealer_validator_set: validator_consensus_info_move_structs.clone(),
-                target_validator_set: validator_consensus_info_move_structs.clone(),
-            },
-            start_time_us: start_time_1.as_micros() as u64,
-        };
-        let handle_result = dkg_manager.process_dkg_start_event(event.clone()).await;
-        assert!(handle_result.is_ok());
-        
-        assert!(
-            matches!(&dkg_manager.state, InnerState::InProgress { start_time, my_transcript, .. } 
+    // Initial state should be `NotStarted`.
+    assert!(matches!(&dkg_manager.state, InnerState::NotStarted));
+
+    // Start DKG
+    let start_time_1 = Duration::from_secs(1700000000);
+
+    // For Timelock, dealer_epoch should be the INTERVAL (e.g., 100)
+    let interval = 100;
+    let event = DKGStartEvent {
+        session_metadata: DKGSessionMetadata {
+            dealer_epoch: interval,
+            randomness_config: OnChainRandomnessConfig::default_enabled().into(),
+            dealer_validator_set: validator_consensus_info_move_structs.clone(),
+            target_validator_set: validator_consensus_info_move_structs.clone(),
+        },
+        start_time_us: start_time_1.as_micros() as u64,
+    };
+    let handle_result = dkg_manager.process_dkg_start_event(event.clone()).await;
+    assert!(handle_result.is_ok());
+
+    assert!(
+        matches!(&dkg_manager.state, InnerState::InProgress { start_time, my_transcript, .. } 
                 if *start_time == start_time_1 && my_transcript.metadata == DKGTranscriptMetadata{ epoch: interval, author: addrs[0]})
-        );
+    );
 
-        // Process Aggregated Transcript
-        let agg_trx = <DummyDKG as DKGTrait>::Transcript::default();
-        let handle_result = dkg_manager
-            .process_aggregated_transcript(agg_trx.clone())
-            .await;
-        assert!(handle_result.is_ok());
-        
-        // Check pool
-        let available_vtxns = vtxn_pool_handle.pull(
-            Instant::now() + Duration::from_secs(10),
-            999,
-            2048,
-            TransactionFilter::no_op(),
-        );
+    // Process Aggregated Transcript
+    let agg_trx = <DummyDKG as DKGTrait>::Transcript::default();
+    let handle_result = dkg_manager
+        .process_aggregated_transcript(agg_trx.clone())
+        .await;
+    assert!(handle_result.is_ok());
 
-        // CRITICAL CHECK: Verify output is TimelockDKGResult
-        assert_eq!(
-            vec![ValidatorTransaction::TimelockDKGResult(DKGTranscript {
-                metadata: DKGTranscriptMetadata {
-                    epoch: interval,
-                    author: addrs[0],
-                },
-                transcript_bytes: bcs::to_bytes(&agg_trx).unwrap(),
-            })],
-            available_vtxns
-        );
-        
-        assert!(matches!(&dkg_manager.state, InnerState::Finished { .. }));
-    }
+    // Check pool
+    let available_vtxns = vtxn_pool_handle.pull(
+        Instant::now() + Duration::from_secs(10),
+        999,
+        2048,
+        TransactionFilter::no_op(),
+    );
 
+    // CRITICAL CHECK: Verify output is TimelockDKGResult
+    assert_eq!(
+        vec![ValidatorTransaction::TimelockDKGResult(DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: interval,
+                author: addrs[0],
+            },
+            transcript_bytes: bcs::to_bytes(&agg_trx).unwrap(),
+        })],
+        available_vtxns
+    );
+
+    assert!(matches!(&dkg_manager.state, InnerState::Finished { .. }));
+}

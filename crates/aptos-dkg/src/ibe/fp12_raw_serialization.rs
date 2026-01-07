@@ -9,7 +9,6 @@
 
 use anyhow::Result;
 use blstrs::{Fp, Fp12, Fp2};
-use ff::PrimeField;
 
 /// Serialize an Fp element to 48 bytes (big-endian).
 fn serialize_fp(fp: &Fp) -> [u8; 48] {
@@ -37,19 +36,19 @@ fn serialize_fp2(fp2: &Fp2) -> [u8; 96] {
 /// (each Fp2 is 96 bytes = 2 * 48 byte Fp elements in big-endian)
 pub fn serialize_fp12_raw(fp12: &Fp12) -> Result<Vec<u8>> {
     let mut result = Vec::with_capacity(576);
-    
+
     // Serialize c0 (Fp6 = 3 Fp2 = 288 bytes)
     let c0 = fp12.c0();
     result.extend_from_slice(&serialize_fp2(&c0.c0()));
     result.extend_from_slice(&serialize_fp2(&c0.c1()));
     result.extend_from_slice(&serialize_fp2(&c0.c2()));
-    
+
     // Serialize c1 (Fp6 = 3 Fp2 = 288 bytes)
     let c1 = fp12.c1();
     result.extend_from_slice(&serialize_fp2(&c1.c0()));
     result.extend_from_slice(&serialize_fp2(&c1.c1()));
     result.extend_from_slice(&serialize_fp2(&c1.c2()));
-    
+
     debug_assert_eq!(result.len(), 576);
     Ok(result)
 }
@@ -88,12 +87,12 @@ mod tests {
         let fp12: Fp12 = gt.into();
 
         let bytes = serialize_fp12_raw(&fp12).expect("Serialization should work");
-        
+
         // Expected first bytes from TypeScript (big-endian)
         let expected_start: [u8; 4] = [0x12, 0x50, 0xeb, 0xd8];
         assert_eq!(
-            &bytes[0..4], 
-            &expected_start, 
+            &bytes[0..4],
+            &expected_start,
             "First 4 bytes should match TypeScript output"
         );
     }
@@ -107,7 +106,7 @@ mod tests {
 
         let bytes1 = serialize_fp12_raw(&fp12).expect("Serialization should work");
         let bytes2 = serialize_fp12_raw(&fp12).expect("Serialization should work");
-        
+
         assert_eq!(bytes1, bytes2, "Serialization should be deterministic");
     }
 }

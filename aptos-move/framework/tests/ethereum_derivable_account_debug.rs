@@ -12,16 +12,12 @@ use aptos_crypto::{
     ed25519::{Ed25519PrivateKey, Ed25519PublicKey},
     SigningKey, Uniform,
 };
-use aptos_language_e2e_tests::{
-    account::Account,
-    executor::FakeExecutor,
-};
+use aptos_language_e2e_tests::{account::Account, executor::FakeExecutor};
 use aptos_types::{
     account_address::AccountAddress,
     transaction::{
         authenticator::{AccountAuthenticator, TransactionAuthenticator},
-        SignedTransaction,
-        TransactionStatus,
+        SignedTransaction, TransactionStatus,
     },
 };
 use move_core_types::vm_status::StatusCode;
@@ -54,7 +50,8 @@ fn test_ethereum_derivable_simple_transfer() {
     println!("Chain ID: {}", raw_tx.chain_id());
 
     // 4. Sign with standard Ed25519 (this should work)
-    let signed_tx = sender.transaction()
+    let signed_tx = sender
+        .transaction()
         .payload(aptos_stdlib::aptos_account_transfer(receiver, 100))
         .sequence_number(0)
         .gas_unit_price(100)
@@ -68,10 +65,7 @@ fn test_ethereum_derivable_simple_transfer() {
     println!("\n=== Standard Signature Test ===");
     println!("Status: {:?}", output.status());
 
-    assert!(matches!(
-        output.status(),
-        TransactionStatus::Keep(_)
-    ));
+    assert!(matches!(output.status(), TransactionStatus::Keep(_)));
 
     // Now let's try with a custom ethereum_derivable_account authenticator
     // TODO: Implement ethereum authenticator construction
@@ -86,16 +80,21 @@ fn test_entry_function_name_extraction() {
 
     // Create different entry function calls and see how they're represented
     let test_cases = vec![
-        ("0x1::aptos_account::transfer",
-         aptos_stdlib::aptos_account_transfer(receiver, 100)),
-        ("0x1::aptos_coin::transfer",
-         aptos_stdlib::aptos_coin_transfer(receiver, 100)),
+        (
+            "0x1::aptos_account::transfer",
+            aptos_stdlib::aptos_account_transfer(receiver, 100),
+        ),
+        (
+            "0x1::aptos_coin::transfer",
+            aptos_stdlib::aptos_coin_transfer(receiver, 100),
+        ),
     ];
 
     for (expected_name, payload) in test_cases {
         println!("\n=== Testing: {} ===", expected_name);
 
-        let signed_tx = sender.transaction()
+        let signed_tx = sender
+            .transaction()
             .payload(payload)
             .sequence_number(0)
             .gas_unit_price(100)
@@ -141,10 +140,7 @@ mod helpers {
 
     /// Helper to derive Aptos address from Ethereum address
     /// Must match the scheme in ethereum_derivable_account.move
-    pub fn derive_aptos_address_from_ethereum(
-        eth_address: &str,
-        domain: &str,
-    ) -> AccountAddress {
+    pub fn derive_aptos_address_from_ethereum(eth_address: &str, domain: &str) -> AccountAddress {
         // TODO: Implement derivation scheme
         // This should match getDerivedAddress() in TypeScript
         unimplemented!("Need to implement ethereum -> aptos address derivation")
