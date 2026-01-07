@@ -12,7 +12,12 @@ pub mod dkg_startup;
 
 
 pub mod test_helpers;
+pub mod test_events;
 pub mod test_ibe;
+pub mod test_dkg_transcript;
+pub mod test_mpk_publication;
+pub mod test_registration;
+pub mod test_secret_revelation;
 pub mod test_timelock;
 
 use anyhow::{anyhow, Result};

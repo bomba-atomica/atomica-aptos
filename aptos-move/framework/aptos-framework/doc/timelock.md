@@ -30,6 +30,7 @@
 <pre><code><b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/hash.md#0x1_aptos_hash">0x1::aptos_hash</a>;
 <b>use</b> <a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra">0x1::bls12381_algebra</a>;
 <b>use</b> <a href="../../aptos-stdlib/doc/crypto_algebra.md#0x1_crypto_algebra">0x1::crypto_algebra</a>;
+<b>use</b> <a href="../../aptos-stdlib/doc/debug.md#0x1_debug">0x1::debug</a>;
 <b>use</b> <a href="event.md#0x1_event">0x1::event</a>;
 <b>use</b> <a href="ibe_signature.md#0x1_ibe_signature">0x1::ibe_signature</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option">0x1::option</a>;
@@ -421,6 +422,7 @@ Initialize the system
 
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_initialize">initialize</a>(framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>) {
     <a href="system_addresses.md#0x1_system_addresses_assert_aptos_framework">system_addresses::assert_aptos_framework</a>(framework);
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] initialize called"));
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
         // Ensure dependencies initialized
         <a href="threshold_dsa.md#0x1_threshold_dsa_initialize">threshold_dsa::initialize</a>(framework);
@@ -445,6 +447,7 @@ Initialize the system
             interval: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
             config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
         });
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> in initialize"));
     }
 }
 </code></pre>
@@ -569,6 +572,9 @@ On New Block: Check for passed deadlines
     <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
     <b>let</b> now = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
 
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block called, mpk_dkg_started="));
+    aptos_std::debug::print(&state.mpk_dkg_started);
+
     // One-time DKG trigger <b>if</b> missed during <a href="genesis.md#0x1_genesis">genesis</a>
     <b>if</b> (!state.mpk_dkg_started) {
         <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
@@ -580,6 +586,7 @@ On New Block: Check for passed deadlines
                 config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
             });
             state.mpk_dkg_started = <b>true</b>;
+            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> in on_new_block"));
         };
     };
 
@@ -627,6 +634,8 @@ Submit a decryption key share
 
 
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_public_key">publish_public_key</a>(validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, timelock_id: u64, mpk: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;) {
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] publish_public_key called, timelock_id="));
+    aptos_std::debug::print(&timelock_id);
     <a href="threshold_dsa.md#0x1_threshold_dsa_publish_master_public_key">threshold_dsa::publish_master_public_key</a>(validator, timelock_id, mpk);
 }
 </code></pre>
@@ -655,6 +664,8 @@ Submit a decryption key share
     timelock_id: u64,
     share: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;
 ) <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
+    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] publish_decryption_key_share called, timelock_id="));
+    aptos_std::debug::print(&timelock_id);
     <b>let</b> validator_addr = std::signer::address_of(validator);
     <b>assert</b>!(<a href="stake.md#0x1_stake_is_current_epoch_validator">stake::is_current_epoch_validator</a>(validator_addr), <a href="timelock.md#0x1_timelock_ENOT_VALIDATOR">ENOT_VALIDATOR</a>);
 

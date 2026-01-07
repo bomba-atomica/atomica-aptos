@@ -102,6 +102,7 @@ module aptos_framework::timelock {
     /// Initialize the system
     public(friend) fun initialize(framework: &signer) {
         system_addresses::assert_aptos_framework(framework);
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] initialize called"));
         if (!exists<TimelockState>(@aptos_framework)) {
             // Ensure dependencies initialized
             threshold_dsa::initialize(framework);
@@ -126,6 +127,7 @@ module aptos_framework::timelock {
                 interval: MPK_ID,
                 config: TimelockConfig { threshold, total_validators: n },
             });
+            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted StartKeyGenEvent in initialize"));
         }
     }
 
@@ -190,6 +192,9 @@ module aptos_framework::timelock {
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
         let now = timestamp::now_microseconds();
 
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block called, mpk_dkg_started="));
+        aptos_std::debug::print(&state.mpk_dkg_started);
+
         // One-time DKG trigger if missed during genesis
         if (!state.mpk_dkg_started) {
             let validators = stake::cur_validator_consensus_infos();
@@ -201,6 +206,7 @@ module aptos_framework::timelock {
                     config: TimelockConfig { threshold, total_validators: n },
                 });
                 state.mpk_dkg_started = true;
+                aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted StartKeyGenEvent in on_new_block"));
             };
         };
 
@@ -228,6 +234,8 @@ module aptos_framework::timelock {
 
     /// Submit a decryption key share
     public entry fun publish_public_key(validator: &signer, timelock_id: u64, mpk: vector<u8>) {
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] publish_public_key called, timelock_id="));
+        aptos_std::debug::print(&timelock_id);
         threshold_dsa::publish_master_public_key(validator, timelock_id, mpk);
     }
     
@@ -236,6 +244,8 @@ module aptos_framework::timelock {
         timelock_id: u64,
         share: vector<u8>
     ) acquires TimelockState {
+        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] publish_decryption_key_share called, timelock_id="));
+        aptos_std::debug::print(&timelock_id);
         let validator_addr = std::signer::address_of(validator);
         assert!(stake::is_current_epoch_validator(validator_addr), ENOT_VALIDATOR);
 
