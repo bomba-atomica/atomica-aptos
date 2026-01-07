@@ -10,6 +10,7 @@ use std::{
     fmt,
     fmt::{Debug, Formatter},
 };
+use tracing::warn;
 
 pub fn total_weight_lower_bound(validator_stakes: &[u64]) -> usize {
     // Each validator has at least 1 weight.
@@ -42,9 +43,11 @@ pub fn total_weight_upper_bound(
     );
     let two = U64F64::from_num(2);
     let n = U64F64::from_num(validator_stakes.len());
-    ((n / two + two) / (reconstruct_threshold_in_stake_ratio - secrecy_threshold_in_stake_ratio))
-        .ceil()
-        .to_num::<usize>()
+    let denominator = max(
+        reconstruct_threshold_in_stake_ratio - secrecy_threshold_in_stake_ratio,
+        U64F64::DELTA,
+    );
+    ((n / two + two) / denominator).ceil().to_num::<usize>()
 }
 
 #[derive(Clone, Debug)]
@@ -60,14 +63,65 @@ pub struct DKGRounding {
 impl DKGRounding {
     pub fn new(
         validator_stakes: &Vec<u64>,
-        secrecy_threshold_in_stake_ratio: U64F64,
+        mut secrecy_threshold_in_stake_ratio: U64F64,
         mut reconstruct_threshold_in_stake_ratio: U64F64,
         fast_secrecy_threshold_in_stake_ratio: Option<U64F64>,
     ) -> Self {
-        reconstruct_threshold_in_stake_ratio = max(
-            reconstruct_threshold_in_stake_ratio,
-            secrecy_threshold_in_stake_ratio + U64F64::DELTA,
-        );
+        let one = U64F64::from_num(1);
+
+        if validator_stakes.is_empty() {
+            warn!("No validator stakes provided, cannot create DKG rounding profile");
+            return Self {
+                rounding_method: "empty".to_string(),
+                profile: DKGRoundingProfile::default(),
+                wconfig: WeightedConfig::new(0, vec![]).unwrap(),
+                fast_wconfig: None,
+                rounding_error: Some("No validator stakes provided".to_string()),
+            };
+        }
+
+        let stakes_sum: u64 = validator_stakes.iter().sum();
+        if stakes_sum == 0 {
+            warn!("All validator stakes are zero, assuming equal weights");
+            reconstruct_threshold_in_stake_ratio = max(
+                reconstruct_threshold_in_stake_ratio,
+                secrecy_threshold_in_stake_ratio + U64F64::DELTA,
+            );
+        } else {
+            reconstruct_threshold_in_stake_ratio = max(
+                reconstruct_threshold_in_stake_ratio,
+                secrecy_threshold_in_stake_ratio + U64F64::DELTA,
+            );
+
+            let min_delta = U64F64::from_num(5) / U64F64::from_num(100);
+            let threshold_gap =
+                reconstruct_threshold_in_stake_ratio - secrecy_threshold_in_stake_ratio;
+
+            if threshold_gap < U64F64::from_num(1) / U64F64::from_num(100) {
+                warn!(
+                    "reconstruct_threshold ({}) and secrecy_threshold ({}) are too close, adjusting to avoid overflow",
+                    reconstruct_threshold_in_stake_ratio, secrecy_threshold_in_stake_ratio
+                );
+                reconstruct_threshold_in_stake_ratio =
+                    min(one, secrecy_threshold_in_stake_ratio + min_delta);
+            }
+        }
+
+        if reconstruct_threshold_in_stake_ratio > one {
+            warn!(
+                "reconstruct_threshold_in_stake_ratio must be <= 1.0, got {}, clamping to 1.0",
+                reconstruct_threshold_in_stake_ratio
+            );
+            reconstruct_threshold_in_stake_ratio = one;
+        }
+
+        if secrecy_threshold_in_stake_ratio > one {
+            warn!(
+                "secrecy_threshold_in_stake_ratio must be <= 1.0, got {}, clamping to 1.0",
+                secrecy_threshold_in_stake_ratio
+            );
+            secrecy_threshold_in_stake_ratio = one;
+        }
 
         let total_weight_min = total_weight_lower_bound(validator_stakes);
         let total_weight_max = total_weight_upper_bound(

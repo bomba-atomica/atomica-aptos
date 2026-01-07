@@ -137,14 +137,14 @@ impl NetworkTask {
     pub fn new(
         network_service_events: NetworkServiceEvents<DKGMessage>,
         self_receiver: aptos_channels::Receiver<Event<DKGMessage>>,
-    ) -> (NetworkTask, NetworkReceivers) {
+    ) -> Result<(NetworkTask, NetworkReceivers)> {
         let (rpc_tx, rpc_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
 
         let network_and_events = network_service_events.into_network_and_events();
         if (network_and_events.values().len() != 1)
             || !network_and_events.contains_key(&NetworkId::Validator)
         {
-            panic!("The network has not been setup correctly for DKG!");
+            bail!("The network has not been setup correctly for DKG!");
         }
 
         // Collect all the network events into a single stream
@@ -152,10 +152,10 @@ impl NetworkTask {
         let network_events = select_all(network_events).fuse();
         let all_events = Box::new(select(network_events, self_receiver));
 
-        (
+        Ok((
             NetworkTask { rpc_tx, all_events },
             NetworkReceivers { rpc_rx },
-        )
+        ))
     }
 
     pub async fn start(mut self) {
@@ -206,7 +206,11 @@ impl RpcResponseSender for RealRpcResponseSender {
         let rpc_response = response
             .and_then(|dkg_msg| self.protocol.to_bytes(&dkg_msg).map(Bytes::from))
             .map_err(RpcError::ApplicationError);
-        let _ = self.inner.take().unwrap().send(rpc_response); // May not succeed.
+        if let Some(sender) = self.inner.take() {
+            let _ = sender.send(rpc_response); // May not succeed.
+        } else {
+            warn!("RPC response sender already consumed - send() called twice");
+        }
     }
 }
 

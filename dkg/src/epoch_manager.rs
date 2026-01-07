@@ -297,15 +297,19 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             "[DKG] await_reconfig_notification: received reconfig for epoch {}",
             reconfig_notification.on_chain_configs.epoch()
         );
-        self.start_new_epoch(reconfig_notification.on_chain_configs)
+        if let Err(e) = self
+            .start_new_epoch(reconfig_notification.on_chain_configs)
             .await
-            .unwrap();
+        {
+            error!("[DKG] Failed to start new epoch: {}", e);
+            std::process::exit(1);
+        }
     }
 
     async fn start_new_epoch(&mut self, payload: OnChainConfigPayload<P>) -> Result<()> {
         let validator_set: ValidatorSet = payload
             .get()
-            .expect("failed to get ValidatorSet from payload");
+            .map_err(|e| anyhow!("failed to get ValidatorSet from payload: {}", e))?;
 
         let epoch_state = Arc::new(EpochState::new(payload.epoch(), (&validator_set).into()));
         self.epoch_state = Some(epoch_state.clone());
@@ -429,8 +433,11 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     async fn shutdown_current_processor(&mut self) {
         if let Some(tx) = self.dkg_manager_close_tx.take() {
             let (ack_tx, ack_rx) = oneshot::channel();
-            tx.send(ack_tx).unwrap();
-            ack_rx.await.unwrap();
+            if let Err(e) = tx.send(ack_tx) {
+                warn!("[DKG] Failed to send shutdown ack request: {}", e);
+            } else if let Err(e) = ack_rx.await {
+                warn!("[DKG] Failed to receive shutdown ack: {}", e);
+            }
         }
 
         // Cleanup all active timelock DKG sessions
@@ -463,14 +470,14 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     fn build_timelock_session_metadata(
         event: &StartKeyGenEvent,
         epoch_state: &Arc<EpochState>,
-    ) -> DKGSessionMetadata {
+    ) -> Result<DKGSessionMetadata> {
         use aptos_types::{
             on_chain_config::{OnChainRandomnessConfig, RandomnessConfigMoveStruct},
             validator_verifier::ValidatorConsensusInfoMoveStruct,
         };
 
         // Convert current validator set to move struct format
-        let validator_consensus_infos: Vec<ValidatorConsensusInfoMoveStruct> = epoch_state
+        let validator_consensus_infos: Result<Vec<ValidatorConsensusInfoMoveStruct>> = epoch_state
             .verifier
             .get_ordered_account_addresses_iter()
             .map(|addr| {
@@ -478,19 +485,21 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 let public_key = epoch_state
                     .verifier
                     .get_public_key(&addr)
-                    .expect("public key must exist for validator");
+                    .ok_or_else(|| anyhow!("public key must exist for validator {}", addr))?;
 
                 // Convert public key to bytes for MoveStruct
-                let pk_bytes =
-                    bcs::to_bytes(&public_key).expect("public key serialization should not fail");
+                let pk_bytes = bcs::to_bytes(&public_key)
+                    .map_err(|e| anyhow!("public key serialization failed: {}", e))?;
 
-                ValidatorConsensusInfoMoveStruct {
+                Ok(ValidatorConsensusInfoMoveStruct {
                     addr,
                     pk_bytes,
                     voting_power,
-                }
+                })
             })
             .collect();
+
+        let validator_consensus_infos = validator_consensus_infos?;
 
         // Build randomness config from timelock config
         // For timelock, we use the threshold from the event
@@ -510,12 +519,12 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
         let randomness_config = RandomnessConfigMoveStruct::from(randomness_config_enum);
 
-        DKGSessionMetadata {
+        Ok(DKGSessionMetadata {
             dealer_epoch: event.interval,
             randomness_config,
             dealer_validator_set: validator_consensus_infos.clone(),
             target_validator_set: validator_consensus_infos,
-        }
+        })
     }
 
     fn start_timelock_dkg(&mut self, event: StartKeyGenEvent) {
@@ -595,7 +604,16 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Build DKGSessionMetadata for this timelock interval
         // Note: For timelock, we use a simplified metadata structure
         // The threshold/total come from the event.config
-        let session_metadata = Self::build_timelock_session_metadata(&event, &epoch_state);
+        let session_metadata = match Self::build_timelock_session_metadata(&event, &epoch_state) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                error!(
+                    "[Timelock] Failed to build session metadata for interval {}: {}",
+                    event.interval, e
+                );
+                return;
+            },
+        };
 
         // Get current timestamp for DKG start
         let start_time_us = aptos_infallible::duration_since_epoch().as_micros() as u64;
@@ -699,7 +717,16 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             config,
         };
 
-        let metadata = Self::build_timelock_session_metadata(&start_event, &epoch_state);
+        let metadata = match Self::build_timelock_session_metadata(&start_event, &epoch_state) {
+            Ok(m) => m,
+            Err(e) => {
+                error!(
+                    "[Timelock] Failed to build session metadata for interval {}: {}",
+                    event.id, e
+                );
+                return;
+            },
+        };
         let pub_params = TimelockDKG::new_public_params(&metadata);
 
         // Deserialize transcript
@@ -743,7 +770,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             .verifier
             .address_to_validator_index()
             .get(&self.my_addr)
-            .unwrap() as u64;
+            .ok_or_else(|| anyhow!("validator index not found for {}", self.my_addr))?
+            as u64;
 
         let (share, _pk_share) = match TimelockDKG::decrypt_secret_share_from_transcript(
             &pub_params,
@@ -953,7 +981,8 @@ mod tests {
         let metadata = EpochManager::<DbBackedOnChainConfig>::build_timelock_session_metadata(
             &event,
             &epoch_state,
-        );
+        )
+        .expect("build_timelock_session_metadata should succeed in test");
 
         assert_eq!(metadata.dealer_epoch, 100);
 

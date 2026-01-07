@@ -51,7 +51,14 @@ pub fn start_dkg_runtime(
         rb_config,
         randomness_override_seq_num,
     );
-    let (network_task, network_receiver) = NetworkTask::new(network_service_events, self_receiver);
+    let (network_task, network_receiver) =
+        match NetworkTask::new(network_service_events, self_receiver) {
+            Ok((task, receiver)) => (task, receiver),
+            Err(e) => {
+                aptos_logger::error!("Failed to create DKG network task: {}", e);
+                panic!("DKG network setup failed: {}", e);
+            },
+        };
     runtime.spawn(network_task.start());
     runtime.spawn(dkg_epoch_manager.start(network_receiver));
     runtime

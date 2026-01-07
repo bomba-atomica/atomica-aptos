@@ -325,7 +325,8 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
         let mut rng = if cfg!(feature = "smoke-test") {
             StdRng::from_seed(self.my_addr.into_bytes())
         } else {
-            StdRng::from_rng(thread_rng()).unwrap()
+            StdRng::from_rng(thread_rng())
+                .expect("Failed to initialize RNG from thread_rng - this should never fail")
         };
         let input_secret = DKG::InputSecret::generate(&mut rng);
 

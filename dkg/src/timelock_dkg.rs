@@ -218,7 +218,7 @@ impl traits::Transcript for TimelockTranscript {
         let sk_shares = group_shares
             .into_iter()
             .zip(scalar_shares.into_iter())
-            .map(|(_gs, ss)| {
+            .map(|(gs, ss)| {
                 // We don't have easy access to gs.share (it's private).
                 // But we can get it via shadow if we really needed it for verification.
                 // For now, just wrap the scalar.
@@ -379,5 +379,273 @@ impl DKGTrait for TimelockDKG {
             &pub_params.pvss_config.pp,
         );
         Ok((sk, pk))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_crypto::Uniform;
+    use aptos_types::dkg::{DKGSessionMetadata, DKGTrait};
+    use aptos_types::on_chain_config::RandomnessConfig;
+    use aptos_types::validator_verifier::ValidatorConsensusInfoMoveStruct;
+    use blstrs::Scalar;
+    use ff::Field;
+    use move_core_types::account_address::AccountAddress;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
+
+    fn create_test_session_metadata(num_validators: usize) -> DKGSessionMetadata {
+        let mut rng = ChaCha20Rng::from_seed([0u8; 32]);
+        let mut validators = Vec::new();
+
+        for i in 0..num_validators {
+            let sk = bls12381::PrivateKey::generate(&mut rng);
+            let pk = bls12381::PublicKey::from(&sk);
+            let addr = AccountAddress::from_hex_literal(&format!("0x{:x}", i + 1)).unwrap();
+
+            validators.push(ValidatorConsensusInfoMoveStruct {
+                addr,
+                pk_bytes: pk.to_bytes().to_vec(),
+                voting_power: 1,
+            });
+        }
+
+        DKGSessionMetadata {
+            dealer_epoch: 1,
+            randomness_config: RandomnessConfig::default_enabled().to_bytes(),
+            dealer_validator_set: validators.clone(),
+            target_validator_set: validators,
+        }
+    }
+
+    #[test]
+    fn test_timelock_transcript_deal_and_verify() {
+        let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
+        let num_validators = 4;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let input_secret = PvtInputSecret::generate(&mut rng);
+        let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
+
+        // Generate transcript
+        let transcript =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+
+        // Verify it has both weighted and scalar transcripts
+        assert!(!transcript.scalar_transcripts.is_empty());
+        assert_eq!(transcript.scalar_transcripts.len(), 1);
+        assert!(transcript.scalar_transcripts.contains_key(&0));
+
+        // Verify the transcript
+        let result = TimelockDKG::verify_transcript(&pub_params, &transcript);
+        assert!(
+            result.is_ok(),
+            "Transcript verification failed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_timelock_transcript_aggregation() {
+        let mut rng = ChaCha20Rng::from_seed([2u8; 32]);
+        let num_validators = 3;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let input_secret = PvtInputSecret::generate(&mut rng);
+
+        // Generate transcripts from two dealers
+        let sk1 = bls12381::PrivateKey::generate(&mut rng);
+        let sk2 = bls12381::PrivateKey::generate(&mut rng);
+
+        let mut transcript1 =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
+
+        let transcript2 =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
+
+        // Aggregate
+        TimelockDKG::aggregate_transcripts(&pub_params, &mut transcript1, transcript2);
+
+        // Should now have both dealers' scalar transcripts
+        assert_eq!(transcript1.scalar_transcripts.len(), 2);
+        assert!(transcript1.scalar_transcripts.contains_key(&0));
+        assert!(transcript1.scalar_transcripts.contains_key(&1));
+    }
+
+    #[test]
+    fn test_decrypt_and_reconstruct_secret() {
+        let mut rng = ChaCha20Rng::from_seed([3u8; 32]);
+        let num_validators = 4;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let input_secret = PvtInputSecret::generate(&mut rng);
+        let expected_secret = TimelockDKG::dealt_secret_from_input(&pub_params, &input_secret);
+
+        // Generate transcripts from enough dealers to meet threshold
+        let mut aggregated_transcript = None;
+
+        for dealer_idx in 0..3 {
+            let sk = bls12381::PrivateKey::generate(&mut rng);
+            let transcript = TimelockDKG::generate_transcript(
+                &mut rng,
+                &pub_params,
+                &input_secret,
+                dealer_idx,
+                &sk,
+            );
+
+            if let Some(ref mut agg) = aggregated_transcript {
+                TimelockDKG::aggregate_transcripts(&pub_params, agg, transcript);
+            } else {
+                aggregated_transcript = Some(transcript);
+            }
+        }
+
+        let final_transcript = aggregated_transcript.unwrap();
+
+        // Each validator decrypts their shares
+        let mut player_shares = Vec::new();
+
+        for player_idx in 0..num_validators {
+            let dk = bls12381::PrivateKey::generate(&mut rng);
+            let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&dk).unwrap();
+
+            let (shares, _pk_shares) = TimelockDKG::decrypt_secret_share_from_transcript(
+                &pub_params,
+                &final_transcript,
+                player_idx as u64,
+                &dk_pvss,
+            )
+            .unwrap();
+
+            player_shares.push((player_idx as u64, shares));
+        }
+
+        // Reconstruct secret from shares
+        let reconstructed =
+            TimelockDKG::reconstruct_secret_from_shares(&pub_params, player_shares).unwrap();
+
+        assert_eq!(reconstructed, expected_secret);
+    }
+
+    #[test]
+    fn test_scalar_encryption_decryption() {
+        let mut rng = ChaCha20Rng::from_seed([4u8; 32]);
+        let num_validators = 3;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let input_secret = PvtInputSecret::generate(&mut rng);
+        let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
+
+        let transcript =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+
+        // Decrypt shares for player 0
+        let player_dk = bls12381::PrivateKey::generate(&mut rng);
+        let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
+
+        let (scalar_shares, _) = TimelockDKG::decrypt_secret_share_from_transcript(
+            &pub_params,
+            &transcript,
+            0,
+            &dk_pvss,
+        )
+        .unwrap();
+
+        // Should have shares equal to player weight
+        let weight = pub_params
+            .pvss_config
+            .wconfig
+            .get_player_weight(&Player { id: 0 });
+        assert_eq!(scalar_shares.len(), weight);
+
+        // Each share should be non-zero (with high probability)
+        for share in &scalar_shares {
+            assert_ne!(*share.as_scalar(), Scalar::ZERO);
+        }
+    }
+
+    #[test]
+    fn test_timelock_transcript_serialization() {
+        let mut rng = ChaCha20Rng::from_seed([5u8; 32]);
+        let num_validators = 3;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let input_secret = PvtInputSecret::generate(&mut rng);
+        let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
+
+        let transcript =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+
+        // Serialize
+        let bytes = transcript.to_bytes();
+
+        // Deserialize
+        let transcript2 = TimelockTranscript::try_from(bytes.as_slice()).unwrap();
+
+        assert_eq!(transcript, transcript2);
+    }
+
+    #[test]
+    fn test_get_dealers() {
+        let mut rng = ChaCha20Rng::from_seed([6u8; 32]);
+        let num_validators = 4;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let input_secret = PvtInputSecret::generate(&mut rng);
+
+        let sk1 = bls12381::PrivateKey::generate(&mut rng);
+        let sk2 = bls12381::PrivateKey::generate(&mut rng);
+        let sk3 = bls12381::PrivateKey::generate(&mut rng);
+
+        let mut transcript =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
+        let t2 = TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
+        let t3 = TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 2, &sk3);
+
+        TimelockDKG::aggregate_transcripts(&pub_params, &mut transcript, t2);
+        TimelockDKG::aggregate_transcripts(&pub_params, &mut transcript, t3);
+
+        let dealers = TimelockDKG::get_dealers(&transcript);
+
+        assert_eq!(dealers.len(), 3);
+        assert!(dealers.contains(&0));
+        assert!(dealers.contains(&1));
+        assert!(dealers.contains(&2));
+    }
+
+    #[test]
+    fn test_single_validator_dkg() {
+        let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
+        let session_metadata = create_test_session_metadata(1);
+
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let input_secret = PvtInputSecret::generate(&mut rng);
+        let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
+
+        let transcript =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+
+        // Should still work with single validator
+        assert!(TimelockDKG::verify_transcript(&pub_params, &transcript).is_ok());
+
+        let player_dk = bls12381::PrivateKey::generate(&mut rng);
+        let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
+
+        let result = TimelockDKG::decrypt_secret_share_from_transcript(
+            &pub_params,
+            &transcript,
+            0,
+            &dk_pvss,
+        );
+
+        assert!(result.is_ok());
     }
 }

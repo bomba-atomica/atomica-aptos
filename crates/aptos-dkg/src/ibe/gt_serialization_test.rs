@@ -50,7 +50,7 @@ mod tests {
         // let bytes = gt.to_bytes();
 
         // Option 2: Via Fp12
-        let fp12: Fp12 = gt.into();
+        let _fp12: Fp12 = gt.into();
         // let bytes = fp12.to_bytes(); // Does this exist?
 
         // Option 3: Serde (if implemented)
