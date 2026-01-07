@@ -108,6 +108,7 @@ impl AptosVM {
             .map_err(|_| Expected(TranscriptVerificationFailed))?;
 
         // All check passed, invoke VM to publish DKG result on chain.
+        aptos_logger::info!("[TIMELOCK] About to call finish_with_dkg_result Move function");
         let mut gas_meter = UnmeteredGasMeter;
         let mut session = self.new_session(resolver, session_id, None);
         let args = vec![
@@ -116,16 +117,22 @@ impl AptosVM {
         ];
 
         let traversal_storage = TraversalStorage::new();
-        session
-            .execute_function_bypass_visibility(
-                &RECONFIGURATION_WITH_DKG_MODULE,
-                FINISH_WITH_DKG_RESULT,
-                vec![],
-                serialize_values(&args),
-                &mut gas_meter,
-                &mut TraversalContext::new(&traversal_storage),
-                module_storage,
-            )
+        let result = session.execute_function_bypass_visibility(
+            &RECONFIGURATION_WITH_DKG_MODULE,
+            FINISH_WITH_DKG_RESULT,
+            vec![],
+            serialize_values(&args),
+            &mut gas_meter,
+            &mut TraversalContext::new(&traversal_storage),
+            module_storage,
+        );
+
+        aptos_logger::info!(
+            "[TIMELOCK] finish_with_dkg_result execution result: {:?}",
+            result.is_ok()
+        );
+
+        result
             .map_err(|e| {
                 expect_only_successful_execution(e, FINISH_WITH_DKG_RESULT.as_str(), log_context)
             })

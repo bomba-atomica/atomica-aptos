@@ -1,0 +1,5 @@
+{
+  "title": "Set Interval for Testing",
+  "description": "Sets the timelock interval to 0.1s",
+  "source_code_url": "https://github.com/aptos-labs/aptos-core"
+}

@@ -1,0 +1,25 @@
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# Environment files
+.env
+.env.local
+
+# Logs
+*.log
+
+# Runtime data
+*.blob
+*.key
+
+# Docker testnet artifacts
+**/genesis-workspace/
+**/genesis-artifacts/
+**/validators/
+
+
+# should always build deps tree
+*.lock

@@ -51,8 +51,8 @@ Global configuration for timelock intervals.
 </dt>
 <dd>
  Interval duration in microseconds.
- Default: 1 hour = 3600 * 1_000_000 microseconds
- Test: 5 seconds = 5 * 1_000_000 microseconds (for fast testing)
+ Default: 5 seconds = 5 * 1_000_000 microseconds
+ TODO: Change to 1 hour (3600 * 1_000_000) for production deployment
 </dd>
 </dl>
 
@@ -88,8 +88,11 @@ Timelock interval configuration is not initialized
 
 ## Function `initialize`
 
-Initialize with default 1-hour interval.
+Initialize with default 5-second interval.
 Called during genesis to set up the timelock configuration.
+
+NOTE: Currently set to 5 seconds for testing/development.
+TODO: Change to 1 hour for production mainnet deployment.
 
 
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock_config.md#0x1_timelock_config_initialize">initialize</a>(framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>)
@@ -105,7 +108,7 @@ Called during genesis to set up the timelock configuration.
     <a href="system_addresses.md#0x1_system_addresses_assert_aptos_framework">system_addresses::assert_aptos_framework</a>(framework);
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a>&gt;(@aptos_framework)) {
         <b>move_to</b>(framework, <a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a> {
-            interval_microseconds: 3600 * 1000000, // 1 hour default
+            interval_microseconds: 5 * 1000000,  // 5 seconds (was 3600 * 1000000 = 1 hour)
         });
     }
 }
@@ -141,7 +144,7 @@ production misconfigurations.
 - interval_us: New interval in microseconds
 
 
-<pre><code><b>public</b> entry <b>fun</b> <a href="timelock_config.md#0x1_timelock_config_set_interval_for_testing">set_interval_for_testing</a>(framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, interval_us: u64)
+<pre><code><b>public</b> entry <b>fun</b> <a href="timelock_config.md#0x1_timelock_config_set_interval_for_testing">set_interval_for_testing</a>(_framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, interval_us: u64)
 </code></pre>
 
 
@@ -151,10 +154,11 @@ production misconfigurations.
 
 
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock_config.md#0x1_timelock_config_set_interval_for_testing">set_interval_for_testing</a>(
-    framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>,
+    _framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>,
     interval_us: u64
 ) <b>acquires</b> <a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a> {
-    <a href="system_addresses.md#0x1_system_addresses_assert_aptos_framework">system_addresses::assert_aptos_framework</a>(framework);
+    // PREVIOUSLY: <a href="system_addresses.md#0x1_system_addresses_assert_aptos_framework">system_addresses::assert_aptos_framework</a>(framework);
+    // Allow <a href="../../aptos-stdlib/doc/any.md#0x1_any">any</a> <a href="account.md#0x1_account">account</a> <b>to</b> set this in testnet for ease of testing (e.g. mint <a href="account.md#0x1_account">account</a>)
 
     // Prevent production override - mainnet <b>has</b> <a href="chain_id.md#0x1_chain_id">chain_id</a> == 1
     <b>let</b> current_chain_id = <a href="chain_id.md#0x1_chain_id_get">chain_id::get</a>();
@@ -163,13 +167,14 @@ production misconfigurations.
         <a href="../../aptos-stdlib/../move-stdlib/doc/error.md#0x1_error_permission_denied">error::permission_denied</a>(<a href="timelock_config.md#0x1_timelock_config_EPRODUCTION_OVERRIDE_FORBIDDEN">EPRODUCTION_OVERRIDE_FORBIDDEN</a>)
     );
 
-    <b>if</b> (!<b>exists</b>&lt;<a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a>&gt;(@aptos_framework)) {
-        <b>move_to</b>(framework, <a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a> {
-            interval_microseconds: interval_us,
-        });
-    } <b>else</b> {
+    // Update the config at @aptos_framework
+    // We <b>assume</b> it <b>exists</b> (initialized by <a href="genesis.md#0x1_genesis">genesis</a>)
+    <b>if</b> (<b>exists</b>&lt;<a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a>&gt;(@aptos_framework)) {
         <b>let</b> config = <b>borrow_global_mut</b>&lt;<a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a>&gt;(@aptos_framework);
         config.interval_microseconds = interval_us;
+    } <b>else</b> {
+        // Should not happen <b>if</b> initialized correctly
+        <b>abort</b> <a href="../../aptos-stdlib/../move-stdlib/doc/error.md#0x1_error_not_found">error::not_found</a>(<a href="timelock_config.md#0x1_timelock_config_ETIMELOCK_CONFIG_NOT_FOUND">ETIMELOCK_CONFIG_NOT_FOUND</a>)
     }
 }
 </code></pre>
@@ -182,6 +187,10 @@ production misconfigurations.
 
 ## Function `get_interval_microseconds`
 
+Get the current interval duration in microseconds. Returns the configured interval, or the default (5 seconds) if not initialized. Used by the timelock module to determine rotation timing.
+
+NOTE: Default is 5 seconds for testing/development.
+TODO: Change to 1 hour for production mainnet deployment.
 
 
 <pre><code>#[view]
@@ -196,7 +205,7 @@ production misconfigurations.
 
 <pre><code><b>public</b> <b>fun</b> <a href="timelock_config.md#0x1_timelock_config_get_interval_microseconds">get_interval_microseconds</a>(): u64 <b>acquires</b> <a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a> {
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a>&gt;(@aptos_framework)) {
-        <b>return</b> 3600 * 1000000 // Default 1 hour
+        <b>return</b> 5 * 1000000  // 5 seconds (was 3600 * 1000000 = 1 hour)
     };
     <b>borrow_global</b>&lt;<a href="timelock_config.md#0x1_timelock_config_TimelockConfig">TimelockConfig</a>&gt;(@aptos_framework).interval_microseconds
 }

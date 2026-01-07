@@ -15,6 +15,12 @@
 //! - Uses pairing-based cryptography: e(G1, G2) -> Gt
 
 pub mod errors;
+mod fp12_raw_serialization;
+mod gt_serialization_fix;
+#[cfg(test)]
+mod gt_serialization_test;
+#[cfg(test)]
+mod golden_vectors;
 
 use crate::weighted_vuf::bls::BLS_WVUF_DST;
 use anyhow::anyhow;
@@ -230,18 +236,14 @@ pub fn deserialize_g1(bytes: &[u8]) -> Result<G1Projective> {
 /// Key bytes (32 bytes for XOR)
 ///
 /// # Implementation Note
-/// We use the debug format representation of Gt as input to the hash function.
-/// While not ideal, this is deterministic and provides sufficient randomness
-/// for the XOR-based encryption scheme. A production system might prefer
-/// to use a standardized Gt serialization format if available.
+/// FIXED (Bug #4): Now uses proper Fp12 serialization (576 bytes) instead of debug format.
+/// This ensures cross-language compatibility with TypeScript @noble/curves implementation
+/// which uses Fp12.toBytes(). The serialization is deterministic and matches the standard
+/// BCS format for Fp12 elements.
 #[allow(dead_code)]
 fn hash_gt_to_bytes(gt: &Gt) -> Result<Vec<u8>> {
-    // Hash the Gt element to derive a symmetric key
-    // Note: Gt from blstrs doesn't expose compressed serialization,
-    // so we use the debug format which is deterministic
-    let mut hasher = Keccak256::new();
-    hasher.update(format!("{:?}", gt));
-    Ok(hasher.finalize().to_vec())
+    // Use the fixed serialization from gt_serialization_fix module
+    gt_serialization_fix::hash_gt_to_bytes(gt)
 }
 
 /// XORs two byte slices, cycling the second if shorter.

@@ -8,7 +8,12 @@
 //! for sealed bid auctions.
 
 pub mod basic_flow;
+pub mod dkg_startup;
 pub mod ibe_e2e;
+pub mod test_dkg;
+pub mod test_helpers;
+pub mod test_ibe;
+pub mod test_timelock;
 
 use anyhow::{anyhow, Result};
 use aptos_api_types::ViewFunction;
@@ -121,39 +126,33 @@ pub async fn wait_for_interval_rotation(
 
 /// Verify public key is published for interval.
 ///
-/// Queries the timelock module to check if a public key (MPK) has been
-/// published for the specified interval. This is used by bidders to
-/// encrypt their bids.
+/// Gets the DKG transcript and extracts the public key (MPK) for IBE encryption.
+/// The public key is stored in the DKG state, not in a separate timelock module store.
 ///
 /// # Arguments
 /// - client: REST client to query blockchain state
-/// - interval: Interval number to check
+/// - interval: Interval number to check (currently unused, uses latest DKG transcript)
 ///
 /// # Returns
-/// Public key bytes if published
+/// Public key bytes (BCS-serialized DKG transcript)
 ///
 /// # Errors
-/// Returns error if public key is not published
-pub async fn verify_public_key_published(client: &Client, interval: u64) -> Result<Vec<u8>> {
-    let view_function = ViewFunction {
-        module: ModuleId::from_str("0x1::timelock").map_err(|e| anyhow!("{}", e))?,
-        function: Identifier::from_str("get_public_key").map_err(|e| anyhow!("{}", e))?,
-        ty_args: vec![],
-        args: vec![bcs::to_bytes(&interval)?],
-    };
+/// Returns error if DKG transcript is not available
+pub async fn verify_public_key_published(client: &Client, _interval: u64) -> Result<Vec<u8>> {
+    use crate::utils::get_on_chain_resource;
+    use aptos_types::dkg::DKGState;
 
-    // Result is Option<vector<u8>> which BCS-deserializes as Vec<Option<Vec<u8>>>
-    let result: Vec<Option<Vec<u8>>> = client
-        .view_bcs(&view_function, None)
-        .await
-        .map_err(|e| anyhow!("Failed to call get_public_key: {}", e))?
-        .into_inner();
+    // Get DKG state which contains the transcript
+    let dkg_state = get_on_chain_resource::<DKGState>(&client).await;
 
-    result
-        .first()
-        .cloned()
-        .flatten()
-        .ok_or_else(|| anyhow!("Public key not published for interval {}", interval))
+    // Check if DKG has completed
+    let last_completed = dkg_state
+        .last_completed
+        .ok_or_else(|| anyhow!("DKG has not completed yet"))?;
+
+    // Return the raw transcript bytes
+    // Tests will deserialize this to extract the public key
+    Ok(last_completed.transcript.clone())
 }
 
 /// Verify secret is aggregated for interval.

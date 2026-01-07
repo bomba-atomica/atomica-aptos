@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - dev-atomica
+      - timelock-tests
     paths:
       - "aptos-move/framework/aptos-framework/sources/timelock.move"
       - "aptos-move/framework/aptos-framework/sources/timelock_config.move"
@@ -178,6 +179,106 @@ jobs:
             echo "❌ DKG tests failed"
             exit 1
           fi
+
+
+
+  test-timelock-typescript:
+    name: Test Timelock TypeScript E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: "1.3.5"
+
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Remove unnecessary software to free up ~30GB
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "atomica-test"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+
+      - name: Build Aptos Framework CLI
+        run: |
+          echo "Building aptos-framework CLI..."
+          cargo build -p aptos-framework --bin aptos-framework --release
+
+      - name: Build Move Framework Bundle
+        run: |
+          echo "Building Move framework bundle (head.mrb)..."
+          export APTOS_FRAMEWORK_BIN=$(pwd)/target/release/aptos-framework
+          ./atomica/move-framework-fixtures/build-framework.sh
+
+      - name: Start Docker daemon
+        run: |
+          sudo systemctl start docker
+          sudo systemctl enable docker
+          docker --version
+
+      - name: Build Docker Test Harness
+        run: |
+          cd atomica/docker-test-harness
+          bun install
+          bun run build
+
+      - name: Build Timelock Tests
+        run: |
+          cd atomica/timelock-tests
+          bun install
+          bun run build
+
+      - name: Run Timelock TypeScript Tests
+        run: |
+          cd atomica/timelock-tests
+          bun run test
 
   test-validator-txn-timelock:
     name: Test Validator Timelock Transaction Handler

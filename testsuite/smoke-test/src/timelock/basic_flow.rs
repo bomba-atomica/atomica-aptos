@@ -28,24 +28,18 @@ use tokio::time::sleep;
 /// - Verifies public key is published
 /// - Waits for reveal
 /// - Verifies secret is aggregated
-///
-/// NOTE: This test is currently ignored as we are replacing smoke tests with
-/// TypeScript-based tests using the docker-test-harness for more reliable
-/// and maintainable testing. These Rust smoke tests can be revisited in the
-/// future if needed, but the docker testnet approach provides better isolation
-/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_basic_flow() {
     let interval_secs = 5;
 
     info!(
-        "Building swarm with 4 validators and {}-second interval",
+        "Building swarm with 3 validators and {}-second interval",
         interval_secs
     );
 
-    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(4)
-        .with_num_fullnodes(1)
+    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(3)
+        .with_num_fullnodes(0)
         .with_aptos()
         .with_init_genesis_config(Arc::new(move |conf| {
             // Enable validator transactions (required for timelock)
@@ -59,7 +53,7 @@ async fn test_timelock_basic_flow() {
     // Configure shorter interval for testing
     {
         info!("Setting timelock interval to {} seconds", interval_secs);
-        let mut root_account = swarm.chain_info().root_account();
+        let root_account = swarm.chain_info().root_account();
 
         let interval_us: u64 = interval_secs * 1_000_000;
 
@@ -193,12 +187,6 @@ async fn test_timelock_basic_flow() {
 /// Test that timelock config can be updated on testnet (not mainnet).
 ///
 /// TODO: Implement when timelock_config module is tested
-///
-/// NOTE: This test is currently ignored as we are replacing smoke tests with
-/// TypeScript-based tests using the docker-test-harness for more reliable
-/// and maintainable testing. These Rust smoke tests can be revisited in the
-/// future if needed, but the docker testnet approach provides better isolation
-/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_config_override() {
@@ -209,16 +197,10 @@ async fn test_timelock_config_override() {
 /// Test that timelock handles validator set changes gracefully.
 ///
 /// TODO: Implement when DKG integration is complete
-///
-/// NOTE: This test is currently ignored as we are replacing smoke tests with
-/// TypeScript-based tests using the docker-test-harness for more reliable
-/// and maintainable testing. These Rust smoke tests can be revisited in the
-/// future if needed, but the docker testnet approach provides better isolation
-/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_with_validator_changes() {
-    // TODO: Start with 4 validators
+    // TODO: Start with 3 validators
     // TODO: Trigger DKG for interval 1
     // TODO: Add validator during DKG
     // TODO: Verify new validator doesn't break DKG
@@ -228,17 +210,11 @@ async fn test_timelock_with_validator_changes() {
 /// Test that timelock handles DKG failures gracefully.
 ///
 /// TODO: Implement when DKG integration is complete
-///
-/// NOTE: This test is currently ignored as we are replacing smoke tests with
-/// TypeScript-based tests using the docker-test-harness for more reliable
-/// and maintainable testing. These Rust smoke tests can be revisited in the
-/// future if needed, but the docker testnet approach provides better isolation
-/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_timelock_dkg_failure_recovery() {
-    // TODO: Start with 4 validators
-    // TODO: Kill 2 validators during DKG
+    // TODO: Start with 3 validators
+    // TODO: Kill 1 validator during DKG (below threshold of 3)
     // TODO: Verify DKG fails (below threshold)
     // TODO: Restart validators
     // TODO: Verify next interval DKG succeeds

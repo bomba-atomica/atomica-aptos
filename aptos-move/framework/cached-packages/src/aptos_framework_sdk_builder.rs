@@ -891,6 +891,11 @@ pub enum EntryFunctionCall {
 
     NonceValidationInitializeNonceTable {},
 
+    /// A simple no-op function that emits an event to prove this module exists
+    NoopDoNothing {
+        _message: Vec<u8>,
+    },
+
     /// Entry function that can be used to transfer, if allow_ungated_transfer is set true.
     ObjectTransferCall {
         object: AccountAddress,
@@ -1141,6 +1146,10 @@ pub enum EntryFunctionCall {
         new_voter: AccountAddress,
     },
 
+    /// Force rotation for testing purposes.
+    /// Bypasses the time check. Only available on non-mainnet chains.
+    TimelockForceRotationForTesting {},
+
     /// validators call this to publish the public key for a future interval
     TimelockPublishPublicKey {
         interval: u64,
@@ -1152,6 +1161,10 @@ pub enum EntryFunctionCall {
         interval: u64,
         share: Vec<u8>,
     },
+
+    /// Manual rotation trigger that can be called by anyone after the scheduled time.
+    /// This allows testing and emergency rotation when automatic rotation fails.
+    TimelockTriggerRotation {},
 
     /// Set interval for testing (devnet/testnet only).
     ///
@@ -1786,6 +1799,7 @@ impl EntryFunctionCall {
             } => multisig_account_vote_transanction(multisig_account, sequence_number, approved),
             NonceValidationAddNonceBuckets { count } => nonce_validation_add_nonce_buckets(count),
             NonceValidationInitializeNonceTable {} => nonce_validation_initialize_nonce_table(),
+            NoopDoNothing { _message } => noop_do_nothing(_message),
             ObjectTransferCall { object, to } => object_transfer_call(object, to),
             ObjectCodeDeploymentPublish {
                 metadata_serialized,
@@ -1939,10 +1953,12 @@ impl EntryFunctionCall {
                 operator,
                 new_voter,
             } => staking_proxy_set_voter(operator, new_voter),
+            TimelockForceRotationForTesting {} => timelock_force_rotation_for_testing(),
             TimelockPublishPublicKey { interval, pk } => timelock_publish_public_key(interval, pk),
             TimelockPublishSecretShare { interval, share } => {
                 timelock_publish_secret_share(interval, share)
             },
+            TimelockTriggerRotation {} => timelock_trigger_rotation(),
             TimelockConfigSetIntervalForTesting { interval_us } => {
                 timelock_config_set_interval_for_testing(interval_us)
             },
@@ -4336,6 +4352,22 @@ pub fn nonce_validation_initialize_nonce_table() -> TransactionPayload {
     ))
 }
 
+/// A simple no-op function that emits an event to prove this module exists
+pub fn noop_do_nothing(_message: Vec<u8>) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("noop").to_owned(),
+        ),
+        ident_str!("do_nothing").to_owned(),
+        vec![],
+        vec![bcs::to_bytes(&_message).unwrap()],
+    ))
+}
+
 /// Entry function that can be used to transfer, if allow_ungated_transfer is set true.
 pub fn object_transfer_call(object: AccountAddress, to: AccountAddress) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
@@ -5153,6 +5185,23 @@ pub fn staking_proxy_set_voter(
     ))
 }
 
+/// Force rotation for testing purposes.
+/// Bypasses the time check. Only available on non-mainnet chains.
+pub fn timelock_force_rotation_for_testing() -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("timelock").to_owned(),
+        ),
+        ident_str!("force_rotation_for_testing").to_owned(),
+        vec![],
+        vec![],
+    ))
+}
+
 /// validators call this to publish the public key for a future interval
 pub fn timelock_publish_public_key(interval: u64, pk: Vec<u8>) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
@@ -5188,6 +5237,23 @@ pub fn timelock_publish_secret_share(interval: u64, share: Vec<u8>) -> Transacti
             bcs::to_bytes(&interval).unwrap(),
             bcs::to_bytes(&share).unwrap(),
         ],
+    ))
+}
+
+/// Manual rotation trigger that can be called by anyone after the scheduled time.
+/// This allows testing and emergency rotation when automatic rotation fails.
+pub fn timelock_trigger_rotation() -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("timelock").to_owned(),
+        ),
+        ident_str!("trigger_rotation").to_owned(),
+        vec![],
+        vec![],
     ))
 }
 
@@ -6899,6 +6965,16 @@ mod decoder {
         }
     }
 
+    pub fn noop_do_nothing(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(EntryFunctionCall::NoopDoNothing {
+                _message: bcs::from_bytes(script.args().get(0)?).ok()?,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn object_transfer_call(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(EntryFunctionCall::ObjectTransferCall {
@@ -7386,6 +7462,16 @@ mod decoder {
         }
     }
 
+    pub fn timelock_force_rotation_for_testing(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(_script) = payload {
+            Some(EntryFunctionCall::TimelockForceRotationForTesting {})
+        } else {
+            None
+        }
+    }
+
     pub fn timelock_publish_public_key(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(EntryFunctionCall::TimelockPublishPublicKey {
@@ -7405,6 +7491,14 @@ mod decoder {
                 interval: bcs::from_bytes(script.args().get(0)?).ok()?,
                 share: bcs::from_bytes(script.args().get(1)?).ok()?,
             })
+        } else {
+            None
+        }
+    }
+
+    pub fn timelock_trigger_rotation(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(_script) = payload {
+            Some(EntryFunctionCall::TimelockTriggerRotation {})
         } else {
             None
         }
@@ -8069,6 +8163,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
             Box::new(decoder::nonce_validation_initialize_nonce_table),
         );
         map.insert(
+            "noop_do_nothing".to_string(),
+            Box::new(decoder::noop_do_nothing),
+        );
+        map.insert(
             "object_transfer_call".to_string(),
             Box::new(decoder::object_transfer_call),
         );
@@ -8226,12 +8324,20 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
             Box::new(decoder::staking_proxy_set_voter),
         );
         map.insert(
+            "timelock_force_rotation_for_testing".to_string(),
+            Box::new(decoder::timelock_force_rotation_for_testing),
+        );
+        map.insert(
             "timelock_publish_public_key".to_string(),
             Box::new(decoder::timelock_publish_public_key),
         );
         map.insert(
             "timelock_publish_secret_share".to_string(),
             Box::new(decoder::timelock_publish_secret_share),
+        );
+        map.insert(
+            "timelock_trigger_rotation".to_string(),
+            Box::new(decoder::timelock_trigger_rotation),
         );
         map.insert(
             "timelock_config_set_interval_for_testing".to_string(),

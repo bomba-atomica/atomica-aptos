@@ -690,7 +690,9 @@ impl ValidatorTransaction {
                 "validator_transaction__observed_jwk_update"
             },
             ValidatorTransaction::DkgResult(_) => "validator_transaction__dkg_result",
-            ValidatorTransaction::TimelockDkgResult(_) => "validator_transaction__timelock_dkg_result",
+            ValidatorTransaction::TimelockDkgResult(_) => {
+                "validator_transaction__timelock_dkg_result"
+            },
             ValidatorTransaction::TimelockShare(_) => "validator_transaction__timelock_share",
         }
     }

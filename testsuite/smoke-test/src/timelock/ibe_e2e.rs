@@ -16,29 +16,28 @@ use aptos_dkg::pvss::traits::Transcript;
 use aptos_forge::{NodeExt, Swarm};
 use aptos_logger::info;
 use aptos_types::dkg::real_dkg::Transcripts;
+use aptos_types::on_chain_config::OnChainRandomnessConfig;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 
-/// NOTE: This test is currently ignored as we are replacing smoke tests with
-/// TypeScript-based tests using the docker-test-harness for more reliable
-/// and maintainable testing. These Rust smoke tests can be revisited in the
-/// future if needed, but the docker testnet approach provides better isolation
-/// and CI integration.
 #[tokio::test]
 #[ignore]
 async fn test_ibe_encrypt_decrypt_e2e() {
     let interval_secs = 5;
 
-    info!("Starting IBE E2E test with 4 validators");
+    info!("Starting IBE E2E test with 3 validators");
 
-    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(4)
-        .with_num_fullnodes(1)
+    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(3)
+        .with_num_fullnodes(0)
         .with_aptos()
         .with_init_genesis_config(Arc::new(move |conf| {
             // Enable validator transactions (required for timelock)
             conf.consensus_config.enable_validator_txns();
+
+            // Enable randomness config (required for DKG manager to start)
+            conf.randomness_config_override = Some(OnChainRandomnessConfig::default_enabled());
         }))
         .build_with_cli(0)
         .await;
@@ -49,7 +48,7 @@ async fn test_ibe_encrypt_decrypt_e2e() {
     // 1. Configure shorter interval for testing
     {
         info!("Setting timelock interval to {} seconds", interval_secs);
-        let mut root_account = swarm.chain_info().root_account();
+        let root_account = swarm.chain_info().root_account();
 
         let interval_us: u64 = interval_secs * 1_000_000;
 

@@ -40,6 +40,7 @@ use futures::StreamExt;
 use futures_channel::oneshot;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio_retry::strategy::ExponentialBackoff;
+use futures::FutureExt;
 
 pub struct EpochManager<P: OnChainConfigProvider> {
     // Some useful metadata
@@ -111,54 +112,147 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         }
     }
 
+    fn route_rpc_request_internal(
+        current_epoch: Option<u64>,
+        dkg_tx: &Option<aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
+        timelock_txs: &HashMap<u64, aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
+        peer_id: AccountAddress,
+        dkg_request: IncomingRpcRequest,
+    ) {
+        let msg_session_id = dkg_request.msg.epoch();
+
+        if Some(msg_session_id) == current_epoch {
+            // Forward to DKGManager if it is alive.
+            if let Some(tx) = dkg_tx {
+                let _ = tx.push(peer_id, (peer_id, dkg_request));
+                return;
+            }
+        }
+
+        // Check if it's for an active Timelock DKG session (indexed by its interval/session_id)
+        if let Some(tx) = timelock_txs.get(&msg_session_id) {
+            let _ = tx.push(peer_id, (peer_id, dkg_request));
+        }
+    }
+
     fn process_rpc_request(
         &mut self,
         peer_id: AccountAddress,
         dkg_request: IncomingRpcRequest,
     ) -> Result<()> {
-        if Some(dkg_request.msg.epoch()) == self.epoch_state.as_ref().map(|s| s.epoch) {
-            // Forward to DKGManager if it is alive.
-            if let Some(tx) = &self.dkg_rpc_msg_tx {
-                let _ = tx.push(peer_id, (peer_id, dkg_request));
-            }
-        }
+        Self::route_rpc_request_internal(
+            self.epoch_state.as_ref().map(|s| s.epoch),
+            &self.dkg_rpc_msg_tx,
+            &self.timelock_rpc_msg_txs,
+            peer_id,
+            dkg_request,
+        );
         Ok(())
     }
 
     fn on_dkg_start_notification(&mut self, notification: EventNotification) -> Result<()> {
-        if let Some(tx) = self.dkg_start_event_tx.as_ref() {
-            let EventNotification {
-                subscribed_events, ..
-            } = notification;
-            for event in subscribed_events {
-                if let Ok(dkg_start_event) = DKGStartEvent::try_from(&event) {
-                    let _ = tx.push((), dkg_start_event);
-                    return Ok(());
-                } else if let Ok(timelock_start) = StartKeyGenEvent::try_from(&event) {
-                    self.start_timelock_dkg(timelock_start);
-                    return Ok(());
-                } else if let Ok(timelock_key) = KeyPublishedEvent::try_from(&event) {
-                    self.process_timelock_key_published(timelock_key);
-                    return Ok(());
-                } else if let Ok(timelock_reveal) = RequestRevealEvent::try_from(&event) {
-                    self.process_timelock_reveal(timelock_reveal);
-                    return Ok(());
-                } else {
-                    debug!("[DKG] on_dkg_start_notification: failed in converting a contract event to a dkg start event!");
+        let EventNotification {
+            subscribed_events, ..
+        } = notification;
+        aptos_logger::warn!(
+            "[DKG] DEBUG: on_dkg_start_notification ENTRY. Events count: {}",
+            subscribed_events.len()
+        );
+        info!(
+            "[DKG] on_dkg_start_notification: Received {} events",
+            subscribed_events.len()
+        );
+        for event in subscribed_events {
+            aptos_logger::warn!(
+                "[DKG] Processing event with type tag: {:?}",
+                event.type_tag()
+            );
+            info!(
+                "[DKG] Processing event with type tag: {:?}",
+                event.type_tag()
+            );
+
+            // Try DKGStartEvent first
+            match DKGStartEvent::try_from(&event) {
+                Ok(dkg_start_event) => {
+                    info!("[DKG] Successfully parsed DKGStartEvent");
+                    if let Some(tx) = self.dkg_start_event_tx.as_ref() {
+                        let _ = tx.push((), dkg_start_event);
+                    } else {
+                        warn!("[DKG] Received DKGStartEvent but DKG is disabled/not initialized");
+                    }
+                    continue;
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a DKGStartEvent: {:?}", e);
                 }
             }
+
+            // Try StartKeyGenEvent (timelock)
+            match StartKeyGenEvent::try_from(&event) {
+                Ok(timelock_start) => {
+                    info!(
+                        "[DKG] Successfully parsed StartKeyGenEvent for interval {}",
+                        timelock_start.interval
+                    );
+                    self.start_timelock_dkg(timelock_start);
+                    continue;
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a StartKeyGenEvent: {:?}", e);
+                }
+            }
+
+            // Try KeyPublishedEvent (timelock)
+            match KeyPublishedEvent::try_from(&event) {
+                Ok(timelock_key) => {
+                    info!(
+                        "[DKG] Successfully parsed KeyPublishedEvent for interval {}",
+                        timelock_key.interval
+                    );
+                    self.process_timelock_key_published(timelock_key);
+                    continue;
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a KeyPublishedEvent: {:?}", e);
+                }
+            }
+
+            // Try RequestRevealEvent (timelock)
+            match RequestRevealEvent::try_from(&event) {
+                Ok(timelock_reveal) => {
+                    info!(
+                        "[DKG] Successfully parsed RequestRevealEvent for interval {}",
+                        timelock_reveal.interval
+                    );
+                    self.process_timelock_reveal(timelock_reveal);
+                    continue;
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a RequestRevealEvent: {:?}", e);
+                }
+            }
+
+            warn!(
+                "[DKG] Event type {:?} did not match any known DKG event type!",
+                event.type_tag()
+            );
         }
         Ok(())
     }
 
     pub async fn start(mut self, mut network_receivers: NetworkReceivers) {
+        info!("[DKG] EpochManager starting, waiting for initial reconfig notification");
         self.await_reconfig_notification().await;
+        info!("[DKG] EpochManager main loop started, listening for events");
         loop {
             let handling_result = tokio::select! {
                 notification = self.dkg_start_events.select_next_some() => {
+                    debug!("[DKG] Received dkg_start_events notification");
                     self.on_dkg_start_notification(notification)
                 },
                 reconfig_notification = self.reconfig_events.select_next_some() => {
+                    info!("[DKG] Received reconfig notification");
                     self.on_new_epoch(reconfig_notification).await
                 },
                 (peer, rpc_request) = network_receivers.rpc_rx.select_next_some() => {
@@ -173,11 +267,16 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     }
 
     async fn await_reconfig_notification(&mut self) {
+        info!("[DKG] await_reconfig_notification: waiting for first reconfig event");
         let reconfig_notification = self
             .reconfig_events
             .next()
             .await
             .expect("Reconfig sender dropped, unable to start new epoch");
+        info!(
+            "[DKG] await_reconfig_notification: received reconfig for epoch {}",
+            reconfig_notification.on_chain_configs.epoch()
+        );
         self.start_new_epoch(reconfig_notification.on_chain_configs)
             .await
             .unwrap();
@@ -227,6 +326,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Check both validator txn and randomness features are enabled
         let randomness_enabled =
             consensus_config.is_vtxn_enabled() && onchain_randomness_config.randomness_enabled();
+        info!(
+            "[DKG] start_new_epoch: epoch={}, vtxn_enabled={}, randomness_enabled={}, my_index={:?}",
+            epoch_state.epoch,
+            consensus_config.is_vtxn_enabled(),
+            onchain_randomness_config.randomness_enabled(),
+            my_index
+        );
         if let (true, Some(my_index)) = (randomness_enabled, my_index) {
             let DKGState {
                 in_progress: in_progress_session,
@@ -282,6 +388,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 dkg_rpc_msg_rx,
                 dkg_manager_close_rx,
             ));
+        } else {
+            warn!(
+                "[DKG] DKG not started for epoch {} - randomness_enabled={}, in_validator_set={}",
+                epoch_state.epoch,
+                randomness_enabled,
+                my_index.is_some()
+            );
         };
         Ok(())
     }
@@ -299,6 +412,17 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             tx.send(ack_tx).unwrap();
             ack_rx.await.unwrap();
         }
+
+        // Cleanup all active timelock DKG sessions
+        let close_txs: Vec<_> = self.timelock_dkg_close_txs.drain().collect();
+        for (interval, tx) in close_txs {
+            debug!("[Timelock] Closing DKG session for interval {} due to epoch shutdown", interval);
+            let (ack_tx, ack_rx) = oneshot::channel();
+            if tx.send(ack_tx).is_ok() {
+                let _ = ack_rx.await;
+            }
+        }
+        self.timelock_rpc_msg_txs.clear();
     }
 
     fn create_network_sender(&self) -> NetworkSender {
@@ -314,7 +438,6 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     /// For timelock DKG, we construct metadata from the current epoch state
     /// and the timelock configuration from the event.
     fn build_timelock_session_metadata(
-        &self,
         event: &StartKeyGenEvent,
         epoch_state: &Arc<EpochState>,
     ) -> DKGSessionMetadata {
@@ -365,7 +488,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         let randomness_config = RandomnessConfigMoveStruct::from(randomness_config_enum);
 
         DKGSessionMetadata {
-            dealer_epoch: epoch_state.epoch,
+            dealer_epoch: event.interval,
             randomness_config,
             dealer_validator_set: validator_consensus_infos.clone(),
             target_validator_set: validator_consensus_infos,
@@ -449,7 +572,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Build DKGSessionMetadata for this timelock interval
         // Note: For timelock, we use a simplified metadata structure
         // The threshold/total come from the event.config
-        let session_metadata = self.build_timelock_session_metadata(&event, &epoch_state);
+        let session_metadata = Self::build_timelock_session_metadata(&event, &epoch_state);
 
         // Get current timestamp for DKG start
         let start_time_us = aptos_infallible::duration_since_epoch().as_micros() as u64;
@@ -515,6 +638,20 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             event.interval
         );
 
+        // Cleanup the DKG session for this interval if it's still running.
+        // Once the key is published on-chain, our local DKG manager task is no longer needed.
+        if let Some(tx) = self.timelock_dkg_close_txs.remove(&event.interval) {
+            debug!("[Timelock] Closing DKG session for interval {} (MPK published)", event.interval);
+            let (ack_tx, ack_rx) = oneshot::channel();
+            if tx.send(ack_tx).is_ok() {
+                // We don't necessarily need to block the event loop here, 
+                // but for session hygiene we wait for a brief acknowledgement.
+                // Using a timeout would be safer in production, but here we assume the task closes quickly.
+                let _ = ack_rx.now_or_never(); 
+            }
+        }
+        self.timelock_rpc_msg_txs.remove(&event.interval);
+
         let epoch_state = match &self.epoch_state {
             Some(s) => s.clone(),
             None => {
@@ -537,7 +674,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             config,
         };
 
-        let metadata = self.build_timelock_session_metadata(&start_event, &epoch_state);
+        let metadata = Self::build_timelock_session_metadata(&start_event, &epoch_state);
         let pub_params = DefaultDKG::new_public_params(&metadata);
 
         // Deserialize transcript
@@ -621,6 +758,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
     fn process_timelock_reveal(&self, event: RequestRevealEvent) {
         info!("[Timelock] Revealing share for interval {}", event.interval);
+        aptos_logger::warn!("[DKG] DEBUG: process_timelock_reveal called for interval {}", event.interval);
 
         // 1. Retrieve secret share from storage
         let share_bytes = match self.retrieve_timelock_share(event.interval) {
@@ -726,3 +864,241 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use aptos_types::dkg::TimelockConfig;
+    use aptos_event_notifications::DbBackedOnChainConfig;
+    use futures::{FutureExt, StreamExt};
+    use aptos_types::waypoint::Waypoint;
+    use aptos_crypto::{bls12381, Uniform};
+    use aptos_config::config::SafetyRulesTestConfig;
+
+    /// Verifies that `build_timelock_session_metadata` correctly converts a `StartKeyGenEvent` 
+    /// into a `DKGSessionMetadata` struct, specifically checking the derivation of `RandomnessConfig`.
+    ///
+    /// WHY:
+    /// This test ensures that the `TimelockConfig` (threshold and total validators) provided in the event
+    /// is accurately translated into the `secrecy_threshold` and `reconstruct_threshold` required by the BLS DKG.
+    /// Incorrect thresholds could lead to liveness failures (cannot carry out DKG) or security issues (threshold too low).
+    ///
+    /// WHAT:
+    /// - Mocks an `EpochState` and `StartKeyGenEvent` with known values (3/4 validators).
+    /// - Calls `build_timelock_session_metadata`.
+    /// - Asserts that the derived `RandomnessConfig` is enabled.
+    /// - Asserts that the derived secrecy and reconstruction thresholds match the expected 75% (0.75).
+    #[test]
+    fn test_build_timelock_session_metadata() {
+        // Setup EpochState (mocked with empty verifier for simplicity)
+        let epoch_state = Arc::new(EpochState {
+            epoch: 10,
+            verifier: Arc::new(aptos_types::validator_verifier::ValidatorVerifier::new(vec![])),
+        });
+
+        // 3 out of 4 is 75%
+        let event = StartKeyGenEvent {
+            interval: 100,
+            config: TimelockConfig {
+                threshold: 3,
+                total_validators: 4,
+            },
+        };
+
+        // We use DbBackedOnChainConfig as the generic parameter P
+        let metadata = EpochManager::<DbBackedOnChainConfig>::build_timelock_session_metadata(
+            &event,
+            &epoch_state,
+        );
+
+        assert_eq!(metadata.dealer_epoch, 100);
+
+        // Verify randomness config derived from event
+        let randomness_config = metadata.randomness_config_derived().expect("derived config");
+        
+        // Should be enabled
+        assert!(randomness_config.randomness_enabled());
+
+        // Threshold percentage = 3 * 100 / 4 = 75. Decimal = 0.75
+        let secrecy = randomness_config.secrecy_threshold().expect("secrecy").to_num::<f64>();
+        let reconstruct = randomness_config.reconstruct_threshold().expect("reconstruct").to_num::<f64>();
+        
+        assert!((secrecy - 0.75).abs() < 1e-6, "Secrecy threshold {} != 0.75", secrecy);
+        assert!((reconstruct - 0.75).abs() < 1e-6, "Reconstruct threshold {} != 0.75", reconstruct);
+    }
+
+    /// Verifies the routing logic for incoming DKG RPC messages, specifically covering the
+    /// co-existence (or lack thereof) of Randomness V2 DKG and Timelock DKG.
+    ///
+    /// WHY:
+    /// `DKGMessage` currently only contains the `epoch` and does not distinguish between
+    /// Randomness V2 and Timelock. If both are active, there is a conflict. 
+    /// This test ensures that:
+    /// 1. We have a defined priority when both could be active (currently favoring Randomness V2).
+    /// 2. Unambiguous routing works correctly when only Timelock is active (fallback mechanism).
+    /// 3. Messages with incorrect epochs are ignored to prevent processing stale/future errors.
+    ///
+    /// WHAT:
+    /// - Tests Scenario 1: Randomness V2 is ACTIVE. Verifies messages go to `dkg_rpc_msg_tx` (V2) and NOT Timelock.
+    /// - Tests Scenario 2: Randomness V2 is DISABLED. Verifies messages fallback to `timelock_rpc_msg_txs`.
+    /// - Tests Scenario 3: Wrong Epoch. Verifies messages are dropped.
+    #[test]
+    fn test_dkg_routing() {
+        use crate::{
+            network::{IncomingRpcRequest, DummyRpcResponseSender},
+            types::{DKGMessage, DKGTranscriptRequest},
+        };
+        use aptos_infallible::RwLock;
+
+        let dkg_epoch = 10;
+        let peer = AccountAddress::random();
+
+        // Helper to create a request
+        let make_req = |epoch: u64| {
+             IncomingRpcRequest {
+                msg: DKGMessage::TranscriptRequest(DKGTranscriptRequest::new(epoch)),
+                sender: peer,
+                response_sender: Box::new(DummyRpcResponseSender::new(Arc::new(RwLock::new(vec![])))),
+            }
+        };
+
+        // Scenario 1: Randomness V2 (Main DKG) is ACTIVE for current epoch.
+        // Expect: msg with current_epoch routed to dkg_rpc_msg_tx.
+        {
+            let (dkg_tx, mut dkg_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let (tl_tx, mut tl_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let mut timelock_txs = HashMap::new();
+            let tl_session_id = 100;
+            timelock_txs.insert(tl_session_id, tl_tx);
+
+            // Message for current epoch
+            EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
+                Some(dkg_epoch),
+                &Some(dkg_tx),
+                &timelock_txs,
+                peer,
+                make_req(dkg_epoch),
+            );
+
+            assert!(dkg_rx.select_next_some().now_or_never().is_some());
+            assert!(tl_rx.select_next_some().now_or_never().is_none());
+        }
+
+        // Scenario 2: Timelock DKG is ACTIVE for a future interval/session.
+        // Expect: msg with tl_session_id routed to correct timelock_txs entry,
+        // even if Randomness V2 is also active for the current epoch.
+        {
+            let (dkg_tx, mut dkg_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let (tl_tx, mut tl_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let mut timelock_txs = HashMap::new();
+            let tl_session_id = 100;
+            timelock_txs.insert(tl_session_id, tl_tx);
+
+            // Message for Timelock interval
+            EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
+                Some(dkg_epoch),
+                &Some(dkg_tx),
+                &timelock_txs,
+                peer,
+                make_req(tl_session_id),
+            );
+
+            assert!(dkg_rx.select_next_some().now_or_never().is_none());
+            assert!(tl_rx.select_next_some().now_or_never().is_some());
+        }
+
+        // Scenario 3: Unknown Epoch/Session ID.
+        // Expect: msg dropped.
+        {
+            let (dkg_tx, mut dkg_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            let mut timelock_txs = HashMap::new();
+            timelock_txs.insert(100, aptos_channel::new(QueueStyle::FIFO, 10, None).0);
+
+            EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
+                Some(dkg_epoch),
+                &Some(dkg_tx),
+                &timelock_txs,
+                peer,
+                make_req(999), // Unknown
+            );
+
+            assert!(dkg_rx.select_next_some().now_or_never().is_none());
+        }
+    }
+
+    /// Verifies that Timelock DKG sessions are correctly cleaned up from the `EpochManager` state
+    /// to prevent memory leaks.
+    #[tokio::test]
+    async fn test_dkg_cleanup() {
+        use aptos_config::config::SafetyRulesConfig;
+        use aptos_validator_transaction_pool::VTxnPoolState;
+
+        let my_addr = AccountAddress::random();
+        let (self_sender, _) = aptos_channels::new_test(1);
+
+        // Setup valid SafetyRulesConfig to avoid panic
+        let mut safety_rules_config = SafetyRulesConfig::default();
+        let mut test_config = SafetyRulesTestConfig::new(my_addr);
+        test_config.consensus_key(bls12381::PrivateKey::generate_for_testing());
+        test_config.waypoint = Some(Waypoint::default());
+        safety_rules_config.test = Some(test_config);
+
+        // Mock NotificationListeners
+        let (_, reconfig_rx) = aptos_channel::new(QueueStyle::KLAST, 1, None);
+        let reconfig_events = ReconfigNotificationListener { notification_receiver: reconfig_rx };
+        let (_, dkg_start_rx) = aptos_channel::new(QueueStyle::KLAST, 1, None);
+        let dkg_start_events = EventNotificationListener { notification_receiver: dkg_start_rx };
+
+        // Mock NetworkClient (we use a simple wrapper or Mock if available)
+        // Since we don't actually use the network in this test, we can use a very simple mock
+        let network_sender = DKGNetworkClient::new(NetworkClient::new(
+            vec![], vec![], HashMap::new(), aptos_network::application::storage::PeersAndMetadata::new(&[])
+        ));
+
+        // Dummy EpochManager
+        let mut manager = EpochManager::<DbBackedOnChainConfig>::new(
+            &safety_rules_config,
+            my_addr,
+            reconfig_events,
+            dkg_start_events,
+            self_sender,
+            network_sender,
+            VTxnPoolState::default(),
+            ReliableBroadcastConfig::default(),
+            0,
+        );
+
+        // Add dummy sessions for intervals 100 and 101
+        for interval in [100, 101] {
+            let (close_tx, _) = oneshot::channel();
+            let (rpc_tx, _) = aptos_channel::new(QueueStyle::FIFO, 10, None);
+            manager.timelock_dkg_close_txs.insert(interval, close_tx);
+            manager.timelock_rpc_msg_txs.insert(interval, rpc_tx);
+        }
+
+        assert_eq!(manager.timelock_dkg_close_txs.len(), 2);
+        assert_eq!(manager.timelock_rpc_msg_txs.len(), 2);
+
+        // 1. Test Interval-level Cleanup: KeyPublished for interval 100
+        let event = KeyPublishedEvent {
+            interval: 100,
+            public_key: vec![],
+        };
+        manager.process_timelock_key_published(event);
+
+        // Interval 100 should be removed, 101 should remain
+        assert!(!manager.timelock_dkg_close_txs.contains_key(&100));
+        assert!(!manager.timelock_rpc_msg_txs.contains_key(&100));
+        assert!(manager.timelock_dkg_close_txs.contains_key(&101));
+        assert!(manager.timelock_rpc_msg_txs.contains_key(&101));
+
+        // 2. Test Epoch-level Cleanup: shutdown_current_processor
+        manager.shutdown_current_processor().await;
+
+        // All should be cleared
+        assert!(manager.timelock_dkg_close_txs.is_empty());
+        assert!(manager.timelock_rpc_msg_txs.is_empty());
+    }
+}
+

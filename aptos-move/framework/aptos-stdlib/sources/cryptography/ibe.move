@@ -1,7 +1,7 @@
 /// This module provides Identity-Based Encryption (IBE) decryption capabilities.
 /// It uses the `crypto_algebra` module for underlying algebraic structures (G1, G2, Gt).
 module aptos_std::ibe {
-    use aptos_std::crypto_algebra::{Self, Element, abort_unless_cryptography_algebra_natives_enabled};
+    use aptos_std::crypto_algebra::{Self, Element};
 
     /// Decrypts a message using Identity-Based Encryption (IBE) logic.
     /// Performs Pairing(u, sig) -> Gt, Serializes Gt, Hashes (Keccak256), and XORs with ciphertext.

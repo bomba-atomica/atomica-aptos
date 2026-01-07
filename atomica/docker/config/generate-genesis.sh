@@ -1,0 +1,293 @@
+#!/bin/bash
+# Generate Aptos genesis for Docker testnet
+#
+# PURPOSE
+# This script is the central orchestration tool for creating a multi-validator testnet genesis.
+# It is designed to run INSIDE a Docker container (standard aptos-tools image) to ensuring
+# binary compatibility between the genesis generator and the validator nodes.
+#
+# WORKFLOW
+# 1. Generates cryptographic keys for the root account (faucet) and all validators.
+# 2. Creates the 'layout.yaml' defining the network topology (chain ID, epoch duration, etc.).
+# 3. Configures each validator's network address and identity.
+# 4. Injects the Move framework (`framework.mrb`) - crucial for custom logic testing.
+# 5. finalize the git-based genesis repository structure.
+# 6. Generates the binary `genesis.blob` and `waypoint.txt`.
+#
+# INPUTS
+# - $1: Number of validators (default: 4)
+# - $2: Chain ID (default: 4)
+# - $3: Base IP address for validators (default: 172.19.0.10)
+# - /framework.mrb: (Optional) Custom framework file mounted by DockerTestnet
+#
+# OUTPUTS
+# - output/genesis.blob: The genesis state file
+# - output/waypoint.txt: The trusted checkpoint for the genesis state
+# - output/root-account-private-keys.yaml: Keys for the privileged root account
+# - validators/*/node-config.yaml: Configuration files for each validator
+
+set -e
+
+# Enable debug mode if ATOMICA_DEBUG_TESTNET is set
+if [ -n "$ATOMICA_DEBUG_TESTNET" ]; then
+    set -x
+fi
+
+# Debug logging helper
+debug() {
+    if [ -n "$ATOMICA_DEBUG_TESTNET" ]; then
+        echo "[DEBUG $(date -Iseconds)] $*" >&2
+    fi
+}
+
+# Redirect verbose aptos CLI output unless debugging
+if [ -z "$ATOMICA_DEBUG_TESTNET" ]; then
+    APTOS_OUTPUT="/dev/null"
+else
+    APTOS_OUTPUT="/dev/stdout"
+fi
+
+NUM_VALIDATORS="${1:-4}"
+CHAIN_ID="${2:-4}"
+BASE_IP="${3:-172.19.0.10}"
+STAKE_AMOUNT="100000000000000"  # 1M APT in octas
+
+WORKSPACE="${WORKSPACE:-/workspace}"
+cd "$WORKSPACE"
+
+debug "Generating genesis for $NUM_VALIDATORS validators (chain_id=$CHAIN_ID, base_ip=$BASE_IP)"
+
+echo "=== Generating genesis for $NUM_VALIDATORS validators (chain_id=$CHAIN_ID) ==="
+
+# Parse base IP to get the base octets and starting number
+IFS='.' read -r ip1 ip2 ip3 ip4 <<< "$BASE_IP"
+
+# Generate usernames array for layout
+USERNAMES=""
+for i in $(seq 0 $((NUM_VALIDATORS - 1))); do
+    if [ -n "$USERNAMES" ]; then
+        USERNAMES="${USERNAMES}, \"validator-${i}\""
+    else
+        USERNAMES="\"validator-${i}\""
+    fi
+done
+
+# Step 1: Generate root account keys (for test-only faucet)
+echo "Step 1/7: Generating root account keys..."
+mkdir -p "root-account"
+aptos genesis generate-keys --output-dir "root-account" --assume-yes > "$APTOS_OUTPUT"
+
+# Extract root public key for layout.yaml
+ROOT_PUBLIC_KEY=$(grep "account_public_key:" root-account/public-keys.yaml | awk '{print $2}' | tr -d '"')
+debug "Root account public key: $ROOT_PUBLIC_KEY"
+
+# Step 2: Generate validator keys
+echo "Step 2/7: Generating validator keys..."
+for i in $(seq 0 $((NUM_VALIDATORS - 1))); do
+    username="validator-${i}"
+    mkdir -p "$username"
+    aptos genesis generate-keys --output-dir "$username" --assume-yes > "$APTOS_OUTPUT"
+done
+
+# Step 3: Create layout.yaml with generated root key
+echo "Step 3/7: Creating layout.yaml..."
+cat > layout.yaml <<EOF
+---
+root_key: "${ROOT_PUBLIC_KEY}"
+users: [${USERNAMES}]
+chain_id: ${CHAIN_ID}
+allow_new_validators: false
+epoch_duration_secs: 7200
+is_test: true
+min_stake: 100000000000000
+min_voting_threshold: 100000000000000
+max_stake: 100000000000000000
+recurring_lockup_duration_secs: 86400
+required_proposer_stake: 100000000000000
+rewards_apy_percentage: 10
+voting_duration_secs: 10
+voting_power_increase_limit: 20
+on_chain_consensus_config:
+  V5:
+    alg:
+      JolteonV2:
+        main:
+          decoupled_execution: true
+          back_pressure_limit: 10
+          exclude_round: 40
+          proposer_election_type:
+             leader_reputation:
+               proposer_and_voter_v2:
+                 active_weight: 1000
+                 inactive_weight: 10
+                 failed_weight: 1
+                 failure_threshold_percent: 10
+                 proposer_window_num_validators_multiplier: 10
+                 voter_window_num_validators_multiplier: 1
+                 weight_by_voting_power: true
+                 use_history_from_previous_epoch_max_count: 5
+          max_failed_authors_to_store: 10
+        quorum_store_enabled: true
+        order_vote_enabled: false
+    vtxn:
+      V1:
+        per_block_limit_txn_count: 10
+        per_block_limit_total_bytes: 1048576
+    window_size: 1
+    rand_check_enabled: true
+EOF
+
+# Step 4: Set validator configurations
+echo "Step 4/7: Setting validator configurations..."
+mkdir -p genesis-repo
+
+for i in $(seq 0 $((NUM_VALIDATORS - 1))); do
+    username="validator-${i}"
+    validator_ip="${ip1}.${ip2}.${ip3}.$((ip4 + i))"
+
+    debug "Setting configuration for $username at IP $validator_ip"
+
+    mkdir -p "genesis-repo/${username}"
+
+    aptos genesis set-validator-configuration \
+        --username "$username" \
+        --owner-public-identity-file "${username}/public-keys.yaml" \
+        --validator-host "${validator_ip}:6180" \
+        --full-node-host "${validator_ip}:6182" \
+        --stake-amount "$STAKE_AMOUNT" \
+        --commission-percentage 0 \
+        --local-repository-dir genesis-repo > "$APTOS_OUTPUT"
+
+    debug "Configured $username with validator-host=${validator_ip}:6180"
+done
+
+# Step 5: Copy layout to genesis repo and find framework
+echo "Step 5/7: Setting up genesis repository..."
+cp layout.yaml genesis-repo/
+
+# Find and copy framework.mrb
+#
+# CRITICAL SECTION: FRAMEWORK INJECTION
+# This logic determines which version of the Aptos framework (Move stdlib, etc.) is loaded into genesis.
+#
+# PRIORITY ORDER:
+# 1. /framework.mrb: A file explicitly mounted by 'DockerTestnet'. This is used for "Custom Genesis"
+#    testing (e.g., verifying 0.1s timelock intervals).
+# 2. /aptos-framework/move/head.mrb: The default framework included in official Aptos Docker images.
+# 3. /opt/aptos/framework/head.mrb: Alternative location in some image versions.
+#
+# If no framework is found here or in the git repo fallback, genesis generation will fail.
+FRAMEWORK_PATHS=(
+    "/framework.mrb"
+    "/aptos-framework/move/head.mrb"
+    "/opt/aptos/framework/head.mrb"
+    "/usr/local/share/aptos/framework/head.mrb"
+)
+
+echo "=== CHECKING FRAMEWORK PATHS ===" >&2
+FRAMEWORK_FOUND=false
+for path in "${FRAMEWORK_PATHS[@]}"; do
+    echo "Checking: $path" >&2
+    if [ -f "$path" ]; then
+        echo "✅ FOUND FRAMEWORK AT: $path" >&2
+        ls -la "$path" >&2
+        cp "$path" genesis-repo/framework.mrb
+        echo "✅ COPIED TO genesis-repo/framework.mrb" >&2
+        ls -la genesis-repo/framework.mrb >&2
+        FRAMEWORK_FOUND=true
+        break
+    else
+        echo "❌ NOT FOUND: $path" >&2
+    fi
+done
+
+# Fallback: search repository for any .mrb file
+if [ "$FRAMEWORK_FOUND" = false ]; then
+    debug "Searching repository for .mrb files"
+    REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+    if [ -n "$REPO_ROOT" ]; then
+        FOUND=$(find "$REPO_ROOT" -type f -name "*.mrb" | head -n 1)
+        if [ -n "$FOUND" ]; then
+            debug "Found fallback framework at: $FOUND"
+            cp "$FOUND" genesis-repo/framework.mrb
+            FRAMEWORK_FOUND=true
+        fi
+    fi
+fi
+
+if [ "$FRAMEWORK_FOUND" = false ]; then
+    echo "ERROR: Could not find framework.mrb in any known location"
+    exit 1
+fi
+
+# Step 6: Setup git structure (required by aptos genesis)
+echo "Step 6/7: Finalizing genesis repository..."
+aptos genesis setup-git \
+    --layout-file layout.yaml \
+    --local-repository-dir genesis-repo > "$APTOS_OUTPUT"
+
+# Step 7: Generate genesis blob and waypoint
+echo "Step 7/7: Generating genesis.blob and waypoint..."
+mkdir -p output
+aptos genesis generate-genesis \
+    --local-repository-dir genesis-repo \
+    --output-dir output > "$APTOS_OUTPUT"
+
+# Save root account keys for TypeScript SDK faucet
+cp root-account/private-keys.yaml output/root-account-private-keys.yaml
+
+# Create node configs for each validator
+# These are placed in each validator's directory and will be copied to /opt/aptos/var/etc/node-config.yaml
+for i in $(seq 0 $((NUM_VALIDATORS - 1))); do
+    username="validator-${i}"
+
+    debug "Creating node config for $username in ${username}/node-config.yaml"
+
+    cat > "${username}/node-config.yaml" << EOF
+base:
+  role: "validator"
+  data_dir: "/opt/aptos/var/data"
+  waypoint:
+    from_file: "/opt/aptos/var/genesis/waypoint.txt"
+
+execution:
+  genesis_file_location: "/opt/aptos/var/genesis/genesis.blob"
+
+consensus:
+  safety_rules:
+    service:
+      type: "local"
+    backend:
+      type: "on_disk_storage"
+      path: "/opt/aptos/var/data/safety-rules.bin"
+    initial_safety_rules_config:
+      from_file:
+        identity_blob_path: "/opt/aptos/var/identity/validator-identity.yaml"
+        waypoint:
+          from_file: "/opt/aptos/var/genesis/waypoint.txt"
+
+validator_network:
+  discovery_method: "onchain"
+  listen_address: "/ip4/0.0.0.0/tcp/6180"
+  mutual_authentication: true
+  identity:
+    type: "from_file"
+    path: "/opt/aptos/var/identity/validator-identity.yaml"
+
+full_node_networks: []
+
+api:
+  enabled: true
+  address: "0.0.0.0:8080"
+
+storage:
+  rocksdb_configs:
+    enable_storage_sharding: false
+EOF
+
+    debug "Created config for $username"
+done
+
+echo "=== Genesis generation complete! ==="
+echo "Waypoint:"
+cat output/waypoint.txt
