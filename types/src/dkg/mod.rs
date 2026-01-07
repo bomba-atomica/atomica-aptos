@@ -102,7 +102,7 @@ impl DKGSessionMetadata {
         self.target_validator_set
             .clone()
             .into_iter()
-            .map(|obj| obj.try_into().unwrap())
+            .filter_map(|obj| obj.try_into().ok())
             .collect()
     }
 
@@ -110,7 +110,7 @@ impl DKGSessionMetadata {
         self.dealer_validator_set
             .clone()
             .into_iter()
-            .map(|obj| obj.try_into().unwrap())
+            .filter_map(|obj| obj.try_into().ok())
             .collect()
     }
 
@@ -311,7 +311,8 @@ impl TryFrom<&ContractEvent> for MasterPublicKeyPublishedEvent {
         if event.type_tag() != &TypeTag::Struct(Box::new(Self::struct_tag())) {
             bail!("Expected MasterPublicKeyPublishedEvent tag");
         }
-        bcs::from_bytes(event.event_data()).context("Failed to deserialize MasterPublicKeyPublishedEvent")
+        bcs::from_bytes(event.event_data())
+            .context("Failed to deserialize MasterPublicKeyPublishedEvent")
     }
 }
 
@@ -334,7 +335,8 @@ impl TryFrom<&ContractEvent> for DecryptionKeyRevealedEvent {
         if event.type_tag() != &TypeTag::Struct(Box::new(Self::struct_tag())) {
             bail!("Expected DecryptionKeyRevealedEvent tag");
         }
-        bcs::from_bytes(event.event_data()).context("Failed to deserialize DecryptionKeyRevealedEvent")
+        bcs::from_bytes(event.event_data())
+            .context("Failed to deserialize DecryptionKeyRevealedEvent")
     }
 }
 
