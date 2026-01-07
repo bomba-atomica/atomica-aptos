@@ -4,7 +4,7 @@
 #[cfg(any(test, feature = "fuzzing"))]
 use crate::dkg::DKGTranscriptMetadata;
 use crate::{
-    dkg::{DKGTranscript, TimelockShare},
+    dkg::{DKGTranscript, DecryptionKeyShare},
     jwks,
     validator_verifier::ValidatorVerifier,
 };
@@ -20,7 +20,7 @@ pub enum ValidatorTransaction {
     DKGResult(DKGTranscript),
     ObservedJWKUpdate(jwks::QuorumCertifiedUpdate),
     TimelockDKGResult(DKGTranscript),
-    TimelockShare(TimelockShare),
+    TimelockShare(DecryptionKeyShare),
 }
 
 impl ValidatorTransaction {

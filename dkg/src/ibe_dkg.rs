@@ -17,8 +17,8 @@ use aptos_dkg::{
 };
 use aptos_types::{
     dkg::{
+        ibe_dkg::{IbeSecret, IbeShare},
         real_dkg::{RealDKG, RealDKGPublicParams},
-        timelock_dkg::{TimelockSecret, TimelockShare},
         DKGSessionMetadata, DKGTrait,
     },
     validator_verifier::ValidatorVerifier,
@@ -42,12 +42,12 @@ type PvtInputSecret = <WeightedTranscript as Transcript>::InputSecret;
 type PvtSigningSecretKey = <WeightedTranscript as Transcript>::SigningSecretKey;
 type PvtSigningPubKey = <WeightedTranscript as Transcript>::SigningPubKey;
 
-pub const TIMELOCK_WEIGHTED_DAS_SCALAR: &'static str = "timelock_weighted_das_scalar";
+pub const IBE_WEIGHTED_DAS_SCALAR: &'static str = "ibe_weighted_das_scalar";
 
-/// A weighted transcript extended for Timelock/IBE support.
+/// A weighted transcript extended for IBE support.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, BCSCryptoHash, CryptoHasher)]
 #[allow(non_snake_case)]
-pub struct TimelockTranscript {
+pub struct IbeTranscript {
     pub weighted_transcript: WeightedTranscript,
 
     /// Encrypted Scalar Shares.
@@ -55,26 +55,26 @@ pub struct TimelockTranscript {
     pub scalar_transcripts: BTreeMap<u64, (Vec<G1Projective>, Vec<[u8; 32]>)>,
 }
 
-impl ValidCryptoMaterial for TimelockTranscript {
+impl ValidCryptoMaterial for IbeTranscript {
     const AIP_80_PREFIX: &'static str = "";
     fn to_bytes(&self) -> Vec<u8> {
-        bcs::to_bytes(&self).expect("unexpected error during TimelockTranscript serialization")
+        bcs::to_bytes(&self).expect("unexpected error during IbeTranscript serialization")
     }
 }
 
-impl TryFrom<&[u8]> for TimelockTranscript {
+impl TryFrom<&[u8]> for IbeTranscript {
     type Error = CryptoMaterialError;
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        bcs::from_bytes::<TimelockTranscript>(bytes)
+        bcs::from_bytes::<IbeTranscript>(bytes)
             .map_err(|_| CryptoMaterialError::DeserializationError)
     }
 }
 
-impl traits::Transcript for TimelockTranscript {
+impl traits::Transcript for IbeTranscript {
     type DealtPubKey = PvtDealtPubKey;
     type DealtPubKeyShare = PvtDealtPubKeyShare;
-    type DealtSecretKey = TimelockSecret;
-    type DealtSecretKeyShare = Vec<TimelockShare>;
+    type DealtSecretKey = IbeSecret;
+    type DealtSecretKeyShare = Vec<IbeShare>;
     type DecryptPrivKey = PvtDecryptPrivKey;
     type EncryptPubKey = PvtEncryptPubKey;
     type InputSecret = PvtInputSecret;
@@ -84,11 +84,11 @@ impl traits::Transcript for TimelockTranscript {
     type SigningSecretKey = PvtSigningSecretKey;
 
     fn dst() -> Vec<u8> {
-        b"APTOS_TIMELOCK_WEIGHTED_DAS_DST".to_vec()
+        b"APTOS_IBE_WEIGHTED_DAS_DST".to_vec()
     }
 
     fn scheme_name() -> String {
-        TIMELOCK_WEIGHTED_DAS_SCALAR.to_string()
+        IBE_WEIGHTED_DAS_SCALAR.to_string()
     }
 
     #[allow(non_snake_case)]
@@ -126,7 +126,7 @@ impl traits::Transcript for TimelockTranscript {
 
         let R_vec = r.iter().map(|ri| g1 * ri).collect::<Vec<G1Projective>>();
 
-        let dst = b"APTOS_TIMELOCK_SCALAR_ENC_DST";
+        let dst = b"APTOS_IBE_SCALAR_ENC_DST";
         for i in 0..sc.get_total_num_players() {
             let weight = sc.get_player_weight(&Player { id: i });
             for j in 0..weight {
@@ -141,7 +141,7 @@ impl traits::Transcript for TimelockTranscript {
         let mut scalar_transcripts = BTreeMap::new();
         scalar_transcripts.insert(dealer.id as u64, (R_vec, encrypted_scalars));
 
-        TimelockTranscript {
+        IbeTranscript {
             weighted_transcript,
             scalar_transcripts,
         }
@@ -202,7 +202,7 @@ impl traits::Transcript for TimelockTranscript {
         let weight = sc.get_player_weight(player);
         let mut scalar_shares = vec![Scalar::ZERO; weight];
 
-        let dst = b"APTOS_TIMELOCK_SCALAR_ENC_DST";
+        let dst = b"APTOS_IBE_SCALAR_ENC_DST";
         let dk_scalar = Scalar::from_bytes_le(&dk.to_bytes()).unwrap();
         for (r_vec, encrypted_scalars) in self.scalar_transcripts.values() {
             let s_i_dealer = sc.get_player_starting_index(player);
@@ -222,7 +222,7 @@ impl traits::Transcript for TimelockTranscript {
                 // We don't have easy access to gs.share (it's private).
                 // But we can get it via shadow if we really needed it for verification.
                 // For now, just wrap the scalar.
-                TimelockShare::new(ss)
+                IbeShare::new(ss)
             })
             .collect();
 
@@ -234,7 +234,7 @@ impl traits::Transcript for TimelockTranscript {
         R: RngCore + CryptoRng,
     {
         let weighted_transcript = WeightedTranscript::generate(sc, rng);
-        TimelockTranscript {
+        IbeTranscript {
             weighted_transcript,
             scalar_transcripts: BTreeMap::new(),
         }
@@ -242,7 +242,7 @@ impl traits::Transcript for TimelockTranscript {
 }
 
 // Implement MalleableTranscript...
-impl MalleableTranscript for TimelockTranscript {
+impl MalleableTranscript for IbeTranscript {
     fn maul_signature<A: Serialize + Clone>(
         &mut self,
         ssk: &Self::SigningSecretKey,
@@ -255,17 +255,17 @@ impl MalleableTranscript for TimelockTranscript {
 
 // Wrapper DKG struct
 #[derive(Debug)]
-pub struct TimelockDKG {}
+pub struct IbeDKG {}
 
-impl DKGTrait for TimelockDKG {
+impl DKGTrait for IbeDKG {
     type DealerPrivateKey = bls12381::PrivateKey;
     type DealtPubKeyShare = PvtDealtPubKeyShare;
-    type DealtSecret = TimelockSecret;
-    type DealtSecretShare = Vec<TimelockShare>;
+    type DealtSecret = IbeSecret;
+    type DealtSecretShare = Vec<IbeShare>;
     type InputSecret = PvtInputSecret;
     type NewValidatorDecryptKey = PvtDecryptPrivKey;
     type PublicParams = RealDKGPublicParams;
-    type Transcript = TimelockTranscript;
+    type Transcript = IbeTranscript;
 
     fn new_public_params(dkg_session_metadata: &DKGSessionMetadata) -> RealDKGPublicParams {
         RealDKG::new_public_params(dkg_session_metadata)
@@ -279,7 +279,7 @@ impl DKGTrait for TimelockDKG {
         _pub_params: &Self::PublicParams,
         input: &Self::InputSecret,
     ) -> Self::DealtSecret {
-        TimelockSecret(*input.get_secret_a())
+        IbeSecret(*input.get_secret_a())
     }
 
     fn reconstruct_secret_from_shares(
@@ -308,7 +308,7 @@ impl DKGTrait for TimelockDKG {
                 &pub_params.pvss_config.wconfig.get_threshold_config(),
                 &shares,
             );
-        Ok(TimelockSecret(secret_scalar))
+        Ok(IbeSecret(secret_scalar))
     }
 
     fn get_dealers(transcript: &Self::Transcript) -> BTreeSet<u64> {
@@ -326,12 +326,12 @@ impl DKGTrait for TimelockDKG {
         my_index: u64,
         sk: &Self::DealerPrivateKey,
     ) -> Self::Transcript {
-        // Delegate to TimelockTranscript::deal
+        // Delegate to IbeTranscript::deal
         let my_index = my_index as usize;
         let my_addr = pub_params.session_metadata.dealer_validator_set[my_index].addr;
         let aux = (pub_params.session_metadata.dealer_epoch, my_addr);
 
-        TimelockTranscript::deal(
+        IbeTranscript::deal(
             &pub_params.pvss_config.wconfig,
             &pub_params.pvss_config.pp,
             sk,
@@ -384,9 +384,9 @@ impl DKGTrait for TimelockDKG {
 
 #[cfg(test)]
 mod tests {
-    //! # Timelock DKG Protocol Tests
+    //! # IBE DKG Protocol Tests
     //!
-    //! This module contains tests for the Timelock DKG protocol implementation.
+    //! This module contains tests for the IBE DKG protocol implementation.
     //!
     //! ## Test Structure
     //!
@@ -471,7 +471,7 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup public parameters
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
 
         // Verify parameters are valid
         assert_eq!(
@@ -496,14 +496,14 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
 
         // Step 2: Deal - generate transcript
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
         let dealer_idx = 0;
 
-        let transcript = TimelockDKG::generate_transcript(
+        let transcript = IbeDKG::generate_transcript(
             &mut rng,
             &pub_params,
             &input_secret,
@@ -532,17 +532,17 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
 
         // Step 2: Deal
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
 
         let transcript =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
 
         // Step 3: Verify
-        let result = TimelockDKG::verify_transcript(&pub_params, &transcript);
+        let result = IbeDKG::verify_transcript(&pub_params, &transcript);
         assert!(
             result.is_ok(),
             "Transcript verification failed: {:?}",
@@ -565,7 +565,7 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
 
         let input_secret = PvtInputSecret::generate(&mut rng);
 
@@ -574,17 +574,17 @@ mod tests {
         let sk2 = bls12381::PrivateKey::generate(&mut rng);
 
         let mut transcript1 =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
 
         let transcript2 =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
 
         // Verify both transcripts
-        assert!(TimelockDKG::verify_transcript(&pub_params, &transcript1).is_ok());
-        assert!(TimelockDKG::verify_transcript(&pub_params, &transcript2).is_ok());
+        assert!(IbeDKG::verify_transcript(&pub_params, &transcript1).is_ok());
+        assert!(IbeDKG::verify_transcript(&pub_params, &transcript2).is_ok());
 
         // Step 4: Aggregate
-        TimelockDKG::aggregate_transcripts(&pub_params, &mut transcript1, transcript2);
+        IbeDKG::aggregate_transcripts(&pub_params, &mut transcript1, transcript2);
 
         // Verify aggregated transcript contains both dealers
         assert_eq!(transcript1.scalar_transcripts.len(), 2);
@@ -607,7 +607,7 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
 
         let input_secret = PvtInputSecret::generate(&mut rng);
 
@@ -616,7 +616,7 @@ mod tests {
 
         for dealer_idx in 0..3 {
             let sk = bls12381::PrivateKey::generate(&mut rng);
-            let transcript = TimelockDKG::generate_transcript(
+            let transcript = IbeDKG::generate_transcript(
                 &mut rng,
                 &pub_params,
                 &input_secret,
@@ -625,11 +625,11 @@ mod tests {
             );
 
             // Verify each transcript
-            assert!(TimelockDKG::verify_transcript(&pub_params, &transcript).is_ok());
+            assert!(IbeDKG::verify_transcript(&pub_params, &transcript).is_ok());
 
             // Aggregate
             if let Some(ref mut agg) = aggregated_transcript {
-                TimelockDKG::aggregate_transcripts(&pub_params, agg, transcript);
+                IbeDKG::aggregate_transcripts(&pub_params, agg, transcript);
             } else {
                 aggregated_transcript = Some(transcript);
             }
@@ -642,7 +642,7 @@ mod tests {
         let player_dk = bls12381::PrivateKey::generate(&mut rng);
         let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
 
-        let (scalar_shares, _pk_shares) = TimelockDKG::decrypt_secret_share_from_transcript(
+        let (scalar_shares, _pk_shares) = IbeDKG::decrypt_secret_share_from_transcript(
             &pub_params,
             &final_transcript,
             player_idx,
@@ -678,17 +678,17 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
 
         let input_secret = PvtInputSecret::generate(&mut rng);
-        let expected_secret = TimelockDKG::dealt_secret_from_input(&pub_params, &input_secret);
+        let expected_secret = IbeDKG::dealt_secret_from_input(&pub_params, &input_secret);
 
         // Steps 2-4: Deal, verify, and aggregate from threshold dealers
         let mut aggregated_transcript = None;
 
         for dealer_idx in 0..3 {
             let sk = bls12381::PrivateKey::generate(&mut rng);
-            let transcript = TimelockDKG::generate_transcript(
+            let transcript = IbeDKG::generate_transcript(
                 &mut rng,
                 &pub_params,
                 &input_secret,
@@ -697,11 +697,11 @@ mod tests {
             );
 
             // Verify
-            assert!(TimelockDKG::verify_transcript(&pub_params, &transcript).is_ok());
+            assert!(IbeDKG::verify_transcript(&pub_params, &transcript).is_ok());
 
             // Aggregate
             if let Some(ref mut agg) = aggregated_transcript {
-                TimelockDKG::aggregate_transcripts(&pub_params, agg, transcript);
+                IbeDKG::aggregate_transcripts(&pub_params, agg, transcript);
             } else {
                 aggregated_transcript = Some(transcript);
             }
@@ -716,7 +716,7 @@ mod tests {
             let dk = bls12381::PrivateKey::generate(&mut rng);
             let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&dk).unwrap();
 
-            let (shares, _pk_shares) = TimelockDKG::decrypt_secret_share_from_transcript(
+            let (shares, _pk_shares) = IbeDKG::decrypt_secret_share_from_transcript(
                 &pub_params,
                 &final_transcript,
                 player_idx as u64,
@@ -729,7 +729,7 @@ mod tests {
 
         // Step 6: Reconstruct secret from threshold shares
         let reconstructed =
-            TimelockDKG::reconstruct_secret_from_shares(&pub_params, player_shares).unwrap();
+            IbeDKG::reconstruct_secret_from_shares(&pub_params, player_shares).unwrap();
 
         // Verify reconstructed secret matches original
         assert_eq!(reconstructed, expected_secret);
@@ -740,18 +740,18 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_timelock_transcript_deal_and_verify() {
+    fn test_ibe_transcript_deal_and_verify() {
         let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
         let num_validators = 4;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
 
         // Generate transcript
         let transcript =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
 
         // Verify it has both weighted and scalar transcripts
         assert!(!transcript.scalar_transcripts.is_empty());
@@ -759,7 +759,7 @@ mod tests {
         assert!(transcript.scalar_transcripts.contains_key(&0));
 
         // Verify the transcript
-        let result = TimelockDKG::verify_transcript(&pub_params, &transcript);
+        let result = IbeDKG::verify_transcript(&pub_params, &transcript);
         assert!(
             result.is_ok(),
             "Transcript verification failed: {:?}",
@@ -768,26 +768,27 @@ mod tests {
     }
 
     #[test]
-    fn test_timelock_transcript_aggregation() {
+    fn test_ibe_transcript_aggregation() {
         let mut rng = ChaCha20Rng::from_seed([2u8; 32]);
         let num_validators = 3;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
         let input_secret = PvtInputSecret::generate(&mut rng);
 
         // Generate transcripts from two dealers
         let sk1 = bls12381::PrivateKey::generate(&mut rng);
         let sk2 = bls12381::PrivateKey::generate(&mut rng);
 
-        let mut transcript1 =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
+        let transcript1 =
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
 
         let transcript2 =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
 
+        let mut transcript1 = transcript1;
         // Aggregate
-        TimelockDKG::aggregate_transcripts(&pub_params, &mut transcript1, transcript2);
+        IbeDKG::aggregate_transcripts(&pub_params, &mut transcript1, transcript2);
 
         // Should now have both dealers' scalar transcripts
         assert_eq!(transcript1.scalar_transcripts.len(), 2);
@@ -801,53 +802,45 @@ mod tests {
         let num_validators = 4;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
         let input_secret = PvtInputSecret::generate(&mut rng);
-        let expected_secret = TimelockDKG::dealt_secret_from_input(&pub_params, &input_secret);
+        let expected_secret = IbeDKG::dealt_secret_from_input(&pub_params, &input_secret);
 
-        // Generate transcripts from enough dealers to meet threshold
+        // Deal from threshold number of validators
         let mut aggregated_transcript = None;
-
-        for dealer_idx in 0..3 {
+        for i in 0..3 {
             let sk = bls12381::PrivateKey::generate(&mut rng);
-            let transcript = TimelockDKG::generate_transcript(
-                &mut rng,
-                &pub_params,
-                &input_secret,
-                dealer_idx,
-                &sk,
-            );
+            let transcript =
+                IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, i, &sk);
 
             if let Some(ref mut agg) = aggregated_transcript {
-                TimelockDKG::aggregate_transcripts(&pub_params, agg, transcript);
+                IbeDKG::aggregate_transcripts(&pub_params, agg, transcript);
             } else {
                 aggregated_transcript = Some(transcript);
             }
         }
+        let transcript = aggregated_transcript.unwrap();
 
-        let final_transcript = aggregated_transcript.unwrap();
-
-        // Each validator decrypts their shares
+        // Get shares for first 3 validators
         let mut player_shares = Vec::new();
-
-        for player_idx in 0..num_validators {
+        for i in 0..3 {
             let dk = bls12381::PrivateKey::generate(&mut rng);
             let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&dk).unwrap();
 
-            let (shares, _pk_shares) = TimelockDKG::decrypt_secret_share_from_transcript(
+            let (shares, _) = IbeDKG::decrypt_secret_share_from_transcript(
                 &pub_params,
-                &final_transcript,
-                player_idx as u64,
+                &transcript,
+                i as u64,
                 &dk_pvss,
             )
             .unwrap();
 
-            player_shares.push((player_idx as u64, shares));
+            player_shares.push((i as u64, shares));
         }
 
-        // Reconstruct secret from shares
+        // Reconstruct
         let reconstructed =
-            TimelockDKG::reconstruct_secret_from_shares(&pub_params, player_shares).unwrap();
+            IbeDKG::reconstruct_secret_from_shares(&pub_params, player_shares).unwrap();
 
         assert_eq!(reconstructed, expected_secret);
     }
@@ -858,18 +851,18 @@ mod tests {
         let num_validators = 3;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
 
         let transcript =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
 
         // Decrypt shares for player 0
         let player_dk = bls12381::PrivateKey::generate(&mut rng);
         let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
 
-        let (scalar_shares, _) = TimelockDKG::decrypt_secret_share_from_transcript(
+        let (scalar_shares, _) = IbeDKG::decrypt_secret_share_from_transcript(
             &pub_params,
             &transcript,
             0,
@@ -891,23 +884,23 @@ mod tests {
     }
 
     #[test]
-    fn test_timelock_transcript_serialization() {
+    fn test_ibe_transcript_serialization() {
         let mut rng = ChaCha20Rng::from_seed([5u8; 32]);
         let num_validators = 3;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
 
         let transcript =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
 
         // Serialize
         let bytes = transcript.to_bytes();
 
         // Deserialize
-        let transcript2 = TimelockTranscript::try_from(bytes.as_slice()).unwrap();
+        let transcript2 = IbeTranscript::try_from(bytes.as_slice()).unwrap();
 
         assert_eq!(transcript, transcript2);
     }
@@ -918,22 +911,23 @@ mod tests {
         let num_validators = 4;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
         let input_secret = PvtInputSecret::generate(&mut rng);
 
         let sk1 = bls12381::PrivateKey::generate(&mut rng);
         let sk2 = bls12381::PrivateKey::generate(&mut rng);
         let sk3 = bls12381::PrivateKey::generate(&mut rng);
 
-        let mut transcript =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
-        let t2 = TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
-        let t3 = TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 2, &sk3);
+        let transcript =
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
+        let t2 = IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
+        let t3 = IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 2, &sk3);
 
-        TimelockDKG::aggregate_transcripts(&pub_params, &mut transcript, t2);
-        TimelockDKG::aggregate_transcripts(&pub_params, &mut transcript, t3);
+        let mut transcript = transcript;
+        IbeDKG::aggregate_transcripts(&pub_params, &mut transcript, t2);
+        IbeDKG::aggregate_transcripts(&pub_params, &mut transcript, t3);
 
-        let dealers = TimelockDKG::get_dealers(&transcript);
+        let dealers = IbeDKG::get_dealers(&transcript);
 
         assert_eq!(dealers.len(), 3);
         assert!(dealers.contains(&0));
@@ -946,20 +940,20 @@ mod tests {
         let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
         let session_metadata = create_test_session_metadata(1);
 
-        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+        let pub_params = IbeDKG::new_public_params(&session_metadata);
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
 
         let transcript =
-            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
 
         // Should still work with single validator
-        assert!(TimelockDKG::verify_transcript(&pub_params, &transcript).is_ok());
+        assert!(IbeDKG::verify_transcript(&pub_params, &transcript).is_ok());
 
         let player_dk = bls12381::PrivateKey::generate(&mut rng);
         let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
 
-        let result = TimelockDKG::decrypt_secret_share_from_transcript(
+        let result = IbeDKG::decrypt_secret_share_from_transcript(
             &pub_params,
             &transcript,
             0,

@@ -9,7 +9,7 @@ use crate::{
     AptosVM,
 };
 use aptos_types::{
-    dkg::{DKGTranscript, TimelockShare},
+    dkg::{DKGTranscript, DecryptionKeyShare},
     move_utils::as_move_value::AsMoveValue,
 };
 use aptos_vm_logging::log_schema::AdapterLogSchema;
@@ -73,7 +73,7 @@ impl AptosVM {
         module_storage: &impl AptosModuleStorage,
         log_context: &AdapterLogSchema,
         session_id: SessionId,
-        share: TimelockShare,
+        share: DecryptionKeyShare,
     ) -> Result<(VMStatus, VMOutput), VMStatus> {
         let mut gas_meter = UnmeteredGasMeter;
         let mut session = self.new_session(resolver, session_id, None);
@@ -113,7 +113,7 @@ impl AptosVM {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aptos_types::dkg::{DKGTranscript, DKGTranscriptMetadata, TimelockShare};
+    use aptos_types::dkg::{DKGTranscript, DKGTranscriptMetadata, DecryptionKeyShare};
     use move_core_types::account_address::AccountAddress;
 
     // These tests verify that the structure of the dispatcher allows meaningful processing.

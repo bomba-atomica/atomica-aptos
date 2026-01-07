@@ -627,7 +627,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Store channels for routing future messages to this interval's DKG
         self.timelock_rpc_msg_txs.insert(event.interval, rpc_msg_tx);
 
-        let dkg_manager = DKGManager::<crate::timelock_dkg::TimelockDKG>::new(
+        let dkg_manager = DKGManager::<crate::ibe_dkg::IbeDKG>::new(
             dealer_sk,
             my_index,
             self.my_addr,
@@ -669,7 +669,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     }
 
     fn process_timelock_key_published(&mut self, event: MasterPublicKeyPublishedEvent) {
-        use crate::timelock_dkg::TimelockDKG;
+        use crate::ibe_dkg::IbeDKG;
         use aptos_types::dkg::{real_dkg::maybe_dk_from_bls_sk, DKGTrait, TimelockConfig};
 
         // Note: event.id corresponds to the timelock interval
@@ -727,10 +727,10 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 return;
             },
         };
-        let pub_params = TimelockDKG::new_public_params(&metadata);
+        let pub_params = IbeDKG::new_public_params(&metadata);
 
         // Deserialize transcript
-        let transcript: <TimelockDKG as DKGTrait>::Transcript =
+        let transcript: <IbeDKG as DKGTrait>::Transcript =
             match bcs::from_bytes(&event.master_public_key) {
                 Ok(t) => t,
                 Err(e) => {
@@ -773,7 +773,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             .ok_or_else(|| anyhow!("validator index not found for {}", self.my_addr))?
             as u64;
 
-        let (share, _pk_share) = match TimelockDKG::decrypt_secret_share_from_transcript(
+        let (share, _pk_share) = match IbeDKG::decrypt_secret_share_from_transcript(
             &pub_params,
             &transcript,
             my_index,
@@ -836,9 +836,9 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         };
 
         // 2. Deserialize the secret key shares
-        use aptos_types::dkg::timelock_dkg::TimelockShare;
-        // TimelockDKG shares are Vec<TimelockShare>
-        let shares: Vec<TimelockShare> = match bcs::from_bytes(&share_bytes) {
+        use aptos_types::dkg::ibe_dkg::IbeShare;
+        // IbeDKG shares are Vec<IbeShare>
+        let shares: Vec<IbeShare> = match bcs::from_bytes(&share_bytes) {
             Ok(s) => s,
             Err(e) => {
                 error!(
@@ -880,7 +880,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         };
 
         // 6. Submit Share
-        let share = aptos_types::dkg::TimelockShare {
+        let share = aptos_types::dkg::DecryptionKeyShare {
             timelock_id,
             author: self.my_addr,
             share: dk_bytes,

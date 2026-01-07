@@ -232,12 +232,12 @@ pub trait DKGTrait: Debug {
 
 pub mod dummy_dkg;
 pub mod real_dkg;
-pub mod timelock_dkg;
+pub mod ibe_dkg;
 
 pub type DefaultDKG = RealDKG;
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
-pub struct TimelockShare {
+pub struct DecryptionKeyShare {
     pub timelock_id: u64,
     pub author: AccountAddress,
     pub share: Vec<u8>,
@@ -345,14 +345,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_timelock_share_bcs() {
-        let share = TimelockShare {
+    fn test_decryption_key_share_bcs() {
+        let share = DecryptionKeyShare {
             timelock_id: 100,
             author: AccountAddress::ONE,
             share: vec![1, 2, 3, 4],
         };
         let bytes = bcs::to_bytes(&share).expect("serialization failed");
-        let decoded: TimelockShare = bcs::from_bytes(&bytes).expect("deserialization failed");
+        let decoded: DecryptionKeyShare = bcs::from_bytes(&bytes).expect("deserialization failed");
         assert_eq!(share, decoded);
     }
 }

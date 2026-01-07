@@ -121,6 +121,8 @@ testing = ["aptos-framework/testing", "move-vm-runtime/testing"]
 fuzzing = []
 no-upload-proposal = []
 indexer = ["aptos-node/indexer"]
+failpoints = ["aptos-node/failpoints"]
+smoke-test = ["aptos-node/smoke-test"]
 cli-framework-test-move = []
 
 [build-dependencies]

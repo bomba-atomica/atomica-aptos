@@ -13,8 +13,10 @@ repository = { workspace = true }
 rust-version = { workspace = true }
 
 [features]
-default = []
+default = ["failpoints", "indexer-tests", "smoke-test"]
+failpoints = ["aptos/failpoints"]
 indexer-tests = ["diesel", "aptos-indexer", "aptos-db-indexer-schemas"]
+smoke-test = ["aptos/smoke-test"]
 
 [dependencies]
 anyhow = { workspace = true }

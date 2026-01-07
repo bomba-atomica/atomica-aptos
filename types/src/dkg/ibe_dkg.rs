@@ -1,14 +1,15 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-//! # Timelock DKG Types
+//! # IBE DKG Types
 //!
-//! This module defines the core types for Timelock Distributed Key Generation (DKG),
-//! which is used to implement Identity-Based Encryption (IBE) for the Aptos blockchain.
+//! This module defines the core types for Identity-Based Encryption (IBE) Distributed Key Generation (DKG).
+//! This IBE system is used by the Timelock service (see `aptos-framework/timelock.move`)
+//! where identities are derived from timelock deadlines.
 //!
 //! ## Overview
 //!
-//! Timelock DKG is a variant of standard DKG that deals **scalar values** instead of
+//! IBE DKG is a variant of standard DKG that deals **scalar values** instead of
 //! group elements. This is necessary for IBE because:
 //! - IBE decryption keys are scalar values in the BLS12-381 field
 //! - Standard DKG deals group elements (G1Projective points)
@@ -16,10 +17,10 @@
 //!
 //! ## Architecture
 //!
-//! The timelock DKG system consists of:
-//! 1. **TimelockShare**: A secret scalar share held by each validator
-//! 2. **TimelockSecret**: The reconstructed master secret (scalar)
-//! 3. **TimelockDKG**: The DKG protocol implementation (in `dkg/src/timelock_dkg.rs`)
+//! The IBE DKG system consists of:
+//! 1. **IbeShare**: A secret scalar share held by each validator
+//! 2. **IbeSecret**: The reconstructed master secret (scalar)
+//! 3. **IbeDKG**: The DKG protocol implementation (in `dkg/src/ibe_dkg.rs`)
 //!
 //! ## Cryptographic Foundation
 //!
@@ -38,16 +39,16 @@
 //! ## Usage Flow
 //!
 //! 1. **Setup**: Validators run DKG to generate a master public key (MPK)
-//! 2. **Dealing**: Each dealer creates a `TimelockTranscript` containing encrypted shares
+//! 2. **Dealing**: Each dealer creates a `IbeTranscript` containing encrypted shares
 //! 3. **Aggregation**: Transcripts are combined to form the final MPK
-//! 4. **Decryption**: Each validator decrypts their `TimelockShare` from the transcript
+//! 4. **Decryption**: Each validator decrypts their `IbeShare` from the transcript
 //! 5. **Reconstruction**: Threshold shares are combined to reveal the master secret
 //!
 //! ## Integration with Standard DKG
 //!
-//! Timelock DKG runs in parallel with standard DKG:
+//! IBE DKG runs in parallel with standard DKG:
 //! - Standard DKG: Produces group element shares for randomness
-//! - Timelock DKG: Produces scalar shares for IBE
+//! - IBE DKG: Produces scalar shares for IBE
 //! - Both use the same PVSS infrastructure and validator set
 
 use aptos_crypto::{CryptoMaterialError, ValidCryptoMaterial, ValidCryptoMaterialStringExt};
@@ -65,11 +66,11 @@ use blstrs::{G1Projective, Scalar};
 use ff::PrimeField;
 use group::Group;
 
-/// A Timelock share represents a validator's secret share of the master IBE secret key.
+/// An IBE share represents a validator's secret share of the master IBE secret key.
 ///
 /// ## Purpose
 ///
-/// Each validator receives one or more `TimelockShare` values during DKG. These shares
+/// Each validator receives one or more `IbeShare` values during DKG. These shares
 /// can later be combined (with threshold participants) to reconstruct the master secret,
 /// which is used to derive IBE decryption keys for specific identities.
 ///
@@ -95,7 +96,7 @@ use group::Group;
 /// ```ignore
 /// // Create a share from a scalar
 /// let scalar = Scalar::from(42u64);
-/// let share = TimelockShare::new(scalar);
+/// let share = IbeShare::new(scalar);
 ///
 /// // Access the scalar value
 /// let s = share.as_scalar();
@@ -105,7 +106,7 @@ use group::Group;
 /// assert_eq!(*comm, G1Projective::generator() * scalar);
 /// ```
 #[derive(DeserializeKey, SerializeKey, SilentDisplay, SilentDebug, PartialEq, Clone)]
-pub struct TimelockShare {
+pub struct IbeShare {
     /// The secret scalar share value (BLS12-381 Fr field element)
     pub(crate) scalar: Scalar,
 
@@ -115,8 +116,8 @@ pub struct TimelockShare {
     pub(crate) comm: G1Projective,
 }
 
-impl TimelockShare {
-    /// Creates a new TimelockShare from a scalar value.
+impl IbeShare {
+    /// Creates a new IbeShare from a scalar value.
     ///
     /// The commitment is automatically computed as g^scalar where g is the
     /// G1 generator point.
@@ -127,10 +128,10 @@ impl TimelockShare {
     ///
     /// # Returns
     ///
-    /// A new TimelockShare with the scalar and its commitment
+    /// A new IbeShare with the scalar and its commitment
     pub fn new(scalar: Scalar) -> Self {
         let comm = G1Projective::generator() * scalar;
-        TimelockShare { scalar, comm }
+        IbeShare { scalar, comm }
     }
 
     /// Returns a reference to the secret scalar value.
@@ -151,17 +152,17 @@ impl TimelockShare {
     }
 }
 
-/// Implementation of ValidCryptoMaterial for TimelockShare.
+/// Implementation of ValidCryptoMaterial for IbeShare.
 ///
-/// This allows TimelockShare to be serialized/deserialized using the aptos-crypto
+/// This allows IbeShare to be serialized/deserialized using the aptos-crypto
 /// framework, which provides hex encoding and other utilities.
 ///
 /// ## Serialization Format
 ///
 /// Shares are serialized as 32-byte little-endian representations of the scalar value.
 /// The commitment (g^scalar) is NOT serialized - it is recomputed on deserialization.
-impl ValidCryptoMaterial for TimelockShare {
-    /// Empty prefix for AIP-80 compatibility (not used for timelock shares)
+impl ValidCryptoMaterial for IbeShare {
+    /// Empty prefix for AIP-80 compatibility (not used for ibe shares)
     const AIP_80_PREFIX: &'static str = "";
 
     /// Serializes the share to bytes (32-byte scalar in little-endian format)
@@ -170,24 +171,24 @@ impl ValidCryptoMaterial for TimelockShare {
     }
 }
 
-/// Deserialization from bytes for TimelockShare.
+/// Deserialization from bytes for IbeShare.
 ///
 /// ## Process
 ///
 /// 1. Validates input is exactly 32 bytes
 /// 2. Attempts to parse as a valid BLS12-381 scalar
 /// 3. Recomputes the commitment g^scalar
-/// 4. Returns the reconstructed TimelockShare
+/// 4. Returns the reconstructed IbeShare
 ///
 /// ## Errors
 ///
 /// Returns `CryptoMaterialError::DeserializationError` if:
 /// - Input is not 32 bytes
 /// - Bytes don't represent a valid scalar (e.g., value >= field modulus)
-impl TryFrom<&[u8]> for TimelockShare {
+impl TryFrom<&[u8]> for IbeShare {
     type Error = CryptoMaterialError;
 
-    fn try_from(bytes: &[u8]) -> std::result::Result<TimelockShare, Self::Error> {
+    fn try_from(bytes: &[u8]) -> std::result::Result<IbeShare, Self::Error> {
         // blstrs::Scalar requires exactly 32 bytes
         let bytes_array: [u8; 32] = bytes
             .try_into()
@@ -198,35 +199,35 @@ impl TryFrom<&[u8]> for TimelockShare {
             .ok_or(CryptoMaterialError::DeserializationError)?;
 
         // Reconstruct the share (recomputes commitment)
-        Ok(TimelockShare::new(s))
+        Ok(IbeShare::new(s))
     }
 }
 
-/// Reconstructable trait implementation for TimelockShare.
+/// Reconstructable trait implementation for IbeShare.
 ///
 /// This trait is required by the DKG framework but reconstruction is NOT implemented
-/// for individual shares. Instead, reconstruction happens at the `TimelockSecret` level
+/// for individual shares. Instead, reconstruction happens at the `IbeSecret` level
 /// using multiple shares from different validators.
 ///
 /// ## Why Not Implemented
 ///
 /// - Individual shares cannot be reconstructed from sub-shares
 /// - Reconstruction requires combining shares from multiple validators
-/// - See `TimelockSecret::reconstruct` for the actual reconstruction logic
-impl Reconstructable<WeightedConfig> for TimelockShare {
-    type Share = TimelockShare;
+/// - See `IbeSecret::reconstruct` for the actual reconstruction logic
+impl Reconstructable<WeightedConfig> for IbeShare {
+    type Share = IbeShare;
 
     /// Panics if called - reconstruction not supported at share level
     fn reconstruct(_sc: &WeightedConfig, _shares: &Vec<(Player, Self::Share)>) -> Self {
-        panic!("TimelockShare reconstruction not implemented - use TimelockSecret::reconstruct")
+        panic!("IbeShare reconstruction not implemented - use IbeSecret::reconstruct")
     }
 }
 
-/// The master secret for Timelock IBE, reconstructed from validator shares.
+/// The master secret for IBE, reconstructed from validator shares.
 ///
 /// ## Purpose
 ///
-/// `TimelockSecret` represents the master secret key for the IBE system. It is:
+/// `IbeSecret` represents the master secret key for the IBE system. It is:
 /// - Generated during DKG setup
 /// - Never stored in full - only shares are kept by validators
 /// - Reconstructed when needed using threshold shares
@@ -246,46 +247,46 @@ impl Reconstructable<WeightedConfig> for TimelockShare {
 ///
 /// ## Security
 ///
-/// - Must be kept secret - compromise allows decrypting all timelocks
+/// - Must be kept secret - compromise allows decrypting all IBE messages
 /// - Should only exist in memory temporarily during reconstruction
 /// - Threshold property ensures no single validator can reconstruct it alone
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TimelockSecret(pub Scalar);
+pub struct IbeSecret(pub Scalar);
 
-/// Conversion from InputSecret to TimelockSecret.
+/// Conversion from InputSecret to IbeSecret.
 ///
 /// This trait implementation allows the DKG framework to convert the random
-/// input secret (generated during dealing) into the timelock-specific secret format.
+/// input secret (generated during dealing) into the IBE-specific secret format.
 ///
 /// ## Process
 ///
 /// Extracts the `secret_a` component from the InputSecret, which is the scalar
 /// value used for IBE. The `secret_b` component (used for standard DKG) is ignored.
-impl Convert<TimelockSecret, DasPP> for InputSecret {
-    fn to(&self, _pp: &DasPP) -> TimelockSecret {
-        TimelockSecret(*self.get_secret_a())
+impl Convert<IbeSecret, DasPP> for InputSecret {
+    fn to(&self, _pp: &DasPP) -> IbeSecret {
+        IbeSecret(*self.get_secret_a())
     }
 }
 
-/// Reconstructable trait for TimelockSecret.
+/// Reconstructable trait for IbeSecret.
 ///
 /// This defines how to reconstruct the master secret from validator shares.
 ///
 /// ## Implementation Note
 ///
-/// Currently panics - actual reconstruction logic is in `dkg/src/timelock_dkg.rs`
-/// in the `TimelockDKG::reconstruct_secret_from_shares` method.
+/// Currently panics - actual reconstruction logic is in `dkg/src/ibe_dkg.rs`
+/// in the `IbeDKG::reconstruct_secret_from_shares` method.
 ///
 /// ## Future Work
 ///
 /// This could be implemented to perform Lagrange interpolation over the shares,
 /// but for now reconstruction is handled by the DKG implementation.
-impl Reconstructable<WeightedConfig> for TimelockSecret {
-    type Share = Vec<TimelockShare>;
+impl Reconstructable<WeightedConfig> for IbeSecret {
+    type Share = Vec<IbeShare>;
 
-    /// Panics if called - use TimelockDKG::reconstruct_secret_from_shares instead
+    /// Panics if called - use IbeDKG::reconstruct_secret_from_shares instead
     fn reconstruct(_sc: &WeightedConfig, _shares: &Vec<(Player, Self::Share)>) -> Self {
-        panic!("TimelockSecret reconstruction not implemented - use TimelockDKG::reconstruct_secret_from_shares");
+        panic!("IbeSecret reconstruction not implemented - use IbeDKG::reconstruct_secret_from_shares");
     }
 }
 
@@ -295,9 +296,9 @@ mod tests {
     use ff::Field;
 
     #[test]
-    fn test_timelock_share_creation() {
+    fn test_ibe_share_creation() {
         let scalar = Scalar::from(42u64);
-        let share = TimelockShare::new(scalar);
+        let share = IbeShare::new(scalar);
 
         assert_eq!(*share.as_scalar(), scalar);
 
@@ -307,86 +308,86 @@ mod tests {
     }
 
     #[test]
-    fn test_timelock_share_serialization_roundtrip() {
+    fn test_ibe_share_serialization_roundtrip() {
         // Use a deterministic scalar value
         let scalar = Scalar::from(123456789u64);
-        let share = TimelockShare::new(scalar);
+        let share = IbeShare::new(scalar);
 
         // Serialize
         let bytes = share.to_bytes();
         assert_eq!(bytes.len(), 32);
 
         // Deserialize
-        let share2 = TimelockShare::try_from(bytes.as_slice()).unwrap();
+        let share2 = IbeShare::try_from(bytes.as_slice()).unwrap();
 
         assert_eq!(share, share2);
         assert_eq!(*share.as_scalar(), *share2.as_scalar());
     }
 
     #[test]
-    fn test_timelock_share_invalid_deserialization() {
+    fn test_ibe_share_invalid_deserialization() {
         // Too short
         let short_bytes = vec![0u8; 16];
-        assert!(TimelockShare::try_from(short_bytes.as_slice()).is_err());
+        assert!(IbeShare::try_from(short_bytes.as_slice()).is_err());
 
         // Too long
         let long_bytes = vec![0u8; 64];
-        assert!(TimelockShare::try_from(long_bytes.as_slice()).is_err());
+        assert!(IbeShare::try_from(long_bytes.as_slice()).is_err());
 
         // Invalid scalar (all 0xFF is out of field)
         let invalid_bytes = vec![0xFFu8; 32];
-        assert!(TimelockShare::try_from(invalid_bytes.as_slice()).is_err());
+        assert!(IbeShare::try_from(invalid_bytes.as_slice()).is_err());
     }
 
     #[test]
-    fn test_timelock_share_zero() {
+    fn test_ibe_share_zero() {
         let zero = Scalar::ZERO;
-        let share = TimelockShare::new(zero);
+        let share = IbeShare::new(zero);
 
         assert_eq!(*share.as_scalar(), Scalar::ZERO);
         assert_eq!(*share.as_group_element(), G1Projective::identity());
     }
 
     #[test]
-    fn test_timelock_share_one() {
+    fn test_ibe_share_one() {
         let one = Scalar::ONE;
-        let share = TimelockShare::new(one);
+        let share = IbeShare::new(one);
 
         assert_eq!(*share.as_scalar(), Scalar::ONE);
         assert_eq!(*share.as_group_element(), G1Projective::generator());
     }
 
     #[test]
-    fn test_timelock_secret_serialization() {
+    fn test_ibe_secret_serialization() {
         // Use a deterministic scalar value
         let scalar = Scalar::from(987654321u64);
-        let secret = TimelockSecret(scalar);
+        let secret = IbeSecret(scalar);
 
         // Test BCS serialization
         let bytes = bcs::to_bytes(&secret).unwrap();
-        let secret2: TimelockSecret = bcs::from_bytes(&bytes).unwrap();
+        let secret2: IbeSecret = bcs::from_bytes(&bytes).unwrap();
 
         assert_eq!(secret, secret2);
     }
 
     #[test]
     fn test_multiple_shares_different_scalars() {
-        let share1 = TimelockShare::new(Scalar::from(1u64));
-        let share2 = TimelockShare::new(Scalar::from(2u64));
-        let share3 = TimelockShare::new(Scalar::from(1u64));
+        let share1 = IbeShare::new(Scalar::from(1u64));
+        let share2 = IbeShare::new(Scalar::from(2u64));
+        let share3 = IbeShare::new(Scalar::from(1u64));
 
         assert_ne!(share1, share2);
         assert_eq!(share1, share3);
     }
 
     #[test]
-    fn test_timelock_share_to_hex_string() {
+    fn test_ibe_share_to_hex_string() {
         let scalar = Scalar::from(42u64);
-        let share = TimelockShare::new(scalar);
+        let share = IbeShare::new(scalar);
 
         // Test hex encoding
         let hex = share.to_encoded_string().unwrap();
-        let share2 = TimelockShare::from_encoded_string(&hex).unwrap();
+        let share2 = IbeShare::from_encoded_string(&hex).unwrap();
 
         assert_eq!(share, share2);
     }
