@@ -215,7 +215,9 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                         "[DKG] Successfully parsed MasterPublicKeyPublishedEvent for ID {}",
                         timelock_key.id
                     );
-                    self.process_timelock_key_published(timelock_key);
+                    if let Err(e) = self.process_timelock_key_published(timelock_key) {
+                        error!("[DKG] Failed to process timelock key published: {}", e);
+                    }
                     continue;
                 },
                 Err(e) => {
@@ -434,7 +436,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         if let Some(tx) = self.dkg_manager_close_tx.take() {
             let (ack_tx, ack_rx) = oneshot::channel();
             if let Err(e) = tx.send(ack_tx) {
-                warn!("[DKG] Failed to send shutdown ack request: {}", e);
+                warn!("[DKG] Failed to send shutdown ack request: {:?}", e);
             } else if let Err(e) = ack_rx.await {
                 warn!("[DKG] Failed to receive shutdown ack: {}", e);
             }
@@ -668,7 +670,10 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // For now, this secret share extraction is deferred
     }
 
-    fn process_timelock_key_published(&mut self, event: MasterPublicKeyPublishedEvent) {
+    fn process_timelock_key_published(
+        &mut self,
+        event: MasterPublicKeyPublishedEvent,
+    ) -> anyhow::Result<()> {
         use crate::ibe_dkg::IbeDKG;
         use aptos_types::dkg::{real_dkg::maybe_dk_from_bls_sk, DKGTrait, TimelockConfig};
 
@@ -699,7 +704,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Some(s) => s.clone(),
             None => {
                 error!("[Timelock] Cannot process key published - no epoch state");
-                return;
+                return Ok(());
             },
         };
 
@@ -724,7 +729,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                     "[Timelock] Failed to build session metadata for interval {}: {}",
                     event.id, e
                 );
-                return;
+                return Ok(());
             },
         };
         let pub_params = IbeDKG::new_public_params(&metadata);
@@ -738,7 +743,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                         "[Timelock] Failed to deserialize transcript for interval {}: {}",
                         event.id, e
                     );
-                    return;
+                    return Ok(());
                 },
             };
 
@@ -746,7 +751,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Some(pk) => pk,
             None => {
                 warn!("[Timelock] My public key not found in validator set");
-                return;
+                return Ok(());
             },
         };
 
@@ -754,7 +759,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Ok(sk) => sk,
             Err(e) => {
                 error!("[Timelock] Failed to get consensus SK: {}", e);
-                return;
+                return Ok(());
             },
         };
 
@@ -762,7 +767,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Ok(dk) => dk,
             Err(e) => {
                 error!("[Timelock] Failed to convert SK to DK: {}", e);
-                return;
+                return Ok(());
             },
         };
 
@@ -770,9 +775,11 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             .verifier
             .address_to_validator_index()
             .get(&self.my_addr)
-            .ok_or_else(|| anyhow!("validator index not found for {}", self.my_addr))?
-            as u64;
-
+            .ok_or_else(|| anyhow!("validator index not found for {}", self.my_addr))
+            .map_err(|e| {
+                error!("[Timelock] {}", e);
+                e
+            })? as u64;
         let (share, _pk_share) = match IbeDKG::decrypt_secret_share_from_transcript(
             &pub_params,
             &transcript,
@@ -785,7 +792,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                     "[Timelock] Failed to decrypt share for interval {}: {}",
                     event.id, e
                 );
-                return;
+                return Ok(());
             },
         };
 
@@ -800,13 +807,14 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                     "[Timelock] Failed to serialize share for interval {}: {}",
                     event.id, e
                 );
-                return;
+                return Ok(());
             },
         };
 
         if let Err(e) = self.store_timelock_share(event.id, &share_bytes) {
             error!("[Timelock] Failed to store share: {}", e);
         }
+        Ok(())
     }
 
     fn process_deadline_reached(&self, event: DeadlineReachedEvent) {
@@ -1178,7 +1186,7 @@ mod tests {
             id: 100,
             master_public_key: vec![],
         };
-        manager.process_timelock_key_published(event);
+        manager.process_timelock_key_published(event).unwrap();
 
         // Interval 100 should be removed, 101 should remain
         assert!(!manager.timelock_dkg_close_txs.contains_key(&100));

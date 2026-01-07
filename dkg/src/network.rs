@@ -137,7 +137,7 @@ impl NetworkTask {
     pub fn new(
         network_service_events: NetworkServiceEvents<DKGMessage>,
         self_receiver: aptos_channels::Receiver<Event<DKGMessage>>,
-    ) -> Result<(NetworkTask, NetworkReceivers)> {
+    ) -> anyhow::Result<(NetworkTask, NetworkReceivers)> {
         let (rpc_tx, rpc_rx) = aptos_channel::new(QueueStyle::FIFO, 10, None);
 
         let network_and_events = network_service_events.into_network_and_events();

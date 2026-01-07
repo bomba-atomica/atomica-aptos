@@ -218,7 +218,7 @@ impl traits::Transcript for IbeTranscript {
         let sk_shares = group_shares
             .into_iter()
             .zip(scalar_shares.into_iter())
-            .map(|(gs, ss)| {
+            .map(|(_gs, ss)| {
                 // We don't have easy access to gs.share (it's private).
                 // But we can get it via shadow if we really needed it for verification.
                 // For now, just wrap the scalar.
