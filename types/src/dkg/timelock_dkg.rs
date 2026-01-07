@@ -108,7 +108,7 @@ use group::Group;
 pub struct TimelockShare {
     /// The secret scalar share value (BLS12-381 Fr field element)
     pub(crate) scalar: Scalar,
-    
+
     /// Cached public commitment: g^scalar (G1 point)
     /// This allows verification that the share corresponds to a public commitment
     /// without revealing the scalar value.
@@ -163,7 +163,7 @@ impl TimelockShare {
 impl ValidCryptoMaterial for TimelockShare {
     /// Empty prefix for AIP-80 compatibility (not used for timelock shares)
     const AIP_80_PREFIX: &'static str = "";
-    
+
     /// Serializes the share to bytes (32-byte scalar in little-endian format)
     fn to_bytes(&self) -> Vec<u8> {
         self.scalar.to_bytes_le().to_vec()
@@ -186,17 +186,17 @@ impl ValidCryptoMaterial for TimelockShare {
 /// - Bytes don't represent a valid scalar (e.g., value >= field modulus)
 impl TryFrom<&[u8]> for TimelockShare {
     type Error = CryptoMaterialError;
-    
+
     fn try_from(bytes: &[u8]) -> std::result::Result<TimelockShare, Self::Error> {
         // blstrs::Scalar requires exactly 32 bytes
         let bytes_array: [u8; 32] = bytes
             .try_into()
             .map_err(|_| CryptoMaterialError::DeserializationError)?;
-            
+
         // Parse as scalar (validates it's in the field)
         let s = Option::<Scalar>::from(Scalar::from_repr(bytes_array))
             .ok_or(CryptoMaterialError::DeserializationError)?;
-            
+
         // Reconstruct the share (recomputes commitment)
         Ok(TimelockShare::new(s))
     }
@@ -215,7 +215,7 @@ impl TryFrom<&[u8]> for TimelockShare {
 /// - See `TimelockSecret::reconstruct` for the actual reconstruction logic
 impl Reconstructable<WeightedConfig> for TimelockShare {
     type Share = TimelockShare;
-    
+
     /// Panics if called - reconstruction not supported at share level
     fn reconstruct(_sc: &WeightedConfig, _shares: &Vec<(Player, Self::Share)>) -> Self {
         panic!("TimelockShare reconstruction not implemented - use TimelockSecret::reconstruct")
@@ -282,7 +282,7 @@ impl Convert<TimelockSecret, DasPP> for InputSecret {
 /// but for now reconstruction is handled by the DKG implementation.
 impl Reconstructable<WeightedConfig> for TimelockSecret {
     type Share = Vec<TimelockShare>;
-    
+
     /// Panics if called - use TimelockDKG::reconstruct_secret_from_shares instead
     fn reconstruct(_sc: &WeightedConfig, _shares: &Vec<(Player, Self::Share)>) -> Self {
         panic!("TimelockSecret reconstruction not implemented - use TimelockDKG::reconstruct_secret_from_shares");

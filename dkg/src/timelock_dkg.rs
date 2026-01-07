@@ -384,6 +384,39 @@ impl DKGTrait for TimelockDKG {
 
 #[cfg(test)]
 mod tests {
+    //! # Timelock DKG Protocol Tests
+    //!
+    //! This module contains tests for the Timelock DKG protocol implementation.
+    //!
+    //! ## Test Structure
+    //!
+    //! Tests are organized in two categories:
+    //!
+    //! ### 1. Incremental Protocol Tests
+    //!
+    //! These tests build incrementally, each adding one more step:
+    //! - `test_protocol_step1_setup` - Setup public parameters
+    //! - `test_protocol_step2_deal` - Setup + Deal transcript
+    //! - `test_protocol_step3_verify` - Setup + Deal + Verify
+    //! - `test_protocol_step4_aggregate` - Setup + Deal + Verify + Aggregate
+    //! - `test_protocol_step5_decrypt` - Setup + Deal + Verify + Aggregate + Decrypt
+    //! - `test_protocol_step6_reconstruct` - Full protocol (all steps)
+    //!
+    //! ### 2. Additional Tests
+    //!
+    //! - Serialization tests
+    //! - Edge cases (single validator)
+    //! - Utility function tests
+    //!
+    //! ## Protocol Steps
+    //!
+    //! 1. **Setup**: Create public parameters from session metadata
+    //! 2. **Deal**: Each dealer generates a transcript with encrypted shares
+    //! 3. **Verify**: Verify individual transcript validity
+    //! 4. **Aggregate**: Combine transcripts from multiple dealers
+    //! 5. **Decrypt**: Each validator decrypts their shares from aggregated transcript
+    //! 6. **Reconstruct**: Combine threshold shares to recover master secret
+
     use super::*;
     use aptos_crypto::Uniform;
     use aptos_types::dkg::{DKGSessionMetadata, DKGTrait};
@@ -418,6 +451,293 @@ mod tests {
             target_validator_set: validators,
         }
     }
+
+    // ========================================================================
+    // INCREMENTAL PROTOCOL TESTS
+    // ========================================================================
+
+    /// **Protocol Step 1: Setup Public Parameters**
+    ///
+    /// This test verifies that we can create valid public parameters from
+    /// session metadata. This is the foundation for all DKG operations.
+    ///
+    /// **What it tests:**
+    /// - Public parameters creation from session metadata
+    /// - PVSS configuration is properly initialized
+    /// - Weighted config matches validator set
+    #[test]
+    fn test_protocol_step1_setup() {
+        let num_validators = 4;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        // Step 1: Setup public parameters
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+
+        // Verify parameters are valid
+        assert_eq!(
+            pub_params.pvss_config.wconfig.get_total_weight(),
+            num_validators
+        );
+        assert!(pub_params.pvss_config.sc.get_threshold() > 0);
+    }
+
+    /// **Protocol Step 2: Setup + Deal**
+    ///
+    /// Builds on Step 1 by adding transcript generation (dealing).
+    ///
+    /// **What it tests:**
+    /// - Dealer can generate a valid transcript
+    /// - Transcript contains encrypted scalar shares
+    /// - Transcript structure is correct
+    #[test]
+    fn test_protocol_step2_deal() {
+        let mut rng = ChaCha20Rng::from_seed([1u8; 32]);
+        let num_validators = 4;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        // Step 1: Setup
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+
+        // Step 2: Deal - generate transcript
+        let input_secret = PvtInputSecret::generate(&mut rng);
+        let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
+        let dealer_idx = 0;
+
+        let transcript = TimelockDKG::generate_transcript(
+            &mut rng,
+            &pub_params,
+            &input_secret,
+            dealer_idx,
+            &dealer_sk,
+        );
+
+        // Verify transcript structure
+        assert!(!transcript.scalar_transcripts.is_empty());
+        assert_eq!(transcript.scalar_transcripts.len(), 1);
+        assert!(transcript.scalar_transcripts.contains_key(&dealer_idx));
+    }
+
+    /// **Protocol Step 3: Setup + Deal + Verify**
+    ///
+    /// Builds on Steps 1-2 by adding transcript verification.
+    ///
+    /// **What it tests:**
+    /// - Transcript passes cryptographic verification
+    /// - PVSS proofs are valid
+    /// - Encrypted shares are properly formed
+    #[test]
+    fn test_protocol_step3_verify() {
+        let mut rng = ChaCha20Rng::from_seed([2u8; 32]);
+        let num_validators = 4;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        // Step 1: Setup
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+
+        // Step 2: Deal
+        let input_secret = PvtInputSecret::generate(&mut rng);
+        let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
+
+        let transcript =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &dealer_sk);
+
+        // Step 3: Verify
+        let result = TimelockDKG::verify_transcript(&pub_params, &transcript);
+        assert!(
+            result.is_ok(),
+            "Transcript verification failed: {:?}",
+            result.err()
+        );
+    }
+
+    /// **Protocol Step 4: Setup + Deal + Verify + Aggregate**
+    ///
+    /// Builds on Steps 1-3 by adding transcript aggregation from multiple dealers.
+    ///
+    /// **What it tests:**
+    /// - Multiple transcripts can be aggregated
+    /// - Aggregated transcript contains all dealers
+    /// - Aggregation preserves validity
+    #[test]
+    fn test_protocol_step4_aggregate() {
+        let mut rng = ChaCha20Rng::from_seed([3u8; 32]);
+        let num_validators = 3;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        // Step 1: Setup
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+
+        let input_secret = PvtInputSecret::generate(&mut rng);
+
+        // Steps 2-3: Deal and verify from multiple dealers
+        let sk1 = bls12381::PrivateKey::generate(&mut rng);
+        let sk2 = bls12381::PrivateKey::generate(&mut rng);
+
+        let mut transcript1 =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
+
+        let transcript2 =
+            TimelockDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
+
+        // Verify both transcripts
+        assert!(TimelockDKG::verify_transcript(&pub_params, &transcript1).is_ok());
+        assert!(TimelockDKG::verify_transcript(&pub_params, &transcript2).is_ok());
+
+        // Step 4: Aggregate
+        TimelockDKG::aggregate_transcripts(&pub_params, &mut transcript1, transcript2);
+
+        // Verify aggregated transcript contains both dealers
+        assert_eq!(transcript1.scalar_transcripts.len(), 2);
+        assert!(transcript1.scalar_transcripts.contains_key(&0));
+        assert!(transcript1.scalar_transcripts.contains_key(&1));
+    }
+
+    /// **Protocol Step 5: Setup + Deal + Verify + Aggregate + Decrypt**
+    ///
+    /// Builds on Steps 1-4 by adding share decryption for validators.
+    ///
+    /// **What it tests:**
+    /// - Validators can decrypt their shares
+    /// - Decrypted shares match expected count (based on weight)
+    /// - Shares are non-zero (valid)
+    #[test]
+    fn test_protocol_step5_decrypt() {
+        let mut rng = ChaCha20Rng::from_seed([4u8; 32]);
+        let num_validators = 4;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        // Step 1: Setup
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+
+        let input_secret = PvtInputSecret::generate(&mut rng);
+
+        // Steps 2-4: Deal, verify, and aggregate from multiple dealers
+        let mut aggregated_transcript = None;
+
+        for dealer_idx in 0..3 {
+            let sk = bls12381::PrivateKey::generate(&mut rng);
+            let transcript = TimelockDKG::generate_transcript(
+                &mut rng,
+                &pub_params,
+                &input_secret,
+                dealer_idx,
+                &sk,
+            );
+
+            // Verify each transcript
+            assert!(TimelockDKG::verify_transcript(&pub_params, &transcript).is_ok());
+
+            // Aggregate
+            if let Some(ref mut agg) = aggregated_transcript {
+                TimelockDKG::aggregate_transcripts(&pub_params, agg, transcript);
+            } else {
+                aggregated_transcript = Some(transcript);
+            }
+        }
+
+        let final_transcript = aggregated_transcript.unwrap();
+
+        // Step 5: Decrypt shares for validator 0
+        let player_idx = 0;
+        let player_dk = bls12381::PrivateKey::generate(&mut rng);
+        let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
+
+        let (scalar_shares, _pk_shares) = TimelockDKG::decrypt_secret_share_from_transcript(
+            &pub_params,
+            &final_transcript,
+            player_idx,
+            &dk_pvss,
+        )
+        .unwrap();
+
+        // Verify shares
+        let weight = pub_params
+            .pvss_config
+            .wconfig
+            .get_player_weight(&Player { id: player_idx });
+        assert_eq!(scalar_shares.len(), weight);
+
+        // Each share should be non-zero (with high probability)
+        for share in &scalar_shares {
+            assert_ne!(*share.as_scalar(), Scalar::ZERO);
+        }
+    }
+
+    /// **Protocol Step 6: Full Protocol (Setup + Deal + Verify + Aggregate + Decrypt + Reconstruct)**
+    ///
+    /// This is the complete end-to-end protocol test.
+    ///
+    /// **What it tests:**
+    /// - All validators can decrypt their shares
+    /// - Threshold shares can reconstruct the master secret
+    /// - Reconstructed secret matches the original input secret
+    #[test]
+    fn test_protocol_step6_reconstruct() {
+        let mut rng = ChaCha20Rng::from_seed([5u8; 32]);
+        let num_validators = 4;
+        let session_metadata = create_test_session_metadata(num_validators);
+
+        // Step 1: Setup
+        let pub_params = TimelockDKG::new_public_params(&session_metadata);
+
+        let input_secret = PvtInputSecret::generate(&mut rng);
+        let expected_secret = TimelockDKG::dealt_secret_from_input(&pub_params, &input_secret);
+
+        // Steps 2-4: Deal, verify, and aggregate from threshold dealers
+        let mut aggregated_transcript = None;
+
+        for dealer_idx in 0..3 {
+            let sk = bls12381::PrivateKey::generate(&mut rng);
+            let transcript = TimelockDKG::generate_transcript(
+                &mut rng,
+                &pub_params,
+                &input_secret,
+                dealer_idx,
+                &sk,
+            );
+
+            // Verify
+            assert!(TimelockDKG::verify_transcript(&pub_params, &transcript).is_ok());
+
+            // Aggregate
+            if let Some(ref mut agg) = aggregated_transcript {
+                TimelockDKG::aggregate_transcripts(&pub_params, agg, transcript);
+            } else {
+                aggregated_transcript = Some(transcript);
+            }
+        }
+
+        let final_transcript = aggregated_transcript.unwrap();
+
+        // Step 5: Each validator decrypts their shares
+        let mut player_shares = Vec::new();
+
+        for player_idx in 0..num_validators {
+            let dk = bls12381::PrivateKey::generate(&mut rng);
+            let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&dk).unwrap();
+
+            let (shares, _pk_shares) = TimelockDKG::decrypt_secret_share_from_transcript(
+                &pub_params,
+                &final_transcript,
+                player_idx as u64,
+                &dk_pvss,
+            )
+            .unwrap();
+
+            player_shares.push((player_idx as u64, shares));
+        }
+
+        // Step 6: Reconstruct secret from threshold shares
+        let reconstructed =
+            TimelockDKG::reconstruct_secret_from_shares(&pub_params, player_shares).unwrap();
+
+        // Verify reconstructed secret matches original
+        assert_eq!(reconstructed, expected_secret);
+    }
+
+    // ========================================================================
+    // ADDITIONAL TESTS (Non-incremental)
+    // ========================================================================
 
     #[test]
     fn test_timelock_transcript_deal_and_verify() {
