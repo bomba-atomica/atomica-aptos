@@ -616,13 +616,8 @@ mod tests {
 
         for dealer_idx in 0..3 {
             let sk = bls12381::PrivateKey::generate(&mut rng);
-            let transcript = IbeDKG::generate_transcript(
-                &mut rng,
-                &pub_params,
-                &input_secret,
-                dealer_idx,
-                &sk,
-            );
+            let transcript =
+                IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, dealer_idx, &sk);
 
             // Verify each transcript
             assert!(IbeDKG::verify_transcript(&pub_params, &transcript).is_ok());
@@ -688,13 +683,8 @@ mod tests {
 
         for dealer_idx in 0..3 {
             let sk = bls12381::PrivateKey::generate(&mut rng);
-            let transcript = IbeDKG::generate_transcript(
-                &mut rng,
-                &pub_params,
-                &input_secret,
-                dealer_idx,
-                &sk,
-            );
+            let transcript =
+                IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, dealer_idx, &sk);
 
             // Verify
             assert!(IbeDKG::verify_transcript(&pub_params, &transcript).is_ok());
@@ -862,13 +852,9 @@ mod tests {
         let player_dk = bls12381::PrivateKey::generate(&mut rng);
         let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
 
-        let (scalar_shares, _) = IbeDKG::decrypt_secret_share_from_transcript(
-            &pub_params,
-            &transcript,
-            0,
-            &dk_pvss,
-        )
-        .unwrap();
+        let (scalar_shares, _) =
+            IbeDKG::decrypt_secret_share_from_transcript(&pub_params, &transcript, 0, &dk_pvss)
+                .unwrap();
 
         // Should have shares equal to player weight
         let weight = pub_params
@@ -918,8 +904,7 @@ mod tests {
         let sk2 = bls12381::PrivateKey::generate(&mut rng);
         let sk3 = bls12381::PrivateKey::generate(&mut rng);
 
-        let transcript =
-            IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
+        let transcript = IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 0, &sk1);
         let t2 = IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 1, &sk2);
         let t3 = IbeDKG::generate_transcript(&mut rng, &pub_params, &input_secret, 2, &sk3);
 
@@ -953,12 +938,8 @@ mod tests {
         let player_dk = bls12381::PrivateKey::generate(&mut rng);
         let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
 
-        let result = IbeDKG::decrypt_secret_share_from_transcript(
-            &pub_params,
-            &transcript,
-            0,
-            &dk_pvss,
-        );
+        let result =
+            IbeDKG::decrypt_secret_share_from_transcript(&pub_params, &transcript, 0, &dk_pvss);
 
         assert!(result.is_ok());
     }

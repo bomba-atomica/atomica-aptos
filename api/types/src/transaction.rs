@@ -21,7 +21,7 @@ use aptos_types::{
     block_metadata::BlockMetadata,
     block_metadata_ext::BlockMetadataExt,
     contract_event::{ContractEvent, EventWithVersion},
-    dkg::{DKGTranscript, DKGTranscriptMetadata, TimelockShare},
+    dkg::{DKGTranscript, DKGTranscriptMetadata, DecryptionKeyShare},
     function_info::FunctionInfo,
     jwks::{jwk::JWK, ProviderJWKs, QuorumCertifiedUpdate},
     keyless,
@@ -885,8 +885,8 @@ pub struct ExportedTimelockShare {
     pub share: HexEncodedBytes,
 }
 
-impl From<TimelockShare> for ExportedTimelockShare {
-    fn from(value: TimelockShare) -> Self {
+impl From<DecryptionKeyShare> for ExportedTimelockShare {
+    fn from(value: DecryptionKeyShare) -> Self {
         Self {
             timelock_id: value.timelock_id.into(),
             share: HexEncodedBytes::from(value.share),

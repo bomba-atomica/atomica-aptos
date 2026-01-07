@@ -286,7 +286,9 @@ impl Reconstructable<WeightedConfig> for IbeSecret {
 
     /// Panics if called - use IbeDKG::reconstruct_secret_from_shares instead
     fn reconstruct(_sc: &WeightedConfig, _shares: &Vec<(Player, Self::Share)>) -> Self {
-        panic!("IbeSecret reconstruction not implemented - use IbeDKG::reconstruct_secret_from_shares");
+        panic!(
+            "IbeSecret reconstruction not implemented - use IbeDKG::reconstruct_secret_from_shares"
+        );
     }
 }
 
