@@ -82,11 +82,55 @@ impl DKGRounding {
 
         let stakes_sum: u64 = validator_stakes.iter().sum();
         if stakes_sum == 0 {
-            warn!("All validator stakes are zero, assuming equal weights");
+            warn!("All validator stakes are zero, assuming equal weights of 1");
+            let equal_weights = vec![1u64; validator_stakes.len()];
+            let n = U64F64::from_num(validator_stakes.len());
             reconstruct_threshold_in_stake_ratio = max(
                 reconstruct_threshold_in_stake_ratio,
                 secrecy_threshold_in_stake_ratio + U64F64::DELTA,
             );
+            let reconstruct_threshold_in_weights = (reconstruct_threshold_in_stake_ratio * n)
+                .ceil()
+                .to_num::<u64>();
+            let fast_reconstruct_threshold_in_weights = fast_secrecy_threshold_in_stake_ratio
+                .map(|ratio| (ratio * n).ceil().to_num::<u64>());
+            let profile = DKGRoundingProfile {
+                validator_weights: equal_weights,
+                secrecy_threshold_in_stake_ratio,
+                reconstruct_threshold_in_stake_ratio,
+                reconstruct_threshold_in_weights,
+                fast_reconstruct_threshold_in_stake_ratio: fast_secrecy_threshold_in_stake_ratio,
+                fast_reconstruct_threshold_in_weights,
+            };
+            let wconfig = WeightedConfig::new(
+                profile.reconstruct_threshold_in_weights as usize,
+                profile
+                    .validator_weights
+                    .iter()
+                    .map(|w| *w as usize)
+                    .collect(),
+            )
+            .unwrap();
+            let fast_wconfig = profile.fast_reconstruct_threshold_in_weights.map(
+                |fast_reconstruct_threshold_in_weights| {
+                    WeightedConfig::new(
+                        fast_reconstruct_threshold_in_weights as usize,
+                        profile
+                            .validator_weights
+                            .iter()
+                            .map(|w| *w as usize)
+                            .collect(),
+                    )
+                    .unwrap()
+                },
+            );
+            return Self {
+                rounding_method: "equal_weights".to_string(),
+                profile,
+                wconfig,
+                fast_wconfig,
+                rounding_error: None,
+            };
         } else {
             reconstruct_threshold_in_stake_ratio = max(
                 reconstruct_threshold_in_stake_ratio,

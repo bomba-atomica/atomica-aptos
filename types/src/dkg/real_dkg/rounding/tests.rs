@@ -55,6 +55,45 @@ fn test_rounding_single_validator() {
 }
 
 #[test]
+fn test_rounding_all_zero_stakes() {
+    let validator_stakes = vec![0u64; 10];
+    let dkg_rounding = DKGRounding::new(
+        &validator_stakes,
+        *DEFAULT_SECRECY_THRESHOLD.deref(),
+        *DEFAULT_RECONSTRUCT_THRESHOLD.deref(),
+        Some(*DEFAULT_FAST_PATH_SECRECY_THRESHOLD.deref()),
+    );
+
+    assert_eq!(dkg_rounding.rounding_method, "equal_weights");
+    assert!(dkg_rounding.rounding_error.is_none());
+
+    let expected_weights = vec![1u64; 10];
+    assert_eq!(dkg_rounding.profile.validator_weights, expected_weights);
+
+    let expected_reconstruct_threshold = (U64F64::from_num(10)
+        * *DEFAULT_RECONSTRUCT_THRESHOLD.deref())
+    .ceil()
+    .to_num::<u64>();
+    assert_eq!(
+        dkg_rounding.profile.reconstruct_threshold_in_weights,
+        expected_reconstruct_threshold
+    );
+
+    let expected_fast_threshold = (U64F64::from_num(10)
+        * *DEFAULT_FAST_PATH_SECRECY_THRESHOLD.deref())
+    .ceil()
+    .to_num::<u64>();
+    assert_eq!(
+        dkg_rounding.profile.fast_reconstruct_threshold_in_weights,
+        Some(expected_fast_threshold)
+    );
+
+    let expected_wconfig =
+        WeightedConfig::new(expected_reconstruct_threshold as usize, vec![1usize; 10]).unwrap();
+    assert_eq!(dkg_rounding.wconfig, expected_wconfig);
+}
+
+#[test]
 fn test_rounding_equal_stakes() {
     let num_runs = 100;
     let mut rng = rand::thread_rng();
