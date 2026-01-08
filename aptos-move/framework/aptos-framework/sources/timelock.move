@@ -7,27 +7,29 @@ module aptos_framework::timelock {
     use aptos_framework::timestamp;
     use aptos_framework::system_addresses;
     use aptos_framework::stake;
-    use aptos_std::crypto_algebra::{zero, add, serialize, deserialize};
-    use aptos_std::bls12381_algebra::{G1, FormatG1Compr};
     use aptos_std::aptos_hash::keccak256;
     
-    // Dependencies
+    // Dependencies - delegating cryptographic operations to specialized modules
     use aptos_framework::threshold_dsa;
-    use aptos_framework::ibe_signature; 
 
     friend aptos_framework::block;
     friend aptos_framework::genesis;
 
-    /// # Atomica Timelock Service (Registry Model)
+    /// # Atomica Timelock Service
     ///
     /// Manages the registration of timelocks and the revelation of decryption keys
     /// based on timestamps (deadlines).
+    ///
+    /// ## Architecture
+    /// - **timelock.move**: Timelock registration, deadline management, state storage
+    /// - **threshold_dsa.move**: DKG, MPK, threshold BLS verification and aggregation
+    /// - **ibe_signature.move**: IBE identity-to-point mapping
     ///
     /// ## Flow
     /// 1. User calls `register(deadline)`.
     /// 2. When `now >= deadline`, `DeadlineReachedEvent` is emitted.
     /// 3. Validators submit decryption key shares for the specific `timelock_id`.
-    /// 4. Decryption key is aggregated and published.
+    /// 4. Decryption key is aggregated (via threshold_dsa) and published.
 
     const ETIMELOCK_NOT_INITIALIZED: u64 = 1;
     const ENOT_VALIDATOR: u64 = 2;
@@ -39,7 +41,9 @@ module aptos_framework::timelock {
     const MPK_ID: u64 = 1; // Canonical ID for the Timelock Service MPK
 
     /// A decryption key share submitted by a validator
+    /// (Shared struct - also used by threshold_dsa module)
     struct DecryptionKeyShare has store, drop {
+        timelock_id: u64,
         validator: address,
         validator_idx: u64,  // Validator's index in the DKG participant set (for Lagrange weights)
         share: vector<u8>,   // G1 point: s_i × Q_id where s_i is validator's scalar share
@@ -75,7 +79,6 @@ module aptos_framework::timelock {
 
     // Events
 
-    /// Emitted to trigger DKG Setup for MPK (Legacy name preserved for Rust compat)
     #[event]
     struct StartKeyGenEvent has drop, store {
         interval: u64, // Acts as ID (should be MPK_ID = 1)
@@ -101,10 +104,13 @@ module aptos_framework::timelock {
         decryption_key: vector<u8>,
     }
 
-    /// Initialize the system
+    // =========================================================================
+    // Initialization
+    // =========================================================================
+
+    /// Initialize the timelock system
     public(friend) fun initialize(framework: &signer) {
         system_addresses::assert_aptos_framework(framework);
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] initialize called"));
         if (!exists<TimelockState>(@aptos_framework)) {
             // Ensure dependencies initialized
             threshold_dsa::initialize(framework);
@@ -129,9 +135,12 @@ module aptos_framework::timelock {
                 interval: MPK_ID,
                 config: TimelockConfig { threshold, total_validators: n },
             });
-            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted StartKeyGenEvent in initialize"));
         }
     }
+
+    // =========================================================================
+    // Timelock Registration
+    // =========================================================================
 
     /// Register a new timelock request
     public entry fun register(deadline: u64) acquires TimelockState {
@@ -186,6 +195,10 @@ module aptos_framework::timelock {
         vector::push_back(deadlines, deadline);
     }
 
+    // =========================================================================
+    // Deadline Processing
+    // =========================================================================
+
     /// On New Block: Check for passed deadlines
     public(friend) fun on_new_block(vm: &signer) acquires TimelockState {
         system_addresses::assert_vm(vm);
@@ -193,9 +206,6 @@ module aptos_framework::timelock {
 
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
         let now = timestamp::now_microseconds();
-
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block called, mpk_dkg_started="));
-        aptos_std::debug::print(&state.mpk_dkg_started);
 
         // One-time DKG trigger if missed during genesis
         if (!state.mpk_dkg_started) {
@@ -208,7 +218,6 @@ module aptos_framework::timelock {
                     config: TimelockConfig { threshold, total_validators: n },
                 });
                 state.mpk_dkg_started = true;
-                aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted StartKeyGenEvent in on_new_block"));
             };
         };
 
@@ -234,21 +243,29 @@ module aptos_framework::timelock {
         };
     }
 
-    /// Submit a decryption key share
+    // =========================================================================
+    // Key Publication
+    // =========================================================================
+
+    /// Submit Master Public Key (delegates to threshold_dsa)
     public entry fun publish_public_key(validator: &signer, timelock_id: u64, mpk: vector<u8>) {
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] publish_public_key called, timelock_id="));
-        aptos_std::debug::print(&timelock_id);
         threshold_dsa::publish_master_public_key(validator, timelock_id, mpk);
     }
     
+    /// Submit a decryption key share for a timelock
+    /// 
+    /// This function handles:
+    /// 1. Deadline verification
+    /// 2. Validator authorization
+    /// 3. Share collection and threshold checking
+    /// 
+    /// Cryptographic operations (verification, aggregation) are delegated to threshold_dsa
     public entry fun publish_decryption_key_share(
         validator: &signer,
         timelock_id: u64,
         validator_idx: u64,  // Validator's index in DKG participant set
         share: vector<u8>
     ) acquires TimelockState {
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] publish_decryption_key_share called, timelock_id="));
-        aptos_std::debug::print(&timelock_id);
         let validator_addr = std::signer::address_of(validator);
         assert!(stake::is_current_epoch_validator(validator_addr), ENOT_VALIDATOR);
 
@@ -258,28 +275,16 @@ module aptos_framework::timelock {
         assert!(table::contains(&state.id_to_deadline, timelock_id), EINVALID_TIMESTAMP);
         let deadline = *table::borrow(&state.id_to_deadline, timelock_id);
         let now = timestamp::now_microseconds();
-        
-        // Allow slightly early submission? No, must strict.
         assert!(now >= deadline, EDEADLINE_NOT_PASSED);
 
-        // Deduplicate
-        if (table::contains(&state.decryption_keys, timelock_id)) return; // Already revealed
-
-        // 2. Compute Identity
-        // Format: "timelock_id:{id}:deadline_timestamp_microseconds:{deadline}"
-        let identity = compute_identity(timelock_id, deadline);
+        // Deduplicate - already revealed
+        if (table::contains(&state.decryption_keys, timelock_id)) return;
         
-        // 3. Verify Share is a Valid Threshold BLS Share
-        // A valid share satisfies: e(share, G2) == e(Q_id, PK_dealer)
-        // where PK_dealer is the dealer's public key commitment from DKG transcript
-        // For threshold BLS, we verify against the specific dealer's public key
-        // Since we can't easily access dealer PKs, we verify:
-        // The share must be on the curve and the pairing check with MPK must work
-        // when properly weighted during aggregation
-        let is_valid = verify_threshold_share(validator_idx, identity, share);
+        // 2. Verify Share format (delegated to threshold_dsa module)
+        let is_valid = threshold_dsa::verify_timelock_share(share);
         assert!(is_valid, ESHARE_VERIFICATION_FAILED);
 
-        // 4. Store & Aggregate with Lagrange Weights
+        // 4. Store Share
         if (!table::contains(&state.shares, timelock_id)) {
             table::add(&mut state.shares, timelock_id, vector::empty());
         };
@@ -293,155 +298,42 @@ module aptos_framework::timelock {
             i = i + 1;
         };
 
-        vector::push_back(shares, DecryptionKeyShare { validator: validator_addr, validator_idx, share });
+        vector::push_back(shares, DecryptionKeyShare { validator: validator_addr, timelock_id, validator_idx, share });
 
-        // Check threshold
+        // 5. Check Threshold and Aggregate
         let voters = stake::cur_validator_consensus_infos();
         let n = vector::length(&voters);
         let threshold = (n * 2 / 3) + 1;
         if (n == 0) { threshold = 1; };
 
         if (vector::length(shares) >= threshold) {
-            // Aggregate with Lagrange weights
-            let dk = aggregate_threshold_shares(shares, n);
-            
-            let key_bytes = serialize<G1, FormatG1Compr>(&dk);
-            table::add(&mut state.decryption_keys, timelock_id, key_bytes);
-            
-            emit(DecryptionKeyRevealedEvent {
-                timelock_id,
-                deadline,
-                decryption_key: key_bytes,
-            });
-        };
-    }
-
-    /// Verify that a share is a valid threshold BLS share
-    /// 
-    /// For threshold BLS, each validator's share s_i corresponds to their polynomial evaluation.
-    /// The share for identity ID is: share_i = s_i × Q_id
-    /// 
-    /// Verification: e(share_i, G2) should equal e(Q_id, PK_i) where PK_i is dealer's public key
-    /// For multi-dealer DKG, we verify against the corresponding dealer's public key
-    fun verify_threshold_share(validator_idx: u64, identity: vector<u8>, share_bytes: vector<u8>): bool {
-        // Parse share as G1 point
-        let share_opt = deserialize<G1, FormatG1Compr>(&share_bytes);
-        if (std::option::is_none(&share_opt)) {
-            return false
-        };
-        let share = std::option::destroy_some(share_opt);
-        
-        // Verify share is on curve and not identity
-        // In a full implementation, we would verify against the dealer's public key
-        // For now, basic sanity checks
-        if (crypto_algebra::is_zero(&share)) {
-            return false  // Zero is not a valid share
-        };
-        
-        // The full verification requires access to dealer public keys from DKG transcript
-        // For threshold BLS correctness:
-        // e(share, G2) == e(Q_id, PK_dealer) for the corresponding dealer
-        // This will be verified implicitly by the Lagrange-weighted aggregation
-        // producing a valid DK when threshold is met
-        
-        true
-    }
-
-    /// Aggregate threshold shares using Lagrange-weighted sum
-    /// 
-    /// Given shares s_i × Q_id from participating validators with indices V,
-    /// the decryption key is: DK = Σ λ_i × (s_i × Q_id) = (Σ λ_i × s_i) × Q_id = s × Q_id
-    /// where λ_i are Lagrange coefficients for the set V.
-    fun aggregate_threshold_shares(shares: &vector<DecryptionKeyShare>, total_validators: u64): G1 {
-        let n = vector::length(shares);
-        if (n == 0) {
-            return zero<G1>()
-        };
-        
-        // Collect participating validator indices
-        let indices = vector::empty<u64>();
-        let i = 0;
-        while (i < n) {
-            let s = vector::borrow(shares, i);
-            vector::push_back(&mut indices, s.validator_idx);
-            i = i + 1;
-        };
-        
-        // Compute Lagrange coefficients and aggregate
-        let sum = zero<G1>();
-        let i = 0;
-        while (i < n) {
-            let s = vector::borrow(shares, i);
-            let idx = s.validator_idx;
-            
-            // Compute Lagrange coefficient λ_idx for this validator
-            // λ_idx = Π_{j ∈ V, j ≠ idx} (-j) / (idx - j)
-            // where V is the set of participating validator indices
-            let lambda = compute_lagrange_coefficient(idx, &indices, total_validators);
-            
-            // Deserialize share
-            let share_opt = deserialize<G1, FormatG1Compr>(&s.share);
-            if (std::option::is_some(&share_opt)) {
-                let share = std::option::destroy_some(share_opt);
-                // weighted_contribution = λ × share
-                let weighted = crypto_algebra::scalar_mul<G1>(&lambda, &share);
-                sum = add(&sum, &weighted);
+            let share_bytes_list = vector::empty<vector<u8>>();
+            let validator_indices = vector::empty<u64>();
+            let i = 0;
+            let len = vector::length(shares);
+            while (i < len) {
+                let s = vector::borrow(shares, i);
+                vector::push_back(&mut share_bytes_list, s.share);
+                vector::push_back(&mut validator_indices, s.validator_idx);
+                i = i + 1;
             };
-            i = i + 1;
-        };
-        
-        sum
-    }
-
-    /// Compute Lagrange coefficient λ_k for validator k
-    /// 
-    /// λ_k = Π_{i ∈ V, i ≠ k} (-i) / (k - i)
-    /// where V is the set of participating validator indices
-    /// 
-    /// In a threshold (t-of-n) scheme, we need at least t shares.
-    /// The Lagrange basis polynomial ensures correct reconstruction of the secret.
-    fun compute_lagrange_coefficient(k: u64, participants: &vector<u64>, total: u64): u128 {
-        let num = 1u128;
-        let den = 1u128;
-        let n = vector::length(participants);
-        let i = 0;
-        while (i < n) {
-            let idx = *vector::borrow(participants, i);
-            if (idx != k) {
-                // numerator: product of (-j) for all j ≠ k
-                // We work modulo the field prime, so -j = q - j
-                let q: u128 = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001u128; // BLS12-381 prime
-                let neg_j = q - (idx as u128);
-                num = (num * neg_j) % q;
+            let dk = threshold_dsa::aggregate_timelock_shares(&share_bytes_list, &validator_indices, n);
+            
+            if (vector::length(&dk) > 0) {
+                table::add(&mut state.decryption_keys, timelock_id, dk);
                 
-                // denominator: (k - j)
-                let diff = if (k > idx) { k - idx } else { idx - k };
-                den = (den * (diff as u128)) % q;
+                emit(DecryptionKeyRevealedEvent {
+                    timelock_id,
+                    deadline,
+                    decryption_key: dk,
+                });
             };
-            i = i + 1;
         };
-        
-        // λ = num / den = num * den^(-1) mod q
-        // Use Fermat's little theorem: den^(-1) = den^(q-2) mod q
-        let q: u128 = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001u128;
-        let den_inv = mod_exp(den, q - 2, q);
-        (num * den_inv) % q
     }
 
-    /// Modular exponentiation: base^exp mod mod
-    fun mod_exp(base: u128, exp: u128, mod: u128): u128 {
-        let result = 1u128;
-        let b = base % mod;
-        let e = exp;
-        while (e > 0) {
-            if (e % 2 == 1) {
-                result = (result * b) % mod;
-            };
-            b = (b * b) % mod;
-            e = e / 2;
-        };
-        result
-    }
+    // =========================================================================
+    // Helper Functions
+    // =========================================================================
 
     /// Construct canonical identity string and hash it
     fun compute_identity(timelock_id: u64, deadline: u64): vector<u8> {
@@ -461,14 +353,16 @@ module aptos_framework::timelock {
         let buf = vector::empty<u8>();
         while (value > 0) {
             let digit = ((value % 10) as u8);
-            vector::push_back(&mut buf, digit + 48); // '0' is 48
+            vector::push_back(&mut buf, digit + 48);
             value = value / 10;
         };
         vector::reverse(&mut buf);
         string::utf8(buf)
     }
 
+    // =========================================================================
     // View Functions
+    // =========================================================================
 
     #[view]
     public fun get_deadline(timelock_id: u64): Option<u64> acquires TimelockState {
@@ -492,23 +386,188 @@ module aptos_framework::timelock {
         }
     }
 
+    // =========================================================================
+    // Unit Tests
+    // =========================================================================
+
     #[test_only]
     use aptos_framework::account::{create_signer_for_test, create_account_for_test};
 
+    #[test]
+    fun test_u64_to_string_zero() {
+        let result = u64_to_string(0);
+        assert!(std::string::bytes(&result) == &b"0", 1);
+    }
+
+    #[test]
+    fun test_u64_to_string_single_digit() {
+        let result = u64_to_string(5);
+        assert!(std::string::bytes(&result) == &b"5", 1);
+    }
+
+    #[test]
+    fun test_u64_to_string_multi_digit() {
+        let result = u64_to_string(12345);
+        assert!(std::string::bytes(&result) == &b"12345", 1);
+    }
+
+    #[test]
+    fun test_compute_identity_format() {
+        let identity = compute_identity(42, 1000000);
+        assert!(vector::length(&identity) == 32, 1); // keccak256 output
+    }
+
+    #[test]
+    fun test_compute_identity_deterministic() {
+        let id1 = compute_identity(1, 1000);
+        let id2 = compute_identity(1, 1000);
+        let id3 = compute_identity(2, 1000);
+        let id4 = compute_identity(1, 2000);
+        
+        assert!(id1 == id2, 1);
+        assert!(id1 != id3, 2);
+        assert!(id1 != id4, 3);
+    }
+
     #[test(framework = @aptos_framework)]
-    public fun test_flow(framework: &signer) acquires TimelockState {
+    fun test_initialize(framework: &signer) acquires TimelockState {
+        timestamp::set_time_has_started_for_testing(framework);
+        create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+        
+        assert!(!exists<TimelockState>(@aptos_framework), 1);
+        initialize(framework);
+        assert!(exists<TimelockState>(@aptos_framework), 2);
+        
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        assert!(state.next_timelock_id == 2, 3);
+        assert!(vector::length(&state.pending_deadlines) == 0, 4);
+    }
+
+    #[test(framework = @aptos_framework)]
+    fun test_register_single_timelock(framework: &signer) acquires TimelockState {
         timestamp::set_time_has_started_for_testing(framework);
         create_account_for_test(@aptos_framework);
         stake::initialize_for_test(framework);
         initialize(framework);
-        let vm = create_signer_for_test(@0x0);
-
-        timestamp::update_global_time_for_test(100);
-        register(200); // ID 0
         
-        timestamp::update_global_time_for_test(201);
+        let deadline = 1000000;
+        register(deadline);
+        
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        assert!(table::contains(&state.id_to_deadline, 2), 1);
+        assert!(*table::borrow(&state.id_to_deadline, 2) == deadline, 2);
+        assert!(vector::length(&state.pending_deadlines) == 1, 3);
+    }
+
+    #[test(framework = @aptos_framework)]
+    fun test_register_multiple_timelocks_different_deadlines(framework: &signer) acquires TimelockState {
+        timestamp::set_time_has_started_for_testing(framework);
+        create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+        initialize(framework);
+        
+        register(1000000);
+        register(2000000);
+        
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        assert!(vector::length(&state.pending_deadlines) == 2, 1);
+        assert!(*vector::borrow(&state.pending_deadlines, 0) == 1000000, 2);
+        assert!(*vector::borrow(&state.pending_deadlines, 1) == 2000000, 3);
+    }
+
+    #[test(framework = @aptos_framework)]
+    #[expected_failure(abort_code = 5, location = Self)]
+    fun test_register_invalid_deadline_past(framework: &signer) acquires TimelockState {
+        timestamp::set_time_has_started_for_testing(framework);
+        create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+        initialize(framework);
+        timestamp::update_global_time_for_test(1000000);
+        register(999999);
+    }
+
+    #[test(framework = @aptos_framework)]
+    fun test_on_new_block_triggers_deadline(framework: &signer) acquires TimelockState {
+        timestamp::set_time_has_started_for_testing(framework);
+        create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+        initialize(framework);
+        
+        let vm = create_signer_for_test(@0x0);
+        register(1000);
+        
+        assert!(vector::length(&borrow_global<TimelockState>(@aptos_framework).pending_deadlines) == 1, 1);
+        
+        timestamp::update_global_time_for_test(1001);
         on_new_block(&vm);
-        // IDs for deadline 200 should be emitted
-        // Logic check: pending_deadlines had [200], now empty.
+        
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        assert!(vector::length(&state.pending_deadlines) == 0, 2);
+    }
+
+    #[test(framework = @aptos_framework)]
+    fun test_get_deadline_not_exists(framework: &signer) acquires TimelockState {
+        timestamp::set_time_has_started_for_testing(framework);
+        create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+        initialize(framework);
+        
+        let result = get_deadline(999);
+        assert!(option::is_none(&result), 1);
+    }
+
+    #[test(framework = @aptos_framework)]
+    fun test_get_deadline_exists(framework: &signer) acquires TimelockState {
+        timestamp::set_time_has_started_for_testing(framework);
+        create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+        initialize(framework);
+        
+        register(1000000);
+        let result = get_deadline(2);
+        assert!(option::is_some(&result), 1);
+        assert!(*option::borrow(&result) == 1000000, 2);
+    }
+
+    #[test(framework = @aptos_framework)]
+    fun test_full_registration_flow(framework: &signer) acquires TimelockState {
+        timestamp::set_time_has_started_for_testing(framework);
+        create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+        initialize(framework);
+        
+        let vm = create_signer_for_test(@0x0);
+        
+        let deadline = 1000000;
+        register(deadline);
+        assert!(get_deadline(2) == option::some(deadline), 1);
+        assert!(get_decryption_key(2) == option::none(), 2);
+        
+        timestamp::update_global_time_for_test(deadline + 1);
+        on_new_block(&vm);
+        
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        assert!(vector::length(&state.pending_deadlines) == 0, 3);
+        assert!(get_decryption_key(2) == option::none(), 4); // No shares yet
+    }
+
+    #[test(framework = @aptos_framework)]
+    fun test_register_deadline_sorted_insertion(framework: &signer) acquires TimelockState {
+        timestamp::set_time_has_started_for_testing(framework);
+        create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+        initialize(framework);
+        
+        register(3000);
+        register(1000);
+        register(2000);
+        
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        let deadlines = &state.pending_deadlines;
+        assert!(vector::length(deadlines) == 3, 1);
+        assert!(*vector::borrow(deadlines, 0) == 1000, 2);
+        assert!(*vector::borrow(deadlines, 1) == 2000, 3);
+        assert!(*vector::borrow(deadlines, 2) == 3000, 4);
     }
 }

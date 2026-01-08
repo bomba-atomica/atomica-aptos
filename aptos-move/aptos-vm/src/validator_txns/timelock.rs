@@ -5,7 +5,7 @@ use crate::{
     aptos_vm::get_system_transaction_output,
     errors::expect_only_successful_execution,
     move_vm_ext::{AptosMoveResolver, SessionId},
-    system_module_names::{PUBLISH_PUBLIC_KEY, PUBLISH_SECRET_SHARE, TIMELOCK_MODULE},
+    system_module_names::{PUBLISH_DECRYPTION_KEY_SHARE, PUBLISH_PUBLIC_KEY, TIMELOCK_MODULE},
     AptosVM,
 };
 use aptos_types::{
@@ -81,6 +81,7 @@ impl AptosVM {
         let args = vec![
             MoveValue::Signer(share.author),
             MoveValue::U64(share.timelock_id),
+            MoveValue::U64(share.validator_idx),
             share.share.as_move_value(),
         ];
 
@@ -88,7 +89,7 @@ impl AptosVM {
         session
             .execute_function_bypass_visibility(
                 &TIMELOCK_MODULE,
-                PUBLISH_SECRET_SHARE,
+                PUBLISH_DECRYPTION_KEY_SHARE,
                 vec![],
                 serialize_values(&args),
                 &mut gas_meter,
@@ -96,7 +97,11 @@ impl AptosVM {
                 module_storage,
             )
             .map_err(|e| {
-                expect_only_successful_execution(e, PUBLISH_SECRET_SHARE.as_str(), log_context)
+                expect_only_successful_execution(
+                    e,
+                    PUBLISH_DECRYPTION_KEY_SHARE.as_str(),
+                    log_context,
+                )
             })
             .map_err(|r| r.unwrap_err())?;
 

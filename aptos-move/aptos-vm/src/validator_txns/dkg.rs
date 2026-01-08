@@ -49,6 +49,12 @@ pub(crate) enum ExecutionFailure {
     Unexpected(VMStatus),
 }
 
+impl From<anyhow::Error> for ExecutionFailure {
+    fn from(_: anyhow::Error) -> Self {
+        ExecutionFailure::Expected(PublicParamsCreationFailed)
+    }
+}
+
 impl AptosVM {
     pub(crate) fn process_dkg_result(
         &self,

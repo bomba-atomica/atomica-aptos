@@ -26,7 +26,8 @@ use aptos_types::{
     account_address::AccountAddress,
     dkg::{
         DKGSessionMetadata, DKGStartEvent, DKGState, DeadlineReachedEvent,
-        DecryptionKeyRevealedEvent, DefaultDKG, MasterPublicKeyPublishedEvent, StartKeyGenEvent,
+        DecryptionKeyRevealedEvent, DecryptionKeyShare, DefaultDKG, MasterPublicKeyPublishedEvent,
+        StartKeyGenEvent,
     },
     epoch_state::EpochState,
     on_chain_config::{
@@ -888,6 +889,19 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         };
 
         // 6. Submit Share with Validator Index (for Lagrange-weighted aggregation)
+        let my_index = match self.epoch_state.as_ref().and_then(|es| {
+            es.verifier
+                .address_to_validator_index()
+                .get(&self.my_addr)
+                .copied()
+        }) {
+            Some(idx) => idx,
+            None => {
+                error!("[Timelock] Cannot submit share: not in validator set");
+                return;
+            },
+        };
+
         let share = DecryptionKeyShare {
             timelock_id,
             author: self.my_addr,

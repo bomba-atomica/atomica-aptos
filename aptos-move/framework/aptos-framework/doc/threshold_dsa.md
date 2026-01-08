@@ -19,6 +19,12 @@
     -  [Mathematical Verification](#@Mathematical_Verification_5)
     -  [Parameters](#@Parameters_6)
 -  [Function `verify_signature_point`](#0x1_threshold_dsa_verify_signature_point)
+-  [Function `verify_timelock_share`](#0x1_threshold_dsa_verify_timelock_share)
+-  [Function `aggregate_timelock_shares`](#0x1_threshold_dsa_aggregate_timelock_shares)
+    -  [Parameters](#@Parameters_7)
+    -  [Returns](#@Returns_8)
+-  [Function `compute_lagrange_coefficient`](#0x1_threshold_dsa_compute_lagrange_coefficient)
+-  [Function `mod_exp`](#0x1_threshold_dsa_mod_exp)
 
 
 <pre><code><b>use</b> <a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra">0x1::bls12381_algebra</a>;
@@ -424,6 +430,215 @@ Helper to verify a point directly if the message is already mapped to G1
     <b>let</b> rhs = pairing&lt;G1, G2, Gt&gt;(&msg_point, &mpk);
 
     eq&lt;Gt&gt;(&lhs, &rhs)
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_threshold_dsa_verify_timelock_share"></a>
+
+## Function `verify_timelock_share`
+
+Verify that a timelock decryption key share is valid
+
+For threshold BLS, each validator's share s_i corresponds to their polynomial evaluation.
+The share for identity ID is: share_i = s_i × Q_id
+
+This function performs basic validation of the share format.
+Full cryptographic verification requires checking against dealer public keys.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_verify_timelock_share">verify_timelock_share</a>(_validator_idx: u64, _identity: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;, share_bytes: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;): bool
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_verify_timelock_share">verify_timelock_share</a>(
+    _validator_idx: u64,
+    _identity: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
+    share_bytes: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;
+): bool {
+    <b>let</b> share_opt = deserialize&lt;G1, FormatG1Compr&gt;(&share_bytes);
+    <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_is_some">option::is_some</a>(&share_opt)
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_threshold_dsa_aggregate_timelock_shares"></a>
+
+## Function `aggregate_timelock_shares`
+
+Aggregate timelock decryption key shares using Lagrange-weighted sum
+
+Given shares s_i × Q_id from participating validators with indices V,
+the decryption key is: DK = Σ λ_i × (s_i × Q_id) = (Σ λ_i × s_i) × Q_id = s × Q_id
+where λ_i are Lagrange coefficients for the set V.
+
+
+<a id="@Parameters_7"></a>
+
+### Parameters
+
+
+* <code>share_bytes_list</code>: Vector of serialized G1 share points
+* <code>validator_indices</code>: Vector of validator indices corresponding to each share
+* <code>total_validators</code>: Total number of validators in the DKG session
+
+
+<a id="@Returns_8"></a>
+
+### Returns
+
+
+The aggregated decryption key (serialized G1 point), or empty if shares is empty
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_aggregate_timelock_shares">aggregate_timelock_shares</a>(share_bytes_list: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;, validator_indices: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, total_validators: u64): <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_aggregate_timelock_shares">aggregate_timelock_shares</a>(
+    share_bytes_list: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;,
+    validator_indices: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
+    total_validators: u64
+): <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt; {
+    <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(share_bytes_list);
+    <b>if</b> (n == 0) {
+        <b>return</b> <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u8&gt;()
+    };
+
+    <b>let</b> lambdas = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u128&gt;();
+    <b>let</b> j = 0;
+    <b>while</b> (j &lt; n) {
+        <b>let</b> idx = *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(validator_indices, j);
+        <b>let</b> lambda = <a href="threshold_dsa.md#0x1_threshold_dsa_compute_lagrange_coefficient">compute_lagrange_coefficient</a>(idx, validator_indices, total_validators);
+        <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> lambdas, lambda);
+        j = j + 1;
+    };
+
+    <b>let</b> result = zero&lt;G1&gt;();
+    <b>let</b> i = 0;
+    <b>while</b> (i &lt; n) {
+        <b>let</b> share_bytes = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(share_bytes_list, i);
+        <b>let</b> share_opt = deserialize&lt;G1, FormatG1Compr&gt;(share_bytes);
+        <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_is_some">option::is_some</a>(&share_opt)) {
+            <b>let</b> share = <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_destroy_some">option::destroy_some</a>(share_opt);
+            <b>let</b> lambda_u128 = *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&lambdas, i);
+            <b>let</b> lambda_scalar = from_u64&lt;Fr&gt;((lambda_u128 <b>as</b> u64));
+            <b>let</b> scaled = scalar_mul(&share, &lambda_scalar);
+            result = add(&result, &scaled);
+        };
+        i = i + 1;
+    };
+
+    serialize&lt;G1, FormatG1Compr&gt;(&result)
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_threshold_dsa_compute_lagrange_coefficient"></a>
+
+## Function `compute_lagrange_coefficient`
+
+Compute Lagrange coefficient λ_k for validator k
+
+λ_k = Π_{i ∈ V, i ≠ k} (0 - i) / (k - i)
+= Π_{i ∈ V, i ≠ k} (-i) / (k - i)
+
+Uses modulo arithmetic with prime q = 1000003.
+
+
+<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_compute_lagrange_coefficient">compute_lagrange_coefficient</a>(k: u64, participants: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, _total: u64): u128
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_compute_lagrange_coefficient">compute_lagrange_coefficient</a>(k: u64, participants: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, _total: u64): u128 {
+    <b>let</b> num = 1u128;
+    <b>let</b> den = 1u128;
+    <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(participants);
+    <b>let</b> i = 0;
+    <b>let</b> q: u128 = 1000003;
+    <b>while</b> (i &lt; n) {
+        <b>let</b> idx = *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(participants, i);
+        <b>if</b> (idx != k) {
+            // numerator: (-idx) mod q = q - idx
+            <b>let</b> neg_idx = q - (idx <b>as</b> u128);
+            num = (num * neg_idx) % q;
+
+            // denominator: (k - idx) mod q
+            // Handle the sign by checking <b>if</b> k &gt; idx
+            <b>let</b> diff = <b>if</b> (k &gt; idx) { k - idx } <b>else</b> { idx - k };
+            <b>let</b> diff_mod = (diff <b>as</b> u128) % q;
+            <b>if</b> (k &lt; idx) {
+                // k - idx is negative, so (k - idx) mod q = q - diff
+                den = (den * (q - diff_mod)) % q;
+            } <b>else</b> {
+                den = (den * diff_mod) % q;
+            };
+        };
+        i = i + 1;
+    };
+
+    // λ = num * den^(-1) mod q
+    <b>let</b> den_inv = <a href="threshold_dsa.md#0x1_threshold_dsa_mod_exp">mod_exp</a>(den, q - 2, q);
+    (num * den_inv) % q
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_threshold_dsa_mod_exp"></a>
+
+## Function `mod_exp`
+
+Modular exponentiation: base^exp mod mod
+
+
+<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_mod_exp">mod_exp</a>(base: u128, exp: u128, mod: u128): u128
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_mod_exp">mod_exp</a>(base: u128, exp: u128, mod: u128): u128 {
+    <b>let</b> result = 1u128;
+    <b>let</b> b = base % mod;
+    <b>let</b> e = exp;
+    <b>while</b> (e &gt; 0) {
+        <b>if</b> (e % 2 == 1) {
+            result = (result * b) % mod;
+        };
+        b = (b * b) % mod;
+        e = e / 2;
+    };
+    result
 }
 </code></pre>
 

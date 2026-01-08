@@ -88,4 +88,4 @@ pub static TIMELOCK_MODULE: Lazy<ModuleId> = Lazy::new(|| {
 });
 
 pub const PUBLISH_PUBLIC_KEY: &IdentStr = ident_str!("publish_public_key");
-pub const PUBLISH_SECRET_SHARE: &IdentStr = ident_str!("publish_secret_share");
+pub const PUBLISH_DECRYPTION_KEY_SHARE: &IdentStr = ident_str!("publish_decryption_key_share");

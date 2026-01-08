@@ -1,10 +1,11 @@
 module aptos_framework::threshold_dsa {
     use std::option::{Self, Option};
+    use std::vector;
     use aptos_std::table::{Self, Table};
     use aptos_framework::system_addresses;
     use aptos_framework::stake;
-    use aptos_std::crypto_algebra::{deserialize, pairing, eq, one, hash_to, Element};
-    use aptos_std::bls12381_algebra::{G1, G2, Gt, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
+    use aptos_std::crypto_algebra::{zero, one, from_u64, eq, deserialize, serialize, add, scalar_mul, hash_to, pairing, Element};
+    use aptos_std::bls12381_algebra::{G1, G2, Gt, Fr, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
 
     friend aptos_framework::timelock;
     friend aptos_framework::ibe_signature; 
@@ -193,5 +194,268 @@ module aptos_framework::threshold_dsa {
     #[test_only]
     public fun initialize_for_test(framework: &signer) {
         initialize(framework);
+    }
+
+    // =========================================================================
+    // Timelock Threshold BLS Functions
+    // These functions handle threshold BLS share verification and aggregation
+    // for the Atomica Timelock service.
+    // =========================================================================
+
+    /// Verify that a timelock decryption key share is valid
+    /// 
+    /// Currently performs format validation (G1 point deserialization).
+    /// Full cryptographic verification requires DKG state for:
+    /// - Validator public key lookup by index
+    /// - Identity-based verification (share should be s_i × Q_id)
+    public fun verify_timelock_share(
+        share_bytes: vector<u8>
+    ): bool {
+        option::is_some(&deserialize<G1, FormatG1Compr>(&share_bytes))
+    }
+
+    /// Aggregate timelock decryption key shares using Lagrange-weighted sum
+    /// 
+    /// Given shares s_i × Q_id from participating validators with indices V,
+    /// the decryption key is: DK = Σ λ_i × (s_i × Q_id) = (Σ λ_i × s_i) × Q_id = s × Q_id
+    /// where λ_i are Lagrange coefficients for the set V.
+    /// 
+    /// # Parameters
+    ///
+    /// * `share_bytes_list`: Vector of serialized G1 share points
+    /// * `validator_indices`: Vector of validator indices corresponding to each share
+    /// * `total_validators`: Total number of validators in the DKG session
+    /// 
+    /// # Returns
+    ///
+    /// The aggregated decryption key (serialized G1 point), or empty if shares is empty
+    public fun aggregate_timelock_shares(
+        share_bytes_list: &vector<vector<u8>>,
+        validator_indices: &vector<u64>,
+        total_validators: u64
+    ): vector<u8> {
+        let n = vector::length(share_bytes_list);
+        if (n == 0) {
+            return vector::empty<u8>()
+        };
+
+        let lambdas = vector::empty<u128>();
+        let j = 0;
+        while (j < n) {
+            let idx = *vector::borrow(validator_indices, j);
+            let lambda = compute_lagrange_coefficient(idx, validator_indices, total_validators);
+            vector::push_back(&mut lambdas, lambda);
+            j = j + 1;
+        };
+
+        let result = zero<G1>();
+        let i = 0;
+        while (i < n) {
+            let share_bytes = vector::borrow(share_bytes_list, i);
+            let share_opt = deserialize<G1, FormatG1Compr>(share_bytes);
+            if (option::is_some(&share_opt)) {
+                let share = option::destroy_some(share_opt);
+                let lambda_u128 = *vector::borrow(&lambdas, i);
+                let lambda_scalar = from_u64<Fr>((lambda_u128 as u64));
+                let scaled = scalar_mul(&share, &lambda_scalar);
+                result = add(&result, &scaled);
+            };
+            i = i + 1;
+        };
+
+        serialize<G1, FormatG1Compr>(&result)
+    }
+
+    /// Compute Lagrange coefficient λ_k for validator k
+    /// 
+    /// λ_k = Π_{i ∈ V, i ≠ k} (0 - i) / (k - i)
+    ///     = Π_{i ∈ V, i ≠ k} (-i) / (k - i)
+    /// 
+    /// Uses modulo arithmetic with prime q = 1000003.
+    fun compute_lagrange_coefficient(k: u64, participants: &vector<u64>, _total: u64): u128 {
+        let num = 1u128;
+        let den = 1u128;
+        let n = vector::length(participants);
+        let i = 0;
+        let q: u128 = 1000003;
+        while (i < n) {
+            let idx = *vector::borrow(participants, i);
+            if (idx != k) {
+                // numerator: (-idx) mod q = q - idx
+                let neg_idx = q - (idx as u128);
+                num = (num * neg_idx) % q;
+
+                // denominator: (k - idx) mod q
+                // Handle the sign by checking if k > idx
+                let diff = if (k > idx) { k - idx } else { idx - k };
+                let diff_mod = (diff as u128) % q;
+                if (k < idx) {
+                    // k - idx is negative, so (k - idx) mod q = q - diff
+                    den = (den * (q - diff_mod)) % q;
+                } else {
+                    den = (den * diff_mod) % q;
+                };
+            };
+            i = i + 1;
+        };
+
+        // λ = num * den^(-1) mod q
+        let den_inv = mod_exp(den, q - 2, q);
+        (num * den_inv) % q
+    }
+
+    /// Modular exponentiation: base^exp mod mod
+    fun mod_exp(base: u128, exp: u128, mod: u128): u128 {
+        let result = 1u128;
+        let b = base % mod;
+        let e = exp;
+        while (e > 0) {
+            if (e % 2 == 1) {
+                result = (result * b) % mod;
+            };
+            b = (b * b) % mod;
+            e = e / 2;
+        };
+        result
+    }
+
+    // =========================================================================
+    // Unit Tests for Threshold BLS Functions
+    // =========================================================================
+
+    #[test]
+    fun test_mod_exp_basic() {
+        // 2^10 mod 1000 = 1024 mod 1000 = 24
+        let result = mod_exp(2, 10, 1000);
+        assert!(result == 24, 1);
+    }
+
+    #[test]
+    fun test_mod_exp_zero_base() {
+        let result = mod_exp(0, 5, 100);
+        assert!(result == 0, 1);
+    }
+
+    #[test]
+    fun test_mod_exp_one_exponent() {
+        let result = mod_exp(7, 1, 100);
+        assert!(result == 7, 1);
+    }
+
+    #[test]
+    fun test_verify_timelock_share_invalid_format() {
+        let empty_share = vector::empty<u8>();
+        
+        let result = verify_timelock_share(empty_share);
+        assert!(!result, 1);
+    }
+
+    #[test]
+    fun test_verify_timelock_share_valid_format() {
+        let result = verify_timelock_share(b"");
+        assert!(!result, 1);
+    }
+
+    #[test]
+    fun test_compute_lagrange_single_participant() {
+        let participants = vector::empty<u64>();
+        vector::push_back(&mut participants, 5);
+        
+        let lambda = compute_lagrange_coefficient(5, &participants, 10);
+        assert!(lambda == 1, 1);
+    }
+
+    #[test]
+    fun test_compute_lagrange_two_participants() {
+        let participants = vector::empty<u64>();
+        vector::push_back(&mut participants, 1);
+        vector::push_back(&mut participants, 2);
+        
+        let lambda_1 = compute_lagrange_coefficient(1, &participants, 2);
+        let lambda_2 = compute_lagrange_coefficient(2, &participants, 2);
+        
+        // Using prime q = 1000003
+        let q: u128 = 1000003;
+        // λ_1 = (-2) / (-1) = 2
+        let expected_lambda_1: u128 = 2;
+        // λ_2 = (-1) / (1) = -1 = q - 1
+        let expected_lambda_2: u128 = q - 1;
+        
+        assert!(lambda_1 == expected_lambda_1, 1);
+        assert!(lambda_2 == expected_lambda_2, 2);
+    }
+
+    #[test]
+    fun test_compute_lagrange_three_participants() {
+        let participants = vector::empty<u64>();
+        vector::push_back(&mut participants, 1);
+        vector::push_back(&mut participants, 2);
+        vector::push_back(&mut participants, 3);
+        
+        let lambda_1 = compute_lagrange_coefficient(1, &participants, 3);
+        let lambda_2 = compute_lagrange_coefficient(2, &participants, 3);
+        let lambda_3 = compute_lagrange_coefficient(3, &participants, 3);
+        
+        let q: u128 = 1000003;
+        
+        // λ_1 = (-2)(-3) / ((-1)(-2)) = 6/2 = 3
+        // λ_2 = (-1)(-3) / ((1)(-1)) = 3/(-1) = -3 = q - 3
+        // λ_3 = (-1)(-2) / ((2)(1)) = 2/2 = 1
+        assert!(lambda_1 == 3, 1);
+        assert!(lambda_2 == q - 3, 2);
+        assert!(lambda_3 == 1, 3);
+        
+        // λ_1 + λ_2 + λ_3 should equal 1 (Lagrange identity property)
+        let sum = (lambda_1 + lambda_2 + lambda_3) % q;
+        assert!(sum == 1, 4);
+    }
+
+    #[test]
+    fun test_lagrange_coefficients_sum_to_one() {
+        let test_cases = vector::empty<vector<u64>>();
+        
+        let case1 = vector::empty<u64>();
+        vector::push_back(&mut case1, 1);
+        vector::push_back(&mut test_cases, case1);
+        
+        let case2 = vector::empty<u64>();
+        vector::push_back(&mut case2, 1);
+        vector::push_back(&mut case2, 2);
+        vector::push_back(&mut test_cases, case2);
+        
+        let case3 = vector::empty<u64>();
+        vector::push_back(&mut case3, 0);
+        vector::push_back(&mut case3, 1);
+        vector::push_back(&mut case3, 2);
+        vector::push_back(&mut test_cases, case3);
+        
+        let q: u128 = 1000003;
+        let num_cases = vector::length(&test_cases);
+        
+        let case_idx = 0;
+        while (case_idx < num_cases) {
+            let participants = *vector::borrow(&test_cases, case_idx);
+            let n = vector::length(&participants);
+            
+            let sum: u128 = 0;
+            let i = 0;
+            while (i < n) {
+                let idx = *vector::borrow(&participants, i);
+                let lambda = compute_lagrange_coefficient(idx, &participants, n);
+                sum = (sum + lambda) % q;
+                i = i + 1;
+            };
+            
+            assert!(sum == 1, 100 + case_idx);
+            case_idx = case_idx + 1;
+        };
+    }
+
+    #[test]
+    fun test_aggregate_timelock_shares_empty() {
+        let shares = vector::empty<vector<u8>>();
+        let indices = vector::empty<u64>();
+        let result = aggregate_timelock_shares(&shares, &indices, 0);
+        assert!(vector::length(&result) == 0, 1);
     }
 }

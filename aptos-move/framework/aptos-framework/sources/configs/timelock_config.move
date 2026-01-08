@@ -93,9 +93,6 @@ module aptos_framework::timelock_config {
         borrow_global<TimelockConfig>(@aptos_framework).interval_microseconds
     }
 
-    #[test_only]
-    use aptos_framework::account::create_signer_for_test;
-
     #[test(framework = @aptos_framework)]
     fun test_initialize_and_get(framework: &signer) acquires TimelockConfig {
         chain_id::initialize_for_test(framework, 4); // testnet

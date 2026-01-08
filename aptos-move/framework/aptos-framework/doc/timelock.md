@@ -13,8 +13,9 @@
 -  [Struct `DeadlineReachedEvent`](#0x1_timelock_DeadlineReachedEvent)
 -  [Struct `DecryptionKeyRevealedEvent`](#0x1_timelock_DecryptionKeyRevealedEvent)
 -  [Constants](#@Constants_0)
-    -  [Atomica Timelock Service (Registry Model)](#@Atomica_Timelock_Service_(Registry_Model)_1)
-        -  [Flow](#@Flow_2)
+    -  [Atomica Timelock Service](#@Atomica_Timelock_Service_1)
+        -  [Architecture](#@Architecture_2)
+        -  [Flow](#@Flow_3)
 -  [Function `initialize`](#0x1_timelock_initialize)
 -  [Function `register`](#0x1_timelock_register)
 -  [Function `insert_pending_deadline`](#0x1_timelock_insert_pending_deadline)
@@ -28,11 +29,7 @@
 
 
 <pre><code><b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/hash.md#0x1_aptos_hash">0x1::aptos_hash</a>;
-<b>use</b> <a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra">0x1::bls12381_algebra</a>;
-<b>use</b> <a href="../../aptos-stdlib/doc/crypto_algebra.md#0x1_crypto_algebra">0x1::crypto_algebra</a>;
-<b>use</b> <a href="../../aptos-stdlib/doc/debug.md#0x1_debug">0x1::debug</a>;
 <b>use</b> <a href="event.md#0x1_event">0x1::event</a>;
-<b>use</b> <a href="ibe_signature.md#0x1_ibe_signature">0x1::ibe_signature</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option">0x1::option</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">0x1::signer</a>;
 <b>use</b> <a href="stake.md#0x1_stake">0x1::stake</a>;
@@ -51,6 +48,8 @@
 
 ## Struct `DecryptionKeyShare`
 
+A decryption key share submitted by a validator
+(Shared struct - also used by threshold_dsa module)
 
 
 <pre><code><b>struct</b> <a href="timelock.md#0x1_timelock_DecryptionKeyShare">DecryptionKeyShare</a> <b>has</b> drop, store
@@ -65,6 +64,12 @@
 <dl>
 <dt>
 <code>validator: <b>address</b></code>
+</dt>
+<dd>
+
+</dd>
+<dt>
+<code>validator_idx: u64</code>
 </dt>
 <dd>
 
@@ -371,23 +376,32 @@
 <a id="0x1_timelock_ETIMELOCK_NOT_INITIALIZED"></a>
 
 
-<a id="@Atomica_Timelock_Service_(Registry_Model)_1"></a>
+<a id="@Atomica_Timelock_Service_1"></a>
 
-### Atomica Timelock Service (Registry Model)
+### Atomica Timelock Service
 
 
 Manages the registration of timelocks and the revelation of decryption keys
 based on timestamps (deadlines).
 
 
-<a id="@Flow_2"></a>
+<a id="@Architecture_2"></a>
+
+#### Architecture
+
+- **timelock.move**: Timelock registration, deadline management, state storage
+- **threshold_dsa.move**: DKG, MPK, threshold BLS verification and aggregation
+- **ibe_signature.move**: IBE identity-to-point mapping
+
+
+<a id="@Flow_3"></a>
 
 #### Flow
 
 1. User calls <code><a href="timelock.md#0x1_timelock_register">register</a>(deadline)</code>.
 2. When <code>now &gt;= deadline</code>, <code><a href="timelock.md#0x1_timelock_DeadlineReachedEvent">DeadlineReachedEvent</a></code> is emitted.
 3. Validators submit decryption key shares for the specific <code>timelock_id</code>.
-4. Decryption key is aggregated and published.
+4. Decryption key is aggregated (via threshold_dsa) and published.
 
 
 <pre><code><b>const</b> <a href="timelock.md#0x1_timelock_ETIMELOCK_NOT_INITIALIZED">ETIMELOCK_NOT_INITIALIZED</a>: u64 = 1;
@@ -408,7 +422,7 @@ based on timestamps (deadlines).
 
 ## Function `initialize`
 
-Initialize the system
+Initialize the timelock system
 
 
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_initialize">initialize</a>(framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>)
@@ -422,7 +436,6 @@ Initialize the system
 
 <pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="timelock.md#0x1_timelock_initialize">initialize</a>(framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>) {
     <a href="system_addresses.md#0x1_system_addresses_assert_aptos_framework">system_addresses::assert_aptos_framework</a>(framework);
-    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] initialize called"));
     <b>if</b> (!<b>exists</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework)) {
         // Ensure dependencies initialized
         <a href="threshold_dsa.md#0x1_threshold_dsa_initialize">threshold_dsa::initialize</a>(framework);
@@ -447,7 +460,6 @@ Initialize the system
             interval: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
             config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
         });
-        aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> in initialize"));
     }
 }
 </code></pre>
@@ -572,9 +584,6 @@ On New Block: Check for passed deadlines
     <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
     <b>let</b> now = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
 
-    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] on_new_block called, mpk_dkg_started="));
-    aptos_std::debug::print(&state.mpk_dkg_started);
-
     // One-time DKG trigger <b>if</b> missed during <a href="genesis.md#0x1_genesis">genesis</a>
     <b>if</b> (!state.mpk_dkg_started) {
         <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
@@ -586,7 +595,6 @@ On New Block: Check for passed deadlines
                 config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
             });
             state.mpk_dkg_started = <b>true</b>;
-            aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] Emitted <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> in on_new_block"));
         };
     };
 
@@ -621,7 +629,7 @@ On New Block: Check for passed deadlines
 
 ## Function `publish_public_key`
 
-Submit a decryption key share
+Submit Master Public Key (delegates to threshold_dsa)
 
 
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_public_key">publish_public_key</a>(validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, timelock_id: u64, mpk: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;)
@@ -634,8 +642,6 @@ Submit a decryption key share
 
 
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_public_key">publish_public_key</a>(validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, timelock_id: u64, mpk: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;) {
-    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] publish_public_key called, timelock_id="));
-    aptos_std::debug::print(&timelock_id);
     <a href="threshold_dsa.md#0x1_threshold_dsa_publish_master_public_key">threshold_dsa::publish_master_public_key</a>(validator, timelock_id, mpk);
 }
 </code></pre>
@@ -648,9 +654,17 @@ Submit a decryption key share
 
 ## Function `publish_decryption_key_share`
 
+Submit a decryption key share for a timelock
+
+This function handles:
+1. Deadline verification
+2. Validator authorization
+3. Share collection and threshold checking
+
+Cryptographic operations (verification, aggregation) are delegated to threshold_dsa
 
 
-<pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_decryption_key_share">publish_decryption_key_share</a>(validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, timelock_id: u64, share: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;)
+<pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_decryption_key_share">publish_decryption_key_share</a>(validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, timelock_id: u64, validator_idx: u64, share: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;)
 </code></pre>
 
 
@@ -662,10 +676,9 @@ Submit a decryption key share
 <pre><code><b>public</b> entry <b>fun</b> <a href="timelock.md#0x1_timelock_publish_decryption_key_share">publish_decryption_key_share</a>(
     validator: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>,
     timelock_id: u64,
+    validator_idx: u64,  // Validator's index in DKG participant set
     share: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;
 ) <b>acquires</b> <a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a> {
-    aptos_std::debug::print(&std::string::utf8(b"[TIMELOCK] publish_decryption_key_share called, timelock_id="));
-    aptos_std::debug::print(&timelock_id);
     <b>let</b> validator_addr = std::signer::address_of(validator);
     <b>assert</b>!(<a href="stake.md#0x1_stake_is_current_epoch_validator">stake::is_current_epoch_validator</a>(validator_addr), <a href="timelock.md#0x1_timelock_ENOT_VALIDATOR">ENOT_VALIDATOR</a>);
 
@@ -675,22 +688,19 @@ Submit a decryption key share
     <b>assert</b>!(<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.id_to_deadline, timelock_id), <a href="timelock.md#0x1_timelock_EINVALID_TIMESTAMP">EINVALID_TIMESTAMP</a>);
     <b>let</b> deadline = *<a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow">table::borrow</a>(&state.id_to_deadline, timelock_id);
     <b>let</b> now = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
-
-    // Allow slightly early submission? No, must strict.
     <b>assert</b>!(now &gt;= deadline, <a href="timelock.md#0x1_timelock_EDEADLINE_NOT_PASSED">EDEADLINE_NOT_PASSED</a>);
 
-    // Deduplicate
-    <b>if</b> (<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.decryption_keys, timelock_id)) <b>return</b>; // Already revealed
+    // Deduplicate - already revealed
+    <b>if</b> (<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.decryption_keys, timelock_id)) <b>return</b>;
 
     // 2. Compute Identity
-    // Format: "timelock_id:{id}:deadline_timestamp_microseconds:{deadline}"
     <b>let</b> identity = <a href="timelock.md#0x1_timelock_compute_identity">compute_identity</a>(timelock_id, deadline);
 
-    // 3. Verify Share
-    <b>let</b> is_valid = <a href="ibe_signature.md#0x1_ibe_signature_verify_private_key">ibe_signature::verify_private_key</a>(<a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>, identity, share);
+    // 3. Verify Share (delegated <b>to</b> <a href="threshold_dsa.md#0x1_threshold_dsa">threshold_dsa</a> <b>module</b>)
+    <b>let</b> is_valid = <a href="threshold_dsa.md#0x1_threshold_dsa_verify_timelock_share">threshold_dsa::verify_timelock_share</a>(validator_idx, identity, share);
     <b>assert</b>!(is_valid, <a href="timelock.md#0x1_timelock_ESHARE_VERIFICATION_FAILED">ESHARE_VERIFICATION_FAILED</a>);
 
-    // 4. Store & Aggregate
+    // 4. Store Share
     <b>if</b> (!<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.shares, timelock_id)) {
         <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.shares, timelock_id, <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>());
     };
@@ -704,40 +714,36 @@ Submit a decryption key share
         i = i + 1;
     };
 
-    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(shares, <a href="timelock.md#0x1_timelock_DecryptionKeyShare">DecryptionKeyShare</a> { validator: validator_addr, share });
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(shares, <a href="timelock.md#0x1_timelock_DecryptionKeyShare">DecryptionKeyShare</a> { validator: validator_addr, validator_idx, share });
 
-    // Check threshold
+    // 5. Check Threshold and Aggregate
     <b>let</b> voters = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
     <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&voters);
     <b>let</b> threshold = (n * 2 / 3) + 1;
     <b>if</b> (n == 0) { threshold = 1; };
 
     <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(shares) &gt;= threshold) {
-        // Aggregate
-        <b>let</b> sum = zero&lt;G1&gt;();
-        <b>let</b> count = 0;
+        <b>let</b> share_bytes_list = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;();
+        <b>let</b> validator_indices = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u64&gt;();
         <b>let</b> i = 0;
         <b>let</b> len = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(shares);
-
-        <b>while</b> (i &lt; len && count &lt; threshold) {
-            <b>let</b> s = &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(shares, i).share;
-            <b>let</b> elem_opt = deserialize&lt;G1, FormatG1Compr&gt;(s);
-            <b>if</b> (std::option::is_some(&elem_opt)) {
-                <b>let</b> elem = std::option::extract(&<b>mut</b> elem_opt);
-                sum = add(&sum, &elem);
-                count = count + 1;
-            };
+        <b>while</b> (i &lt; len) {
+            <b>let</b> s = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(shares, i);
+            <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> share_bytes_list, s.share);
+            <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> validator_indices, s.validator_idx);
             i = i + 1;
         };
+        <b>let</b> dk = <a href="threshold_dsa.md#0x1_threshold_dsa_aggregate_timelock_shares">threshold_dsa::aggregate_timelock_shares</a>(&share_bytes_list, &validator_indices, n);
 
-        <b>let</b> key_bytes = serialize&lt;G1, FormatG1Compr&gt;(&sum);
-        <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.decryption_keys, timelock_id, key_bytes);
+        <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&dk) &gt; 0) {
+            <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.decryption_keys, timelock_id, dk);
 
-        emit(<a href="timelock.md#0x1_timelock_DecryptionKeyRevealedEvent">DecryptionKeyRevealedEvent</a> {
-            timelock_id,
-            deadline,
-            decryption_key: key_bytes,
-        });
+            emit(<a href="timelock.md#0x1_timelock_DecryptionKeyRevealedEvent">DecryptionKeyRevealedEvent</a> {
+                timelock_id,
+                deadline,
+                decryption_key: dk,
+            });
+        };
     };
 }
 </code></pre>
@@ -799,7 +805,7 @@ Construct canonical identity string and hash it
     <b>let</b> buf = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u8&gt;();
     <b>while</b> (value &gt; 0) {
         <b>let</b> digit = ((value % 10) <b>as</b> u8);
-        <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> buf, digit + 48); // '0' is 48
+        <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> buf, digit + 48);
         value = value / 10;
     };
     <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_reverse">vector::reverse</a>(&<b>mut</b> buf);

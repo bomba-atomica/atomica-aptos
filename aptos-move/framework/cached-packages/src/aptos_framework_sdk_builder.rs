@@ -1152,12 +1152,21 @@ pub enum EntryFunctionCall {
         pk: Vec<u8>,
     },
 
+    /// Submit a decryption key share for a timelock
+    ///
+    /// This function handles:
+    /// 1. Deadline verification
+    /// 2. Validator authorization
+    /// 3. Share collection and threshold checking
+    ///
+    /// Cryptographic operations (verification, aggregation) are delegated to threshold_dsa
     TimelockPublishDecryptionKeyShare {
         timelock_id: u64,
+        validator_idx: u64,
         share: Vec<u8>,
     },
 
-    /// Submit a decryption key share
+    /// Submit Master Public Key (delegates to threshold_dsa)
     TimelockPublishPublicKey {
         timelock_id: u64,
         mpk: Vec<u8>,
@@ -1958,9 +1967,11 @@ impl EntryFunctionCall {
             ThresholdDsaPublishMasterPublicKey { id, pk } => {
                 threshold_dsa_publish_master_public_key(id, pk)
             },
-            TimelockPublishDecryptionKeyShare { timelock_id, share } => {
-                timelock_publish_decryption_key_share(timelock_id, share)
-            },
+            TimelockPublishDecryptionKeyShare {
+                timelock_id,
+                validator_idx,
+                share,
+            } => timelock_publish_decryption_key_share(timelock_id, validator_idx, share),
             TimelockPublishPublicKey { timelock_id, mpk } => {
                 timelock_publish_public_key(timelock_id, mpk)
             },
@@ -5207,8 +5218,17 @@ pub fn threshold_dsa_publish_master_public_key(id: u64, pk: Vec<u8>) -> Transact
     ))
 }
 
+/// Submit a decryption key share for a timelock
+///
+/// This function handles:
+/// 1. Deadline verification
+/// 2. Validator authorization
+/// 3. Share collection and threshold checking
+///
+/// Cryptographic operations (verification, aggregation) are delegated to threshold_dsa
 pub fn timelock_publish_decryption_key_share(
     timelock_id: u64,
+    validator_idx: u64,
     share: Vec<u8>,
 ) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
@@ -5223,12 +5243,13 @@ pub fn timelock_publish_decryption_key_share(
         vec![],
         vec![
             bcs::to_bytes(&timelock_id).unwrap(),
+            bcs::to_bytes(&validator_idx).unwrap(),
             bcs::to_bytes(&share).unwrap(),
         ],
     ))
 }
 
-/// Submit a decryption key share
+/// Submit Master Public Key (delegates to threshold_dsa)
 pub fn timelock_publish_public_key(timelock_id: u64, mpk: Vec<u8>) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
@@ -7487,7 +7508,8 @@ mod decoder {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(EntryFunctionCall::TimelockPublishDecryptionKeyShare {
                 timelock_id: bcs::from_bytes(script.args().get(0)?).ok()?,
-                share: bcs::from_bytes(script.args().get(1)?).ok()?,
+                validator_idx: bcs::from_bytes(script.args().get(1)?).ok()?,
+                share: bcs::from_bytes(script.args().get(2)?).ok()?,
             })
         } else {
             None
