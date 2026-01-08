@@ -26,7 +26,7 @@ use aptos_types::{
 use aptos_validator_transaction_pool::{TxnGuard, VTxnPoolState};
 use fail::fail_point;
 use futures_channel::oneshot;
-use futures_util::{future::AbortHandle, FutureExt, StreamExt};
+use futures_util::{future::AbortHandle, stream::FusedStream, FutureExt, StreamExt};
 use move_core_types::account_address::AccountAddress;
 use rand::{prelude::StdRng, thread_rng, SeedableRng};
 use std::{sync::Arc, time::Duration};
@@ -165,6 +165,17 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
         }
 
         let mut close_rx = close_rx.into_stream();
+
+        // Check if any receivers are already terminated before entering the loop
+        if dkg_start_event_rx.is_terminated()
+            || rpc_msg_rx.is_terminated()
+            || agg_trx_rx.is_terminated()
+            || self.pull_notification_rx.is_terminated()
+        {
+            warn!("[DKG] One or more receivers terminated during startup, exiting DKGManager");
+            return;
+        }
+
         while !self.stopped {
             let handling_result = tokio::select! {
                 dkg_start_event = dkg_start_event_rx.select_next_some() => {

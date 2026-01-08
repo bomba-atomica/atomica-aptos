@@ -37,6 +37,7 @@ use aptos_types::{
     validator_txn::{Topic, ValidatorTransaction},
 };
 use aptos_validator_transaction_pool::VTxnPoolState;
+use futures::stream::FusedStream;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_channel::oneshot;
@@ -283,6 +284,16 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         info!("[DKG] EpochManager starting, waiting for initial reconfig notification");
         self.await_reconfig_notification().await;
         info!("[DKG] EpochManager main loop started, listening for events");
+
+        // Check if any receivers are already terminated before entering the loop
+        if self.dkg_start_events.is_terminated()
+            || self.reconfig_events.is_terminated()
+            || network_receivers.rpc_rx.is_terminated()
+        {
+            warn!("[DKG] One or more receivers terminated during startup, exiting EpochManager");
+            return;
+        }
+
         loop {
             let handling_result = tokio::select! {
                 notification = self.dkg_start_events.select_next_some() => {

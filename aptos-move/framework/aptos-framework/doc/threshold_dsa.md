@@ -23,8 +23,7 @@
 -  [Function `aggregate_timelock_shares`](#0x1_threshold_dsa_aggregate_timelock_shares)
     -  [Parameters](#@Parameters_7)
     -  [Returns](#@Returns_8)
--  [Function `compute_lagrange_coefficient`](#0x1_threshold_dsa_compute_lagrange_coefficient)
--  [Function `mod_exp`](#0x1_threshold_dsa_mod_exp)
+-  [Function `compute_lagrange_coefficient_fr`](#0x1_threshold_dsa_compute_lagrange_coefficient_fr)
 
 
 <pre><code><b>use</b> <a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra">0x1::bls12381_algebra</a>;
@@ -363,20 +362,8 @@ Returns <code><b>true</b></code> if the verification holds, <code><b>false</b></
     <b>let</b> signature = <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_destroy_some">option::destroy_some</a>(sig_opt);
 
     // Use Hash-<b>to</b>-Curve <b>to</b> map message <b>to</b> G1
-    // Using same suite <b>as</b> defined in <a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra">bls12381_algebra</a>
-    <b>let</b> h_msg = hash_to&lt;G1, HashG1XmdSha256SswuRo&gt;(&b"IBE-BLS-SIG", &msg);
-    // Note: DST should be verified against <b>spec</b>. "IBE-BLS-SIG" matches nothing?
-    // Using empty DST or a specific one?
-    // Boneh-Franklin uses H_1.
-    // <a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra">bls12381_algebra</a> uses HashG1XmdSha256SswuRo default DST "QUUX...".
-    // I should probably pass DST or <b>use</b> a standard one.
-    // For now using "IBE-BLS_SIG" <b>as</b> placeholder. This must match how signatures were generated!
-    // But wait, the user said "Exact nomenclature of IBE paper".
-    // The paper just says H_1.
-    // I will <b>use</b> a fixed DST provided by `<a href="ibe_signature.md#0x1_ibe_signature">ibe_signature</a>` via arguments?
-    // `<a href="threshold_dsa.md#0x1_threshold_dsa">threshold_dsa</a>` is generic. Let's <b>assume</b> the caller handles hashing <b>to</b> G1?
-    // But `verify_signature` takes `msg: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;`.
-    // If `<a href="ibe_signature.md#0x1_ibe_signature">ibe_signature</a>` calls this <b>with</b> ALREADY HASHED bytes (ID), then we should <a href="../../aptos-stdlib/../move-stdlib/doc/hash.md#0x1_hash">hash</a> them <b>to</b> curve.
+    // Using same DST <b>as</b> Rust's BLS_WVUF_DST = b"APTOS_BLS_WVUF_DST"
+    <b>let</b> h_msg = hash_to&lt;G1, HashG1XmdSha256SswuRo&gt;(&b"APTOS_BLS_WVUF_DST", &msg);
 
     // Verification: e(sig, g2_gen) == e(h_msg, mpk)
     <b>let</b> lhs = pairing&lt;G1, G2, Gt&gt;(&signature, &one&lt;G2&gt;());
@@ -517,15 +504,17 @@ The aggregated decryption key (serialized G1 point), or empty if shares is empty
         <b>return</b> <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u8&gt;()
     };
 
-    <b>let</b> lambdas = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u128&gt;();
+    // Compute Lagrange coefficients using Fr field operations
+    <b>let</b> lambdas = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;Element&lt;Fr&gt;&gt;();
     <b>let</b> j = 0;
     <b>while</b> (j &lt; n) {
         <b>let</b> idx = *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(validator_indices, j);
-        <b>let</b> lambda = <a href="threshold_dsa.md#0x1_threshold_dsa_compute_lagrange_coefficient">compute_lagrange_coefficient</a>(idx, validator_indices, total_validators);
+        <b>let</b> lambda = <a href="threshold_dsa.md#0x1_threshold_dsa_compute_lagrange_coefficient_fr">compute_lagrange_coefficient_fr</a>(idx, validator_indices);
         <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> lambdas, lambda);
         j = j + 1;
     };
 
+    // Deserialize shares and multiply by Lagrange coefficients
     <b>let</b> result = zero&lt;G1&gt;();
     <b>let</b> i = 0;
     <b>while</b> (i &lt; n) {
@@ -533,9 +522,8 @@ The aggregated decryption key (serialized G1 point), or empty if shares is empty
         <b>let</b> share_opt = deserialize&lt;G1, FormatG1Compr&gt;(share_bytes);
         <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_is_some">option::is_some</a>(&share_opt)) {
             <b>let</b> share = <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_destroy_some">option::destroy_some</a>(share_opt);
-            <b>let</b> lambda_u128 = *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&lambdas, i);
-            <b>let</b> lambda_scalar = from_u64&lt;Fr&gt;((lambda_u128 <b>as</b> u64));
-            <b>let</b> scaled = scalar_mul(&share, &lambda_scalar);
+            <b>let</b> lambda = *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&lambdas, i);
+            <b>let</b> scaled = scalar_mul&lt;G1, Fr&gt;(&share, &lambda);
             result = add(&result, &scaled);
         };
         i = i + 1;
@@ -549,19 +537,19 @@ The aggregated decryption key (serialized G1 point), or empty if shares is empty
 
 </details>
 
-<a id="0x1_threshold_dsa_compute_lagrange_coefficient"></a>
+<a id="0x1_threshold_dsa_compute_lagrange_coefficient_fr"></a>
 
-## Function `compute_lagrange_coefficient`
+## Function `compute_lagrange_coefficient_fr`
 
-Compute Lagrange coefficient λ_k for validator k
+Compute Lagrange coefficient λ_k for validator k in Fr field
 
 λ_k = Π_{i ∈ V, i ≠ k} (0 - i) / (k - i)
 = Π_{i ∈ V, i ≠ k} (-i) / (k - i)
 
-Uses modulo arithmetic with prime q = 1000003.
+Uses BLS12-381 Fr field arithmetic via crypto_algebra natives.
 
 
-<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_compute_lagrange_coefficient">compute_lagrange_coefficient</a>(k: u64, participants: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, _total: u64): u128
+<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_compute_lagrange_coefficient_fr">compute_lagrange_coefficient_fr</a>(k: u64, participants: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;): <a href="../../aptos-stdlib/doc/crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;<a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra_Fr">bls12381_algebra::Fr</a>&gt;
 </code></pre>
 
 
@@ -570,71 +558,35 @@ Uses modulo arithmetic with prime q = 1000003.
 <summary>Implementation</summary>
 
 
-<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_compute_lagrange_coefficient">compute_lagrange_coefficient</a>(k: u64, participants: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, _total: u64): u128 {
-    <b>let</b> num = 1u128;
-    <b>let</b> den = 1u128;
+<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_compute_lagrange_coefficient_fr">compute_lagrange_coefficient_fr</a>(k: u64, participants: &<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;): Element&lt;Fr&gt; {
+    <b>let</b> num = from_u64&lt;Fr&gt;(1);
+    <b>let</b> den = from_u64&lt;Fr&gt;(1);
     <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(participants);
     <b>let</b> i = 0;
-    <b>let</b> q: u128 = 1000003;
     <b>while</b> (i &lt; n) {
         <b>let</b> idx = *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(participants, i);
         <b>if</b> (idx != k) {
-            // numerator: (-idx) mod q = q - idx
-            <b>let</b> neg_idx = q - (idx <b>as</b> u128);
-            num = (num * neg_idx) % q;
+            // numerator: -idx
+            <b>let</b> neg_idx = from_u64&lt;Fr&gt;(idx);
+            num = sub(&num, &neg_idx);
 
-            // denominator: (k - idx) mod q
-            // Handle the sign by checking <b>if</b> k &gt; idx
-            <b>let</b> diff = <b>if</b> (k &gt; idx) { k - idx } <b>else</b> { idx - k };
-            <b>let</b> diff_mod = (diff <b>as</b> u128) % q;
-            <b>if</b> (k &lt; idx) {
-                // k - idx is negative, so (k - idx) mod q = q - diff
-                den = (den * (q - diff_mod)) % q;
-            } <b>else</b> {
-                den = (den * diff_mod) % q;
-            };
+            // denominator: (k - idx)
+            <b>let</b> k_fr = from_u64&lt;Fr&gt;(k);
+            <b>let</b> idx_fr = from_u64&lt;Fr&gt;(idx);
+            <b>let</b> diff = sub(&k_fr, &idx_fr);
+            den = mul(&den, &diff);
         };
         i = i + 1;
     };
 
-    // λ = num * den^(-1) mod q
-    <b>let</b> den_inv = <a href="threshold_dsa.md#0x1_threshold_dsa_mod_exp">mod_exp</a>(den, q - 2, q);
-    (num * den_inv) % q
-}
-</code></pre>
-
-
-
-</details>
-
-<a id="0x1_threshold_dsa_mod_exp"></a>
-
-## Function `mod_exp`
-
-Modular exponentiation: base^exp mod mod
-
-
-<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_mod_exp">mod_exp</a>(base: u128, exp: u128, mod: u128): u128
-</code></pre>
-
-
-
-<details>
-<summary>Implementation</summary>
-
-
-<pre><code><b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_mod_exp">mod_exp</a>(base: u128, exp: u128, mod: u128): u128 {
-    <b>let</b> result = 1u128;
-    <b>let</b> b = base % mod;
-    <b>let</b> e = exp;
-    <b>while</b> (e &gt; 0) {
-        <b>if</b> (e % 2 == 1) {
-            result = (result * b) % mod;
-        };
-        b = (b * b) % mod;
-        e = e / 2;
-    };
-    result
+    // λ = num * den^(-1)
+    <b>let</b> den_inv = inv(&den);
+    <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_is_some">option::is_some</a>(&den_inv)) {
+        mul(&num, &<a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_destroy_some">option::destroy_some</a>(den_inv))
+    } <b>else</b> {
+        // Should never happen for valid participants
+        from_u64&lt;Fr&gt;(0)
+    }
 }
 </code></pre>
 
