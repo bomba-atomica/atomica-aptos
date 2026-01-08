@@ -425,13 +425,13 @@ mod tests {
 
     use super::*;
     use aptos_crypto::Uniform;
+    use aptos_dkg::pvss::traits::ThresholdConfig;
     use aptos_types::dkg::{DKGSessionMetadata, DKGTrait};
-    use aptos_types::on_chain_config::RandomnessConfig;
+    use aptos_types::on_chain_config::{OnChainRandomnessConfig, RandomnessConfigMoveStruct};
     use aptos_types::validator_verifier::ValidatorConsensusInfoMoveStruct;
     use blstrs::Scalar;
     use ff::Field;
     use move_core_types::account_address::AccountAddress;
-    use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
     fn create_test_session_metadata(num_validators: usize) -> DKGSessionMetadata {
@@ -450,9 +450,10 @@ mod tests {
             });
         }
 
+        let randomness_config = OnChainRandomnessConfig::default_enabled();
         DKGSessionMetadata {
             dealer_epoch: 1,
-            randomness_config: RandomnessConfig::default_enabled().to_bytes(),
+            randomness_config: RandomnessConfigMoveStruct::from(randomness_config),
             dealer_validator_set: validators.clone(),
             target_validator_set: validators,
         }
@@ -485,7 +486,14 @@ mod tests {
             pub_params.pvss_config.wconfig.get_total_weight(),
             num_validators
         );
-        assert!(pub_params.pvss_config.sc.get_threshold() > 0);
+        assert!(
+            pub_params
+                .pvss_config
+                .wconfig
+                .get_threshold_config()
+                .get_threshold()
+                > 0
+        );
     }
 
     /// **Protocol Step 2: Setup + Deal**
@@ -646,7 +654,7 @@ mod tests {
         // Step 5: Decrypt shares for validator 0
         let player_idx = 0;
         let player_dk = bls12381::PrivateKey::generate(&mut rng);
-        let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
+        let dk_pvss = aptos_types::dkg::real_dkg::maybe_dk_from_bls_sk(&player_dk).unwrap();
 
         let (scalar_shares, _pk_shares) = IbeDKG::decrypt_secret_share_from_transcript(
             &pub_params,
@@ -657,10 +665,9 @@ mod tests {
         .unwrap();
 
         // Verify shares
-        let weight = pub_params
-            .pvss_config
-            .wconfig
-            .get_player_weight(&Player { id: player_idx });
+        let weight = pub_params.pvss_config.wconfig.get_player_weight(&Player {
+            id: player_idx as usize,
+        });
         assert_eq!(scalar_shares.len(), weight);
 
         // Each share should be non-zero (with high probability)
@@ -716,7 +723,7 @@ mod tests {
 
         for player_idx in 0..num_validators {
             let dk = bls12381::PrivateKey::generate(&mut rng);
-            let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&dk).unwrap();
+            let dk_pvss = aptos_types::dkg::real_dkg::maybe_dk_from_bls_sk(&dk).unwrap();
 
             let (shares, _pk_shares) = IbeDKG::decrypt_secret_share_from_transcript(
                 &pub_params,
@@ -830,7 +837,7 @@ mod tests {
         let mut player_shares = Vec::new();
         for i in 0..3 {
             let dk = bls12381::PrivateKey::generate(&mut rng);
-            let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&dk).unwrap();
+            let dk_pvss = aptos_types::dkg::real_dkg::maybe_dk_from_bls_sk(&dk).unwrap();
 
             let (shares, _) = IbeDKG::decrypt_secret_share_from_transcript(
                 &pub_params,
@@ -866,7 +873,7 @@ mod tests {
 
         // Decrypt shares for player 0
         let player_dk = bls12381::PrivateKey::generate(&mut rng);
-        let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
+        let dk_pvss = aptos_types::dkg::real_dkg::maybe_dk_from_bls_sk(&player_dk).unwrap();
 
         let (scalar_shares, _) =
             IbeDKG::decrypt_secret_share_from_transcript(&pub_params, &transcript, 0, &dk_pvss)
@@ -955,7 +962,7 @@ mod tests {
         assert!(IbeDKG::verify_transcript(&pub_params, &transcript).is_ok());
 
         let player_dk = bls12381::PrivateKey::generate(&mut rng);
-        let dk_pvss = aptos_dkg::pvss::das::decrypt_key_from_bls_sk(&player_dk).unwrap();
+        let dk_pvss = aptos_types::dkg::real_dkg::maybe_dk_from_bls_sk(&player_dk).unwrap();
 
         let result =
             IbeDKG::decrypt_secret_share_from_transcript(&pub_params, &transcript, 0, &dk_pvss);

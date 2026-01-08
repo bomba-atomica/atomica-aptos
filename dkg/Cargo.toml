@@ -52,6 +52,7 @@ tokio-retry = { workspace = true }
 
 [dev-dependencies]
 aptos-types = { workspace = true, features = ["testing"] }
+rand_chacha = "0.2.2"
 
 [features]
 smoke-test = []
