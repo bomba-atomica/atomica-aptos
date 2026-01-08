@@ -56,7 +56,7 @@ We implement this using the IETF standard <code>hash_to_curve</code> (XMD:SHA-25
 ### Protocol Role
 
 
-This module connects the abstract concept of an "Identity" (e.g. a time interval)
+This module connects the abstract concept of an "Identity" (e.g. a timelock identity)
 to the cryptographic verification logic in <code><a href="threshold_dsa.md#0x1_threshold_dsa">threshold_dsa</a></code>.
 
 
@@ -143,9 +143,9 @@ This function verifies that the provided <code>private_key_bytes</code> constitu
 $$ \text{Verify}(P_{pub}, ID, d_{ID}) \iff e(d_{ID}, g_2) = e(H_1(ID), P_{pub}) $$
 
 In the context of the Timelock Service:
-*   **Identity**: The time interval number (serialized).
+*   **Identity**: The timelock identity string (serialized).
 *   **Private Key**: The "decryption key" revealed by the validator set.
-*   **Verification**: Ensures that the revealed key is cryptographically valid and bound to the interval.
+*   **Verification**: Ensures that the revealed key is cryptographically valid and bound to the identity.
 
 This wraps <code><a href="threshold_dsa.md#0x1_threshold_dsa_verify_signature_point">threshold_dsa::verify_signature_point</a></code>.
 

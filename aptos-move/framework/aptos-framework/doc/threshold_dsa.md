@@ -59,7 +59,7 @@
 <code>master_public_keys: <a href="../../aptos-stdlib/doc/table.md#0x1_table_Table">table::Table</a>&lt;u64, <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;</code>
 </dt>
 <dd>
- Map of ID (e.g. interval/epoch) to Master Public Key bytes (compressed G2)
+ Map of ID (e.g. epoch) to Master Public Key bytes (compressed G2)
 </dd>
 </dl>
 
@@ -326,7 +326,7 @@ By bilinearity: $e(s \cdot H(m), g_2) = e(H(m), g_2)^s = e(H(m), s \cdot g_2) = 
 ### Parameters
 
 
-*   <code>id</code>: The identifier for the stored MPK (e.g. epoch/interval).
+*   <code>id</code>: The identifier for the stored MPK (e.g. epoch).
 *   <code>msg</code>: The message bytes to be signed. This will be hashed to curve $G_1$ via <code>hash_to_curve</code>.
 *   <code>sig</code>: The signature bytes (compressed $G_1$ point).
 

@@ -481,7 +481,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         )
     }
 
-    /// Build DKGSessionMetadata for a timelock interval.
+    /// Build DKGSessionMetadata for a timelock epoch.
     ///
     /// For timelock DKG, we construct metadata from the current epoch state
     /// and the timelock configuration from the event.
@@ -628,7 +628,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         >(QueueStyle::FIFO, 100, None);
         let (close_tx, close_rx) = oneshot::channel();
 
-        // Build DKGSessionMetadata for this timelock interval
+        // Build DKGSessionMetadata for this timelock epoch
         // Note: For timelock, we use a simplified metadata structure
         // The threshold/total come from the event.config
         let session_metadata = match Self::build_timelock_session_metadata(&event, &epoch_state) {
@@ -651,7 +651,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             start_time_us,
         };
 
-        // Store channels for routing future messages to this interval's DKG
+        // Store channels for routing future messages to this epoch's DKG
         self.timelock_rpc_msg_txs.insert(event.epoch, rpc_msg_tx);
 
         let dkg_manager = DKGManager::<crate::ibe_dkg::IbeDKG>::new(
@@ -687,7 +687,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // TODO Phase 3/4: After DKG completes successfully, we need to:
         // 1. Detect when the DKG transcript is finalized on-chain
         // 2. Extract our secret share from the local DKG state
-        // 3. Store it using self.store_timelock_share(interval, share_bytes)
+        // 3. Store it using self.store_timelock_share(epoch, share_bytes)
         // Options:
         //   a) Add a callback to DKGManager for completion notification
         //   b) Poll blockchain state for TimelockDKGResult events
@@ -708,7 +708,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             event.id
         );
 
-        // Cleanup the DKG session for this interval if it's still running.
+        // Cleanup the DKG session for this epoch if it's still running.
         // Once the key is published on-chain, our local DKG manager task is no longer needed.
         if let Some(tx) = self.timelock_dkg_close_txs.remove(&event.id) {
             debug!(
@@ -751,17 +751,6 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Err(e) => {
                 error!(
                     "[Timelock] Failed to build session metadata for epoch {}: {}",
-                    event.id, e
-                );
-                return Ok(());
-            },
-        };
-
-        let metadata = match Self::build_timelock_session_metadata(&start_event, &epoch_state) {
-            Ok(m) => m,
-            Err(e) => {
-                error!(
-                    "[Timelock] Failed to build session metadata for interval {}: {}",
                     event.id, e
                 );
                 return Ok(());
@@ -1039,7 +1028,7 @@ mod tests {
 
         // 3 out of 4 is 75%
         let event = StartKeyGenEvent {
-            interval: 100,
+            epoch: 100,
             config: TimelockConfig {
                 threshold: 3,
                 total_validators: 4,
@@ -1140,7 +1129,7 @@ mod tests {
             assert!(tl_rx.select_next_some().now_or_never().is_none());
         }
 
-        // Scenario 2: Timelock DKG is ACTIVE for a future interval/session.
+        // Scenario 2: Timelock DKG is ACTIVE for a future epoch/session.
         // Expect: msg with tl_session_id routed to correct timelock_txs entry,
         // even if Randomness V2 is also active for the current epoch.
         {
@@ -1150,7 +1139,7 @@ mod tests {
             let tl_session_id = 100;
             timelock_txs.insert(tl_session_id, tl_tx);
 
-            // Message for Timelock interval
+            // Message for Timelock epoch
             EpochManager::<DbBackedOnChainConfig>::route_rpc_request_internal(
                 Some(dkg_epoch),
                 &Some(dkg_tx),
@@ -1231,25 +1220,25 @@ mod tests {
             0,
         );
 
-        // Add dummy sessions for intervals 100 and 101
-        for interval in [100, 101] {
+        // Add dummy sessions for epochs 100 and 101
+        for epoch in [100, 101] {
             let (close_tx, _) = oneshot::channel();
             let (rpc_tx, _) = aptos_channel::new(QueueStyle::FIFO, 10, None);
-            manager.timelock_dkg_close_txs.insert(interval, close_tx);
-            manager.timelock_rpc_msg_txs.insert(interval, rpc_tx);
+            manager.timelock_dkg_close_txs.insert(epoch, close_tx);
+            manager.timelock_rpc_msg_txs.insert(epoch, rpc_tx);
         }
 
         assert_eq!(manager.timelock_dkg_close_txs.len(), 2);
         assert_eq!(manager.timelock_rpc_msg_txs.len(), 2);
 
-        // 1. Test Interval-level Cleanup: MasterPublicKeyPublishedEvent for interval 100
+        // 1. Test Epoch-level Cleanup: MasterPublicKeyPublishedEvent for epoch 100
         let event = MasterPublicKeyPublishedEvent {
             id: 100,
             master_public_key: vec![],
         };
         manager.process_timelock_key_published(event).unwrap();
 
-        // Interval 100 should be removed, 101 should remain
+        // Epoch 100 should be removed, 101 should remain
         assert!(!manager.timelock_dkg_close_txs.contains_key(&100));
         assert!(!manager.timelock_rpc_msg_txs.contains_key(&100));
         assert!(manager.timelock_dkg_close_txs.contains_key(&101));

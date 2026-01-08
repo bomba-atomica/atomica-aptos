@@ -1177,22 +1177,6 @@ pub enum EntryFunctionCall {
         deadline: u64,
     },
 
-    /// Set checkpoint period for testing (devnet/testnet only).
-    ///
-    /// This function allows overriding the default period on test networks
-    /// to speed up testing (e.g., 5 seconds instead of 1 hour).
-    ///
-    /// # Security
-    /// This function is blocked on mainnet (chain_id == 1) to prevent
-    /// production misconfigurations.
-    ///
-    /// # Arguments
-    /// - framework: Must be @aptos_framework signer
-    /// - period_us: New period in microseconds
-    TimelockConfigSetCheckpointPeriodForTesting {
-        period_us: u64,
-    },
-
     TransactionFeeConvertToAptosFaBurnRef {},
 
     /// Used in on-chain governances to update the major version for the next epoch.
@@ -1976,9 +1960,6 @@ impl EntryFunctionCall {
                 timelock_publish_public_key(timelock_id, mpk)
             },
             TimelockRegister { deadline } => timelock_register(deadline),
-            TimelockConfigSetCheckpointPeriodForTesting { period_us } => {
-                timelock_config_set_checkpoint_period_for_testing(period_us)
-            },
             TransactionFeeConvertToAptosFaBurnRef {} => {
                 transaction_fee_convert_to_aptos_fa_burn_ref()
             },
@@ -5284,33 +5265,6 @@ pub fn timelock_register(deadline: u64) -> TransactionPayload {
     ))
 }
 
-/// Set checkpoint period for testing (devnet/testnet only).
-///
-/// This function allows overriding the default period on test networks
-/// to speed up testing (e.g., 5 seconds instead of 1 hour).
-///
-/// # Security
-/// This function is blocked on mainnet (chain_id == 1) to prevent
-/// production misconfigurations.
-///
-/// # Arguments
-/// - framework: Must be @aptos_framework signer
-/// - period_us: New period in microseconds
-pub fn timelock_config_set_checkpoint_period_for_testing(period_us: u64) -> TransactionPayload {
-    TransactionPayload::EntryFunction(EntryFunction::new(
-        ModuleId::new(
-            AccountAddress::new([
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 1,
-            ]),
-            ident_str!("timelock_config").to_owned(),
-        ),
-        ident_str!("set_checkpoint_period_for_testing").to_owned(),
-        vec![],
-        vec![bcs::to_bytes(&period_us).unwrap()],
-    ))
-}
-
 pub fn transaction_fee_convert_to_aptos_fa_burn_ref() -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
@@ -7537,20 +7491,6 @@ mod decoder {
         }
     }
 
-    pub fn timelock_config_set_checkpoint_period_for_testing(
-        payload: &TransactionPayload,
-    ) -> Option<EntryFunctionCall> {
-        if let TransactionPayload::EntryFunction(script) = payload {
-            Some(
-                EntryFunctionCall::TimelockConfigSetCheckpointPeriodForTesting {
-                    period_us: bcs::from_bytes(script.args().get(0)?).ok()?,
-                },
-            )
-        } else {
-            None
-        }
-    }
-
     pub fn transaction_fee_convert_to_aptos_fa_burn_ref(
         payload: &TransactionPayload,
     ) -> Option<EntryFunctionCall> {
@@ -8373,10 +8313,6 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
         map.insert(
             "timelock_register".to_string(),
             Box::new(decoder::timelock_register),
-        );
-        map.insert(
-            "timelock_config_set_checkpoint_period_for_testing".to_string(),
-            Box::new(decoder::timelock_config_set_checkpoint_period_for_testing),
         );
         map.insert(
             "transaction_fee_convert_to_aptos_fa_burn_ref".to_string(),
