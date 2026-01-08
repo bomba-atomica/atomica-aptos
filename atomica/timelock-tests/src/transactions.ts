@@ -11,32 +11,6 @@ export class TimelockTransactions {
   ) {}
 
   /**
-   * Set the timelock checkpoint period for testing purposes.
-   * Note: This is only available on non-mainnet chains.
-   */
-  async setIntervalForTesting(periodUs: number): Promise<string> {
-    const payload: Types.TransactionPayload = {
-      type: "entry_function_payload",
-      function: "0x1::timelock_config::set_checkpoint_period_for_testing",
-      type_arguments: [],
-      arguments: [periodUs],
-    };
-
-    const txn = await this.client.generateTransaction(this.account.address(), payload);
-    const signedTxn = await this.client.signTransaction(this.account, txn);
-    const pendingTxn = await this.client.submitTransaction(signedTxn);
-    const txnResult = (await this.client.waitForTransactionWithResult(pendingTxn.hash)) as any;
-
-    if (!txnResult.success) {
-      throw new Error(`Set checkpoint period for testing failed: ${txnResult.vm_status}`);
-    }
-
-    console.log(`Set checkpoint period for testing transaction completed: ${periodUs}us`);
-
-    return pendingTxn.hash;
-  }
-
-  /**
    * Force force rotation for testing purposes.
    * Note: This is only available on non-mainnet chains.
    */

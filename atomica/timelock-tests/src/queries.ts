@@ -129,21 +129,4 @@ export class TimelockQueries {
     }
     return parseInt((timestampResource.data as any).microseconds, 10);
   }
-
-  /**
-   * Get configured timelock checkpoint period
-   */
-  async getConfiguredInterval(): Promise<number> {
-    try {
-      const resources = await this.client.getAccountResources("0x1");
-      const configResource = resources.find((r: any) => r.type.includes("timelock_config::TimelockConfig"));
-      if (!configResource) {
-        throw new Error("Timelock config resource not found");
-      }
-      return parseInt((configResource.data as any).checkpoint_period_microseconds, 10);
-    } catch (error) {
-      console.log(`Error getting configured checkpoint period: ${error}`);
-      throw error;
-    }
-  }
 }

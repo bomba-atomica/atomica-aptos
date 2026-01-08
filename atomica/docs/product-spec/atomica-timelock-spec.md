@@ -192,25 +192,6 @@ let microseconds = 1704067200000000_u64;
 let seconds = microseconds / 1_000_000;
 ```
 
-### Checkpoint Alignment
-
-Deadlines must be aligned to `checkpoint_period_microseconds`:
-
-```rust
-// Valid if deadline is multiple of checkpoint period
-deadline_timestamp_microseconds % checkpoint_period_microseconds == 0
-
-// Example: 1-hour checkpoints
-checkpoint_period_microseconds = 3_600_000_000  // 1 hour in microseconds
-
-// Valid deadlines:
-// 1704067200000000 (2024-01-01 00:00:00) ✓ aligned
-// 1704070800000000 (2024-01-01 01:00:00) ✓ aligned
-
-// Invalid deadline:
-// 1704071234567890 (arbitrary timestamp)  ✗ not aligned
-```
-
 ### Field Naming Convention
 
 > [!IMPORTANT]
@@ -238,14 +219,14 @@ checkpoint_period_microseconds = 3_600_000_000  // 1 hour in microseconds
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      ON-CHAIN (Move)                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │ timelock     │  │ timelock_    │  │ block        │          │
-│  │ .move        │◄─│ config.move  │◄─│ .move        │          │
-│  │              │  │              │  │              │          │
-│  │ TimelockState│  │ CheckpointCfg│  │ on_new_block │          │
-│  │ Events       │  │              │  │ (rotation)   │          │
-│  │ Aggregation  │  │              │  │              │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
+│  ┌──────────────┐  ┌──────────────┐          │
+│  │ timelock     │◄─│ block        │          │
+│  │ .move        │  │ .move        │          │
+│  │              │  │              │          │
+│  │ TimelockState│  │ on_new_block │          │
+│  │ Events       │  │ (rotation)   │          │
+│  │ Aggregation  │  │              │          │
+│  └──────────────┘  └──────────────┘          │
 └────────────────────────┬────────────────────────────────────────┘
                          │ Events
                          ▼
@@ -692,7 +673,7 @@ struct SecretRevealedEvent {
 **Timelock Dashboard:**
 
 - **Current Deadline:** Display as "Deadline #42"
-- **Next Rotation:** Estimate based on `last_rotation_time + checkpoint_period_microseconds`
+- **Next Rotation:** Estimate based on `last_rotation_time`
 - **Recent Deadlines:** Table showing:
   - Deadline number
   - Public Key status (Published / Pending)
@@ -953,7 +934,7 @@ module my_addr::sealed_auction {
 **1. Timing Strategy**
 
 - Encrypt for `current_deadline + 1` or later
-- Allow buffer time (2-3 checkpoint periods) for DKG reliability
+- Allow buffer time for DKG reliability
 - Monitor events for key publication confirmation
 
 **2. Error Handling**
@@ -1089,15 +1070,6 @@ OnChainConsensusConfig::V5 {
 }
 ```
 
-**Timelock Configuration:**
-
-```move
-// aptos_framework::timelock_config
-TimelockConfig {
-    checkpoint_period_microseconds: 3600 * 1000000,  // 1 hour (production)
-}
-```
-
 **Storage Tables:**
 
 ```move
@@ -1164,7 +1136,6 @@ bun run test:ibe    # Full encryption/decryption
 **Devnet:**
 
 - Shorter deadlines (5 seconds for fast testing)
-- Use `set_checkpoint_period_for_testing()` entry function
 - Monitor via explorer
 
 **Testnet/Mainnet:**
@@ -1329,7 +1300,6 @@ The Atomica Timelock system builds upon existing Aptos infrastructure. This sect
 ├────────────────────────────────────────────────────────┤
 │  Move Modules:                                          │
 │    - timelock.move (state, logic, events)              │
-│    - timelock_config.move (deadline config)            │
 │                                                         │
 │  Rust Extensions:                                       │
 │    - Timelock DKG handlers in EpochManager             │
