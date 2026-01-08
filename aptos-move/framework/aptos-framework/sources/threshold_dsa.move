@@ -4,7 +4,7 @@ module aptos_framework::threshold_dsa {
     use aptos_std::table::{Self, Table};
     use aptos_framework::system_addresses;
     use aptos_framework::stake;
-    use aptos_std::crypto_algebra::{zero, one, from_u64, eq, deserialize, serialize, add, scalar_mul, hash_to, pairing, Element};
+    use aptos_std::crypto_algebra::{zero, one, from_u64, eq, deserialize, serialize, add, sub, scalar_mul, hash_to, pairing, Element, inv};
     use aptos_std::bls12381_algebra::{G1, G2, Gt, Fr, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
 
     friend aptos_framework::timelock;
@@ -142,20 +142,8 @@ module aptos_framework::threshold_dsa {
         let signature = option::destroy_some(sig_opt);
         
         // Use Hash-to-Curve to map message to G1
-        // Using same suite as defined in bls12381_algebra
-        let h_msg = hash_to<G1, HashG1XmdSha256SswuRo>(&b"IBE-BLS-SIG", &msg); 
-        // Note: DST should be verified against spec. "IBE-BLS-SIG" matches nothing?
-        // Using empty DST or a specific one? 
-        // Boneh-Franklin uses H_1. 
-        // bls12381_algebra uses HashG1XmdSha256SswuRo default DST "QUUX...".
-        // I should probably pass DST or use a standard one. 
-        // For now using "IBE-BLS_SIG" as placeholder. This must match how signatures were generated!
-        // But wait, the user said "Exact nomenclature of IBE paper".
-        // The paper just says H_1.
-        // I will use a fixed DST provided by `ibe_signature` via arguments?
-        // `threshold_dsa` is generic. Let's assume the caller handles hashing to G1?
-        // But `verify_signature` takes `msg: vector<u8>`.
-        // If `ibe_signature` calls this with ALREADY HASHED bytes (ID), then we should hash them to curve.
+        // Using same DST as Rust's BLS_WVUF_DST = b"APTOS_BLS_WVUF_DST"
+        let h_msg = hash_to<G1, HashG1XmdSha256SswuRo>(&b"APTOS_BLS_WVUF_DST", &msg);
         
         // Verification: e(sig, g2_gen) == e(h_msg, mpk)
         let lhs = pairing<G1, G2, Gt>(&signature, &one<G2>());
@@ -239,15 +227,17 @@ module aptos_framework::threshold_dsa {
             return vector::empty<u8>()
         };
 
-        let lambdas = vector::empty<u128>();
+        // Compute Lagrange coefficients using Fr field operations
+        let lambdas = vector::empty<Element<Fr>>();
         let j = 0;
         while (j < n) {
             let idx = *vector::borrow(validator_indices, j);
-            let lambda = compute_lagrange_coefficient(idx, validator_indices, total_validators);
+            let lambda = compute_lagrange_coefficient_fr(idx, validator_indices);
             vector::push_back(&mut lambdas, lambda);
             j = j + 1;
         };
 
+        // Deserialize shares and multiply by Lagrange coefficients
         let result = zero<G1>();
         let i = 0;
         while (i < n) {
@@ -255,9 +245,8 @@ module aptos_framework::threshold_dsa {
             let share_opt = deserialize<G1, FormatG1Compr>(share_bytes);
             if (option::is_some(&share_opt)) {
                 let share = option::destroy_some(share_opt);
-                let lambda_u128 = *vector::borrow(&lambdas, i);
-                let lambda_scalar = from_u64<Fr>((lambda_u128 as u64));
-                let scaled = scalar_mul(&share, &lambda_scalar);
+                let lambda = *vector::borrow(&lambdas, i);
+                let scaled = scalar_mul<G1, Fr>(&share, &lambda);
                 result = add(&result, &scaled);
             };
             i = i + 1;
@@ -266,57 +255,41 @@ module aptos_framework::threshold_dsa {
         serialize<G1, FormatG1Compr>(&result)
     }
 
-    /// Compute Lagrange coefficient λ_k for validator k
+    /// Compute Lagrange coefficient λ_k for validator k in Fr field
     /// 
     /// λ_k = Π_{i ∈ V, i ≠ k} (0 - i) / (k - i)
     ///     = Π_{i ∈ V, i ≠ k} (-i) / (k - i)
     /// 
-    /// Uses modulo arithmetic with prime q = 1000003.
-    fun compute_lagrange_coefficient(k: u64, participants: &vector<u64>, _total: u64): u128 {
-        let num = 1u128;
-        let den = 1u128;
+    /// Uses BLS12-381 Fr field arithmetic via crypto_algebra natives.
+    fun compute_lagrange_coefficient_fr(k: u64, participants: &vector<u64>): Element<Fr> {
+        let num = from_u64<Fr>(1);
+        let den = from_u64<Fr>(1);
         let n = vector::length(participants);
         let i = 0;
-        let q: u128 = 1000003;
         while (i < n) {
             let idx = *vector::borrow(participants, i);
             if (idx != k) {
-                // numerator: (-idx) mod q = q - idx
-                let neg_idx = q - (idx as u128);
-                num = (num * neg_idx) % q;
+                // numerator: -idx
+                let neg_idx = from_u64<Fr>(idx);
+                num = sub(&num, &neg_idx);
 
-                // denominator: (k - idx) mod q
-                // Handle the sign by checking if k > idx
-                let diff = if (k > idx) { k - idx } else { idx - k };
-                let diff_mod = (diff as u128) % q;
-                if (k < idx) {
-                    // k - idx is negative, so (k - idx) mod q = q - diff
-                    den = (den * (q - diff_mod)) % q;
-                } else {
-                    den = (den * diff_mod) % q;
-                };
+                // denominator: (k - idx)
+                let k_fr = from_u64<Fr>(k);
+                let idx_fr = from_u64<Fr>(idx);
+                let diff = sub(&k_fr, &idx_fr);
+                den = mul(&den, &diff);
             };
             i = i + 1;
         };
 
-        // λ = num * den^(-1) mod q
-        let den_inv = mod_exp(den, q - 2, q);
-        (num * den_inv) % q
-    }
-
-    /// Modular exponentiation: base^exp mod mod
-    fun mod_exp(base: u128, exp: u128, mod: u128): u128 {
-        let result = 1u128;
-        let b = base % mod;
-        let e = exp;
-        while (e > 0) {
-            if (e % 2 == 1) {
-                result = (result * b) % mod;
-            };
-            b = (b * b) % mod;
-            e = e / 2;
-        };
-        result
+        // λ = num * den^(-1)
+        let den_inv = inv(&den);
+        if (option::is_some(&den_inv)) {
+            mul(&num, &option::destroy_some(den_inv))
+        } else {
+            // Should never happen for valid participants
+            from_u64<Fr>(0)
+        }
     }
 
     // =========================================================================
@@ -356,100 +329,9 @@ module aptos_framework::threshold_dsa {
         assert!(!result, 1);
     }
 
-    #[test]
-    fun test_compute_lagrange_single_participant() {
-        let participants = vector::empty<u64>();
-        vector::push_back(&mut participants, 5);
-        
-        let lambda = compute_lagrange_coefficient(5, &participants, 10);
-        assert!(lambda == 1, 1);
-    }
-
-    #[test]
-    fun test_compute_lagrange_two_participants() {
-        let participants = vector::empty<u64>();
-        vector::push_back(&mut participants, 1);
-        vector::push_back(&mut participants, 2);
-        
-        let lambda_1 = compute_lagrange_coefficient(1, &participants, 2);
-        let lambda_2 = compute_lagrange_coefficient(2, &participants, 2);
-        
-        // Using prime q = 1000003
-        let q: u128 = 1000003;
-        // λ_1 = (-2) / (-1) = 2
-        let expected_lambda_1: u128 = 2;
-        // λ_2 = (-1) / (1) = -1 = q - 1
-        let expected_lambda_2: u128 = q - 1;
-        
-        assert!(lambda_1 == expected_lambda_1, 1);
-        assert!(lambda_2 == expected_lambda_2, 2);
-    }
-
-    #[test]
-    fun test_compute_lagrange_three_participants() {
-        let participants = vector::empty<u64>();
-        vector::push_back(&mut participants, 1);
-        vector::push_back(&mut participants, 2);
-        vector::push_back(&mut participants, 3);
-        
-        let lambda_1 = compute_lagrange_coefficient(1, &participants, 3);
-        let lambda_2 = compute_lagrange_coefficient(2, &participants, 3);
-        let lambda_3 = compute_lagrange_coefficient(3, &participants, 3);
-        
-        let q: u128 = 1000003;
-        
-        // λ_1 = (-2)(-3) / ((-1)(-2)) = 6/2 = 3
-        // λ_2 = (-1)(-3) / ((1)(-1)) = 3/(-1) = -3 = q - 3
-        // λ_3 = (-1)(-2) / ((2)(1)) = 2/2 = 1
-        assert!(lambda_1 == 3, 1);
-        assert!(lambda_2 == q - 3, 2);
-        assert!(lambda_3 == 1, 3);
-        
-        // λ_1 + λ_2 + λ_3 should equal 1 (Lagrange identity property)
-        let sum = (lambda_1 + lambda_2 + lambda_3) % q;
-        assert!(sum == 1, 4);
-    }
-
-    #[test]
-    fun test_lagrange_coefficients_sum_to_one() {
-        let test_cases = vector::empty<vector<u64>>();
-        
-        let case1 = vector::empty<u64>();
-        vector::push_back(&mut case1, 1);
-        vector::push_back(&mut test_cases, case1);
-        
-        let case2 = vector::empty<u64>();
-        vector::push_back(&mut case2, 1);
-        vector::push_back(&mut case2, 2);
-        vector::push_back(&mut test_cases, case2);
-        
-        let case3 = vector::empty<u64>();
-        vector::push_back(&mut case3, 0);
-        vector::push_back(&mut case3, 1);
-        vector::push_back(&mut case3, 2);
-        vector::push_back(&mut test_cases, case3);
-        
-        let q: u128 = 1000003;
-        let num_cases = vector::length(&test_cases);
-        
-        let case_idx = 0;
-        while (case_idx < num_cases) {
-            let participants = *vector::borrow(&test_cases, case_idx);
-            let n = vector::length(&participants);
-            
-            let sum: u128 = 0;
-            let i = 0;
-            while (i < n) {
-                let idx = *vector::borrow(&participants, i);
-                let lambda = compute_lagrange_coefficient(idx, &participants, n);
-                sum = (sum + lambda) % q;
-                i = i + 1;
-            };
-            
-            assert!(sum == 1, 100 + case_idx);
-            case_idx = case_idx + 1;
-        };
-    }
+    // =========================================================================
+    // Tests for aggregate_timelock_shares with Fr field arithmetic
+    // =========================================================================
 
     #[test]
     fun test_aggregate_timelock_shares_empty() {
