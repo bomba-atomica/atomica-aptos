@@ -43,7 +43,7 @@ module aptos_framework::threshold_dsa {
     const EINVALID_SIGNATURE: u64 = 5;
 
     struct State has key {
-        /// Map of ID (e.g. interval/epoch) to Master Public Key bytes (compressed G2)
+        /// Map of ID (e.g. epoch) to Master Public Key bytes (compressed G2)
         master_public_keys: Table<u64, vector<u8>>,
     }
 
@@ -116,7 +116,7 @@ module aptos_framework::threshold_dsa {
     ///
     /// # Parameters
     ///
-    /// *   `id`: The identifier for the stored MPK (e.g. epoch/interval).
+    /// *   `id`: The identifier for the stored MPK (e.g. epoch).
     /// *   `msg`: The message bytes to be signed. This will be hashed to curve $G_1$ via `hash_to_curve`.
     /// *   `sig`: The signature bytes (compressed $G_1$ point).
     ///

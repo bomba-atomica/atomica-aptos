@@ -20,7 +20,7 @@ module aptos_framework::ibe_signature {
     ///
     /// # Protocol Role
     ///
-    /// This module connects the abstract concept of an "Identity" (e.g. a time interval)
+    /// This module connects the abstract concept of an "Identity" (e.g. a timelock identity)
     /// to the cryptographic verification logic in `threshold_dsa`.
 
     // DST for mapping identity to point.
@@ -67,9 +67,9 @@ module aptos_framework::ibe_signature {
     /// $$ \text{Verify}(P_{pub}, ID, d_{ID}) \iff e(d_{ID}, g_2) = e(H_1(ID), P_{pub}) $$
     ///
     /// In the context of the Timelock Service:
-    /// *   **Identity**: The time interval number (serialized).
+    /// *   **Identity**: The timelock identity string (serialized).
     /// *   **Private Key**: The "decryption key" revealed by the validator set.
-    /// *   **Verification**: Ensures that the revealed key is cryptographically valid and bound to the interval.
+    /// *   **Verification**: Ensures that the revealed key is cryptographically valid and bound to the identity.
     ///
     /// This wraps `threshold_dsa::verify_signature_point`.
     public fun verify_private_key(mpk_id: u64, identity: vector<u8>, private_key_bytes: vector<u8>): bool {
