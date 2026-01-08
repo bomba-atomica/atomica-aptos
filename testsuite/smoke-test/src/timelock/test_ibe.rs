@@ -1,7 +1,6 @@
 //! IBE (Identity-Based Encryption) tests for timelock (Registry Model)
 
 use super::test_helpers::{create_timelock_swarm, register_timelock, TimelockTestConfig};
-use anyhow::{anyhow, Result};
 use aptos_api_types::ViewFunction;
 use aptos_dkg::ibe::{compute_timelock_identity, ibe_decrypt, ibe_encrypt};
 use aptos_dkg::pvss::traits::Transcript;
@@ -25,6 +24,7 @@ async fn get_chain_time(client: &aptos_rest_client::Client) -> u64 {
     response[0]
 }
 
+/*
 async fn log_dkg_state(client: &aptos_rest_client::Client) {
     info!("=== DKG State Diagnostic ===");
     match super::verify_public_key_published(client, 1).await {
@@ -46,6 +46,7 @@ async fn log_dkg_state(client: &aptos_rest_client::Client) {
     }
     info!("===========================");
 }
+*/
 
 #[tokio::test]
 async fn test_ibe_registry_e2e() {

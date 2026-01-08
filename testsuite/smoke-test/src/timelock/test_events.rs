@@ -4,7 +4,6 @@
 //! timelock protocol. They check validator logs for event processing.
 
 use super::test_helpers::{create_timelock_swarm, register_timelock, TimelockTestConfig};
-use anyhow::{anyhow, Result};
 use aptos_api_types::ViewFunction;
 use aptos_logger::info;
 use move_core_types::identifier::Identifier;

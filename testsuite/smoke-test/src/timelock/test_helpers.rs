@@ -1,7 +1,6 @@
 //! Common test helpers for timelock smoke tests
 
 use crate::smoke_test_environment::SwarmBuilder;
-use anyhow::Result;
 use aptos_forge::{NodeExt, Swarm};
 use aptos_logger::{error, info};
 use aptos_types::on_chain_config::OnChainRandomnessConfig;
@@ -10,6 +9,7 @@ use move_core_types::language_storage::ModuleId;
 use std::sync::Arc;
 
 /// Configuration for timelock tests
+#[derive(Clone, Copy)]
 pub struct TimelockTestConfig {
     pub num_validators: usize,
     pub num_fullnodes: usize,
@@ -65,7 +65,7 @@ pub async fn create_timelock_swarm(
     let chain_id = swarm.chain_id();
 
     info!("Swarm created successfully");
-    info!("  - Client endpoint: {}", client.endpoint());
+    info!("  - Client endpoint: {}", client.path_prefix_string());
     info!("  - Chain ID: {:?}", chain_id);
 
     (Box::new(swarm), client, chain_id)
