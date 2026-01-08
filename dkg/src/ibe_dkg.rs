@@ -267,7 +267,9 @@ impl DKGTrait for IbeDKG {
     type PublicParams = RealDKGPublicParams;
     type Transcript = IbeTranscript;
 
-    fn new_public_params(dkg_session_metadata: &DKGSessionMetadata) -> RealDKGPublicParams {
+    fn new_public_params(
+        dkg_session_metadata: &DKGSessionMetadata,
+    ) -> anyhow::Result<RealDKGPublicParams> {
         RealDKG::new_public_params(dkg_session_metadata)
     }
 
@@ -471,7 +473,8 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup public parameters
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
 
         // Verify parameters are valid
         assert_eq!(
@@ -496,7 +499,8 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
 
         // Step 2: Deal - generate transcript
         let input_secret = PvtInputSecret::generate(&mut rng);
@@ -532,7 +536,8 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
 
         // Step 2: Deal
         let input_secret = PvtInputSecret::generate(&mut rng);
@@ -565,7 +570,8 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
 
         let input_secret = PvtInputSecret::generate(&mut rng);
 
@@ -607,7 +613,8 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
 
         let input_secret = PvtInputSecret::generate(&mut rng);
 
@@ -673,7 +680,8 @@ mod tests {
         let session_metadata = create_test_session_metadata(num_validators);
 
         // Step 1: Setup
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
 
         let input_secret = PvtInputSecret::generate(&mut rng);
         let expected_secret = IbeDKG::dealt_secret_from_input(&pub_params, &input_secret);
@@ -735,7 +743,8 @@ mod tests {
         let num_validators = 4;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
 
@@ -763,7 +772,8 @@ mod tests {
         let num_validators = 3;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
         let input_secret = PvtInputSecret::generate(&mut rng);
 
         // Generate transcripts from two dealers
@@ -792,7 +802,8 @@ mod tests {
         let num_validators = 4;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
         let input_secret = PvtInputSecret::generate(&mut rng);
         let expected_secret = IbeDKG::dealt_secret_from_input(&pub_params, &input_secret);
 
@@ -841,7 +852,8 @@ mod tests {
         let num_validators = 3;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
 
@@ -875,7 +887,8 @@ mod tests {
         let num_validators = 3;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
 
@@ -897,7 +910,8 @@ mod tests {
         let num_validators = 4;
         let session_metadata = create_test_session_metadata(num_validators);
 
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
         let input_secret = PvtInputSecret::generate(&mut rng);
 
         let sk1 = bls12381::PrivateKey::generate(&mut rng);
@@ -925,7 +939,8 @@ mod tests {
         let mut rng = ChaCha20Rng::from_seed([7u8; 32]);
         let session_metadata = create_test_session_metadata(1);
 
-        let pub_params = IbeDKG::new_public_params(&session_metadata);
+        let pub_params =
+            IbeDKG::new_public_params(&session_metadata).expect("new_public_params should succeed");
         let input_secret = PvtInputSecret::generate(&mut rng);
         let dealer_sk = bls12381::PrivateKey::generate(&mut rng);
 

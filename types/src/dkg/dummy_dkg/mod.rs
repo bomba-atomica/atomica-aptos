@@ -27,8 +27,10 @@ impl DKGTrait for DummyDKG {
     type PublicParams = DKGSessionMetadata;
     type Transcript = DummyDKGTranscript;
 
-    fn new_public_params(dkg_session_metadata: &DKGSessionMetadata) -> Self::PublicParams {
-        dkg_session_metadata.clone()
+    fn new_public_params(
+        dkg_session_metadata: &DKGSessionMetadata,
+    ) -> anyhow::Result<Self::PublicParams> {
+        Ok(dkg_session_metadata.clone())
     }
 
     fn aggregate_input_secret(secrets: Vec<DummySecret>) -> DummySecret {

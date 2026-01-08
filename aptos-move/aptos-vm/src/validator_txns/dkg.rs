@@ -36,6 +36,7 @@ pub(crate) enum ExpectedFailure {
     EpochNotCurrent = 0x10001,
     TranscriptDeserializationFailed = 0x10002,
     TranscriptVerificationFailed = 0x10003,
+    PublicParamsCreationFailed = 0x10004,
 
     // Move equivalent: `errors::invalid_state(*)`
     MissingResourceDKGState = 0x30001,
@@ -98,7 +99,8 @@ impl AptosVM {
         }
 
         // Deserialize transcript and verify it.
-        let pub_params = DefaultDKG::new_public_params(&in_progress_session_state.metadata);
+        let pub_params = DefaultDKG::new_public_params(&in_progress_session_state.metadata)
+            .map_err(|_| ExecutionFailure::Expected(PublicParamsCreationFailed))?;
         let transcript = bcs::from_bytes::<<DefaultDKG as DKGTrait>::Transcript>(
             dkg_node.transcript_bytes.as_slice(),
         )

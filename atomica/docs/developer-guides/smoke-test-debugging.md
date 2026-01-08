@@ -1,5 +1,11 @@
 # Smoke Test Debugging Guide
 
+> **Terminology Note**: This guide references "interval" in code examples and log output because the Move API and Rust code use legacy terminology. In documentation and conceptual explanations, use **deadline** instead:
+>
+> - Test output saying "interval 1" → refers to deadline 1
+> - Log message "interval_micros" → deadline timestamp in microseconds
+> - DKG runs per **epoch**, outputs used for all deadlines within that epoch
+
 ## Running Smoke Tests
 
 ### Basic Test Execution
@@ -43,11 +49,13 @@ Validator logs:
 ### Finding Validator Logs
 
 When a test fails, look for this line:
+
 ```
 Logs located at /var/folders/.../T/.tmpXXXXXX
 ```
 
 This directory contains the actual validator node logs where you'll find:
+
 - Event processing logs
 - DKG operations
 - Timelock revelation attempts
@@ -92,6 +100,7 @@ tail -f /path/to/logs/0/log | grep -E "Timelock|DKG"
 ### Key Log Messages to Look For
 
 **Event Subscription (should appear early):**
+
 ```
 [EventSub] subscribe_to_events called with 0 event_keys, 4 v2_tags:
   ["0x1::dkg::DKGStartEvent", "0x1::timelock::StartKeyGenEvent",
@@ -99,6 +108,7 @@ tail -f /path/to/logs/0/log | grep -E "Timelock|DKG"
 ```
 
 **DKG Processing (should appear during test):**
+
 ```
 [DKG] Successfully parsed DKGStartEvent
 [DKG] Processing DKGStart event
@@ -106,11 +116,12 @@ tail -f /path/to/logs/0/log | grep -E "Timelock|DKG"
 ```
 
 **Timelock Event Processing (what we're debugging):**
+
 ```
-[Timelock] Processing KeyPublishedEvent for interval N
-[Timelock] Storing secret share for interval N
-[Timelock] Revealing share for interval N
-[DKG] DEBUG: process_timelock_reveal called for interval N
+[Timelock] Processing KeyPublishedEvent for epoch N
+[Timelock] Storing DK_share for deadline N
+[Timelock] Revealing share for deadline N
+[DKG] DEBUG: process_timelock_reveal called for deadline N
 ```
 
 **Missing logs indicate where the problem is!**
@@ -184,6 +195,7 @@ if (!exists<TimelockState>(@aptos_framework)) {
 ```
 
 **Important notes:**
+
 - Debug prints must be added **before** compiling the Move code into the genesis/framework packages
 - Changes to `aptos-move/framework/*/sources/*.move` require recompiling `aptos-cached-packages`
 - Debug prints appear under `[debug]` log level in validator logs
@@ -226,12 +238,14 @@ done
 ### Step 4: Compare Test Expectations vs Reality
 
 **Test stdout says:**
+
 ```
 Waiting for secret to be revealed for interval 1
 (timeout after 60 attempts)
 ```
 
 **Validator logs show:**
+
 ```
 [EventSub] Subscribed to RequestRevealEvent  ✓
 (but no "Processing RequestRevealEvent" messages!)  ✗
@@ -244,11 +258,13 @@ Waiting for secret to be revealed for interval 1
 ### Issue: "Test times out waiting for condition"
 
 **Check:**
+
 1. Is the condition actually happening on-chain?
 2. Are validators processing events?
 3. Are there errors in validator logs?
 
 **Debug:**
+
 ```bash
 # Check if events are being delivered
 grep "EventNotification\|process_event" $LOG_DIR/0/log
@@ -260,6 +276,7 @@ grep "process_timelock\|Revealing share" $LOG_DIR/0/log
 ### Issue: "Events subscribed but not processed"
 
 **Symptoms:**
+
 - Log shows: `subscribe_to_events called with [..., "0x1::timelock::KeyPublishedEvent", ...]`
 - But no: `Processing KeyPublishedEvent` messages
 
@@ -285,6 +302,7 @@ async fn my_test() {
 ```
 
 Or copy logs before test ends:
+
 ```bash
 # In another terminal while test is running
 cp -r /var/folders/.../T/.tmpXXXXXX /tmp/saved_logs/
@@ -293,6 +311,7 @@ cp -r /var/folders/.../T/.tmpXXXXXX /tmp/saved_logs/
 ## Quick Reference
 
 ### Test Execution
+
 ```bash
 # Single test, save output
 cargo test -p smoke-test --lib timelock::TEST_NAME -- --test-threads=1 --nocapture > /tmp/out.txt 2>&1
@@ -305,6 +324,7 @@ cargo test -p smoke-test --lib timelock -- --test-threads=1 --nocapture
 ```
 
 ### Log Analysis
+
 ```bash
 # Get log directory from test output
 grep "Logs located at" /tmp/test_output.txt
@@ -323,6 +343,7 @@ grep -h "Timelock\|DKG" /path/to/logs/0/log | grep -v DEBUG | sort
 ```
 
 ### Common Grep Patterns
+
 ```bash
 # Event subscriptions
 grep "subscribe_to_events" $LOG_DIR/0/log

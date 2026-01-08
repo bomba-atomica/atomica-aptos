@@ -98,7 +98,7 @@ pub fn build_dkg_pvss_config(
     reconstruct_threshold: U64F64,
     maybe_fast_path_secrecy_threshold: Option<U64F64>,
     next_validators: &[ValidatorConsensusInfo],
-) -> DKGPvssConfig {
+) -> anyhow::Result<DKGPvssConfig> {
     let validator_stakes: Vec<u64> = next_validators.iter().map(|vi| vi.voting_power).collect();
     let timer = Instant::now();
     let DKGRounding {
@@ -115,44 +115,36 @@ pub fn build_dkg_pvss_config(
     );
     let rounding_time = timer.elapsed();
 
-    let mut key_conversion_error = None;
-    let consensus_keys: Vec<EncPK> = next_validators
-        .iter()
-        .filter_map(|vi| match vi.public_key.to_bytes().as_slice().try_into() {
-            Ok(key) => Some(key),
-            Err(_) => {
-                key_conversion_error = Some(format!(
-                    "Failed to convert key for validator {}",
-                    vi.address
-                ));
-                None
-            },
-        })
-        .collect();
+    let consensus_keys: Result<Vec<EncPK>, anyhow::Error> =
+        next_validators
+            .iter()
+            .map(|vi| {
+                vi.public_key.to_bytes().as_slice().try_into().map_err(|_| {
+                    anyhow!("Failed to convert public key for validator {}", vi.address)
+                })
+            })
+            .collect();
+
+    let consensus_keys =
+        consensus_keys.context("Failed to convert validator public keys for DKGG")?;
 
     let pp = DkgPP::default_with_bls_base();
-
-    let combined_error = match (rounding_error, key_conversion_error) {
-        (None, None) => None,
-        (Some(e), None) | (None, Some(e)) => Some(e),
-        (Some(e1), Some(e2)) => Some(format!("{}; {}", e1, e2)),
-    };
 
     let rounding_summary = RoundingSummary {
         method: rounding_method,
         output: profile,
         exec_time: rounding_time,
-        error: combined_error,
+        error: rounding_error,
     };
 
-    DKGPvssConfig::new(
+    Ok(DKGPvssConfig::new(
         cur_epoch,
         wconfig,
         fast_wconfig,
         pp,
         consensus_keys,
         rounding_summary,
-    )
+    ))
 }
 
 #[derive(Debug)]
@@ -205,7 +197,9 @@ impl DKGTrait for RealDKG {
     type PublicParams = RealDKGPublicParams;
     type Transcript = Transcripts;
 
-    fn new_public_params(dkg_session_metadata: &DKGSessionMetadata) -> RealDKGPublicParams {
+    fn new_public_params(
+        dkg_session_metadata: &DKGSessionMetadata,
+    ) -> anyhow::Result<RealDKGPublicParams> {
         let randomness_config = dkg_session_metadata
             .randomness_config_derived()
             .unwrap_or_else(OnChainRandomnessConfig::default_enabled);
@@ -223,13 +217,14 @@ impl DKGTrait for RealDKG {
             reconstruct_threshold,
             maybe_fast_path_secrecy_threshold,
             &dkg_session_metadata.target_validator_consensus_infos_cloned(),
-        );
+        )
+        .context("Failed to build DKG PVSS config")?;
         let verifier = ValidatorVerifier::new(dkg_session_metadata.dealer_consensus_infos_cloned());
-        RealDKGPublicParams {
+        Ok(RealDKGPublicParams {
             session_metadata: dkg_session_metadata.clone(),
             pvss_config,
             verifier: verifier.into(),
-        }
+        })
     }
 
     fn aggregate_input_secret(secrets: Vec<Self::InputSecret>) -> Self::InputSecret {
@@ -601,4 +596,107 @@ pub fn maybe_dk_from_bls_sk(
     bytes.reverse();
     <WTrx as Transcript>::DecryptPrivKey::try_from(bytes.as_slice())
         .map_err(|e| anyhow!("dk_from_bls_sk failed with dk deserialization error: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::on_chain_config::OnChainRandomnessConfig;
+    use crate::validator_verifier::ValidatorConsensusInfoMoveStruct;
+    use aptos_crypto::{bls12381, Genesis};
+    use aptos_dkg::pvss::traits::SecretSharingConfig;
+
+    fn create_test_validators(num_validators: usize) -> Vec<ValidatorConsensusInfo> {
+        (0..num_validators)
+            .map(|i| {
+                let sk = bls12381::PrivateKey::genesis();
+                let pk = bls12381::PublicKey::from(&sk);
+                let addr = AccountAddress::from_hex_literal(&format!("0x{:x}", i + 1)).unwrap();
+                ValidatorConsensusInfo::new(addr, pk, 1)
+            })
+            .collect()
+    }
+
+    fn create_test_session_metadata(validators: &[ValidatorConsensusInfo]) -> DKGSessionMetadata {
+        DKGSessionMetadata {
+            dealer_epoch: 1,
+            randomness_config: OnChainRandomnessConfig::default_enabled().into(),
+            dealer_validator_set: validators
+                .iter()
+                .map(|vi| ValidatorConsensusInfoMoveStruct::from(vi.clone()))
+                .collect(),
+            target_validator_set: validators
+                .iter()
+                .map(|vi| ValidatorConsensusInfoMoveStruct::from(vi.clone()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_build_dkg_pvss_config_with_valid_validators() {
+        let validators = create_test_validators(4);
+        let _session_metadata = create_test_session_metadata(&validators);
+
+        let pvss_config = build_dkg_pvss_config(
+            1,
+            *rounding::DEFAULT_SECRECY_THRESHOLD,
+            *rounding::DEFAULT_RECONSTRUCT_THRESHOLD,
+            None,
+            &validators,
+        )
+        .expect("build_dkg_pvss_config should succeed with valid validators");
+
+        assert_eq!(pvss_config.eks.len(), 4);
+        assert_eq!(pvss_config.wconfig.get_total_num_players(), 4);
+    }
+
+    #[test]
+    fn test_build_dkg_pvss_config_with_single_validator() {
+        let validators = create_test_validators(1);
+        let _session_metadata = create_test_session_metadata(&validators);
+
+        let pvss_config = build_dkg_pvss_config(
+            1,
+            *rounding::DEFAULT_SECRECY_THRESHOLD,
+            *rounding::DEFAULT_RECONSTRUCT_THRESHOLD,
+            None,
+            &validators,
+        )
+        .expect("build_dkg_pvss_config should succeed with single validator");
+
+        assert_eq!(pvss_config.eks.len(), 1);
+        assert_eq!(pvss_config.wconfig.get_total_num_players(), 1);
+    }
+
+    #[test]
+    fn test_build_dkg_pvss_config_with_empty_validators_fallback() {
+        let validators = create_test_validators(0);
+
+        let result = build_dkg_pvss_config(
+            1,
+            *rounding::DEFAULT_SECRECY_THRESHOLD,
+            *rounding::DEFAULT_RECONSTRUCT_THRESHOLD,
+            None,
+            &validators,
+        );
+
+        assert!(result.is_ok());
+        let pvss_config = result.unwrap();
+        assert!(pvss_config.rounding_summary.error.is_some());
+    }
+
+    #[test]
+    fn test_all_validators_have_consistent_eks_and_weights() {
+        let validators = create_test_validators(4);
+        let session_metadata = create_test_session_metadata(&validators);
+
+        let pub_params = RealDKG::new_public_params(&session_metadata)
+            .expect("new_public_params should succeed");
+
+        assert_eq!(
+            pub_params.pvss_config.eks.len(),
+            pub_params.pvss_config.wconfig.get_total_num_players(),
+            "EKS count should match player count"
+        );
+    }
 }

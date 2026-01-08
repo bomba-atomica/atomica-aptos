@@ -96,7 +96,7 @@ fn verify_dkg_transcript(
         "Verifying the transcript generated in epoch {}.",
         dkg_session.metadata.dealer_epoch,
     );
-    let pub_params = DefaultDKG::new_public_params(&dkg_session.metadata);
+    let pub_params = DefaultDKG::new_public_params(&dkg_session.metadata)?;
     let transcript = bcs::from_bytes(dkg_session.transcript.as_slice()).map_err(|e| {
         anyhow!("DKG transcript verification failed with transcript deserialization error: {e}")
     })?;
@@ -221,7 +221,7 @@ async fn verify_randomness(
     let dkg_session = dkg_state
         .last_completed
         .ok_or_else(|| anyhow!("randomness verification failed with missing dkg result"))?;
-    let dkg_pub_params = DefaultDKG::new_public_params(&dkg_session.metadata);
+    let dkg_pub_params = DefaultDKG::new_public_params(&dkg_session.metadata)?;
     let transcript =
         bcs::from_bytes::<<DefaultDKG as DKGTrait>::Transcript>(dkg_session.transcript.as_slice())
             .map_err(|_| {

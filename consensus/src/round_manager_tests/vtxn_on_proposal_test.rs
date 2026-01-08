@@ -187,7 +187,8 @@ fn test_dkg_result_handling<F>(
         dealer_validator_set: validator_set.clone(),
         target_validator_set: validator_set,
     };
-    let public_params = RealDKG::new_public_params(&dkg_session_metadata);
+    let public_params = RealDKG::new_public_params(&dkg_session_metadata)
+        .expect("new_public_params should succeed");
     let trx = trx_gen_func(
         &mut rng,
         &public_params,

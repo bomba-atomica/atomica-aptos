@@ -186,7 +186,7 @@ pub trait DKGTrait: Debug {
     type DealtPubKeyShare;
     type NewValidatorDecryptKey: Uniform;
 
-    fn new_public_params(dkg_session_metadata: &DKGSessionMetadata) -> Self::PublicParams;
+    fn new_public_params(dkg_session_metadata: &DKGSessionMetadata) -> Result<Self::PublicParams>;
     fn aggregate_input_secret(secrets: Vec<Self::InputSecret>) -> Self::InputSecret;
     fn dealt_secret_from_input(
         pub_params: &Self::PublicParams,
@@ -240,7 +240,8 @@ pub type DefaultDKG = RealDKG;
 pub struct DecryptionKeyShare {
     pub timelock_id: u64,
     pub author: AccountAddress,
-    pub share: Vec<u8>,
+    pub validator_idx: u64, // Validator's index in DKG participant set (for Lagrange weights)
+    pub share: Vec<u8>,     // G1 point: s_i × Q_id
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
@@ -349,6 +350,7 @@ mod tests {
         let share = DecryptionKeyShare {
             timelock_id: 100,
             author: AccountAddress::ONE,
+            validator_idx: 0,
             share: vec![1, 2, 3, 4],
         };
         let bytes = bcs::to_bytes(&share).expect("serialization failed");

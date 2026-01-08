@@ -18,7 +18,7 @@ This guide provides instructions for future agents analyzing timelock cryptograp
 **Investigation Checklist:**
 
 - Verify all cryptographic operations validate input formats (e.g., G1/G2 point serialization)
-- Check interval/range validations prevent premature key reveals
+- Check deadline/range validations prevent premature key reveals
 - Audit for unbounded data structures that could cause memory exhaustion
 - Ensure access controls use live validator sets, not cached data
 
@@ -76,7 +76,7 @@ This guide provides instructions for future agents analyzing timelock cryptograp
 1. **Input Validation Review**
    - Examine all public entry functions for cryptographic input validation
    - Verify G1/G2 point deserialization rejects invalid curves
-   - Check interval bounds prevent future key reveals
+   - Check deadline bounds prevent premature key reveals
    - Audit share aggregation for duplicate/malformed inputs
 
 2. **Access Control Verification**

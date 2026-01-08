@@ -732,7 +732,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 return Ok(());
             },
         };
-        let pub_params = IbeDKG::new_public_params(&metadata);
+        let pub_params = IbeDKG::new_public_params(&metadata)?;
 
         // Deserialize transcript
         let transcript: <IbeDKG as DKGTrait>::Transcript =
@@ -887,10 +887,11 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             },
         };
 
-        // 6. Submit Share
-        let share = aptos_types::dkg::DecryptionKeyShare {
+        // 6. Submit Share with Validator Index (for Lagrange-weighted aggregation)
+        let share = DecryptionKeyShare {
             timelock_id,
             author: self.my_addr,
+            validator_idx: my_index as u64, // Include validator index for Lagrange weights
             share: dk_bytes,
         };
 

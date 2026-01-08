@@ -1034,7 +1034,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         if dkg_session.metadata.dealer_epoch + 1 != new_epoch_state.epoch {
             return Err(NoRandomnessReason::CompletedSessionTooOld);
         }
-        let dkg_pub_params = DefaultDKG::new_public_params(&dkg_session.metadata);
+        let dkg_pub_params = DefaultDKG::new_public_params(&dkg_session.metadata)?;
         let my_index = new_epoch_state
             .verifier
             .address_to_validator_index()

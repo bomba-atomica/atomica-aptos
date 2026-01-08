@@ -85,85 +85,18 @@ where:
 ```
 
 - **Type**: G1 point (48 bytes)
-- **Revealed**: After deadline timestamp, via threshold reconstruction
-
-### Decryption Key Share (DK_share)
-
-A portion of the decryption key held by each validator. Each validator receives one share during DKG.
-
-- **Type**: G1 point
-- **Stored**: Locally by each validator in persistent storage
-- **Revealed**: Submitted on-chain after deadline
-
-### Identity
-
-The public identifier for IBE encryption, computed as:
-
-```
-identity = Keccak256("timelock_id:" || timelock_id || ":deadline_timestamp_microseconds:" || deadline)
-```
-
-- **Format**: 32-byte hash
-- **One-to-one**: Each (timelock_id, deadline) pair has a unique identity
-- **Application-agnostic**: Contains no auction or application semantics
-
----
-
-## Protocol Phases
-
-### Setup
-
-The initial configuration phase:
-
-1. DKG ceremony executed by validators
-2. MSK split into shares using PVSS
-3. Each validator receives encrypted share
-4. MPK computed and published on-chain
-
-### Encryption
-
-Any party can encrypt without validator involvement:
-
-1. Compute identity from timelock_id and deadline
-2. Fetch MPK from blockchain
-3. Encrypt message using IBE.Encrypt
-4. Store ciphertext (U, V) off-chain or on-chain
-
-### Decryption (Reveal)
-
-After deadline passes:
-
-1. Validators submit their DK_shares on-chain
-2. Contract aggregates shares until threshold met
-3. DK reconstructed when threshold exceeded
-4. Parties with ciphertexts decrypt using DK
-
----
-
-## Threshold Concepts
-
-### Threshold (t)
-
-The minimum number of decryption key shares required to reconstruct the full decryption key.
-
-- **Default**: 2/3 + 1 of validator voting power
-- **Rationale**: Ensures liveness while maintaining security against minority collusion
-
-### Validator Weight (w)
-
-The voting power assigned to each validator, determining their influence in threshold cryptography.
-
-- **Weight assignment**: Based on stake (from consensus)
-- **Share count**: Validators with higher weight receive more shares
-- **Total weight**: Sum of all validator weights
+- **Revealed**: After deadline timestamp, via on-chain aggregation of validator DK_contributions
+- **Reconstruction**: Validators submit `DK_share_i × Q_id` (G1 points); contract aggregates using Lagrange coefficients to reconstruct DK
 
 ### Share
 
-A portion of the master secret key distributed to one validator.
+A portion of the master secret key distributed to validators. In weighted PVSS:
 
-- **One-to-one**: Each validator receives exactly one share
-- **Weight-based**: Share is weighted by the validator's stake
-- **Encrypted**: Transit-encrypted to prevent interception
+- **Type**: BLS12-381 scalar (32 bytes)
+- **One-to-one mapping**: Each validator receives encrypted scalar shares proportional to their weight
+- **Weight-based**: A validator with 2x stake receives shares that count as 2x toward reconstruction threshold
+- **Encrypted**: Transit-encrypted using consensus BLS keys to prevent interception
+- **Commitment**: Each share includes `g^share` (G1 point) for verification without revealing the scalar
 
 ### Threshold Cryptography
 
@@ -352,58 +285,68 @@ Output:  DK (G1 point)
             │        ┌────────────────────────────┼────────────────────────────┐
             │        │                            │                            │
 ┌───────────▼────┐ ┌─▼──────────────┐ ┌───────────▼──────────┐ ┌───────────────▼──────────────┐
-│ MPK (G2)       │ │ DK_share_1 (G1)│ │ DK_share_2 (G1)      │ │ DK_share_n (G1)              │
-│ Published      │ │ Stored locally │ │ Stored locally       │ │ Stored locally               │
-│ On-chain       │ │ by Validator 1 │ │ by Validator 2       │ │ by Validator n               │
+│ MPK (G2)       │ │ DK_share_1      │ │ DK_share_2          │ │ DK_share_n                  │
+│ Published      │ │ (scalar)        │ │ (scalar)            │ │ (scalar)                    │
+│ On-chain       │ │ Stored locally  │ │ Stored locally      │ │ Stored locally              │
+│                │ │ by Validator 1  │ │ by Validator 2      │ │ by Validator n              │
 └────────┬───────┘ └───────┬────────┘ └──────────┬──────────┘ └───────────────┬──────────────┘
          │                 │                      │                            │
-         │                 └──────────────────────┼────────────────────────────┘
-         │                                            │
-         │                              ┌─────────────┴─────────────┐
-         │                              │                           │
-         │                 ┌────────────▼────────────┐  ┌─────────▼────────────┐
-         │                 │  Threshold Reconstruct  │  │  DK_share submission │
-         │                 │  (t+1 shares required)  │  │  (after deadline)    │
-         │                 │                         │  │                      │
-         │                 │  Combines shares to     │  │  Validators submit   │
-         │                 │  produce DK             │  │  shares on-chain     │
-         │                 └────────────┬────────────┘  └──────────┬───────────┘
-         │                              │                          │
-         │                              │                          │
-         │                              ▼                          │
-         │                    ┌────────────────────┐              │
-         │                    │ DK (G1)            │              │
-         │                    │ Decryption Key     │              │
-         │                    │ Revealed on-chain  │              │
-         │                    └────────────────────┘              │
-         │                              │                          │
-         │                              │                          │
+         │                 │                      │                            │
+         │                 │                      │         ┌───────────────────┴───────────────┐
+         │                 │                      │         │                                   │
+         │                 │                      │         │  On reveal: each validator computes│
+         │                 │                      │         │  DK_contribution_i =             │
+         │                 │                      │         │    DK_share_i × Q_id (G1 point)  │
+         │                 │                      │         │                                   │
+         │                 │                      │         ▼                                   │
+         │                 │                      │  ┌─────────────────────────────────────────┐
+         │                 │                      │  │ ValidatorTransaction::TimelockShare     │
+         │                 │                      │  │ Submit G1 point on-chain                │
+         │                 │                      │  └──────────────────┬────────────────────────┘
+         │                 │                      │                     │
+         │                 │                      │                     │
+         │                 │                      │    ┌────────────────┴────────────────────┐
+         │                 │                      │    │                                     │
+         │                 │            ┌─────────▼────▼┐                          ┌─────────▼──────────────────┐
+         │                 │            │  On-chain     │                          │  Threshold Reconstruct    │
+         │                 │            │  Aggregation  │                          │  (t+1 shares required)    │
+         │                 │            │               │                          │                           │
+         │                 │            │  Collect G1   │                          │  Lagrange interpolation   │
+         │                 │            │  contributions│                          │  of G1 contributions      │
+         │                 │            │  from validators                          │                           │
+         │                 │            └───────┬────────┘                          │  Produces DK (G1 point)   │
+         │                 │                    │                                   └─────────────┬───────────────┘
+         │                 │                    │                                             │
+         │                 │                    │                                             │
+         │                 │                    ▼                                             │
+         │                 │          ┌────────────────────┐                                  │
+         │                 │          │ DK (G1)            │                                  │
+         │                 │          │ Decryption Key     │                                  │
+         │                 │          │ Revealed on-chain  │                                  │
+         │                 │          └────────────────────┘                                  │
+         │                 │                    │                                             │
+         │                 │                    │                                             │
 ┌────────▼────────────────┐ ┌───────────▼──────────────────┐ ┌─────▼─────────────────────────┐
-│ IBE.Encrypt             │ │ IBE.Decrypt                  │ │ On-chain Share Aggregation   │
-│ (Anyone can encrypt)    │ │ (After deadline, DK known)   │ │ ValidatorTransaction::       │
-│                         │ │                              │ │ TimelockShare                │
-│ Input:                  │ │ Input:                       │ │                              │
-│ - MPK                   │ │ - DK (from reconstruction)   │ │ Validators submit DK_shares  │
-│ - Identity              │ │ - Ciphertext (U, V)          │ │ Contract aggregates until    │
-│ - Message               │ │ - Identity                   │ │ threshold met                │
-│                         │ │                              │ │                              │
-│ Output:                 │ │ Output:                      │ └──────────────────────────────┘
-│ Ciphertext (U, V)       │ │ Message M                    │              │
-└─────────────────────────┘ └──────────────────────────────┘              │
-                                                                         │
-                                                            ┌─────────────▼─────────────┐
-                                                            │ Threshold Reconstruct     │
-                                                            │ (t+1 shares)              │
-                                                            │ DK revealed on-chain      │
-                                                            └───────────────────────────┘
+│ IBE.Encrypt             │ │ IBE.Decrypt                  │ │                             │
+│ (Anyone can encrypt)    │ │ (After deadline, DK known)   │ │                             │
+│                         │ │                              │ │                             │
+│ Input:                  │ │ Input:                       │ │                             │
+│ - MPK                   │ │ - DK (from on-chain)         │ │                             │
+│ - Identity              │ │ - Ciphertext (U, V)          │ │                             │
+│ - Message               │ │ - Identity                   │ │                             │
+│                         │ │                              │ │                             │
+│ Output:                 │ │ Output:                      │ │                             │
+│ Ciphertext (U, V)       │ │ Message M                    │ │                             │
+└─────────────────────────┘ └──────────────────────────────┘ └─────────────────────────────┘
 ```
 
 **Key Observations:**
 
 1. **MSK is not stored anywhere** - it's conceptually distributed as shares from the start
-2. **DK_shares are input AND output** of DKG - each validator receives their share
-3. **BLS keys serve dual purposes** - consensus AND encrypting DKG shares
-4. **DK is reconstructed only after deadline** - fromDK_shares, never from MSK
+2. **DK_shares are scalars** (32 bytes) - each validator receives encrypted scalar shares
+3. **DK_contributions are G1 points** - computed on reveal as `DK_share × Q_id`
+4. **DK is reconstructed on-chain** - contract aggregates G1 contributions using Lagrange coefficients
+5. **BLS keys serve dual purposes** - consensus AND encrypting DKG shares
 
 ---
 
