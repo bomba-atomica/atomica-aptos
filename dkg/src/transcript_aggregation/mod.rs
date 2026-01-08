@@ -129,9 +129,23 @@ impl<S: DKGTrait> BroadcastStatus<DKGMessage> for Arc<TranscriptAggregationState
             Err(VerifyError::TooLittleVotingPower { voting_power, .. }) => Some(*voting_power),
             _ => None,
         };
+        use aptos_logger::warn;
         let maybe_aggregated = power_check_result
             .ok()
-            .map(|_| trx_aggregator.trx.clone().unwrap());
+            .and_then(|_| trx_aggregator.trx.clone());
+        let peer_validator_index = self
+            .epoch_state
+            .verifier
+            .address_to_validator_index()
+            .get(&sender)
+            .copied();
+        if peer_validator_index.is_none() {
+            warn!(
+                epoch = self.epoch_state.epoch,
+                peer = sender,
+                "DKG: Could not find validator index for peer"
+            );
+        }
         info!(
             epoch = self.epoch_state.epoch,
             peer = sender,
@@ -141,11 +155,7 @@ impl<S: DKGTrait> BroadcastStatus<DKGMessage> for Arc<TranscriptAggregationState
             threshold = threshold,
             threshold_exceeded = maybe_aggregated.is_some(),
             "[DKG] added transcript from validator {}, {} out of {} aggregated.",
-            self.epoch_state
-                .verifier
-                .address_to_validator_index()
-                .get(&sender)
-                .unwrap(),
+            peer_validator_index.unwrap_or(0),
             new_total_power.unwrap_or(0),
             threshold
         );

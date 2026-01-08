@@ -71,12 +71,14 @@ impl DKGRounding {
 
         if validator_stakes.is_empty() {
             warn!("No validator stakes provided, cannot create DKG rounding profile");
+            let wconfig_err = WeightedConfig::new(1, vec![]).err();
             return Self {
                 rounding_method: "empty".to_string(),
                 profile: DKGRoundingProfile::default(),
-                wconfig: WeightedConfig::new(0, vec![]).unwrap(),
+                wconfig: WeightedConfig::new(1, vec![])
+                    .unwrap_or_else(|_| WeightedConfig::new(1, vec![1]).unwrap()),
                 fast_wconfig: None,
-                rounding_error: Some("No validator stakes provided".to_string()),
+                rounding_error: wconfig_err.map(|e| format!("WeightedConfig error: {e}")),
             };
         }
 

@@ -10,9 +10,9 @@ use crate::{
     validator_verifier::{ValidatorConsensusInfo, ValidatorVerifier},
 };
 use anyhow::{anyhow, bail, ensure, Context};
+use aptos_crypto::bls12381::PrivateKey;
 #[cfg(any(test, feature = "testing"))]
 use aptos_crypto::Uniform;
-use aptos_crypto::{bls12381, bls12381::PrivateKey};
 use aptos_dkg::{
     pvss,
     pvss::{
@@ -114,23 +114,35 @@ pub fn build_dkg_pvss_config(
         maybe_fast_path_secrecy_threshold,
     );
     let rounding_time = timer.elapsed();
-    let validator_consensus_keys: Vec<bls12381::PublicKey> = next_validators
+
+    let mut key_conversion_error = None;
+    let consensus_keys: Vec<EncPK> = next_validators
         .iter()
-        .map(|vi| vi.public_key.clone())
+        .filter_map(|vi| match vi.public_key.to_bytes().as_slice().try_into() {
+            Ok(key) => Some(key),
+            Err(_) => {
+                key_conversion_error = Some(format!(
+                    "Failed to convert key for validator {}",
+                    vi.address
+                ));
+                None
+            },
+        })
         .collect();
 
-    let consensus_keys: Vec<EncPK> = validator_consensus_keys
-        .iter()
-        .map(|k| k.to_bytes().as_slice().try_into().unwrap())
-        .collect::<Vec<_>>();
-
     let pp = DkgPP::default_with_bls_base();
+
+    let combined_error = match (rounding_error, key_conversion_error) {
+        (None, None) => None,
+        (Some(e), None) | (None, Some(e)) => Some(e),
+        (Some(e1), Some(e2)) => Some(format!("{}; {}", e1, e2)),
+    };
 
     let rounding_summary = RoundingSummary {
         method: rounding_method,
         output: profile,
         exec_time: rounding_time,
-        error: rounding_error,
+        error: combined_error,
     };
 
     DKGPvssConfig::new(
@@ -463,29 +475,32 @@ impl DKGTrait for RealDKG {
         pub_params: &Self::PublicParams,
         input_player_share_pairs: Vec<(u64, Self::DealtSecretShare)>,
     ) -> anyhow::Result<Self::DealtSecret> {
-        let player_share_pairs = input_player_share_pairs
-            .clone()
+        let mut fast_shares = Vec::new();
+        let mut has_all_fast_shares = pub_params.pvss_config.fast_wconfig.is_some();
+
+        let player_share_pairs: Vec<(Player, _)> = input_player_share_pairs
             .into_iter()
-            .map(|(x, y)| (Player { id: x as usize }, y.main))
+            .map(|(x, y)| {
+                if has_all_fast_shares {
+                    if let Some(fast) = y.fast {
+                        fast_shares.push((Player { id: x as usize }, fast));
+                    } else {
+                        has_all_fast_shares = false;
+                    }
+                }
+                (Player { id: x as usize }, y.main)
+            })
             .collect();
+
         let reconstructed_secret = <WTrx as Transcript>::DealtSecretKey::reconstruct(
             &pub_params.pvss_config.wconfig,
             &player_share_pairs,
         );
-        if input_player_share_pairs
-            .clone()
-            .into_iter()
-            .all(|(_, y)| y.fast.is_some())
-            && pub_params.pvss_config.fast_wconfig.is_some()
-        {
-            let fast_player_share_pairs = input_player_share_pairs
-                .into_iter()
-                .map(|(x, y)| (Player { id: x as usize }, y.fast.unwrap()))
-                .collect();
-            let fast_reconstructed_secret = <WTrx as Transcript>::DealtSecretKey::reconstruct(
-                pub_params.pvss_config.fast_wconfig.as_ref().unwrap(),
-                &fast_player_share_pairs,
-            );
+
+        if has_all_fast_shares {
+            let fast_wconfig = pub_params.pvss_config.fast_wconfig.as_ref().unwrap();
+            let fast_reconstructed_secret =
+                <WTrx as Transcript>::DealtSecretKey::reconstruct(fast_wconfig, &fast_shares);
             ensure!(
                 reconstructed_secret == fast_reconstructed_secret,
                 "real_dkg::reconstruct_secret_from_shares failed with inconsistent dealt secrets."
