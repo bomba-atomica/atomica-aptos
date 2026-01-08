@@ -61,12 +61,12 @@ export interface Ciphertext {
 export class IBECrypto {
   /**
    * Compute timelock identity from timelock ID and deadline.
-   * 
+   *
    * Format: Keccak256("timelock_id:{id}:deadline_timestamp_microseconds:{deadline}")
-   * 
+   *
    * This is an **application-agnostic** identity format. It contains no auction,
    * bid, or other application-specific semantics.
-   * 
+   *
    * @param timelockId - Unique identifier for this timelock
    * @param deadlineTimestampMicroseconds - Unix epoch timestamp in MICROSECONDS when decryption becomes available
    * @returns 32-byte Keccak256 hash
@@ -80,7 +80,7 @@ export class IBECrypto {
 
   /**
    * Encrypt a message using IBE with the given public key (G2 point) and identity
-   * 
+   *
    * Identity-Based Encryption (Boneh-Franklin / Sakai-Kasahara style with pairings):
    * 1. H_id = MapToG1(identity)
    * 2. r = random scalar
@@ -94,7 +94,7 @@ export class IBECrypto {
 
   /**
    * Encrypts a message using IBE.
-   * 
+   *
    * @param mpkG2 Master Public Key (G2 point)
    * @param identity Identity bytes
    * @param message Message to encrypt
@@ -102,22 +102,24 @@ export class IBECrypto {
    */
   static ibeEncrypt(mpkG2: Uint8Array, identity: Uint8Array, message: Uint8Array): Ciphertext {
     // 1. Map identity to G1
-    // Timelock IBE uses identity = H(interval...), no "H(m)" augmentation.
-    const pointId = bls12_381.G1.hashToCurve(identity, { DST: IBECrypto.DST });
+    // Prepend "H(m)" to match Rust hash_to_curve(identity, DST, b"H(m)") signature
+    // This is specific to the blstrs crate's hash_to_curve implementation
+    const msgWithH = new Uint8Array([72, 40, 109, 41, ...identity]); // "H(m)" as bytes
+    const pointId = bls12_381.G1.hashToCurve(msgWithH, { DST: IBECrypto.DST });
 
     // 2. Parse MPK
-    const mpkPoint = bls12_381.G2.Point.fromHex(Buffer.from(mpkG2).toString('hex'));
+    const mpkPoint = bls12_381.G2.Point.fromHex(Buffer.from(mpkG2).toString("hex"));
 
     // 3. Generate random r
     const r = bls12_381.utils.randomSecretKey();
 
     // 4. U = r * G2_generator
-    const uPoint = bls12_381.G2.Point.BASE.multiply(BigInt("0x" + Buffer.from(r).toString('hex')));
+    const uPoint = bls12_381.G2.Point.BASE.multiply(BigInt("0x" + Buffer.from(r).toString("hex")));
     const u = uPoint.toBytes(true);
 
     // 5. Symmetric Key Generation
     // We compute pairing(H_id * r, mpk) => e(H_id, mpk)^r
-    const pointIdTimesR = pointId.multiply(BigInt("0x" + Buffer.from(r).toString('hex')));
+    const pointIdTimesR = pointId.multiply(BigInt("0x" + Buffer.from(r).toString("hex")));
     const sharedSecret = bls12_381.pairing(pointIdTimesR, mpkPoint);
 
     // Convert Fp12 shared secret to bytes for hashing
@@ -134,7 +136,7 @@ export class IBECrypto {
 
   /**
    * Decrypt a ciphertext using IBE with the given secret key (G1 point)
-   * 
+   *
    * Secret Key sk = H_id^s (where s is master secret)
    * U = r * G2
    * Shared Secret = e(sk, U) = e(H_id^s, r*G2) = e(H_id, G2)^(s*r)
@@ -142,8 +144,8 @@ export class IBECrypto {
    */
   static ibeDecrypt(skG1: Uint8Array, identity: Uint8Array, mpkG2: Uint8Array, ciphertext: Ciphertext): Uint8Array {
     // 1. Parse U and SK
-    const uPoint = bls12_381.G2.Point.fromHex(Buffer.from(ciphertext.u).toString('hex'));
-    const skPoint = bls12_381.G1.Point.fromHex(Buffer.from(skG1).toString('hex'));
+    const uPoint = bls12_381.G2.Point.fromHex(Buffer.from(ciphertext.u).toString("hex"));
+    const skPoint = bls12_381.G1.Point.fromHex(Buffer.from(skG1).toString("hex"));
 
     // 2. Compute Pairing e(sk, U)
     const sharedSecret = bls12_381.pairing(skPoint, uPoint);
@@ -165,28 +167,28 @@ export class IBECrypto {
   static deserializeG1(bytes: Uint8Array) {
     // Ensure 48 bytes
     if (bytes.length !== 48) throw new Error("G1 point must be 48 bytes");
-    return bls12_381.G1.Point.fromHex(Buffer.from(bytes).toString('hex'));
+    return bls12_381.G1.Point.fromHex(Buffer.from(bytes).toString("hex"));
   }
 
   static deserializeG2(bytes: Uint8Array) {
     if (bytes.length !== 96) throw new Error("G2 point must be 96 bytes");
-    return bls12_381.G2.Point.fromHex(Buffer.from(bytes).toString('hex'));
+    return bls12_381.G2.Point.fromHex(Buffer.from(bytes).toString("hex"));
   }
 
   /**
    * Extract G2 master public key from DKG transcript (BCS serialized)
-   * 
+   *
    * Rust Structure:
    * struct DKGTranscript {
    *     metadata: DKGTranscriptMetadata, // epoch(u64), author(32 bytes)
    *     transcript_bytes: vector<u8>,    // BCS bytes of Transcripts
    * }
-   * 
+   *
    * struct Transcripts {
    *     main: WeightedTranscript,
    *     fast: Option<WeightedTranscript>,
    * }
-   * 
+   *
    * struct WeightedTranscript {
    *     soks: Vec<SoK>,
    *     R: Vec<G1>,
@@ -256,32 +258,39 @@ export class IBECrypto {
   }
 
   /**
-   * Serialize Fp12 element to bytes in Little Endian format to match Rust/Arkworks
+   * Serialize Fp12 element to bytes in Big Endian format to match Rust/Arkworks
    * Order: c0.c0.c0, c0.c0.c1, c0.c1.c0 ... c1.c2.c1
-   * Each Fp element is 48 bytes, Little Endian.
+   * Each Fp element is 48 bytes, Big Endian.
+   * This matches the Rust implementation in crates/aptos-dkg/src/ibe/fp12_raw_serialization.rs
    */
   static canonicalSerializeFp12(fp12: any): Uint8Array {
     const result = new Uint8Array(576); // 12 * 48
     let offset = 0;
 
     const coeffs = [
-      fp12.c0.c0.c0, fp12.c0.c0.c1, // Fp2 c0
-      fp12.c0.c1.c0, fp12.c0.c1.c1, // Fp2 c1
-      fp12.c0.c2.c0, fp12.c0.c2.c1, // Fp2 c2
-      fp12.c1.c0.c0, fp12.c1.c0.c1, // Fp2 c0 (of c1)
-      fp12.c1.c1.c0, fp12.c1.c1.c1, // Fp2 c1 (of c1)
-      fp12.c1.c2.c0, fp12.c1.c2.c1, // Fp2 c2 (of c1)
+      fp12.c0.c0.c0,
+      fp12.c0.c0.c1, // Fp2 c0
+      fp12.c0.c1.c0,
+      fp12.c0.c1.c1, // Fp2 c1
+      fp12.c0.c2.c0,
+      fp12.c0.c2.c1, // Fp2 c2
+      fp12.c1.c0.c0,
+      fp12.c1.c0.c1, // Fp2 c0 (of c1)
+      fp12.c1.c1.c0,
+      fp12.c1.c1.c1, // Fp2 c1 (of c1)
+      fp12.c1.c2.c0,
+      fp12.c1.c2.c1, // Fp2 c2 (of c1)
     ];
 
     for (const val of coeffs) {
       let hex = val.toString(16);
-      if (hex.length % 2 !== 0) hex = '0' + hex;
+      if (hex.length % 2 !== 0) hex = "0" + hex;
       const padding = 96 - hex.length; // 48 bytes = 96 hex chars
-      if (padding > 0) hex = '0'.repeat(padding) + hex;
+      if (padding > 0) hex = "0".repeat(padding) + hex;
 
-      const buffer = Buffer.from(hex, 'hex');
-      // Reverse for Little Endian
-      result.set(buffer.reverse(), offset);
+      const buffer = Buffer.from(hex, "hex");
+      // Big Endian (no reverse) to match Rust fp12_raw_serialization
+      result.set(buffer, offset);
       offset += 48;
     }
 
@@ -324,7 +333,9 @@ export class IBECrypto {
    */
   static getDecryptionKey(msk: Uint8Array, identity: Uint8Array): Uint8Array {
     const s = BigInt("0x" + Buffer.from(msk).toString("hex"));
-    const pointId = bls12_381.G1.hashToCurve(identity, { DST: IBECrypto.DST });
+    // Prepend "H(m)" to match Rust hash_to_curve(identity, DST, b"H(m)") signature
+    const msgWithH = new Uint8Array([72, 40, 109, 41, ...identity]); // "H(m)" as bytes
+    const pointId = bls12_381.G1.hashToCurve(msgWithH, { DST: IBECrypto.DST });
     const dk = pointId.multiply(s);
     return dk.toBytes(true);
   }
@@ -335,8 +346,8 @@ export class IBECrypto {
    * WARNING: Simple additive sharing, assumes contract just sums shares.
    */
   static generateAdditiveShares(secretG1Bytes: Uint8Array, n: number): Uint8Array[] {
-    const secret = bls12_381.G1.Point.fromHex(Buffer.from(secretG1Bytes).toString('hex'));
-    const shares: typeof secret[] = [];
+    const secret = bls12_381.G1.Point.fromHex(Buffer.from(secretG1Bytes).toString("hex"));
+    const shares: (typeof secret)[] = [];
     let currentSum = bls12_381.G1.Point.ZERO;
 
     // Generate n-1 random shares
@@ -352,6 +363,6 @@ export class IBECrypto {
     const lastShare = secret.subtract(currentSum);
     shares.push(lastShare);
 
-    return shares.map(p => p.toBytes(true));
+    return shares.map((p) => p.toBytes(true));
   }
 }

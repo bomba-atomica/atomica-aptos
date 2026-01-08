@@ -23,11 +23,12 @@ module aptos_framework::ibe_signature {
     /// This module connects the abstract concept of an "Identity" (e.g. a time interval)
     /// to the cryptographic verification logic in `threshold_dsa`.
 
-    // DST for mapping identity to point. 
-    // This should match the Rust implementation's DST.
-    // Spec says 'IBE-BLS-SIG' in threshold_dsa? Or we define it here.
-    // Let's use a standard one.
-    const DST: vector<u8> = b"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_";
+    // DST for mapping identity to point.
+    // This matches Rust's BLS_WVUF_DST = b"APTOS_BLS_WVUF_DST"
+    const DST: vector<u8> = b"APTOS_BLS_WVUF_DST";
+
+    // Message prefix for hash_to_curve, matching Rust's b"H(m)"
+    const H_M_MSG: vector<u8> = b"H(m)";
 
     /// Map an Identity string to a $G_1$ group element.
     ///
@@ -36,9 +37,24 @@ module aptos_framework::ibe_signature {
     /// $$ Q_{ID} = H_1(ID) \in G_1^* $$
     ///
     /// This corresponds to the first step of the **Extract** algorithm in [BF01].
-    /// In our Timelock system, `identity_bytes` is the BCS-serialized time interval.
+    /// In our Timelock system, `identity_bytes` is the Keccak256 hash of the identity string.
+    ///
+    /// Note: This function prepends "H(m)" to the identity before hashing to curve,
+    /// matching the Rust implementation's hash_to_curve(identity, DST, b"H(m)") signature.
     public fun identity_to_point(identity_bytes: vector<u8>): Element<G1> {
-        hash_to<G1, HashG1XmdSha256SswuRo>(&DST, &identity_bytes)
+        // Prepend "H(m)" message to match Rust hash_to_curve(identity, DST, b"H(m)")
+        // This is specific to the blstrs crate's hash_to_curve implementation
+        let msg_with_h = vector::empty<u8>();
+        vector::push_back(&mut msg_with_h, 72); // 'H'
+        vector::push_back(&mut msg_with_h, 40); // '('
+        vector::push_back(&mut msg_with_h, 109); // 'm'
+        vector::push_back(&mut msg_with_h, 41); // ')'
+        let i = 0;
+        while (i < vector::length(&identity_bytes)) {
+            vector::push_back(&mut msg_with_h, *vector::borrow(&identity_bytes, i));
+            i = i + 1;
+        };
+        hash_to<G1, HashG1XmdSha256SswuRo>(&DST, &msg_with_h)
     }
 
     /// Verify that a given Private Key ($d_{ID}$) corresponds to the Identity ($ID$)

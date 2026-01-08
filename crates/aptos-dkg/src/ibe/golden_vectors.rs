@@ -1,5 +1,15 @@
+// Copyright © Aptos Foundation
+// SPDX-License-Identifier: Apache-2.0
+
+//! Golden Vector Tests for IBE
+//!
+//! These tests verify the IBE implementation using deterministic golden vectors.
+//! Run with: cargo test -p aptos-dkg verify_golden_vectors -- --nocapture
+//!
+//! Generate new golden vectors:
+//! cargo test -p aptos-dkg generate_golden_vectors -- --nocapture
+
 use super::*;
-use aptos_crypto::blstrs::random_scalar;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use std::{fs::File, io::Write, path::PathBuf};
@@ -40,15 +50,19 @@ struct Verification {
     decrypted_hex: String,
 }
 
+/// Generate and save golden vectors to atomica/golden-vectors/ibe_fixtures.json
+/// Run with: cargo test -p aptos-dkg generate_golden_vectors -- --nocapture
 #[test]
-fn generate_and_save_golden_vectors() {
+fn generate_golden_vectors() {
+    use aptos_crypto::blstrs::random_scalar;
+
     let mut rng = thread_rng();
 
     // 1. Setup Keys
     let msk = random_scalar(&mut rng);
     let mpk = G2Projective::generator() * msk;
 
-    // 2. Identity - using new application-agnostic format
+    // 2. Identity - using application-agnostic format matching spec
     let timelock_id = 42u64;
     let deadline_timestamp_microseconds = 1704070800000000u64; // 2024-01-01 01:00:00 UTC
     let identity = compute_timelock_identity(timelock_id, deadline_timestamp_microseconds);
@@ -66,16 +80,14 @@ fn generate_and_save_golden_vectors() {
     assert_eq!(decrypted, message, "Self-check failed");
 
     // 6. Serialize to JSON Struct
-    // Note: Rust scalars/points to hex
     let msk_bytes = msk.to_bytes_le();
     let mpk_bytes = serialize_g2(&mpk).unwrap();
     let dk_bytes = serialize_g1(&dk).unwrap();
     let u_bytes = serialize_g2(&ciphertext.u).unwrap();
 
     let fixtures = GoldenVectors {
-        description:
-            "IBE Golden Vectors for Atomica Timelock (Rust Generated) - v2 identity format"
-                .to_string(),
+        description: "IBE Golden Vectors for Atomica Timelock (Rust Generated) - canonical Fp12 serialization"
+            .to_string(),
         timestamp: format!("{:?}", std::time::SystemTime::now()),
         parameters: Parameters {
             timelock_id,
@@ -83,7 +95,7 @@ fn generate_and_save_golden_vectors() {
             message_string: message_str.to_string(),
         },
         keys: Keys {
-            msk_hex: hex::encode(msk_bytes), // Scalar is 32 bytes
+            msk_hex: hex::encode(msk_bytes),
             mpk_g2_hex: hex::encode(mpk_bytes),
             identity_hash_hex: hex::encode(&identity),
             decryption_key_g1_hex: hex::encode(dk_bytes),
@@ -98,12 +110,8 @@ fn generate_and_save_golden_vectors() {
     };
 
     // 7. Save to File
-    // Path relative to where cargo test runs (usually workspace root or crate root)
-    // We want `atomica/golden-vectors/ibe_fixtures_rust.json`
-    // Assuming run from workspace root:
     let output_path = PathBuf::from("atomica/golden-vectors/ibe_fixtures.json");
 
-    // Ensure directory exists (it should, but safety first)
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
@@ -114,24 +122,25 @@ fn generate_and_save_golden_vectors() {
         .expect("Failed to write golden vectors");
 
     println!(
-        "Saved golden vectors to {:?}",
+        "✅ Saved golden vectors to {:?}",
         output_path.canonicalize().unwrap_or(output_path)
     );
 }
 
+/// Verify golden vectors can be loaded and decrypted correctly
+/// This test ensures cross-implementation compatibility
 #[test]
-fn verify_golden_vectors_roundtrip() {
+fn verify_golden_vectors() {
     // 1. Load Fixtures
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let mut path = PathBuf::from(manifest_dir);
-    // Walk up to workspace root from crate root (crates/aptos-dkg)
     path.pop(); // crates/
     path.pop(); // root
     path.push("atomica/golden-vectors/ibe_fixtures.json");
 
     if !path.exists() {
         panic!(
-            "Golden vectors file not found at {:?}. Run generate_and_save_golden_vectors first.",
+            "Golden vectors file not found at {:?}. Run generate_golden_vectors first.",
             path
         );
     }
@@ -190,4 +199,41 @@ fn verify_golden_vectors_roundtrip() {
 
     assert_eq!(new_decrypted, decrypted, "Roundtrip data mismatch");
     println!("✅ Roundtrip (Encrypt -> Decrypt) successful");
+}
+
+/// Verify Gt serialization produces consistent results
+#[test]
+fn verify_gt_serialization() {
+    use crate::ibe::gt_serialization_fix::serialize_gt;
+
+    // Compute e(G1_generator, G2_generator)
+    let g1 = G1Projective::generator();
+    let g2 = G2Projective::generator();
+    let gt = multi_pairing(std::iter::once(&g1), std::iter::once(&g2));
+
+    let serialized = serialize_gt(&gt).expect("Serialization should work");
+
+    // Should be 576 bytes
+    assert_eq!(
+        serialized.len(),
+        576,
+        "Gt serialization should be 576 bytes"
+    );
+
+    // Should be deterministic
+    let serialized2 = serialize_gt(&gt).expect("Serialization should work");
+    assert_eq!(
+        serialized, serialized2,
+        "Serialization should be deterministic"
+    );
+
+    // First bytes should match expected
+    let expected_start: [u8; 4] = [0x12, 0x50, 0xeb, 0xd8];
+    assert_eq!(
+        &serialized[0..4],
+        &expected_start,
+        "First 4 bytes should match"
+    );
+
+    println!("✅ Gt serialization verified");
 }
