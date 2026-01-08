@@ -4,18 +4,9 @@
 use aptos_crypto::blstrs::{
     biguint_to_scalar, G1_PROJ_NUM_BYTES, G2_PROJ_NUM_BYTES, SCALAR_FIELD_ORDER, SCALAR_NUM_BYTES,
 };
-/// TODO(Security): This file is a workaround for the `rand_core_hell` issue, briefly described below.
-///
-/// Ideally, we would write the following sane code:
-///
-/// ```ignore
-/// let mut dk = Scalar::random(rng);
-/// while dk.is_zero() {
-///     dk = Scalar::random(rng);
-/// }
-/// ```
-///
-/// But we can't due to `aptos-crypto`'s dependency on an older version of `rand` and `rand_core`
+/// TODO(Security): This file is a workaround for the `rand_core_hell` issue.
+/// Ideally we would use `Scalar::random(rng)` directly, but we can't due to
+/// `aptos-crypto`'s dependency on an older version of `rand` and `rand_core`
 /// compared to `blstrs`'s dependency.
 use blstrs::{G1Projective, G2Projective, Gt, Scalar};
 use group::Group;

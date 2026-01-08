@@ -54,14 +54,6 @@ pub struct Ciphertext {
 ///
 /// # Returns
 /// Ciphertext that can only be decrypted with the corresponding decryption key
-///
-/// # Example
-/// ```ignore
-/// let mpk = ...; // From blockchain
-/// let identity = compute_timelock_identity(interval, chain_id);
-/// let bid_data = b"secret_bid_100_tokens";
-/// let ciphertext = ibe_encrypt(&mpk, &identity, bid_data)?;
-/// ```
 #[allow(dead_code)]
 pub fn ibe_encrypt(mpk: &G2Projective, identity: &[u8], message: &[u8]) -> Result<Ciphertext> {
     // Boneh-Franklin IBE encryption:
@@ -101,12 +93,6 @@ pub fn ibe_encrypt(mpk: &G2Projective, identity: &[u8], message: &[u8]) -> Resul
 ///
 /// # Returns
 /// Plaintext message bytes
-///
-/// # Example
-/// ```ignore
-/// let dk = ...; // From blockchain after reveal
-/// let plaintext = ibe_decrypt(&dk, &ciphertext)?;
-/// ```
 #[allow(dead_code)]
 pub fn ibe_decrypt(dk: &G1Projective, ciphertext: &Ciphertext) -> Result<Vec<u8>> {
     // Boneh-Franklin IBE decryption:
@@ -268,13 +254,6 @@ fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
 ///
 /// # Returns
 /// 32-byte identity for IBE encryption
-///
-/// # Example
-/// ```ignore
-/// // Timelock ID 42 with deadline 2024-01-01 01:00:00 UTC
-/// let identity = compute_timelock_identity(42, 1704070800000000);
-/// // identity will be a deterministic 32-byte hash
-/// ```
 #[allow(dead_code)]
 pub fn compute_timelock_identity(
     timelock_id: u64,
