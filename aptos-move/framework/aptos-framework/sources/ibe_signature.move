@@ -1,5 +1,5 @@
 module aptos_framework::ibe_signature {
-    // use std::vector; 
+    use std::vector; 
 
     use aptos_std::bls12381_algebra::{G1, HashG1XmdSha256SswuRo};
     use aptos_std::crypto_algebra::{hash_to, Element};

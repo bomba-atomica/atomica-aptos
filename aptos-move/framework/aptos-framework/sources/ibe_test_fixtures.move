@@ -16,10 +16,11 @@
 
 module aptos_framework::ibe_test_fixtures {
     use std::vector;
-    use std::hash;
+    use aptos_std::aptos_hash;
     use aptos_std::crypto_algebra::{Self, Element};
-    use aptos_std::bls12381_algebra::{G1, G2, Gt, HashG1XmdSha256SswuRo};
-    use aptos_framework::ibe;
+    use aptos_std::bls12381_algebra::{G1, G2, HashG1XmdSha256SswuRo, FormatG1Compr, FormatG2Compr};
+    #[test_only]
+    use aptos_std::bls12381_algebra::Gt;
 
     // ============================================================================
     // Test Fixture Constants (matching Rust fixtures.rs)
@@ -103,7 +104,8 @@ module aptos_framework::ibe_test_fixtures {
 
     /// Compute Keccak256 hash
     public fun keccak256(data: &vector<u8>): vector<u8> {
-        hash::keccak256(data)
+        let input = *data;
+        aptos_hash::keccak256(input)
     }
 
     /// Map identity bytes to G1 point using hash_to_curve
@@ -125,23 +127,23 @@ module aptos_framework::ibe_test_fixtures {
     /// Parse G2 hex to Element
     public fun parse_g2_hex(hex: &vector<u8>): Element<G2> {
         let bytes = parse_hex(hex);
-        crypto_algebra::deserialize<G2>(&bytes)
+        crypto_algebra::deserialize<G2, FormatG2Compr>(&bytes).extract()
     }
 
     /// Parse G1 hex to Element
     public fun parse_g1_hex(hex: &vector<u8>): Element<G1> {
         let bytes = parse_hex(hex);
-        crypto_algebra::deserialize<G1>(&bytes)
+        crypto_algebra::deserialize<G1, FormatG1Compr>(&bytes).extract()
     }
 
     // ============================================================================
     // Test Functions
     // ============================================================================
 
+    #[test]
     /// Test 1: Identity Derivation
     /// Verifies Keccak256("timelock_id:42:deadline_timestamp_microseconds:1704070800000000")
     /// matches the expected identity hash
-    #[test]
     fun test_identity_derivation() {
         // Compute identity string
         let identity_string = FIXTURE_IDENTITY_STRING;
@@ -158,9 +160,9 @@ module aptos_framework::ibe_test_fixtures {
         };
     }
 
+    #[test]
     /// Test 2: Identity to G1 Point Mapping
     /// Verifies hash_to_curve produces expected G1 point
-    #[test]
     fun test_identity_to_g1() {
         let identity_hash = FIXTURE_IDENTITY_HASH;
         let q_id = identity_to_g1(&identity_hash);
@@ -179,9 +181,9 @@ module aptos_framework::ibe_test_fixtures {
         };
     }
 
+    #[test]
     /// Test 3: MPK Parsing
     /// Verifies G2 point deserialization works correctly
-    #[test]
     fun test_mpk_parsing() {
         let mpk_hex = FIXTURE_MPK_G2_HEX;
         let mpk = parse_g2_hex(&mpk_hex);
@@ -197,9 +199,9 @@ module aptos_framework::ibe_test_fixtures {
         };
     }
 
+    #[test]
     /// Test 4: DK Parsing
     /// Verifies G1 point deserialization works correctly
-    #[test]
     fun test_dk_parsing() {
         let dk_hex = FIXTURE_DK_G1_HEX;
         let dk = parse_g1_hex(&dk_hex);
@@ -215,9 +217,9 @@ module aptos_framework::ibe_test_fixtures {
         };
     }
 
+    #[test]
     /// Test 5: Ciphertext U Parsing
     /// Verifies ciphertext U (G2) deserialization
-    #[test]
     fun test_ciphertext_u_parsing() {
         let u_hex = FIXTURE_CIPHERTEXT_U_HEX;
         let u = parse_g2_hex(&u_hex);
@@ -233,9 +235,9 @@ module aptos_framework::ibe_test_fixtures {
         };
     }
 
+    #[test]
     /// Test 6: IBE Decryption
     /// Verifies full decryption using pre-computed ciphertext
-    #[test]
     fun test_ibe_decryption() {
         // Parse ciphertext components
         let u_hex = FIXTURE_CIPHERTEXT_U_HEX;
@@ -262,9 +264,9 @@ module aptos_framework::ibe_test_fixtures {
         };
     }
 
+    #[test]
     /// Test 7: Full Roundtrip (Encrypted in Rust, Decrypted in Move)
     /// Uses pre-computed ciphertext from Rust fixture
-    #[test]
     fun test_cross_language_decryption() {
         // Ciphertext computed by Rust implementation
         let u_hex = FIXTURE_CIPHERTEXT_U_HEX;
@@ -289,9 +291,9 @@ module aptos_framework::ibe_test_fixtures {
         };
     }
 
+    #[test]
     /// Test 8: Verify Fixture Constants are Valid
     /// Ensures all hex constants are correctly formatted
-    #[test]
     fun test_fixture_constants_valid() {
         // MSK should be 32 bytes
         let msk = parse_hex(&FIXTURE_MSK_HEX);
