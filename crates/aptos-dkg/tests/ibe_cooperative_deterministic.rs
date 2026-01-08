@@ -36,10 +36,9 @@
 //! - IBE key derivation: `/crates/aptos-dkg/src/ibe/mod.rs:125-136`
 
 use aptos_dkg::{
-    algebra::{lagrange::lagrange_coefficients, polynomials::shamir_secret_share},
+    algebra::polynomials::shamir_secret_share,
     ibe::{compute_timelock_identity, derive_decryption_key, ibe_decrypt, ibe_encrypt},
-    pvss::{das, test_utils::setup_dealing, traits::SecretSharingConfig, WeightedConfig},
-    utils::g1_multi_exp,
+    pvss::{das, test_utils::setup_dealing, WeightedConfig},
 };
 use blstrs::{G1Projective, G2Projective, Scalar};
 use group::Group;
