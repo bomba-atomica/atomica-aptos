@@ -443,14 +443,13 @@ Helper to verify a point directly if the message is already mapped to G1
 
 Verify that a timelock decryption key share is valid
 
-For threshold BLS, each validator's share s_i corresponds to their polynomial evaluation.
-The share for identity ID is: share_i = s_i × Q_id
+Currently performs format validation (G1 point deserialization).
+Full cryptographic verification requires DKG state for:
+- Validator public key lookup by index
+- Identity-based verification (share should be s_i × Q_id)
 
-This function performs basic validation of the share format.
-Full cryptographic verification requires checking against dealer public keys.
 
-
-<pre><code><b>public</b> <b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_verify_timelock_share">verify_timelock_share</a>(_validator_idx: u64, _identity: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;, share_bytes: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;): bool
+<pre><code><b>public</b> <b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_verify_timelock_share">verify_timelock_share</a>(share_bytes: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;): bool
 </code></pre>
 
 
@@ -460,12 +459,9 @@ Full cryptographic verification requires checking against dealer public keys.
 
 
 <pre><code><b>public</b> <b>fun</b> <a href="threshold_dsa.md#0x1_threshold_dsa_verify_timelock_share">verify_timelock_share</a>(
-    _validator_idx: u64,
-    _identity: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
     share_bytes: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;
 ): bool {
-    <b>let</b> share_opt = deserialize&lt;G1, FormatG1Compr&gt;(&share_bytes);
-    <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_is_some">option::is_some</a>(&share_opt)
+    <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_is_some">option::is_some</a>(&deserialize&lt;G1, FormatG1Compr&gt;(&share_bytes))
 }
 </code></pre>
 

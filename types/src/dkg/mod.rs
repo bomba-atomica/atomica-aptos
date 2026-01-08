@@ -295,6 +295,28 @@ impl TryFrom<&ContractEvent> for DeadlineReachedEvent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TimelockRegisteredEvent {
+    pub timelock_id: u64,
+    pub deadline: u64,
+}
+
+impl MoveStructType for TimelockRegisteredEvent {
+    const MODULE_NAME: &'static IdentStr = ident_str!("timelock");
+    const STRUCT_NAME: &'static IdentStr = ident_str!("TimelockRegisteredEvent");
+}
+
+impl TryFrom<&ContractEvent> for TimelockRegisteredEvent {
+    type Error = anyhow::Error;
+
+    fn try_from(event: &ContractEvent) -> Result<Self> {
+        if event.type_tag() != &TypeTag::Struct(Box::new(Self::struct_tag())) {
+            bail!("Expected TimelockRegisteredEvent tag");
+        }
+        bcs::from_bytes(event.event_data()).context("Failed to deserialize TimelockRegisteredEvent")
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MasterPublicKeyPublishedEvent {
     pub id: u64,
     pub master_public_key: Vec<u8>,

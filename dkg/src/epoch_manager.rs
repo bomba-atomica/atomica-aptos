@@ -27,7 +27,7 @@ use aptos_types::{
     dkg::{
         DKGSessionMetadata, DKGStartEvent, DKGState, DeadlineReachedEvent,
         DecryptionKeyRevealedEvent, DecryptionKeyShare, DefaultDKG, MasterPublicKeyPublishedEvent,
-        StartKeyGenEvent,
+        StartKeyGenEvent, TimelockRegisteredEvent,
     },
     epoch_state::EpochState,
     on_chain_config::{
@@ -238,6 +238,21 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 },
                 Err(e) => {
                     debug!("[DKG] Not a DeadlineReachedEvent: {:?}", e);
+                },
+            }
+
+            // Try TimelockRegisteredEvent (timelock)
+            match TimelockRegisteredEvent::try_from(&event) {
+                Ok(timelock_registered) => {
+                    info!(
+                        "[DKG] Successfully parsed TimelockRegisteredEvent for timelock_id {} (deadline {})",
+                        timelock_registered.timelock_id, timelock_registered.deadline
+                    );
+                    self.process_timelock_registered(timelock_registered);
+                    continue;
+                },
+                Err(e) => {
+                    debug!("[DKG] Not a TimelockRegisteredEvent: {:?}", e);
                 },
             }
 
@@ -827,6 +842,17 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         for timelock_id in event.timelock_ids {
             self.reveal_one_timelock(timelock_id, event.deadline);
         }
+    }
+
+    fn process_timelock_registered(&self, event: TimelockRegisteredEvent) {
+        info!(
+            "[Timelock] Timelock {} registered with deadline {}",
+            event.timelock_id, event.deadline
+        );
+        // Currently we just log the registration. In future we could:
+        // - Pre-compute the identity string for this timelock
+        // - Start preparing for share submission when deadline approaches
+        // - Track pending timelocks for better logging/monitoring
     }
 
     fn reveal_one_timelock(&self, timelock_id: u64, deadline: u64) {

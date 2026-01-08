@@ -63,6 +63,12 @@ A decryption key share submitted by a validator
 
 <dl>
 <dt>
+<code>timelock_id: u64</code>
+</dt>
+<dd>
+
+</dd>
+<dt>
 <code>validator: <b>address</b></code>
 </dt>
 <dd>
@@ -693,11 +699,8 @@ Cryptographic operations (verification, aggregation) are delegated to threshold_
     // Deduplicate - already revealed
     <b>if</b> (<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.decryption_keys, timelock_id)) <b>return</b>;
 
-    // 2. Compute Identity
-    <b>let</b> identity = <a href="timelock.md#0x1_timelock_compute_identity">compute_identity</a>(timelock_id, deadline);
-
-    // 3. Verify Share (delegated <b>to</b> <a href="threshold_dsa.md#0x1_threshold_dsa">threshold_dsa</a> <b>module</b>)
-    <b>let</b> is_valid = <a href="threshold_dsa.md#0x1_threshold_dsa_verify_timelock_share">threshold_dsa::verify_timelock_share</a>(validator_idx, identity, share);
+    // 2. Verify Share format (delegated <b>to</b> <a href="threshold_dsa.md#0x1_threshold_dsa">threshold_dsa</a> <b>module</b>)
+    <b>let</b> is_valid = <a href="threshold_dsa.md#0x1_threshold_dsa_verify_timelock_share">threshold_dsa::verify_timelock_share</a>(share);
     <b>assert</b>!(is_valid, <a href="timelock.md#0x1_timelock_ESHARE_VERIFICATION_FAILED">ESHARE_VERIFICATION_FAILED</a>);
 
     // 4. Store Share
@@ -714,7 +717,7 @@ Cryptographic operations (verification, aggregation) are delegated to threshold_
         i = i + 1;
     };
 
-    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(shares, <a href="timelock.md#0x1_timelock_DecryptionKeyShare">DecryptionKeyShare</a> { validator: validator_addr, validator_idx, share });
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(shares, <a href="timelock.md#0x1_timelock_DecryptionKeyShare">DecryptionKeyShare</a> { validator: validator_addr, timelock_id, validator_idx, share });
 
     // 5. Check Threshold and Aggregate
     <b>let</b> voters = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();

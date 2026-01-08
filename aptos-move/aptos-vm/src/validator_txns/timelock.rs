@@ -4,12 +4,14 @@
 use crate::{
     aptos_vm::get_system_transaction_output,
     errors::expect_only_successful_execution,
-    move_vm_ext::{AptosMoveResolver, SessionId},
+    move_vm_ext::{AptosMoveResolver, AptosResolver, SessionId},
     system_module_names::{PUBLISH_DECRYPTION_KEY_SHARE, PUBLISH_PUBLIC_KEY, TIMELOCK_MODULE},
     AptosVM,
 };
+use anyhow::Context;
+use aptos_dkg::ibe::{serialize_g2, G2Projective};
 use aptos_types::{
-    dkg::{DKGTranscript, DecryptionKeyShare},
+    dkg::{real_dkg::Transcripts, DKGTrait, DKGTranscript, DecryptionKeyShare},
     move_utils::as_move_value::AsMoveValue,
 };
 use aptos_vm_logging::log_schema::AdapterLogSchema;
@@ -34,12 +36,20 @@ impl AptosVM {
         dkg_transcript: DKGTranscript,
     ) -> Result<(VMStatus, VMOutput), VMStatus> {
         let mut gas_meter = UnmeteredGasMeter;
+
+        // Extract MPK from transcript - the Move function expects an MPK (G2 point), not transcript bytes
+        let transcripts: Transcripts = bcs::from_bytes(&dkg_transcript.transcript_bytes)
+            .context("Failed to deserialize DKG transcript for MPK extraction")?;
+        let dealt_pub_key = transcripts.main.get_dealt_public_key();
+        let mpk_bytes = serialize_g2(&dealt_pub_key.as_group_element())
+            .context("Failed to serialize MPK to G2 compressed format")?;
+
         let mut session = self.new_session(resolver, session_id, None);
 
         let args = vec![
             MoveValue::Signer(dkg_transcript.metadata.author),
             MoveValue::U64(dkg_transcript.metadata.epoch), // Reuse epoch as interval
-            dkg_transcript.transcript_bytes.as_move_value(),
+            mpk_bytes.as_move_value(),
         ];
 
         let traversal_storage = TraversalStorage::new();
