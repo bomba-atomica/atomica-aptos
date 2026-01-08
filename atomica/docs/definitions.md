@@ -155,6 +155,14 @@ The timestamp (in microseconds) when decryption becomes possible. Unique to each
 - **Alignment**: Must align to checkpoint period
 - **Irrevocable**: Cannot be changed after encryption
 
+### Checkpoint Period
+
+The duration (in microseconds) that enforces alignment for valid deadlines. Deadlines must be multiples of this period.
+
+- **Default**: 3,600,000,000 microseconds (1 hour)
+- **Purpose**: Batches verification and reveal operations to specific time slots
+- **Configurable**: Can be adjusted via `timelock_config` (e.g. for testing)
+
 ### Timelock ID
 
 A unique identifier for a timelock registration.
