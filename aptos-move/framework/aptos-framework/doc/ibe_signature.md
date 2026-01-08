@@ -60,7 +60,16 @@ This module connects the abstract concept of an "Identity" (e.g. a time interval
 to the cryptographic verification logic in <code><a href="threshold_dsa.md#0x1_threshold_dsa">threshold_dsa</a></code>.
 
 
-<pre><code><b>const</b> <a href="ibe_signature.md#0x1_ibe_signature_DST">DST</a>: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt; = [66, 76, 83, 95, 83, 73, 71, 95, 66, 76, 83, 49, 50, 51, 56, 49, 71, 49, 95, 88, 77, 68, 58, 83, 72, 65, 45, 50, 53, 54, 95, 83, 83, 87, 85, 95, 82, 79, 95, 78, 85, 76, 95];
+<pre><code><b>const</b> <a href="ibe_signature.md#0x1_ibe_signature_DST">DST</a>: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt; = [65, 80, 84, 79, 83, 95, 66, 76, 83, 95, 87, 86, 85, 70, 95, 68, 83, 84];
+</code></pre>
+
+
+
+<a id="0x1_ibe_signature_H_M_MSG"></a>
+
+
+
+<pre><code><b>const</b> <a href="ibe_signature.md#0x1_ibe_signature_H_M_MSG">H_M_MSG</a>: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt; = [72, 40, 109, 41];
 </code></pre>
 
 
@@ -80,7 +89,10 @@ Map an Identity string to a $G_1$ group element.
 $$ Q_{ID} = H_1(ID) \in G_1^* $$
 
 This corresponds to the first step of the **Extract** algorithm in [BF01].
-In our Timelock system, <code>identity_bytes</code> is the BCS-serialized time interval.
+In our Timelock system, <code>identity_bytes</code> is the Keccak256 hash of the identity string.
+
+Note: This function prepends "H(m)" to the identity before hashing to curve,
+matching the Rust implementation's hash_to_curve(identity, DST, b"H(m)") signature.
 
 
 <pre><code><b>public</b> <b>fun</b> <a href="ibe_signature.md#0x1_ibe_signature_identity_to_point">identity_to_point</a>(identity_bytes: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;): <a href="../../aptos-stdlib/doc/crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;<a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra_G1">bls12381_algebra::G1</a>&gt;
@@ -93,7 +105,19 @@ In our Timelock system, <code>identity_bytes</code> is the BCS-serialized time i
 
 
 <pre><code><b>public</b> <b>fun</b> <a href="ibe_signature.md#0x1_ibe_signature_identity_to_point">identity_to_point</a>(identity_bytes: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;): Element&lt;G1&gt; {
-    hash_to&lt;G1, HashG1XmdSha256SswuRo&gt;(&<a href="ibe_signature.md#0x1_ibe_signature_DST">DST</a>, &identity_bytes)
+    // Prepend "H(m)" message <b>to</b> match Rust hash_to_curve(identity, <a href="ibe_signature.md#0x1_ibe_signature_DST">DST</a>, b"H(m)")
+    // This is specific <b>to</b> the blstrs crate's hash_to_curve implementation
+    <b>let</b> msg_with_h = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u8&gt;();
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> msg_with_h, 72); // 'H'
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> msg_with_h, 40); // '('
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> msg_with_h, 109); // 'm'
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> msg_with_h, 41); // ')'
+    <b>let</b> i = 0;
+    <b>while</b> (i &lt; <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&identity_bytes)) {
+        <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> msg_with_h, *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&identity_bytes, i));
+        i = i + 1;
+    };
+    hash_to&lt;G1, HashG1XmdSha256SswuRo&gt;(&<a href="ibe_signature.md#0x1_ibe_signature_DST">DST</a>, &msg_with_h)
 }
 </code></pre>
 

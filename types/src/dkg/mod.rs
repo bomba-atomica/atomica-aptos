@@ -265,7 +265,7 @@ pub struct TimelockConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StartKeyGenEvent {
-    pub interval: u64,
+    pub epoch: u64,
     pub config: TimelockConfig,
 }
 
@@ -286,24 +286,24 @@ impl TryFrom<&ContractEvent> for StartKeyGenEvent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DeadlineReachedEvent {
+pub struct RequestRevealEvent {
     pub deadline: u64,
     pub timelock_ids: Vec<u64>,
 }
 
-impl MoveStructType for DeadlineReachedEvent {
+impl MoveStructType for RequestRevealEvent {
     const MODULE_NAME: &'static IdentStr = ident_str!("timelock");
-    const STRUCT_NAME: &'static IdentStr = ident_str!("DeadlineReachedEvent");
+    const STRUCT_NAME: &'static IdentStr = ident_str!("RequestRevealEvent");
 }
 
-impl TryFrom<&ContractEvent> for DeadlineReachedEvent {
+impl TryFrom<&ContractEvent> for RequestRevealEvent {
     type Error = anyhow::Error;
 
     fn try_from(event: &ContractEvent) -> Result<Self> {
         if event.type_tag() != &TypeTag::Struct(Box::new(Self::struct_tag())) {
-            bail!("Expected DeadlineReachedEvent tag");
+            bail!("Expected RequestRevealEvent tag");
         }
-        bcs::from_bytes(event.event_data()).context("Failed to deserialize DeadlineReachedEvent")
+        bcs::from_bytes(event.event_data()).context("Failed to deserialize RequestRevealEvent")
     }
 }
 
@@ -353,26 +353,25 @@ impl TryFrom<&ContractEvent> for MasterPublicKeyPublishedEvent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DecryptionKeyRevealedEvent {
+pub struct SecretRevealedEvent {
     pub timelock_id: u64,
     pub deadline: u64,
-    pub decryption_key: Vec<u8>,
+    pub secret: Vec<u8>,
 }
 
-impl MoveStructType for DecryptionKeyRevealedEvent {
+impl MoveStructType for SecretRevealedEvent {
     const MODULE_NAME: &'static IdentStr = ident_str!("timelock");
-    const STRUCT_NAME: &'static IdentStr = ident_str!("DecryptionKeyRevealedEvent");
+    const STRUCT_NAME: &'static IdentStr = ident_str!("SecretRevealedEvent");
 }
 
-impl TryFrom<&ContractEvent> for DecryptionKeyRevealedEvent {
+impl TryFrom<&ContractEvent> for SecretRevealedEvent {
     type Error = anyhow::Error;
 
     fn try_from(event: &ContractEvent) -> Result<Self> {
         if event.type_tag() != &TypeTag::Struct(Box::new(Self::struct_tag())) {
-            bail!("Expected DecryptionKeyRevealedEvent tag");
+            bail!("Expected SecretRevealedEvent tag");
         }
-        bcs::from_bytes(event.event_data())
-            .context("Failed to deserialize DecryptionKeyRevealedEvent")
+        bcs::from_bytes(event.event_data()).context("Failed to deserialize SecretRevealedEvent")
     }
 }
 

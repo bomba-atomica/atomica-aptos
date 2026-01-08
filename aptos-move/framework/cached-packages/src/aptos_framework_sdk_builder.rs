@@ -1177,9 +1177,9 @@ pub enum EntryFunctionCall {
         deadline: u64,
     },
 
-    /// Set interval for testing (devnet/testnet only).
+    /// Set checkpoint period for testing (devnet/testnet only).
     ///
-    /// This function allows overriding the default interval on test networks
+    /// This function allows overriding the default period on test networks
     /// to speed up testing (e.g., 5 seconds instead of 1 hour).
     ///
     /// # Security
@@ -1188,9 +1188,9 @@ pub enum EntryFunctionCall {
     ///
     /// # Arguments
     /// - framework: Must be @aptos_framework signer
-    /// - interval_us: New interval in microseconds
-    TimelockConfigSetIntervalForTesting {
-        interval_us: u64,
+    /// - period_us: New period in microseconds
+    TimelockConfigSetCheckpointPeriodForTesting {
+        period_us: u64,
     },
 
     TransactionFeeConvertToAptosFaBurnRef {},
@@ -1976,8 +1976,8 @@ impl EntryFunctionCall {
                 timelock_publish_public_key(timelock_id, mpk)
             },
             TimelockRegister { deadline } => timelock_register(deadline),
-            TimelockConfigSetIntervalForTesting { interval_us } => {
-                timelock_config_set_interval_for_testing(interval_us)
+            TimelockConfigSetCheckpointPeriodForTesting { period_us } => {
+                timelock_config_set_checkpoint_period_for_testing(period_us)
             },
             TransactionFeeConvertToAptosFaBurnRef {} => {
                 transaction_fee_convert_to_aptos_fa_burn_ref()
@@ -5284,9 +5284,9 @@ pub fn timelock_register(deadline: u64) -> TransactionPayload {
     ))
 }
 
-/// Set interval for testing (devnet/testnet only).
+/// Set checkpoint period for testing (devnet/testnet only).
 ///
-/// This function allows overriding the default interval on test networks
+/// This function allows overriding the default period on test networks
 /// to speed up testing (e.g., 5 seconds instead of 1 hour).
 ///
 /// # Security
@@ -5295,8 +5295,8 @@ pub fn timelock_register(deadline: u64) -> TransactionPayload {
 ///
 /// # Arguments
 /// - framework: Must be @aptos_framework signer
-/// - interval_us: New interval in microseconds
-pub fn timelock_config_set_interval_for_testing(interval_us: u64) -> TransactionPayload {
+/// - period_us: New period in microseconds
+pub fn timelock_config_set_checkpoint_period_for_testing(period_us: u64) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
             AccountAddress::new([
@@ -5305,9 +5305,9 @@ pub fn timelock_config_set_interval_for_testing(interval_us: u64) -> Transaction
             ]),
             ident_str!("timelock_config").to_owned(),
         ),
-        ident_str!("set_interval_for_testing").to_owned(),
+        ident_str!("set_checkpoint_period_for_testing").to_owned(),
         vec![],
-        vec![bcs::to_bytes(&interval_us).unwrap()],
+        vec![bcs::to_bytes(&period_us).unwrap()],
     ))
 }
 
@@ -7537,13 +7537,15 @@ mod decoder {
         }
     }
 
-    pub fn timelock_config_set_interval_for_testing(
+    pub fn timelock_config_set_checkpoint_period_for_testing(
         payload: &TransactionPayload,
     ) -> Option<EntryFunctionCall> {
         if let TransactionPayload::EntryFunction(script) = payload {
-            Some(EntryFunctionCall::TimelockConfigSetIntervalForTesting {
-                interval_us: bcs::from_bytes(script.args().get(0)?).ok()?,
-            })
+            Some(
+                EntryFunctionCall::TimelockConfigSetCheckpointPeriodForTesting {
+                    period_us: bcs::from_bytes(script.args().get(0)?).ok()?,
+                },
+            )
         } else {
             None
         }
@@ -8373,8 +8375,8 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
             Box::new(decoder::timelock_register),
         );
         map.insert(
-            "timelock_config_set_interval_for_testing".to_string(),
-            Box::new(decoder::timelock_config_set_interval_for_testing),
+            "timelock_config_set_checkpoint_period_for_testing".to_string(),
+            Box::new(decoder::timelock_config_set_checkpoint_period_for_testing),
         );
         map.insert(
             "transaction_fee_convert_to_aptos_fa_burn_ref".to_string(),

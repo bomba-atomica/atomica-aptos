@@ -1,7 +1,7 @@
 # Atomica Timelock DKG & IBE Specification
 
-**Version:** 1.0
-**Last Updated:** January 2, 2026
+**Version:** 1.1
+**Last Updated:** January 8, 2026
 **Status:** Reference Specification
 
 ---
@@ -81,9 +81,17 @@ _Note: Uses Keccak256 (original SHA-3 competition winner, same as Ethereum) rath
 **Decryption Key (DK) for Identity:**
 
 ```
-Q_id = HashToCurve_G1(identity)
+Q_id = HashToCurve_G1("H(m)" || identity, "APTOS_BLS_WVUF_DST")
 DK = s × Q_id  (G1 point, 48 bytes)
 ```
+
+> [!IMPORTANT]
+> **HashToCurve Parameters:**
+>
+> - **DST (Domain Separation Tag):** "APTOS_BLS_WVUF_DST"
+> - **Augmentation/Prefix:** "H(m)"
+>
+> The identity MUST be prefixed with `b"H(m)"` before the HashToCurve operation to match the on-chain Rust implementation.
 
 **Threshold Reconstruction:**
 
@@ -100,7 +108,7 @@ DK = s × Q_id  (G1 point, 48 bytes)
 
 1. Generate random scalar `r`
 2. Compute `U = r × G2_generator` (96 bytes)
-3. Compute `Q_id = HashToCurve_G1(identity)`
+3. Compute `Q_id = HashToCurve_G1("H(m)" || identity, "APTOS_BLS_WVUF_DST")`
 4. Compute `g_id = e(Q_id, MPK)^r`
 5. Derive symmetric key: `K = Keccak256(g_id)[0..32]`
 6. Encrypt: `V = M ⊕ K` (XOR with key expansion)
@@ -234,7 +242,7 @@ checkpoint_period_microseconds = 3_600_000_000  // 1 hour in microseconds
 │  │ timelock     │  │ timelock_    │  │ block        │          │
 │  │ .move        │◄─│ config.move  │◄─│ .move        │          │
 │  │              │  │              │  │              │          │
-│  │ TimelockState│  │ Interval cfg │  │ on_new_block │          │
+│  │ TimelockState│  │ CheckpointCfg│  │ on_new_block │          │
 │  │ Events       │  │              │  │ (rotation)   │          │
 │  │ Aggregation  │  │              │  │              │          │
 │  └──────────────┘  └──────────────┘  └──────────────┘          │
@@ -272,52 +280,43 @@ checkpoint_period_microseconds = 3_600_000_000  // 1 hour in microseconds
 
 ### State Machine
 
-> **Terminology Note**: The term "interval" is deprecated. The current term is **deadline**. The diagram below uses the old terminology for historical reference.
->
-> **Key Concept**: DKG runs per **Epoch**, not per deadline. The MPK and DK_shares generated at epoch boundary are used for all deadlines within that epoch.
+> **Key Concept**: The DKG runs once (globally or per configuration reset), not per deadline. The same Master Public Key (MPK) is used for all deadlines.
 
 ```
 ┌──────────────┐
 │  DEADLINE N  │
-│  (Within     │
-│   Epoch E)   │
+│  (Registered)│
 └──────┬───────┘
        │ Time passes (on_new_block)
-       │ No new DKG until next epoch
+       │
        ▼
 ┌──────────────────────────────────────────────────────────┐
-│  RequestRevealEvent(N)                                    │
+│  RequestRevealEvent(deadline=N)                          │
 └──────┬─────────────────────────────┬─────────────────────┘
        │                             │
        │ PARALLEL                    │
        ▼                             ▼
 ┌──────────────────┐          ┌──────────────────┐
-│  (No DKG)        │          │  Reveal for N    │
-│  (Same keys from │          │  (DK_shares)     │
-│   Epoch E DKG)   │          │                  │
-└──────┬───────────┘          └──────┬───────────┘
-       │                             │
-       ▼                             ▼
-┌──────────────────┐          ┌──────────────────┐
-│  KeyPublished    │          │  SecretRevealed  │
-│  Event(E)        │          │  Event(N)        │
-└──────────────────┘          └──────────────────┘
-       │                             │
-       │                             │  (DK for Deadline N
-       │                             │   now revealed)
-       └─────────────┬───────────────┘
-                     │ Epoch Boundary
-                     ▼
-              ┌──────────────┐
-              │  EPOCH E+1   │
-              │  New DKG     │
-              └──────────────┘
+│  (MPK already)   │          │  Reveal for N    │
+│  (published)     │          │  (DK_shares)     │
+│                  │          │                  │
+└──────────────────┘          └──────┬───────────┘
+                                     │
+                                     ▼
+                              ┌──────────────────┐
+                              │  SecretRevealed  │
+                              │  Event(N)        │
+                              └──────────────────┘
+                                     │
+                                     │  (DK for Deadline N
+                                     │   now revealed)
+                                     └─────────────
 ```
 
 **Flow Summary:**
 
-- **DKG** → Runs once per epoch boundary → produces MPK + DK_shares
-- **Deadlines** → Multiple deadlines within an epoch → all use same DKG output
+- **DKG** → Runs on system initialization → produces global MPK + DK_shares (polynomial)
+- **Deadlines** → Multiple deadlines → all use same DKG output (derived from polynomial)
 - **Reveal** → Each deadline triggers share submission → DK revealed after threshold
 
 ---
@@ -366,11 +365,11 @@ let epoch_manager = EpochManager::new(
 - Check `consensus_config.is_vtxn_enabled() == true`
 - Verify consensus key is loaded in PersistentSafetyStorage
 
-#### Phase 2: DKG Execution (Per Epoch)
+#### Phase 2: DKG Execution (Per Epoch/Reset)
 
-> **Important**: DKG runs per **Epoch**, not per deadline. The MPK and DK_shares generated in one epoch are used for all timelock deadlines within that epoch. A new DKG is only triggered when the epoch changes.
+> **Important**: DKG runs per **Epoch**, not per deadline. The MPK and DK_shares generated in one epoch are used for all timelock deadlines within that epoch. A new DKG is only triggered when the epoch changes or system resets.
 
-**Trigger:** `StartKeyGenEvent` emitted on-chain at epoch boundary
+**Trigger:** `StartKeyGenEvent` emitted on-chain
 
 **Process:**
 
@@ -466,7 +465,7 @@ let epoch_manager = EpochManager::new(
 4. **Persistent Storage**
    ```rust
    let share_bytes = bcs::to_bytes(&share)?;
-   key_storage.set_timelock_share(deadline, share_bytes)?;
+   key_storage.set_timelock_share(epoch, share_bytes)?;
    ```
 
 **Storage Format:** BCS-serialized `DealtSecretKeyShares` (varies, ~100-500 bytes)
@@ -480,7 +479,8 @@ let epoch_manager = EpochManager::new(
 1.  **Share Retrieval**
 
     ```rust
-    let share_bytes = key_storage.get_timelock_share(deadline)?;
+    // Retrieve share for the epoch that generated the keys
+    let share_bytes = key_storage.get_timelock_share(epoch)?;
     let shares: DealtSecretKeyShares = bcs::from_bytes(&share_bytes)?;
     ```
 
@@ -567,12 +567,6 @@ INFO [Timelock] Successfully computed and submitted decryption key share
 
 ## Explorer Integration
 
-> **Note**: The Move API uses `interval` field names (e.g., `get_current_interval`, `interval: u64` in structs). This is legacy terminology from an earlier design. In documentation and UI, use **deadline** instead. The mapping is:
->
-> - `get_current_interval` → Get current deadline number
-> - `get_public_key(interval)` → Get MPK for deadline
-> - `get_secret(interval)` → Get DK for deadline
-
 ### View Functions (REST API)
 
 **Get Current Deadline:**
@@ -580,11 +574,11 @@ INFO [Timelock] Successfully computed and submitted decryption key share
 ```typescript
 GET /v1/view
 {
-  "function": "0x1::timelock::get_current_interval",
+  "function": "0x1::timelock::get_current_deadline_id",
   "type_arguments": [],
   "arguments": []
 }
-// Returns: "42" (string representation of u64 - current deadline number)
+// Returns: "42" (string representation of u64 - current deadline ID)
 ```
 
 **Get Public Key for Deadline:**
@@ -632,11 +626,11 @@ GET /v1/view
 ```typescript
 GET /v1/view
 {
-  "function": "0x1::timelock::get_interval_config",
+  "function": "0x1::timelock::get_config",
   "type_arguments": [],
   "arguments": ["42"]
 }
-// Returns: Option<DeadlineConfig> (legacy name: IntervalConfig)
+// Returns: Option<TimelockConfig>
 // {
 //   "threshold": "3",
 //   "total_validators": "4",
@@ -646,13 +640,11 @@ GET /v1/view
 
 ### Events to Index
 
-> **Note**: Move event structs use `interval: u64` field. This maps to the deadline number.
-
 **1. StartKeyGenEvent** (at epoch boundary)
 
 ```move
 struct StartKeyGenEvent {
-    interval: u64,  // Epoch number (triggers new DKG)
+    epoch: u64,  // Epoch number (triggers new DKG)
     config: TimelockConfig,
 }
 ```
@@ -663,7 +655,7 @@ struct StartKeyGenEvent {
 
 ```move
 struct KeyPublishedEvent {
-    interval: u64,  // Epoch number
+    epoch: u64,  // Epoch number
     public_key: vector<u8>,  // BCS-serialized PVSS Transcript
 }
 ```
@@ -678,7 +670,7 @@ struct KeyPublishedEvent {
 
 ```move
 struct RequestRevealEvent {
-    interval: u64,  // Deadline number (when deadline passes)
+    deadline: u64,  // Deadline timestamp (when deadline passes)
 }
 ```
 
@@ -688,7 +680,7 @@ struct RequestRevealEvent {
 
 ```move
 struct SecretRevealedEvent {
-    interval: u64,  // Deadline number
+    deadline: u64,  // Deadline timestamp
     secret: vector<u8>,  // 48 bytes, G1 DK
 }
 ```
@@ -697,12 +689,10 @@ struct SecretRevealedEvent {
 
 ### Explorer UI Recommendations
 
-> **Terminology Note**: The term "interval" is deprecated in documentation. The current term is **deadline**. However, the Move API uses `interval` field names (e.g., `interval: u64` in structs). For UI display purposes, use "Deadline" to match current terminology.
-
 **Timelock Dashboard:**
 
 - **Current Deadline:** Display as "Deadline #42"
-- **Next Rotation:** Estimate based on `last_rotation_time + interval_microseconds`
+- **Next Rotation:** Estimate based on `last_rotation_time + checkpoint_period_microseconds`
 - **Recent Deadlines:** Table showing:
   - Deadline number
   - Public Key status (Published / Pending)
@@ -834,6 +824,9 @@ export interface Ciphertext {
 }
 
 export class IBECrypto {
+  // DST matches Rust BLS_WVUF_DST
+  static readonly DST = "APTOS_BLS_WVUF_DST";
+
   /**
    * Compute the IBE identity for a timelock.
    *
@@ -849,8 +842,14 @@ export class IBECrypto {
   }
 
   static ibeEncrypt(mpkG2: Uint8Array, identity: Uint8Array, message: Uint8Array): Ciphertext {
+    // Prepend "H(m)" to match Rust hash_to_curve(identity, DST, b"H(m)") signature
+    // This is specific to the blstrs crate's hash_to_curve implementation
+    const msgWithH = new Uint8Array(36); // 32 bytes identity + 4 bytes prefix
+    msgWithH.set(new TextEncoder().encode("H(m)"), 0);
+    msgWithH.set(identity, 4);
+
     // Hash identity to G1
-    const pointId = bls12_381.G1.hashToCurve(identity);
+    const pointId = bls12_381.G1.hashToCurve(msgWithH, { DST: IBECrypto.DST });
 
     // Parse MPK (G2)
     const mpkPoint = bls12_381.G2.Point.fromHex(Buffer.from(mpkG2).toString("hex"));
@@ -905,8 +904,6 @@ export class IBECrypto {
 
 ### Move Smart Contract Integration
 
-> **Note**: Move struct fields and function parameters use legacy `interval` terminology. This maps to the deadline number in current documentation.
-
 **Storing Encrypted Data On-Chain:**
 
 ```move
@@ -918,7 +915,7 @@ module my_addr::sealed_auction {
         bidder: address,
         encrypted_amount: vector<u8>,  // Ciphertext.v
         ciphertext_u: vector<u8>,      // Ciphertext.u (96 bytes)
-        target_deadline: u64,  // Note: Move uses target_interval field
+        target_deadline: u64,
     }
 
     public entry fun submit_bid(
@@ -955,10 +952,8 @@ module my_addr::sealed_auction {
 
 **1. Timing Strategy**
 
-> **Note**: The Move API uses `current_interval` field. The term "deadline" is used in documentation for conceptual clarity.
-
-- Encrypt for `current_interval + 1` or later
-- Allow buffer time (2-3 deadlines) for DKG reliability
+- Encrypt for `current_deadline + 1` or later
+- Allow buffer time (2-3 checkpoint periods) for DKG reliability
 - Monitor events for key publication confirmation
 
 **2. Error Handling**
@@ -1099,7 +1094,7 @@ OnChainConsensusConfig::V5 {
 ```move
 // aptos_framework::timelock_config
 TimelockConfig {
-    interval_microseconds: 3600 * 1000000,  // 1 hour (production)
+    checkpoint_period_microseconds: 3600 * 1000000,  // 1 hour (production)
 }
 ```
 
@@ -1107,13 +1102,12 @@ TimelockConfig {
 
 ```move
 struct TimelockState has key {
-    current_interval: u64,
-    last_rotation_time: u64,
-    public_keys: Table<u64, vector<u8>>,          // interval -> MPK
-    validator_shares: Table<u64, vector<ValidatorShare>>,
-    revealed_secrets: Table<u64, vector<u8>>,     // interval -> DK
-    interval_configs: Table<u64, IntervalConfig>,
-    // Event handles...
+    next_timelock_id: u64,
+    pending_deadlines: vector<u64>,
+    deadline_to_ids: Table<u64, vector<u64>>,
+    decryption_keys: Table<u64, vector<u8>>,
+    mpk_dkg_started: bool,
+    // ...
 }
 ```
 
@@ -1170,7 +1164,7 @@ bun run test:ibe    # Full encryption/decryption
 **Devnet:**
 
 - Shorter deadlines (5 seconds for fast testing)
-- Use `set_interval_for_testing()` entry function
+- Use `set_checkpoint_period_for_testing()` entry function
 - Monitor via explorer
 
 **Testnet/Mainnet:**
@@ -1342,15 +1336,6 @@ The Atomica Timelock system builds upon existing Aptos infrastructure. This sect
 │    - Share storage in PersistentSafetyStorage          │
 │    - IBE crypto library (aptos-dkg/src/ibe)            │
 │    - VM dispatchers (process_timelock_*)               │
-│                                                         │
-│  Transaction Types:                                     │
-│    - Topic::TIMELOCK                                   │
-│    - TimelockDKGResult                                 │
-│    - TimelockShare                                     │
-│                                                         │
-│  Client SDK:                                            │
-│    - ibe-crypto.ts (TypeScript IBE)                    │
-│    - Test harness (Docker testnet)                     │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -1358,117 +1343,46 @@ The Atomica Timelock system builds upon existing Aptos infrastructure. This sect
 
 ## Security Considerations
 
-### Threat Model
+### 1. DKG Robustness
 
-**Assumptions:**
+The system relies on the assumption that at least $2f+1$ validators are honest. If more than $f$ validators collude, they can reconstruct the master secret key, allowing them to decrypt any timelocked message at any time.
 
-1. **Honest Majority:** At least 2/3 + 1 validators are honest
-2. **Network Liveness:** Validators can communicate
-3. **Cryptographic Security:** BLS12-381 and IBE are secure
+**Mitigation:**
 
-**Attacks Prevented:**
+- Using the same high-stake validator set as the main consensus mechanism.
+- DKG protocol is publicly verifiable (PVSS).
+- Threshold signatures prevent any single entity from controlling the keys.
 
-- **Early Decryption:** Single validator cannot decrypt (threshold security)
-- **Key Leakage:** Master secret never reconstructed on single machine
-- **Replay Attacks:** Shares are deadline-specific
-- **Censorship:** Any validator can trigger rotation via entry function
-- **Early Reveal:** Share publication MUST validate `deadline < current_deadline` (only past deadlines can be revealed)
+### 2. Clock Synchronization
 
-**Attacks Not Prevented:**
+Deadlines are enforced based on `timestamp::now_microseconds()`, which is derived from block timestamps.
 
-- **Collusion:** 2/3+ validators can collude to reveal early
-- **Network Partition:** DKG may fail if too many validators offline
-- **Quantum Computers:** Pairing-based crypto vulnerable (future concern)
+**Risk:**
+Validators can manipulate block timestamps within a small window.
 
-### Security Properties
+**Mitigation:**
 
-**Confidentiality:**
+- Aptos consensus rules strictly bound block timestamps.
+- Deadlines should be chosen with a safety margin (e.g., don't rely on sub-second precision for high-value auctions).
 
-- Ciphertext reveals no information about plaintext (IND-ID-CPA)
-- Decryption impossible before reveal (assuming honest threshold)
+### 3. Front-Running
 
-**Integrity:**
+A validator could theoretically see a decrypted bid in the mempool (after the key is revealed) and try to insert their own transaction.
 
-- Invalid shares rejected by G1 deserialization check
-- Transcript verification via PVSS
+**Mitigation:**
 
-**Availability:**
+- The architecture requires bids to be **committed** (encrypted) before the deadline.
+- New bids cannot be submitted after the deadline passes.
+- Smart contracts must enforce `assert!(now < deadline)` for bid submission.
 
-- Manual rotation fallback (`trigger_rotation()`)
-- DKG retry on failure (implementation pending)
+### 4. Serialization Compatibility
 
-### Failure Modes
+Cross-language serialization of curve points (G1, G2) and target group elements (Gt) is critical.
 
-> [!IMPORTANT]
-> Applications MUST handle these failure scenarios gracefully.
+**Risk:**
+Different libraries serialize field elements differently (e.g., big-endian vs little-endian, compressed vs uncompressed).
 
-**1. DKG Timeout (No Transcript Published)**
+**Mitigation:**
 
-- **Cause:** Network partition, insufficient validator participation
-- **Effect:** `get_public_key(deadline)` returns `None`
-- **Recovery:** Deadline is skipped; next deadline proceeds normally
-- **User Impact:** Messages cannot be encrypted for this deadline; encrypt for future deadlines instead
-
-**2. Reveal Threshold Not Met**
-
-- **Cause:** Fewer than 2/3+1 validators reveal shares
-- **Effect:** `get_secret(deadline)` returns `None` indefinitely
-- **Recovery:** None — secret is permanently unrecoverable
-- **User Impact:** Messages encrypted for this deadline cannot be decrypted
-- **Mitigation:** Encrypt for deadlines with buffer time; check validator liveness before encrypting
-
-**3. New Validator After DKG**
-
-- **Cause:** New validator added to set after deadline's DKG completed
-- **Effect:** New validator has no share for that deadline
-- **Recovery:** Validator logs warning and does not participate in reveal
-- **User Impact:** None (threshold is based on original participant set)
-
-**4. Validator Key Rotation**
-
-- **Cause:** Validator rotates consensus key between DKG and reveal
-- **Effect:** Cannot decrypt own share from transcript
-- **Recovery:** Validator logs error and does not participate in reveal
-- **User Impact:** Reduces available shares; may prevent threshold if many validators rotate
-
-### Audit Recommendations
-
-**Critical Components:**
-
-1. IBE implementation (`aptos-dkg/src/ibe/mod.rs`)
-2. Share aggregation logic (`timelock.move:235-316`)
-3. Identity derivation (both Rust and TypeScript)
-4. Transcript deserialization/verification
-5. Share storage security (PersistentSafetyStorage)
-
-**Test Vectors:**
-
-- Encrypt/decrypt round-trip
-- Invalid share rejection
-- Threshold boundary conditions
-- Cross-implementation compatibility (Rust ↔ TypeScript)
-
----
-
-## Appendix
-
-### Glossary
-
-- **DKG**: Distributed Key Generation
-- **IBE**: Identity-Based Encryption
-- **MPK**: Master Public Key (G2 point, 96 bytes)
-- **DK**: Decryption Key (G1 point, 48 bytes)
-- **PVSS**: Publicly Verifiable Secret Sharing
-- **VTxn**: Validator Transaction
-- **Gt**: Target group of pairing (Fp12 element)
-
-### References
-
-- [BLS12-381 Specification](https://electriccoin.co/blog/new-snark-curve/)
-- [Boneh-Franklin IBE Paper](https://crypto.stanford.edu/~dabo/papers/bfibe.pdf)
-- [Aptos DKG Documentation](https://github.com/aptos-labs/aptos-core/tree/main/dkg)
-- [Aptos Randomness AIP](https://github.com/aptos-foundation/AIPs)
-
-### Version History
-
-- **v1.0** (2026-01-02): Initial specification
+- This specification mandates **Canonical Serialization** for Gt (big-endian coefficients).
+- All implementations must verify against test vectors provided in `atomica/timelock-tests`.

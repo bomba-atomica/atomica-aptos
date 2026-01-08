@@ -10,8 +10,8 @@
 -  [Resource `TimelockState`](#0x1_timelock_TimelockState)
 -  [Struct `StartKeyGenEvent`](#0x1_timelock_StartKeyGenEvent)
 -  [Struct `TimelockRegisteredEvent`](#0x1_timelock_TimelockRegisteredEvent)
--  [Struct `DeadlineReachedEvent`](#0x1_timelock_DeadlineReachedEvent)
--  [Struct `DecryptionKeyRevealedEvent`](#0x1_timelock_DecryptionKeyRevealedEvent)
+-  [Struct `RequestRevealEvent`](#0x1_timelock_RequestRevealEvent)
+-  [Struct `SecretRevealedEvent`](#0x1_timelock_SecretRevealedEvent)
 -  [Constants](#@Constants_0)
     -  [Atomica Timelock Service](#@Atomica_Timelock_Service_1)
         -  [Architecture](#@Architecture_2)
@@ -205,7 +205,7 @@ A decryption key share submitted by a validator
 
 <dl>
 <dt>
-<code>interval: u64</code>
+<code>epoch: u64</code>
 </dt>
 <dd>
 
@@ -255,14 +255,14 @@ A decryption key share submitted by a validator
 
 </details>
 
-<a id="0x1_timelock_DeadlineReachedEvent"></a>
+<a id="0x1_timelock_RequestRevealEvent"></a>
 
-## Struct `DeadlineReachedEvent`
+## Struct `RequestRevealEvent`
 
 
 
 <pre><code>#[<a href="event.md#0x1_event">event</a>]
-<b>struct</b> <a href="timelock.md#0x1_timelock_DeadlineReachedEvent">DeadlineReachedEvent</a> <b>has</b> drop, store
+<b>struct</b> <a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> <b>has</b> drop, store
 </code></pre>
 
 
@@ -289,14 +289,14 @@ A decryption key share submitted by a validator
 
 </details>
 
-<a id="0x1_timelock_DecryptionKeyRevealedEvent"></a>
+<a id="0x1_timelock_SecretRevealedEvent"></a>
 
-## Struct `DecryptionKeyRevealedEvent`
+## Struct `SecretRevealedEvent`
 
 
 
 <pre><code>#[<a href="event.md#0x1_event">event</a>]
-<b>struct</b> <a href="timelock.md#0x1_timelock_DecryptionKeyRevealedEvent">DecryptionKeyRevealedEvent</a> <b>has</b> drop, store
+<b>struct</b> <a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a> <b>has</b> drop, store
 </code></pre>
 
 
@@ -319,7 +319,7 @@ A decryption key share submitted by a validator
 
 </dd>
 <dt>
-<code>decryption_key: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;</code>
+<code>secret: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;</code>
 </dt>
 <dd>
 
@@ -405,7 +405,7 @@ based on timestamps (deadlines).
 #### Flow
 
 1. User calls <code><a href="timelock.md#0x1_timelock_register">register</a>(deadline)</code>.
-2. When <code>now &gt;= deadline</code>, <code><a href="timelock.md#0x1_timelock_DeadlineReachedEvent">DeadlineReachedEvent</a></code> is emitted.
+2. When <code>now &gt;= deadline</code>, <code>DeadlineReachedEvent</code> is emitted.
 3. Validators submit decryption key shares for the specific <code>timelock_id</code>.
 4. Decryption key is aggregated (via threshold_dsa) and published.
 
@@ -463,7 +463,7 @@ Initialize the timelock system
         <b>if</b> (n == 0) { n = 1; threshold = 1; };
 
         emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
-            interval: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
+            epoch: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
             config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
         });
     }
@@ -597,7 +597,7 @@ On New Block: Check for passed deadlines
         <b>if</b> (n &gt; 0) {
             <b>let</b> threshold = (n * 2 / 3) + 1;
             emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
-                interval: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
+                epoch: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
                 config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
             });
             state.mpk_dkg_started = <b>true</b>;
@@ -618,7 +618,7 @@ On New Block: Check for passed deadlines
         // Get IDs and emit <a href="event.md#0x1_event">event</a>
         <b>if</b> (<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.deadline_to_ids, next_deadline)) {
             <b>let</b> ids = <a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow">table::borrow</a>(&state.deadline_to_ids, next_deadline);
-            emit(<a href="timelock.md#0x1_timelock_DeadlineReachedEvent">DeadlineReachedEvent</a> {
+            emit(<a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> {
                 deadline: next_deadline,
                 timelock_ids: *ids,
             });
@@ -741,10 +741,10 @@ Cryptographic operations (verification, aggregation) are delegated to threshold_
         <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&dk) &gt; 0) {
             <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.decryption_keys, timelock_id, dk);
 
-            emit(<a href="timelock.md#0x1_timelock_DecryptionKeyRevealedEvent">DecryptionKeyRevealedEvent</a> {
+            emit(<a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a> {
                 timelock_id,
                 deadline,
-                decryption_key: dk,
+                secret: dk,
             });
         };
     };

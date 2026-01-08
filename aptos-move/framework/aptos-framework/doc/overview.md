@@ -45,6 +45,7 @@ This is the reference documentation of the Aptos framework.
 -  [`0x1::governance_proposal`](governance_proposal.md#0x1_governance_proposal)
 -  [`0x1::guid`](guid.md#0x1_guid)
 -  [`0x1::ibe_signature`](ibe_signature.md#0x1_ibe_signature)
+-  [`0x1::ibe_test_fixtures`](ibe_test_fixtures.md#0x1_ibe_test_fixtures)
 -  [`0x1::jwk_consensus_config`](jwk_consensus_config.md#0x1_jwk_consensus_config)
 -  [`0x1::jwks`](jwks.md#0x1_jwks)
 -  [`0x1::keyless_account`](keyless_account.md#0x1_keyless_account)

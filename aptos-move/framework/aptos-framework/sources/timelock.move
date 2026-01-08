@@ -81,7 +81,7 @@ module aptos_framework::timelock {
 
     #[event]
     struct StartKeyGenEvent has drop, store {
-        interval: u64, // Acts as ID (should be MPK_ID = 1)
+        epoch: u64, // Acts as ID (should be MPK_ID = 1)
         config: TimelockConfig,
     }
 
@@ -92,16 +92,16 @@ module aptos_framework::timelock {
     }
 
     #[event]
-    struct DeadlineReachedEvent has drop, store {
+    struct RequestRevealEvent has drop, store {
         deadline: u64,
         timelock_ids: vector<u64>,
     }
 
     #[event]
-    struct DecryptionKeyRevealedEvent has drop, store {
+    struct SecretRevealedEvent has drop, store {
         timelock_id: u64,
         deadline: u64,
-        decryption_key: vector<u8>,
+        secret: vector<u8>,
     }
 
     // =========================================================================
@@ -132,7 +132,7 @@ module aptos_framework::timelock {
             if (n == 0) { n = 1; threshold = 1; };
 
             emit(StartKeyGenEvent {
-                interval: MPK_ID,
+                epoch: MPK_ID,
                 config: TimelockConfig { threshold, total_validators: n },
             });
         }
@@ -214,7 +214,7 @@ module aptos_framework::timelock {
             if (n > 0) {
                 let threshold = (n * 2 / 3) + 1;
                 emit(StartKeyGenEvent {
-                    interval: MPK_ID,
+                    epoch: MPK_ID,
                     config: TimelockConfig { threshold, total_validators: n },
                 });
                 state.mpk_dkg_started = true;
@@ -235,7 +235,7 @@ module aptos_framework::timelock {
             // Get IDs and emit event
             if (table::contains(&state.deadline_to_ids, next_deadline)) {
                 let ids = table::borrow(&state.deadline_to_ids, next_deadline);
-                emit(DeadlineReachedEvent {
+                emit(RequestRevealEvent {
                     deadline: next_deadline,
                     timelock_ids: *ids,
                 });
@@ -322,10 +322,10 @@ module aptos_framework::timelock {
             if (vector::length(&dk) > 0) {
                 table::add(&mut state.decryption_keys, timelock_id, dk);
                 
-                emit(DecryptionKeyRevealedEvent {
+                emit(SecretRevealedEvent {
                     timelock_id,
                     deadline,
-                    decryption_key: dk,
+                    secret: dk,
                 });
             };
         };

@@ -1,14 +1,14 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-/// Configuration for timelock encryption intervals.
+/// Configuration for timelock encryption deadlines.
 ///
-/// This module manages the interval duration for timelock key rotation. The interval
+/// This module manages the checkpoint period for timelock key rotation. The period
 /// determines how frequently new timelock keys are generated via DKG, and when old
 /// keys are revealed for decryption.
 ///
 /// Default: 1 hour (production)
-/// Test: Configurable via `set_interval_for_testing()` on non-mainnet chains
+/// Test: Configurable via `set_checkpoint_period_for_testing()` on non-mainnet chains
 module aptos_framework::timelock_config {
     use std::error;
     use aptos_framework::chain_id;
@@ -17,20 +17,20 @@ module aptos_framework::timelock_config {
     friend aptos_framework::genesis;
     friend aptos_framework::timelock;
 
-    /// Timelock interval configuration is not initialized
+    /// Timelock configuration is not initialized
     const ETIMELOCK_CONFIG_NOT_FOUND: u64 = 1;
-    /// Cannot override interval in production (mainnet)
+    /// Cannot override period in production (mainnet)
     const EPRODUCTION_OVERRIDE_FORBIDDEN: u64 = 2;
 
-    /// Global configuration for timelock intervals.
+    /// Global configuration for timelock.
     struct TimelockConfig has key {
-        /// Interval duration in microseconds.
+        /// Checkpoint period duration in microseconds.
         /// Default: 5 seconds = 5 * 1_000_000 microseconds
         /// TODO: Change to 1 hour (3600 * 1_000_000) for production deployment
-        interval_microseconds: u64,
+        checkpoint_period_microseconds: u64,
     }
 
-    /// Initialize with default 5-second interval.
+    /// Initialize with default 5-second period.
     /// Called during genesis to set up the timelock configuration.
     ///
     /// NOTE: Currently set to 5 seconds for testing/development.
@@ -39,14 +39,14 @@ module aptos_framework::timelock_config {
         system_addresses::assert_aptos_framework(framework);
         if (!exists<TimelockConfig>(@aptos_framework)) {
             move_to(framework, TimelockConfig {
-                interval_microseconds: 5 * 1000000,  // 5 seconds (was 3600 * 1000000 = 1 hour)
+                checkpoint_period_microseconds: 5 * 1000000,  // 5 seconds (was 3600 * 1000000 = 1 hour)
             });
         }
     }
 
-    /// Set interval for testing (devnet/testnet only).
+    /// Set checkpoint period for testing (devnet/testnet only).
     ///
-    /// This function allows overriding the default interval on test networks
+    /// This function allows overriding the default period on test networks
     /// to speed up testing (e.g., 5 seconds instead of 1 hour).
     ///
     /// # Security
@@ -55,10 +55,10 @@ module aptos_framework::timelock_config {
     ///
     /// # Arguments
     /// - framework: Must be @aptos_framework signer
-    /// - interval_us: New interval in microseconds
-    public entry fun set_interval_for_testing(
+    /// - period_us: New period in microseconds
+    public entry fun set_checkpoint_period_for_testing(
         _framework: &signer,
-        interval_us: u64
+        period_us: u64
     ) acquires TimelockConfig {
         // PREVIOUSLY: system_addresses::assert_aptos_framework(framework);
         // Allow any account to set this in testnet for ease of testing (e.g. mint account)
@@ -74,7 +74,7 @@ module aptos_framework::timelock_config {
         // We assume it exists (initialized by genesis)
         if (exists<TimelockConfig>(@aptos_framework)) {
             let config = borrow_global_mut<TimelockConfig>(@aptos_framework);
-            config.interval_microseconds = interval_us;
+            config.checkpoint_period_microseconds = period_us;
         } else {
             // Should not happen if initialized correctly
             abort error::not_found(ETIMELOCK_CONFIG_NOT_FOUND)
@@ -82,22 +82,22 @@ module aptos_framework::timelock_config {
     }
 
     #[view]
-    /// Get the current interval duration in microseconds. Returns the configured interval, or the default (5 seconds) if not initialized. Used by the timelock module to determine rotation timing.
+    /// Get the current checkpoint period in microseconds. Returns the configured period, or the default (5 seconds) if not initialized. Used by the timelock module to determine rotation timing.
     ///
     /// NOTE: Default is 5 seconds for testing/development.
     /// TODO: Change to 1 hour for production mainnet deployment.
-    public fun get_interval_microseconds(): u64 acquires TimelockConfig {
+    public fun get_checkpoint_period_microseconds(): u64 acquires TimelockConfig {
         if (!exists<TimelockConfig>(@aptos_framework)) {
             return 5 * 1000000  // 5 seconds (was 3600 * 1000000 = 1 hour)
         };
-        borrow_global<TimelockConfig>(@aptos_framework).interval_microseconds
+        borrow_global<TimelockConfig>(@aptos_framework).checkpoint_period_microseconds
     }
 
     #[test(framework = @aptos_framework)]
     fun test_initialize_and_get(framework: &signer) acquires TimelockConfig {
         chain_id::initialize_for_test(framework, 4); // testnet
         initialize(framework);
-        assert!(get_interval_microseconds() == 5 * 1000000, 0);  // Now defaults to 5 seconds
+        assert!(get_checkpoint_period_microseconds() == 5 * 1000000, 0);  // Now defaults to 5 seconds
     }
 
     #[test(framework = @aptos_framework)]
@@ -106,8 +106,8 @@ module aptos_framework::timelock_config {
         initialize(framework);
 
         // Set to 5 seconds for testing
-        set_interval_for_testing(framework, 5 * 1000000);
-        assert!(get_interval_microseconds() == 5 * 1000000, 0);
+        set_checkpoint_period_for_testing(framework, 5 * 1000000);
+        assert!(get_checkpoint_period_microseconds() == 5 * 1000000, 0);
     }
 
     #[test(framework = @aptos_framework)]
@@ -117,12 +117,12 @@ module aptos_framework::timelock_config {
         initialize(framework);
 
         // This should abort
-        set_interval_for_testing(framework, 5 * 1000000);
+        set_checkpoint_period_for_testing(framework, 5 * 1000000);
     }
 
     #[test]
     fun test_get_default_when_not_initialized() acquires TimelockConfig {
         // Should return default even if not initialized
-        assert!(get_interval_microseconds() == 5 * 1000000, 0);  // Now defaults to 5 seconds
+        assert!(get_checkpoint_period_microseconds() == 5 * 1000000, 0);  // Now defaults to 5 seconds
     }
 }

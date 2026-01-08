@@ -25,9 +25,9 @@ use aptos_safety_rules::{safety_rules_manager::storage, PersistentSafetyStorage}
 use aptos_types::{
     account_address::AccountAddress,
     dkg::{
-        DKGSessionMetadata, DKGStartEvent, DKGState, DeadlineReachedEvent,
-        DecryptionKeyRevealedEvent, DecryptionKeyShare, DefaultDKG, MasterPublicKeyPublishedEvent,
-        StartKeyGenEvent, TimelockRegisteredEvent,
+        DKGSessionMetadata, DKGStartEvent, DKGState, DecryptionKeyShare, DefaultDKG,
+        MasterPublicKeyPublishedEvent, RequestRevealEvent, SecretRevealedEvent, StartKeyGenEvent,
+        TimelockRegisteredEvent,
     },
     epoch_state::EpochState,
     on_chain_config::{
@@ -198,8 +198,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             match StartKeyGenEvent::try_from(&event) {
                 Ok(timelock_start) => {
                     info!(
-                        "[DKG] Successfully parsed StartKeyGenEvent for interval {}",
-                        timelock_start.interval
+                        "[DKG] Successfully parsed StartKeyGenEvent for epoch {}",
+                        timelock_start.epoch
                     );
                     self.start_timelock_dkg(timelock_start);
                     continue;
@@ -226,18 +226,18 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 },
             }
 
-            // Try DeadlineReachedEvent (timelock)
-            match DeadlineReachedEvent::try_from(&event) {
-                Ok(deadline_reached) => {
+            // Try RequestRevealEvent (timelock)
+            match RequestRevealEvent::try_from(&event) {
+                Ok(request_reveal) => {
                     info!(
-                        "[DKG] Successfully parsed DeadlineReachedEvent for deadline {}",
-                        deadline_reached.deadline
+                        "[DKG] Successfully parsed RequestRevealEvent for deadline {}",
+                        request_reveal.deadline
                     );
-                    self.process_deadline_reached(deadline_reached);
+                    self.process_request_reveal(request_reveal);
                     continue;
                 },
                 Err(e) => {
-                    debug!("[DKG] Not a DeadlineReachedEvent: {:?}", e);
+                    debug!("[DKG] Not a RequestRevealEvent: {:?}", e);
                 },
             }
 
@@ -256,18 +256,18 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 },
             }
 
-            // Try DecryptionKeyRevealedEvent (timelock)
-            match DecryptionKeyRevealedEvent::try_from(&event) {
+            // Try SecretRevealedEvent (timelock)
+            match SecretRevealedEvent::try_from(&event) {
                 Ok(timelock_revealed) => {
                     info!(
-                        "[DKG] Successfully parsed DecryptionKeyRevealedEvent for timelock_id {}",
+                        "[DKG] Successfully parsed SecretRevealedEvent for timelock_id {}",
                         timelock_revealed.timelock_id
                     );
                     // Currently we just log it. In future we might want to stop trying to reveal if we haven't already.
                     continue;
                 },
                 Err(e) => {
-                    debug!("[DKG] Not a DecryptionKeyRevealedEvent: {:?}", e);
+                    debug!("[DKG] Not a SecretRevealedEvent: {:?}", e);
                 },
             }
 
@@ -547,7 +547,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         let randomness_config = RandomnessConfigMoveStruct::from(randomness_config_enum);
 
         Ok(DKGSessionMetadata {
-            dealer_epoch: event.interval,
+            dealer_epoch: event.epoch,
             randomness_config,
             dealer_validator_set: validator_consensus_infos.clone(),
             target_validator_set: validator_consensus_infos,
@@ -556,8 +556,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
     fn start_timelock_dkg(&mut self, event: StartKeyGenEvent) {
         info!(
-            "[Timelock] Starting DKG for interval {} (threshold={}, validators={})",
-            event.interval, event.config.threshold, event.config.total_validators
+            "[Timelock] Starting DKG for epoch {} (threshold={}, validators={})",
+            event.epoch, event.config.threshold, event.config.total_validators
         );
 
         // Get current epoch state - needed for validator set and network setup
@@ -579,8 +579,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Some(idx) => idx,
             None => {
                 warn!(
-                    "[Timelock] Not participating in DKG for interval {} - not in validator set",
-                    event.interval
+                    "[Timelock] Not participating in DKG for epoch {} - not in validator set",
+                    event.epoch
                 );
                 return;
             },
@@ -635,8 +635,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Ok(metadata) => metadata,
             Err(e) => {
                 error!(
-                    "[Timelock] Failed to build session metadata for interval {}: {}",
-                    event.interval, e
+                    "[Timelock] Failed to build session metadata for epoch {}: {}",
+                    event.epoch, e
                 );
                 return;
             },
@@ -652,7 +652,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         };
 
         // Store channels for routing future messages to this interval's DKG
-        self.timelock_rpc_msg_txs.insert(event.interval, rpc_msg_tx);
+        self.timelock_rpc_msg_txs.insert(event.epoch, rpc_msg_tx);
 
         let dkg_manager = DKGManager::<crate::ibe_dkg::IbeDKG>::new(
             dealer_sk,
@@ -664,24 +664,24 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             true, // is_timelock
         );
 
-        let interval = event.interval;
+        let epoch = event.epoch;
         tokio::spawn(dkg_manager.run(None, start_event_rx, rpc_msg_rx, close_rx));
 
         // Send the start event to trigger DKG execution
         if let Err(e) = start_event_tx.push((), dkg_start_event) {
             error!(
-                "[Timelock] Failed to send start event to DKG manager for interval {}: {:?}",
-                interval, e
+                "[Timelock] Failed to send start event to DKG manager for epoch {}: {:?}",
+                epoch, e
             );
             return;
         }
 
         // Store close channel for later cleanup
-        self.timelock_dkg_close_txs.insert(interval, close_tx);
+        self.timelock_dkg_close_txs.insert(epoch, close_tx);
 
         info!(
-            "[Timelock] Spawned and triggered DKG manager for interval {} (validator index {})",
-            interval, my_index
+            "[Timelock] Spawned and triggered DKG manager for epoch {} (validator index {})",
+            epoch, my_index
         );
 
         // TODO Phase 3/4: After DKG completes successfully, we need to:
@@ -743,8 +743,18 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         };
         // Create a dummy StartKeyGenEvent to reuse the metadata builder
         let start_event = StartKeyGenEvent {
-            interval: event.id,
+            epoch: event.id,
             config,
+        };
+        let metadata = match Self::build_timelock_session_metadata(&start_event, &epoch_state) {
+            Ok(m) => m,
+            Err(e) => {
+                error!(
+                    "[Timelock] Failed to build session metadata for epoch {}: {}",
+                    event.id, e
+                );
+                return Ok(());
+            },
         };
 
         let metadata = match Self::build_timelock_session_metadata(&start_event, &epoch_state) {
