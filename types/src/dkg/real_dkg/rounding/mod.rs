@@ -37,17 +37,41 @@ pub fn total_weight_upper_bound(
     mut reconstruct_threshold_in_stake_ratio: U64F64,
     secrecy_threshold_in_stake_ratio: U64F64,
 ) -> usize {
+    if validator_stakes.is_empty() {
+        warn!("total_weight_upper_bound called with empty validator_stakes");
+        return 0;
+    }
+
     reconstruct_threshold_in_stake_ratio = max(
         reconstruct_threshold_in_stake_ratio,
         secrecy_threshold_in_stake_ratio + U64F64::DELTA,
     );
+
+    let threshold_gap = reconstruct_threshold_in_stake_ratio - secrecy_threshold_in_stake_ratio;
+    if threshold_gap <= U64F64::from_num(0) {
+        warn!(
+            "threshold_gap is zero or negative in total_weight_upper_bound: {}, using safe default",
+            threshold_gap
+        );
+        return validator_stakes.len() * 3 + 12;
+    }
+
     let two = U64F64::from_num(2);
     let n = U64F64::from_num(validator_stakes.len());
-    let denominator = max(
-        reconstruct_threshold_in_stake_ratio - secrecy_threshold_in_stake_ratio,
-        U64F64::DELTA,
-    );
-    ((n / two + two) / denominator).ceil().to_num::<usize>()
+    let denominator = max(threshold_gap, U64F64::DELTA);
+
+    let numerator = n / two + two;
+    match numerator.checked_div(denominator) {
+        Some(result) => result.ceil().to_num::<usize>(),
+        None => {
+            warn!(
+                "Overflow in total_weight_upper_bound calculation, using safe default. \
+                 numerator={}, denominator={}",
+                numerator, denominator
+            );
+            validator_stakes.len() * 3 + 12
+        },
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -175,6 +199,13 @@ impl DKGRounding {
             reconstruct_threshold_in_stake_ratio,
             secrecy_threshold_in_stake_ratio,
         );
+
+        if total_weight_max < total_weight_min {
+            warn!(
+                "total_weight_max ({}) < total_weight_min ({}), using safe default",
+                total_weight_max, total_weight_min
+            );
+        }
 
         let (profile, rounding_error, rounding_method) = match DKGRoundingProfile::new(
             validator_stakes,
@@ -372,7 +403,21 @@ impl DKGRoundingProfile {
             reconstruct_threshold_in_stake_ratio,
             secrecy_threshold_in_stake_ratio,
         );
-        let stake_per_weight = stake_total / U64F64::from_num(estimated_weight_total);
+
+        let stake_per_weight =
+            if estimated_weight_total == 0 || estimated_weight_total == usize::MAX {
+                warn!(
+                "Invalid estimated_weight_total in infallible DKG rounding: {}, using safe default",
+                estimated_weight_total
+            );
+                max(
+                    one,
+                    stake_total / U64F64::from_num(max(validator_stakes.len(), 1)),
+                )
+            } else {
+                max(one, stake_total / U64F64::from_num(estimated_weight_total))
+            };
+
         compute_profile_fixed_point(
             validator_stakes,
             stake_per_weight,
