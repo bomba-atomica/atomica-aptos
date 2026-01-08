@@ -5,7 +5,7 @@ import { AptosClient } from "aptos";
  */
 
 export class TimelockQueries {
-  constructor(private client: AptosClient) { }
+  constructor(private client: AptosClient) {}
 
   /**
    * Get current timelock interval
@@ -68,9 +68,9 @@ export class TimelockQueries {
       // item is the value directly. value_type is vector<u8>, returned as hex string in updated SDKs?
       // Aptos TS SDK returns hex string for vector<u8> usually.
       if (item) {
-        if (typeof item === 'string') {
+        if (typeof item === "string") {
           // Hex string
-          return new Uint8Array(Buffer.from(item.startsWith('0x') ? item.slice(2) : item, 'hex'));
+          return new Uint8Array(Buffer.from(item.startsWith("0x") ? item.slice(2) : item, "hex"));
         } else if (Array.isArray(item)) {
           // Array of numbers
           return new Uint8Array(item);
@@ -103,8 +103,8 @@ export class TimelockQueries {
       });
 
       if (item) {
-        if (typeof item === 'string') {
-          return new Uint8Array(Buffer.from(item.startsWith('0x') ? item.slice(2) : item, 'hex'));
+        if (typeof item === "string") {
+          return new Uint8Array(Buffer.from(item.startsWith("0x") ? item.slice(2) : item, "hex"));
         } else if (Array.isArray(item)) {
           return new Uint8Array(item);
         }
@@ -131,7 +131,7 @@ export class TimelockQueries {
   }
 
   /**
-   * Get configured timelock interval
+   * Get configured timelock checkpoint period
    */
   async getConfiguredInterval(): Promise<number> {
     try {
@@ -140,9 +140,9 @@ export class TimelockQueries {
       if (!configResource) {
         throw new Error("Timelock config resource not found");
       }
-      return parseInt((configResource.data as any).interval_microseconds, 10);
+      return parseInt((configResource.data as any).checkpoint_period_microseconds, 10);
     } catch (error) {
-      console.log(`Error getting configured interval: ${error}`);
+      console.log(`Error getting configured checkpoint period: ${error}`);
       throw error;
     }
   }

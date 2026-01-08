@@ -70,13 +70,13 @@ pub struct EpochManager<P: OnChainConfigProvider> {
     key_storage: PersistentSafetyStorage,
 
     // Timelock DKG sessions
-    // Track close channels for active timelock DKG sessions by interval number
-    // Multiple intervals can have concurrent DKG sessions running
+    // Track close channels for active timelock DKG sessions by epoch number
+    // Multiple epochs can have concurrent DKG sessions running
     // We store close_tx to allow graceful shutdown of each DKG session
     timelock_dkg_close_txs: HashMap<u64, oneshot::Sender<oneshot::Sender<()>>>,
 
-    // RPC message channels for timelock DKG communication per interval
-    // We need separate channels for each timelock interval since they run concurrently
+    // RPC message channels for timelock DKG communication per epoch
+    // We need separate channels for each timelock epoch since they run concurrently
     // Note: We don't store start_event_tx because we send the event immediately after spawn
     timelock_rpc_msg_txs:
         HashMap<u64, aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
@@ -135,7 +135,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             }
         }
 
-        // Check if it's for an active Timelock DKG session (indexed by its interval/session_id)
+        // Check if it's for an active Timelock DKG session (indexed by its epoch/session_id)
         if let Some(tx) = timelock_txs.get(&msg_session_id) {
             let _ = tx.push(peer_id, (peer_id, dkg_request));
         }
@@ -460,10 +460,10 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
         // Cleanup all active timelock DKG sessions
         let close_txs: Vec<_> = self.timelock_dkg_close_txs.drain().collect();
-        for (interval, tx) in close_txs {
+        for (epoch, tx) in close_txs {
             debug!(
-                "[Timelock] Closing DKG session for interval {} due to epoch shutdown",
-                interval
+                "[Timelock] Closing DKG session for epoch {} due to epoch shutdown",
+                epoch
             );
             let (ack_tx, ack_rx) = oneshot::channel();
             if tx.send(ack_tx).is_ok() {
@@ -702,9 +702,9 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         use crate::ibe_dkg::IbeDKG;
         use aptos_types::dkg::{real_dkg::maybe_dk_from_bls_sk, DKGTrait, TimelockConfig};
 
-        // Note: event.id corresponds to the timelock interval
+        // Note: event.id corresponds to the timelock epoch
         info!(
-            "[Timelock] Processing MasterPublicKeyPublishedEvent for interval {}",
+            "[Timelock] Processing MasterPublicKeyPublishedEvent for epoch {}",
             event.id
         );
 
@@ -712,7 +712,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         // Once the key is published on-chain, our local DKG manager task is no longer needed.
         if let Some(tx) = self.timelock_dkg_close_txs.remove(&event.id) {
             debug!(
-                "[Timelock] Closing DKG session for interval {} (MPK published)",
+                "[Timelock] Closing DKG session for epoch {} (MPK published)",
                 event.id
             );
             let (ack_tx, ack_rx) = oneshot::channel();
@@ -775,7 +775,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 Ok(t) => t,
                 Err(e) => {
                     error!(
-                        "[Timelock] Failed to deserialize transcript for interval {}: {}",
+                        "[Timelock] Failed to deserialize transcript for epoch {}: {}",
                         event.id, e
                     );
                     return Ok(());
@@ -824,7 +824,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Ok(res) => res,
             Err(e) => {
                 error!(
-                    "[Timelock] Failed to decrypt share for interval {}: {}",
+                    "[Timelock] Failed to decrypt share for epoch {}: {}",
                     event.id, e
                 );
                 return Ok(());
@@ -839,7 +839,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             Ok(bytes) => bytes,
             Err(e) => {
                 error!(
-                    "[Timelock] Failed to serialize share for interval {}: {}",
+                    "[Timelock] Failed to serialize share for epoch {}: {}",
                     event.id, e
                 );
                 return Ok(());
@@ -852,9 +852,9 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         Ok(())
     }
 
-    fn process_deadline_reached(&self, event: DeadlineReachedEvent) {
+    fn process_request_reveal(&self, event: RequestRevealEvent) {
         info!(
-            "[Timelock] Deadline {} reached for {} timelocks",
+            "[Timelock] RequestRevealEvent: deadline {} for {} timelocks",
             event.deadline,
             event.timelock_ids.len()
         );
@@ -876,13 +876,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
     fn reveal_one_timelock(&self, timelock_id: u64, deadline: u64) {
         // 1. Retrieve secret share for MPK_ID (Constant 1)
-        // Note: The logic assumes that MPK DKG (Setup) was run for interval 1.
-        let mpk_id = 1;
-        let share_bytes = match self.retrieve_timelock_share(mpk_id) {
+        // Note: The logic assumes that MPK DKG (Setup) was run for epoch 1.
+        let mpk_epoch = 1;
+        let share_bytes = match self.retrieve_timelock_share(mpk_epoch) {
             Ok(bytes) => bytes,
             Err(e) => {
                 warn!(
-                    "[Timelock] Cannot reveal for timelock {}: Missing MPK share (id=1): {}",
+                    "[Timelock] Cannot reveal for timelock {}: Missing MPK share (epoch=1): {}",
                     timelock_id, e
                 );
                 return;
@@ -911,6 +911,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         let dealer_sk_share = shares[0].as_scalar();
 
         // 3. Compute Identity (Application-Agnostic Format)
+        // Note: This matches the spec and Move implementation
         let identity = aptos_dkg::ibe::compute_timelock_identity(timelock_id, deadline);
 
         // 4. Compute Decryption Key Share (Sign Identity with Secret Share)
@@ -967,36 +968,36 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     ///
     /// Currently uses in-memory cache. TODO Phase 4: Add persistent storage
     /// to survive node restarts.
-    fn store_timelock_share(&mut self, interval: u64, share: &[u8]) -> Result<()> {
+    fn store_timelock_share(&mut self, epoch: u64, share: &[u8]) -> Result<()> {
         info!(
-            "[Timelock] Storing secret share for interval {} ({} bytes)",
-            interval,
+            "[Timelock] Storing secret share for epoch {} ({} bytes)",
+            epoch,
             share.len()
         );
 
         // Store in key_storage (persistent)
         self.key_storage
-            .set_timelock_share(interval, share.to_vec())
+            .set_timelock_share(epoch, share.to_vec())
             .map_err(|e| anyhow!("[Timelock] Failed to store share: {}", e))?;
 
         info!(
-            "[Timelock] Share for interval {} stored successfully in persistent storage",
-            interval
+            "[Timelock] Share for epoch {} stored successfully in persistent storage",
+            epoch
         );
         Ok(())
     }
 
     /// Retrieve stored timelock secret share.
     ///
-    /// Returns error if share not found (validator may have joined after that interval).
-    fn retrieve_timelock_share(&self, interval: u64) -> Result<Vec<u8>> {
+    /// Returns error if share not found (validator may have joined after that epoch).
+    fn retrieve_timelock_share(&self, epoch: u64) -> Result<Vec<u8>> {
         // Lookup in persistent storage
         self.key_storage
-            .get_timelock_share(interval)
+            .get_timelock_share(epoch)
             .map_err(|e| {
                 anyhow!(
-                    "No secret share found for interval {}: {}. Validator may not have participated in DKG for this interval.",
-                    interval, e
+                    "No secret share found for epoch {}: {}. Validator may not have participated in DKG for this epoch.",
+                    epoch, e
                 )
             })
     }

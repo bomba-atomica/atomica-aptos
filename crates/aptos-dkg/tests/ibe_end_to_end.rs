@@ -22,9 +22,9 @@ use aptos_dkg::{
     },
     pvss::{
         das,
-        test_utils::{setup_dealing, NoAux},
-        traits::{Reconstructable, SecretSharingConfig, Transcript},
-        Player, ThresholdConfigBlstrs, WeightedConfig,
+        test_utils::{setup_dealing, DealingArgs, NoAux},
+        traits::{Reconstructable, SecretSharingConfig, ThresholdConfig, Transcript},
+        Player, WeightedConfig,
     },
 };
 use blstrs::{G1Projective, G2Projective, Scalar};
@@ -97,7 +97,7 @@ fn end_to_end_ibe_test() -> Result<E2EResult> {
     println!("  - Total weight: {}", wconfig.get_total_weight());
     println!(
         "  - Threshold weight: {}",
-        wconfig.get_threshold_config().get_threshold()
+        (*wconfig.get_threshold_config()).get_threshold()
     );
 
     println!("\nPHASE 2: Running Distributed Key Generation (DKG)...");
@@ -187,7 +187,7 @@ fn end_to_end_ibe_test() -> Result<E2EResult> {
     let mut decrypted_shares: Vec<(Player, ShareType)> = Vec::new();
     for player in &eligible_players {
         let player_id = player.get_id();
-        let (sk_share, pk_share) = aggregated_trx.decrypt_own_share(
+        let (sk_share, pk_share): (ShareType, _) = aggregated_trx.decrypt_own_share(
             &wconfig,
             player,
             &dealing_args.dks[player_id],
@@ -222,17 +222,13 @@ fn end_to_end_ibe_test() -> Result<E2EResult> {
     // Reconstruct MSK scalar from shares
     // Each share is DealtSecretKeyShare which wraps DealtSecretKey(g1^msk_share)
     // We need to convert the group element to scalar
-    let shares_for_reconstruction: Vec<(Player, Scalar)> = decrypted_shares
-        .iter()
-        .map(|(player, share)| {
-            // DealtSecretKeyShare contains DealtSecretKey which has as_group_element()
-            let share_ref: &ShareType = share;
-            let share_element = share_ref.as_group_element();
-            let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
-                .expect("Failed to convert group element to scalar");
-            (*player, scalar)
-        })
-        .collect();
+    let mut shares_for_reconstruction: Vec<(Player, Scalar)> = Vec::new();
+    for (player, share) in &decrypted_shares {
+        let share_element = share.as_group_element();
+        let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
+            .expect("Failed to convert group element to scalar");
+        shares_for_reconstruction.push((*player, scalar));
+    }
 
     let reconstructed_msk_scalar =
         Scalar::reconstruct(wconfig.get_threshold_config(), &shares_for_reconstruction);
@@ -399,15 +395,13 @@ fn test_ibe_end_to_end_3_of_5() {
 
     let q_id = G1Projective::hash_to_curve(&identity, b"APTOS_BLS_WVUF_DST", b"H(m)");
 
-    let shares_for_recon: Vec<(Player, Scalar)> = shares
-        .iter()
-        .map(|(player, share)| {
-            let share_element = share.as_group_element();
-            let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
-                .expect("Failed to convert group element to scalar");
-            (*player, scalar)
-        })
-        .collect();
+    let mut shares_for_recon: Vec<(Player, Scalar)> = Vec::new();
+    for (player, share) in &shares {
+        let share_element = share.as_group_element();
+        let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
+            .expect("Failed to convert group element to scalar");
+        shares_for_recon.push((*player, scalar));
+    }
 
     let reconstructed_msk = Scalar::reconstruct(wconfig.get_threshold_config(), &shares_for_recon);
 
@@ -479,15 +473,13 @@ fn test_ibe_end_to_end_share_subset() {
         shares1.push((*player, sk_share));
     }
 
-    let shares1_for_recon: Vec<(Player, Scalar)> = shares1
-        .iter()
-        .map(|(player, share)| {
-            let share_element = share.as_group_element();
-            let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
-                .expect("Failed to convert group element to scalar");
-            (*player, scalar)
-        })
-        .collect();
+    let mut shares1_for_recon: Vec<(Player, Scalar)> = Vec::new();
+    for (player, share) in &shares1 {
+        let share_element = share.as_group_element();
+        let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
+            .expect("Failed to convert group element to scalar");
+        shares1_for_recon.push((*player, scalar));
+    }
 
     let reconstructed_msk1 =
         Scalar::reconstruct(wconfig.get_threshold_config(), &shares1_for_recon);
@@ -513,15 +505,13 @@ fn test_ibe_end_to_end_share_subset() {
         shares2.push((*player, sk_share));
     }
 
-    let shares2_for_recon: Vec<(Player, Scalar)> = shares2
-        .iter()
-        .map(|(player, share)| {
-            let share_element = share.as_group_element();
-            let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
-                .expect("Failed to convert group element to scalar");
-            (*player, scalar)
-        })
-        .collect();
+    let mut shares2_for_recon: Vec<(Player, Scalar)> = Vec::new();
+    for (player, share) in &shares2 {
+        let share_element = share.as_group_element();
+        let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
+            .expect("Failed to convert group element to scalar");
+        shares2_for_recon.push((*player, scalar));
+    }
 
     let reconstructed_msk2 =
         Scalar::reconstruct(wconfig.get_threshold_config(), &shares2_for_recon);
@@ -558,7 +548,7 @@ fn test_ibe_end_to_end_weighted() {
     println!("Total weight: {}", wconfig.get_total_weight());
     println!(
         "Threshold weight: {}",
-        wconfig.get_threshold_config().get_threshold()
+        (*wconfig.get_threshold_config()).get_threshold()
     );
 
     let dealing_args = setup_dealing::<das::WeightedTranscript, _>(&wconfig, &mut rng);
@@ -604,15 +594,13 @@ fn test_ibe_end_to_end_weighted() {
         shares.push((*player, sk_share));
     }
 
-    let shares_for_recon: Vec<(Player, Scalar)> = shares
-        .iter()
-        .map(|(player, share)| {
-            let share_element = share.as_group_element();
-            let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
-                .expect("Failed to convert group element to scalar");
-            (*player, scalar)
-        })
-        .collect();
+    let mut shares_for_recon: Vec<(Player, Scalar)> = Vec::new();
+    for (player, share) in &shares {
+        let share_element = share.as_group_element();
+        let scalar = Scalar::from_repr_vartime(share_element.to_bytes())
+            .expect("Failed to convert group element to scalar");
+        shares_for_recon.push((*player, scalar));
+    }
 
     let reconstructed_msk = Scalar::reconstruct(wconfig.get_threshold_config(), &shares_for_recon);
     let dk = q_id * reconstructed_msk;
