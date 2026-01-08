@@ -2,6 +2,7 @@ module aptos_framework::timelock {
     use std::option::{Self, Option};
     use std::vector;
     use std::string::{Self, String};
+    use std::debug;
     use aptos_std::table::{Self, Table};
     use aptos_framework::event::emit;
     use aptos_framework::timestamp;
@@ -131,6 +132,10 @@ module aptos_framework::timelock {
             let threshold = (n * 2 / 3) + 1;
             if (n == 0) { n = 1; threshold = 1; };
 
+            debug::print(&string::utf8(b"[TIMELOCK] Initializing timelock system"));
+            debug::print(&n);
+            debug::print(&threshold);
+
             emit(StartKeyGenEvent {
                 epoch: MPK_ID,
                 config: TimelockConfig { threshold, total_validators: n },
@@ -151,6 +156,10 @@ module aptos_framework::timelock {
         // Validation
         let now = timestamp::now_microseconds();
         assert!(deadline > now, EINVALID_TIMESTAMP);
+
+        debug::print(&string::utf8(b"[TIMELOCK] Registering timelock"));
+        debug::print(&id);
+        debug::print(&deadline);
 
         // Store mappings
         table::add(&mut state.id_to_deadline, id, deadline);
@@ -207,12 +216,17 @@ module aptos_framework::timelock {
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
         let now = timestamp::now_microseconds();
 
+        debug::print(&string::utf8(b"[TIMELOCK] on_new_block called"));
+        debug::print(&now);
+
         // One-time DKG trigger if missed during genesis
         if (!state.mpk_dkg_started) {
             let validators = stake::cur_validator_consensus_infos();
             let n = vector::length(&validators);
             if (n > 0) {
                 let threshold = (n * 2 / 3) + 1;
+                debug::print(&string::utf8(b"[TIMELOCK] Emitting StartKeyGenEvent for MPK DKG"));
+                debug::print(&n);
                 emit(StartKeyGenEvent {
                     epoch: MPK_ID,
                     config: TimelockConfig { threshold, total_validators: n },
@@ -225,6 +239,9 @@ module aptos_framework::timelock {
         while (!vector::is_empty(&state.pending_deadlines)) {
             let next_deadline = *vector::borrow(&state.pending_deadlines, 0);
             
+            debug::print(&string::utf8(b"[TIMELOCK] Checking deadline"));
+            debug::print(&next_deadline);
+            
             if (next_deadline > now) {
                 break // No more deadlines to process
             };
@@ -235,6 +252,8 @@ module aptos_framework::timelock {
             // Get IDs and emit event
             if (table::contains(&state.deadline_to_ids, next_deadline)) {
                 let ids = table::borrow(&state.deadline_to_ids, next_deadline);
+                debug::print(&string::utf8(b"[TIMELOCK] Emitting RequestRevealEvent for deadline"));
+                debug::print(&next_deadline);
                 emit(RequestRevealEvent {
                     deadline: next_deadline,
                     timelock_ids: *ids,
@@ -271,11 +290,18 @@ module aptos_framework::timelock {
 
         let state = borrow_global_mut<TimelockState>(@aptos_framework);
 
+        debug::print(&string::utf8(b"[TIMELOCK] publish_decryption_key_share called"));
+        debug::print(&timelock_id);
+        debug::print(&validator_addr);
+        debug::print(&vector::length(&share));
+
         // 1. Verify Deadline Passed
         assert!(table::contains(&state.id_to_deadline, timelock_id), EINVALID_TIMESTAMP);
         let deadline = *table::borrow(&state.id_to_deadline, timelock_id);
         let now = timestamp::now_microseconds();
         assert!(now >= deadline, EDEADLINE_NOT_PASSED);
+
+        debug::print(&string::utf8(b"[TIMELOCK] Deadline passed, processing share"));
 
         // Deduplicate - already revealed
         if (table::contains(&state.decryption_keys, timelock_id)) return;
@@ -300,13 +326,22 @@ module aptos_framework::timelock {
 
         vector::push_back(shares, DecryptionKeyShare { validator: validator_addr, timelock_id, validator_idx, share });
 
+        debug::print(&string::utf8(b"[TIMELOCK] Share collected"));
+        debug::print(&vector::length(shares));
+
         // 5. Check Threshold and Aggregate
         let voters = stake::cur_validator_consensus_infos();
         let n = vector::length(&voters);
         let threshold = (n * 2 / 3) + 1;
         if (n == 0) { threshold = 1; };
 
+        debug::print(&string::utf8(b"[TIMELOCK] Threshold check"));
+        debug::print(&threshold);
+        debug::print(&vector::length(shares));
+
         if (vector::length(shares) >= threshold) {
+            debug::print(&string::utf8(b"[TIMELOCK] Threshold met, aggregating shares"));
+
             let share_bytes_list = vector::empty<vector<u8>>();
             let validator_indices = vector::empty<u64>();
             let i = 0;
@@ -320,6 +355,10 @@ module aptos_framework::timelock {
             let dk = threshold_dsa::aggregate_timelock_shares(&share_bytes_list, &validator_indices, n);
             
             if (vector::length(&dk) > 0) {
+                debug::print(&string::utf8(b"[TIMELOCK] Secret revealed successfully"));
+                debug::print(&timelock_id);
+                debug::print(&vector::length(&dk));
+
                 table::add(&mut state.decryption_keys, timelock_id, dk);
                 
                 emit(SecretRevealedEvent {

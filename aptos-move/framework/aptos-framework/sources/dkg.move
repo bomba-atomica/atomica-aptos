@@ -3,6 +3,9 @@ module aptos_framework::dkg {
     use std::error;
     use std::option;
     use std::option::Option;
+    use std::string;
+    use std::vector;
+    use aptos_framework::debug;
     use aptos_framework::event::emit;
     use aptos_framework::randomness_config::RandomnessConfig;
     use aptos_framework::system_addresses;
@@ -78,6 +81,9 @@ module aptos_framework::dkg {
             transcript: vector[],
         });
 
+        debug::print(&string::utf8(b"[DKG] Starting DKG session"));
+        debug::print(&dealer_epoch);
+
         emit(DKGStartEvent {
             start_time_us,
             session_metadata: new_session_metadata,
@@ -94,6 +100,9 @@ module aptos_framework::dkg {
         session.transcript = transcript;
         dkg_state.last_completed = option::some(session);
         dkg_state.in_progress = option::none();
+
+        debug::print(&string::utf8(b"[DKG] Finished DKG session - transcript published"));
+        debug::print(&vector::length(&transcript));
     }
 
     /// Delete the currently incomplete session, if it exists.

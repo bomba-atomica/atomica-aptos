@@ -1,8 +1,9 @@
 //! Common test helpers for timelock smoke tests
 
 use crate::smoke_test_environment::SwarmBuilder;
+use anyhow::Result;
 use aptos_forge::{NodeExt, Swarm};
-use aptos_logger::info;
+use aptos_logger::{error, info};
 use aptos_types::on_chain_config::OnChainRandomnessConfig;
 use move_core_types::identifier::Identifier;
 use move_core_types::language_storage::ModuleId;
@@ -63,6 +64,10 @@ pub async fn create_timelock_swarm(
     let client = swarm.validators().next().unwrap().rest_client();
     let chain_id = swarm.chain_id();
 
+    info!("Swarm created successfully");
+    info!("  - Client endpoint: {}", client.endpoint());
+    info!("  - Chain ID: {:?}", chain_id);
+
     (Box::new(swarm), client, chain_id)
 }
 
@@ -72,7 +77,7 @@ pub async fn register_timelock<S: Swarm + ?Sized>(
     client: &aptos_rest_client::Client,
     deadline_micros: u64,
 ) -> anyhow::Result<()> {
-    info!("Registering timelock with dealine {}", deadline_micros);
+    info!("Registering timelock with deadline {}", deadline_micros);
     let root_account = swarm.chain_info().root_account();
     let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
         aptos_types::transaction::EntryFunction::new(
@@ -91,9 +96,18 @@ pub async fn register_timelock<S: Swarm + ?Sized>(
             .max_gas_amount(2_000_000)
             .gas_unit_price(100),
     );
+    info!("Submitting timelock registration transaction...");
     let response = client.submit_and_wait(&signed_txn).await?;
+
     if !response.inner().success() {
-        anyhow::bail!("Register failed: {:?}", response.inner().vm_status());
+        let error_msg = format!("Register failed: {:?}", response.inner().vm_status());
+        error!("{}", error_msg);
+        anyhow::bail!("{}", error_msg);
     }
+
+    info!(
+        "✅ Timelock registered successfully with deadline {}",
+        deadline_micros
+    );
     Ok(())
 }

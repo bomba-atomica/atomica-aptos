@@ -1,6 +1,8 @@
 module aptos_framework::threshold_dsa {
     use std::option::{Self, Option};
     use std::vector;
+    use std::debug;
+    use std::string;
     use aptos_std::table::{Self, Table};
     use aptos_framework::system_addresses;
     use aptos_framework::stake;
@@ -76,6 +78,10 @@ module aptos_framework::threshold_dsa {
             // Validate PK format (G2 compressed)
             let pk_point = deserialize<G2, FormatG2Compr>(&pk);
             assert!(option::is_some(&pk_point), EINVALID_PUBKEY);
+
+            debug::print(&string::utf8(b"[THRESHOLD_DSA] Publishing Master Public Key"));
+            debug::print(&id);
+            debug::print(&vector::length(&pk));
 
             table::add(&mut state.master_public_keys, id, pk);
             
@@ -224,8 +230,13 @@ module aptos_framework::threshold_dsa {
     ): vector<u8> {
         let n = vector::length(share_bytes_list);
         if (n == 0) {
+            debug::print(&string::utf8(b"[THRESHOLD_DSA] aggregate_timelock_shares called with empty shares"));
             return vector::empty<u8>()
         };
+
+        debug::print(&string::utf8(b"[THRESHOLD_DSA] Aggregating timelock shares"));
+        debug::print(&n);
+        debug::print(&total_validators);
 
         // Compute Lagrange coefficients using Fr field operations
         let lambdas = vector::empty<Element<Fr>>();
@@ -251,6 +262,9 @@ module aptos_framework::threshold_dsa {
             };
             i = i + 1;
         };
+
+        debug::print(&string::utf8(b"[THRESHOLD_DSA] Share aggregation complete"));
+        debug::print(&vector::length(&serialize<G1, FormatG1Compr>(&result)));
 
         serialize<G1, FormatG1Compr>(&result)
     }

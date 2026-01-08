@@ -29,6 +29,7 @@
 
 
 <pre><code><b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/hash.md#0x1_aptos_hash">0x1::aptos_hash</a>;
+<b>use</b> <a href="../../aptos-stdlib/doc/debug.md#0x1_debug">0x1::debug</a>;
 <b>use</b> <a href="event.md#0x1_event">0x1::event</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option">0x1::option</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">0x1::signer</a>;
@@ -462,6 +463,10 @@ Initialize the timelock system
         <b>let</b> threshold = (n * 2 / 3) + 1;
         <b>if</b> (n == 0) { n = 1; threshold = 1; };
 
+        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Initializing <a href="timelock.md#0x1_timelock">timelock</a> system"));
+        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&n);
+        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&threshold);
+
         emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
             epoch: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
             config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
@@ -498,6 +503,10 @@ Register a new timelock request
     // Validation
     <b>let</b> now = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
     <b>assert</b>!(deadline &gt; now, <a href="timelock.md#0x1_timelock_EINVALID_TIMESTAMP">EINVALID_TIMESTAMP</a>);
+
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Registering <a href="timelock.md#0x1_timelock">timelock</a>"));
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&id);
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&deadline);
 
     // Store mappings
     <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.id_to_deadline, id, deadline);
@@ -590,12 +599,17 @@ On New Block: Check for passed deadlines
     <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
     <b>let</b> now = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
 
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] on_new_block called"));
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&now);
+
     // One-time DKG trigger <b>if</b> missed during <a href="genesis.md#0x1_genesis">genesis</a>
     <b>if</b> (!state.mpk_dkg_started) {
         <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
         <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&validators);
         <b>if</b> (n &gt; 0) {
             <b>let</b> threshold = (n * 2 / 3) + 1;
+            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Emitting <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> for MPK DKG"));
+            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&n);
             emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
                 epoch: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
                 config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
@@ -608,6 +622,9 @@ On New Block: Check for passed deadlines
     <b>while</b> (!<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_is_empty">vector::is_empty</a>(&state.pending_deadlines)) {
         <b>let</b> next_deadline = *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&state.pending_deadlines, 0);
 
+        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Checking deadline"));
+        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&next_deadline);
+
         <b>if</b> (next_deadline &gt; now) {
             <b>break</b> // No more deadlines <b>to</b> process
         };
@@ -618,6 +635,8 @@ On New Block: Check for passed deadlines
         // Get IDs and emit <a href="event.md#0x1_event">event</a>
         <b>if</b> (<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.deadline_to_ids, next_deadline)) {
             <b>let</b> ids = <a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow">table::borrow</a>(&state.deadline_to_ids, next_deadline);
+            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Emitting <a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> for deadline"));
+            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&next_deadline);
             emit(<a href="timelock.md#0x1_timelock_RequestRevealEvent">RequestRevealEvent</a> {
                 deadline: next_deadline,
                 timelock_ids: *ids,
@@ -690,11 +709,18 @@ Cryptographic operations (verification, aggregation) are delegated to threshold_
 
     <b>let</b> state = <b>borrow_global_mut</b>&lt;<a href="timelock.md#0x1_timelock_TimelockState">TimelockState</a>&gt;(@aptos_framework);
 
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] publish_decryption_key_share called"));
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&timelock_id);
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&validator_addr);
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&share));
+
     // 1. Verify Deadline Passed
     <b>assert</b>!(<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.id_to_deadline, timelock_id), <a href="timelock.md#0x1_timelock_EINVALID_TIMESTAMP">EINVALID_TIMESTAMP</a>);
     <b>let</b> deadline = *<a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow">table::borrow</a>(&state.id_to_deadline, timelock_id);
     <b>let</b> now = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
     <b>assert</b>!(now &gt;= deadline, <a href="timelock.md#0x1_timelock_EDEADLINE_NOT_PASSED">EDEADLINE_NOT_PASSED</a>);
+
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Deadline passed, processing share"));
 
     // Deduplicate - already revealed
     <b>if</b> (<a href="../../aptos-stdlib/doc/table.md#0x1_table_contains">table::contains</a>(&state.decryption_keys, timelock_id)) <b>return</b>;
@@ -719,13 +745,22 @@ Cryptographic operations (verification, aggregation) are delegated to threshold_
 
     <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(shares, <a href="timelock.md#0x1_timelock_DecryptionKeyShare">DecryptionKeyShare</a> { validator: validator_addr, timelock_id, validator_idx, share });
 
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Share collected"));
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(shares));
+
     // 5. Check Threshold and Aggregate
     <b>let</b> voters = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
     <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&voters);
     <b>let</b> threshold = (n * 2 / 3) + 1;
     <b>if</b> (n == 0) { threshold = 1; };
 
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Threshold check"));
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&threshold);
+    <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(shares));
+
     <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(shares) &gt;= threshold) {
+        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Threshold met, aggregating shares"));
+
         <b>let</b> share_bytes_list = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;();
         <b>let</b> validator_indices = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u64&gt;();
         <b>let</b> i = 0;
@@ -739,6 +774,10 @@ Cryptographic operations (verification, aggregation) are delegated to threshold_
         <b>let</b> dk = <a href="threshold_dsa.md#0x1_threshold_dsa_aggregate_timelock_shares">threshold_dsa::aggregate_timelock_shares</a>(&share_bytes_list, &validator_indices, n);
 
         <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&dk) &gt; 0) {
+            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Secret revealed successfully"));
+            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&timelock_id);
+            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&dk));
+
             <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> state.decryption_keys, timelock_id, dk);
 
             emit(<a href="timelock.md#0x1_timelock_SecretRevealedEvent">SecretRevealedEvent</a> {

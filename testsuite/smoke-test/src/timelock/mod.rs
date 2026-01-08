@@ -20,6 +20,7 @@ pub mod test_timelock;
 
 use anyhow::{anyhow, Result};
 use aptos_api_types::ViewFunction;
+use aptos_logger::debug;
 use aptos_rest_client::Client;
 use move_core_types::{identifier::Identifier, language_storage::ModuleId};
 use std::str::FromStr;
@@ -42,13 +43,24 @@ pub async fn verify_public_key_published(client: &Client, _interval: u64) -> Res
     use crate::utils::get_on_chain_resource;
     use aptos_types::dkg::DKGState;
 
+    debug!("Querying DKG state for public key...");
+
     // Get DKG state which contains the transcript
     let dkg_state = get_on_chain_resource::<DKGState>(&client).await;
+
+    debug!("DKG state retrieved, checking for completed transcript...");
 
     // Check if DKG has completed
     let last_completed = dkg_state
         .last_completed
-        .ok_or_else(|| anyhow!("DKG has not completed yet"))?;
+        .ok_or_else(|| anyhow!("DKG has not completed yet - no completed transcript found"))?;
+
+    debug!(
+        "DKG transcript found: dealer_epoch={}, target_epoch={}, transcript_len={}",
+        last_completed.metadata.dealer_epoch,
+        last_completed.target_epoch(),
+        last_completed.transcript.len()
+    );
 
     // Return the raw transcript bytes
     // Tests will deserialize this to extract the public key
@@ -82,12 +94,20 @@ pub async fn verify_secret_aggregated(
         args: vec![bcs::to_bytes(&timelock_id)?],
     };
 
+    debug!("Querying timelock decryption key for ID {}...", timelock_id);
+
     // Result is Option<vector<u8>>
     let result: Vec<Option<Vec<u8>>> = client
         .view_bcs(&view_function, None)
         .await
-        .map_err(|e| anyhow!("Failed to call get_secret: {}", e))?
+        .map_err(|e| anyhow!("Failed to call get_decryption_key: {}", e))?
         .into_inner();
+
+    debug!(
+        "get_decryption_key response for ID {}: {:?}",
+        timelock_id,
+        result.first()
+    );
 
     result
         .first()
@@ -107,11 +127,19 @@ pub async fn verify_master_public_key_on_chain(client: &Client, interval: u64) -
         args: vec![bcs::to_bytes(&interval)?],
     };
 
+    debug!("Querying Master Public Key for interval {}...", interval);
+
     let result: Vec<Option<Vec<u8>>> = client
         .view_bcs(&view_function, None)
         .await
         .map_err(|e| anyhow!("Failed to call get_master_public_key: {}", e))?
         .into_inner();
+
+    debug!(
+        "get_master_public_key response for interval {}: {:?}",
+        interval,
+        result.first()
+    );
 
     result
         .first()
