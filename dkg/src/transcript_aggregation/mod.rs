@@ -70,6 +70,7 @@ impl<S: DKGTrait> BroadcastStatus<DKGMessage> for Arc<TranscriptAggregationState
         let DKGTranscript {
             metadata,
             transcript_bytes,
+            mpk_bytes: _,
         } = dkg_transcript;
         ensure!(
             metadata.epoch == self.epoch_state.epoch,

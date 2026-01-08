@@ -140,6 +140,7 @@ async fn test_dkg_state_transition() {
                 author: addrs[0],
             },
             transcript_bytes: bcs::to_bytes(&agg_trx).unwrap(),
+            mpk_bytes: vec![],
         })],
         available_vtxns
     );
@@ -261,6 +262,7 @@ async fn test_timelock_dkg_state_transition() {
                 author: addrs[0],
             },
             transcript_bytes: bcs::to_bytes(&agg_trx).unwrap(),
+            mpk_bytes: vec![],
         })],
         available_vtxns
     );

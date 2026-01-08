@@ -382,6 +382,10 @@ impl DKGTrait for IbeDKG {
         );
         Ok((sk, pk))
     }
+
+    fn is_valid_for_dkg(pub_params: &Self::PublicParams) -> bool {
+        pub_params.pvss_config.is_valid_for_dkg()
+    }
 }
 
 #[cfg(test)]

@@ -47,6 +47,7 @@ impl MixedPayloadClient {
                     author: AccountAddress::ZERO,
                 },
                 transcript_bytes: vec![],
+                mpk_bytes: vec![],
             })]
         });
         vec![]

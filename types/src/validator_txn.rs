@@ -32,6 +32,7 @@ impl ValidatorTransaction {
                 author: AccountAddress::ZERO,
             },
             transcript_bytes: payload,
+            mpk_bytes: vec![],
         })
     }
 

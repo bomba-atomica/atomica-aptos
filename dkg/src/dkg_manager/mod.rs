@@ -10,8 +10,11 @@ use crate::{
 use anyhow::{anyhow, bail, ensure, Result};
 use aptos_channels::{aptos_channel, message_queues::QueueStyle};
 use aptos_crypto::Uniform;
+use aptos_dkg::ibe::serialize_g2;
+use aptos_dkg::pvss::traits::Transcript;
 use aptos_infallible::duration_since_epoch;
 use aptos_logger::{debug, error, info, warn};
+use aptos_types::dkg::real_dkg::Transcripts;
 use aptos_types::{
     dkg::{
         DKGSessionMetadata, DKGSessionState, DKGStartEvent, DKGTrait, DKGTranscript,
@@ -328,6 +331,13 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
             StdRng::from_rng(thread_rng())
                 .expect("Failed to initialize RNG from thread_rng - this should never fail")
         };
+
+        // Validate encryption public keys are configured - prevents panics in PVSS deal
+        if !DKG::is_valid_for_dkg(&public_params) {
+            warn!("[DKG] Cannot start DKG: encryption public keys not properly configured.");
+            return Ok(()); // Gracefully skip instead of panicking
+        }
+
         let input_secret = DKG::InputSecret::generate(&mut rng);
 
         let trx = DKG::generate_transcript(
@@ -342,6 +352,7 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
             dkg_session_metadata.dealer_epoch,
             self.my_addr,
             bcs::to_bytes(&trx).map_err(|e| anyhow!("transcript serialization error: {e}"))?,
+            vec![],
         );
 
         let deal_finish = duration_since_epoch();
@@ -395,13 +406,20 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
                     .observe(secs_since_dkg_start);
 
                 let txn = if self.is_timelock {
+                    let transcript_bytes = bcs::to_bytes(&agg_trx)
+                        .map_err(|e| anyhow!("transcript serialization error: {e}"))?;
+                    // Extract MPK from transcript for timelock
+                    // Note: For timelock, DKG::Transcript is always Transcripts
+                    let mpk = extract_mpk_from_transcript::<DKG>(&agg_trx);
+                    let mpk_bytes = serialize_g2(mpk.as_group_element())
+                        .map_err(|e| anyhow!("MPK serialization error: {e}"))?;
                     ValidatorTransaction::TimelockDKGResult(DKGTranscript {
                         metadata: DKGTranscriptMetadata {
                             epoch: my_transcript.metadata.epoch,
                             author: self.my_addr,
                         },
-                        transcript_bytes: bcs::to_bytes(&agg_trx)
-                            .map_err(|e| anyhow!("transcript serialization error: {e}"))?,
+                        transcript_bytes,
+                        mpk_bytes,
                     })
                 } else {
                     ValidatorTransaction::DKGResult(DKGTranscript {
@@ -411,6 +429,7 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
                         },
                         transcript_bytes: bcs::to_bytes(&agg_trx)
                             .map_err(|e| anyhow!("transcript serialization error: {e}"))?,
+                        mpk_bytes: vec![],
                     })
                 };
                 let topic = if self.is_timelock {
@@ -496,6 +515,20 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
         response_sender.send(response);
         Ok(())
     }
+}
+
+fn extract_mpk_from_transcript<D: DKGTrait>(
+    trx: &D::Transcript,
+) -> <aptos_dkg::pvss::das::WeightedTranscript as aptos_dkg::pvss::traits::Transcript>::DealtPubKey
+where
+    D::Transcript: Sized,
+{
+    // For RealDKG (used in timelock), Transcript = Transcripts which has a 'main' field of type WTrx
+    // WTrx implements Transcript trait from aptos-dkg with get_dealt_public_key()
+    // This function is only called when is_timelock = true, which uses RealDKG
+    let transcripts: &Transcripts =
+        unsafe { &*(trx as *const D::Transcript as *const Transcripts) };
+    transcripts.main.get_dealt_public_key()
 }
 
 #[cfg(test)]

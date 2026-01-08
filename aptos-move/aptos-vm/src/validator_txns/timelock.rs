@@ -4,22 +4,17 @@
 use crate::{
     aptos_vm::get_system_transaction_output,
     errors::expect_only_successful_execution,
-    move_vm_ext::{AptosMoveResolver, AptosResolver, SessionId},
+    move_vm_ext::{AptosMoveResolver, SessionId},
     system_module_names::{PUBLISH_DECRYPTION_KEY_SHARE, PUBLISH_PUBLIC_KEY, TIMELOCK_MODULE},
     AptosVM,
 };
-use anyhow::Context;
-use aptos_dkg::ibe::{serialize_g2, G2Projective};
-use aptos_types::{
-    dkg::{real_dkg::Transcripts, DKGTrait, DKGTranscript, DecryptionKeyShare},
-    move_utils::as_move_value::AsMoveValue,
-};
+use aptos_types::dkg::DecryptionKeyShare;
+use aptos_types::move_utils::as_move_value::AsMoveValue;
 use aptos_vm_logging::log_schema::AdapterLogSchema;
 use aptos_vm_types::{
     module_and_script_storage::module_storage::AptosModuleStorage, output::VMOutput,
 };
 use move_core_types::{
-    // use move_core_types::account_address::AccountAddress;
     value::{serialize_values, MoveValue},
     vm_status::VMStatus,
 };
@@ -33,23 +28,15 @@ impl AptosVM {
         module_storage: &impl AptosModuleStorage,
         log_context: &AdapterLogSchema,
         session_id: SessionId,
-        dkg_transcript: DKGTranscript,
+        dkg_transcript: aptos_types::dkg::DKGTranscript,
     ) -> Result<(VMStatus, VMOutput), VMStatus> {
         let mut gas_meter = UnmeteredGasMeter;
-
-        // Extract MPK from transcript - the Move function expects an MPK (G2 point), not transcript bytes
-        let transcripts: Transcripts = bcs::from_bytes(&dkg_transcript.transcript_bytes)
-            .context("Failed to deserialize DKG transcript for MPK extraction")?;
-        let dealt_pub_key = transcripts.main.get_dealt_public_key();
-        let mpk_bytes = serialize_g2(&dealt_pub_key.as_group_element())
-            .context("Failed to serialize MPK to G2 compressed format")?;
-
         let mut session = self.new_session(resolver, session_id, None);
 
         let args = vec![
             MoveValue::Signer(dkg_transcript.metadata.author),
-            MoveValue::U64(dkg_transcript.metadata.epoch), // Reuse epoch as interval
-            mpk_bytes.as_move_value(),
+            MoveValue::U64(dkg_transcript.metadata.epoch),
+            dkg_transcript.mpk_bytes.as_move_value(),
         ];
 
         let traversal_storage = TraversalStorage::new();
@@ -131,12 +118,8 @@ mod tests {
     use aptos_types::dkg::{DKGTranscript, DKGTranscriptMetadata, DecryptionKeyShare};
     use move_core_types::account_address::AccountAddress;
 
-    // These tests verify that the structure of the dispatcher allows meaningful processing.
-    // They mock the VM/Storage interaction to focus on valid input handling.
-
     #[test]
     fn test_timelock_dkg_result_dispatch() {
-        // This is a minimal smoke test ensuring compilation and basic function signature handling
         let transcript = DKGTranscript {
             metadata: DKGTranscriptMetadata {
                 epoch: 10,
@@ -144,9 +127,6 @@ mod tests {
             },
             transcript_bytes: vec![1, 2, 3],
         };
-
-        // Note: Fully mocking AptosVM session creation for unit tests is complex and often done
-        // at integration level. Here we assert types exist and are importable.
         assert_eq!(transcript.metadata.epoch, 10);
     }
 }

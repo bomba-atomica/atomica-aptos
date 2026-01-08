@@ -906,6 +906,7 @@ impl From<DKGTranscript> for ExportedDKGTranscript {
         let DKGTranscript {
             metadata,
             transcript_bytes,
+            mpk_bytes: _,
         } = value;
         let DKGTranscriptMetadata { epoch, author } = metadata;
         Self {

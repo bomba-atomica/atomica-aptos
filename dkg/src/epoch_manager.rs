@@ -505,9 +505,11 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                     .get_public_key(&addr)
                     .ok_or_else(|| anyhow!("public key must exist for validator {}", addr))?;
 
-                // Convert public key to bytes for MoveStruct
-                let pk_bytes = bcs::to_bytes(&public_key)
-                    .map_err(|e| anyhow!("public key serialization failed: {}", e))?;
+                // Convert public key to bytes - use native to_bytes() not BCS
+                // This must match the format expected by bls12381_keys::PublicKey::try_from
+                let pk_bytes = public_key.to_bytes().as_slice().try_into().map_err(|_| {
+                    anyhow!("Failed to convert public key bytes for validator {}", addr)
+                })?;
 
                 Ok(ValidatorConsensusInfoMoveStruct {
                     addr,
@@ -518,6 +520,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             .collect();
 
         let validator_consensus_infos = validator_consensus_infos?;
+
+        // Validate we have at least one validator
+        if validator_consensus_infos.is_empty() {
+            anyhow::bail!(
+                "[Timelock] Cannot build session metadata: no validators found in epoch state"
+            );
+        }
 
         // Build randomness config from timelock config
         // For timelock, we use the threshold from the event

@@ -52,6 +52,8 @@ pub struct DKGTranscript {
     pub metadata: DKGTranscriptMetadata,
     #[serde(with = "serde_bytes")]
     pub transcript_bytes: Vec<u8>,
+    #[serde(with = "serde_bytes")]
+    pub mpk_bytes: Vec<u8>, // Extracted MPK (G2 compressed, 96 bytes) for timelock
 }
 
 impl Debug for DKGTranscript {
@@ -59,15 +61,22 @@ impl Debug for DKGTranscript {
         f.debug_struct("DKGTranscript")
             .field("metadata", &self.metadata)
             .field("transcript_bytes_len", &self.transcript_bytes.len())
+            .field("mpk_bytes_len", &self.mpk_bytes.len())
             .finish()
     }
 }
 
 impl DKGTranscript {
-    pub fn new(epoch: u64, author: AccountAddress, transcript_bytes: Vec<u8>) -> Self {
+    pub fn new(
+        epoch: u64,
+        author: AccountAddress,
+        transcript_bytes: Vec<u8>,
+        mpk_bytes: Vec<u8>,
+    ) -> Self {
         Self {
             metadata: DKGTranscriptMetadata { epoch, author },
             transcript_bytes,
+            mpk_bytes,
         }
     }
 
@@ -78,6 +87,7 @@ impl DKGTranscript {
                 author: AccountAddress::ZERO,
             },
             transcript_bytes: vec![],
+            mpk_bytes: vec![],
         }
     }
 
@@ -228,6 +238,9 @@ pub trait DKGTrait: Debug {
         player_share_pairs: Vec<(u64, Self::DealtSecretShare)>,
     ) -> Result<Self::DealtSecret>;
     fn get_dealers(transcript: &Self::Transcript) -> BTreeSet<u64>;
+
+    /// Check if public params are properly configured for DKG (encryption keys match player count)
+    fn is_valid_for_dkg(pub_params: &Self::PublicParams) -> bool;
 }
 
 pub mod dummy_dkg;

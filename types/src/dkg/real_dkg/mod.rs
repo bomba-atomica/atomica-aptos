@@ -16,7 +16,7 @@ use aptos_crypto::Uniform;
 use aptos_dkg::{
     pvss,
     pvss::{
-        traits::{Convert, Reconstructable, Transcript},
+        traits::{Convert, Reconstructable, SecretSharingConfig, Transcript},
         Player,
     },
 };
@@ -89,6 +89,10 @@ impl DKGPvssConfig {
             eks,
             rounding_summary,
         }
+    }
+
+    pub fn is_valid_for_dkg(&self) -> bool {
+        self.eks.len() == self.wconfig.get_total_num_players()
     }
 }
 
@@ -511,6 +515,10 @@ impl DKGTrait for RealDKG {
             .into_iter()
             .map(|x| x.id as u64)
             .collect()
+    }
+
+    fn is_valid_for_dkg(pub_params: &Self::PublicParams) -> bool {
+        pub_params.pvss_config.is_valid_for_dkg()
     }
 }
 

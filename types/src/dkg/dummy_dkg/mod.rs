@@ -124,6 +124,11 @@ impl DKGTrait for DummyDKG {
     fn get_dealers(transcript: &DummyDKGTranscript) -> BTreeSet<u64> {
         transcript.contributions_by_dealer.keys().copied().collect()
     }
+
+    fn is_valid_for_dkg(_pub_params: &Self::PublicParams) -> bool {
+        // DummyDKG always returns true - it's for testing
+        true
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -70,6 +70,7 @@ fn test_transcript_aggregation_state() {
                 author: addrs[0],
             },
             transcript_bytes: good_trx_0_bytes.clone(),
+            mpk_bytes: vec![],
         },
     );
     assert!(result.is_err());
@@ -83,6 +84,7 @@ fn test_transcript_aggregation_state() {
                 author: addrs[0],
             },
             transcript_bytes: good_trx_0_bytes.clone(),
+            mpk_bytes: vec![],
         },
     );
     assert!(result.is_err());
@@ -96,6 +98,7 @@ fn test_transcript_aggregation_state() {
                 author: addrs[1],
             },
             transcript_bytes: good_trx_0_bytes.clone(),
+            mpk_bytes: vec![],
         },
     );
     assert!(result.is_err());
@@ -109,6 +112,7 @@ fn test_transcript_aggregation_state() {
                 author: vfn_addr,
             },
             transcript_bytes: good_trx_0_bytes.clone(),
+            mpk_bytes: vec![],
         },
     );
     assert!(result.is_err());
@@ -124,6 +128,7 @@ fn test_transcript_aggregation_state() {
                 author: addrs[0],
             },
             transcript_bytes: bad_trx_0_bytes,
+            mpk_bytes: vec![],
         },
     );
     assert!(result.is_err());
@@ -143,6 +148,7 @@ fn test_transcript_aggregation_state() {
                 author: addrs[2],
             },
             transcript_bytes: bcs::to_bytes(&bad_trx_2).unwrap(),
+            mpk_bytes: vec![],
         },
     );
     assert!(result.is_err());
@@ -158,6 +164,7 @@ fn test_transcript_aggregation_state() {
                 author: addrs[3],
             },
             transcript_bytes: bcs::to_bytes(&good_trx_3).unwrap(),
+            mpk_bytes: vec![],
         },
     );
     println!("{:?}", result);
@@ -174,6 +181,7 @@ fn test_transcript_aggregation_state() {
                 author: addrs[3],
             },
             transcript_bytes: bcs::to_bytes(&good_trx_3_another).unwrap(),
+            mpk_bytes: vec![],
         },
     );
     assert!(matches!(result, Ok(None)));
@@ -189,6 +197,7 @@ fn test_transcript_aggregation_state() {
                 author: addrs[4],
             },
             transcript_bytes: bcs::to_bytes(&good_trx_4).unwrap(),
+            mpk_bytes: vec![],
         },
     );
     assert!(matches!(result, Ok(Some(_))));
