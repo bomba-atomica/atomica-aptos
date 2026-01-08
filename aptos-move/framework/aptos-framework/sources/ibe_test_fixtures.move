@@ -19,6 +19,10 @@ module aptos_framework::ibe_test_fixtures {
     use aptos_std::crypto_algebra::{Self, Element};
     use aptos_std::bls12381_algebra::{G1, G2, HashG1XmdSha256SswuRo, FormatG1Compr, FormatG2Compr};
     #[test_only]
+    use aptos_std::aptos_hash;
+    #[test_only]
+    use aptos_std::ibe;
+    #[test_only]
     use aptos_std::bls12381_algebra::Gt;
 
     // ============================================================================

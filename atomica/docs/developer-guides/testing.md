@@ -46,6 +46,18 @@ cd atomica/timelock-tests && bun run test:rotation
 > Do NOT create runtime scripts to change framework configs.
 > Use custom genesis injection via `head.mrb` instead.
 
+# Framework Unit Testing
+
+To verify the Move framework changes independently:
+
+```bash
+# 1. Compile the framework source
+aptos-framework release
+
+# 2. Run Move unit tests
+aptos move test --package-dir aptos-move/framework/aptos-framework
+```
+
 ---
 
 ## Test Architecture
@@ -65,6 +77,7 @@ timelock-tests/
 ```
 
 **Key Components:**
+
 - `docker-test-harness/` — Manages 4-validator Docker testnets
 - `move-framework-fixtures/head.mrb` — Compiled framework for custom genesis
 
@@ -73,27 +86,30 @@ timelock-tests/
 ## Troubleshooting
 
 ### Test Timeout
+
 Increase timeout in `bun.config.ts` or add `--timeout 300000` flag.
 
 ### Framework Not Loading
+
 Check that `head.mrb` exists and Docker volumes are correctly mounted.
 
 ### Docker Instability
+
 Restart Docker daemon: `docker restart`
 
 ---
 
 ## Test Coverage
 
-| Test | Status |
-|------|--------|
-| ✅ DKG transcript publication | Passing (Basic) |
-| ✅ Share reveal and aggregation | Passing (Basic) |
-| ✅ Manual rotation trigger | Passing |
-| ✅ Custom framework loading | Passing |
-| ✅ IBE crypto vectors | **Passing** (Real Crypto Fixed) |
-| ⚠️ IBE E2E Flow | **Timeout** (Validator DKG publication) |
-| ✅ Docker Faucet | **Passing** (Fixed: Using SDK CoinClient) |
-| ❌ invalid share rejection | Not implemented |
+| Test                            | Status                                    |
+| ------------------------------- | ----------------------------------------- |
+| ✅ DKG transcript publication   | Passing (Basic)                           |
+| ✅ Share reveal and aggregation | Passing (Basic)                           |
+| ✅ Manual rotation trigger      | Passing                                   |
+| ✅ Custom framework loading     | Passing                                   |
+| ✅ IBE crypto vectors           | **Passing** (Real Crypto Fixed)           |
+| ⚠️ IBE E2E Flow                 | **Timeout** (Validator DKG publication)   |
+| ✅ Docker Faucet                | **Passing** (Fixed: Using SDK CoinClient) |
+| ❌ invalid share rejection      | Not implemented                           |
 
 See [development-and-verification.md](./development-and-verification.md) for roadmap.
