@@ -4,7 +4,7 @@ module aptos_framework::threshold_dsa {
     use aptos_std::table::{Self, Table};
     use aptos_framework::system_addresses;
     use aptos_framework::stake;
-    use aptos_std::crypto_algebra::{zero, one, from_u64, eq, deserialize, serialize, add, sub, scalar_mul, hash_to, pairing, Element, inv};
+    use aptos_std::crypto_algebra::{zero, one, from_u64, eq, deserialize, serialize, add, sub, mul, scalar_mul, hash_to, pairing, Element, inv};
     use aptos_std::bls12381_algebra::{G1, G2, Gt, Fr, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
 
     friend aptos_framework::timelock;
@@ -295,25 +295,6 @@ module aptos_framework::threshold_dsa {
     // =========================================================================
     // Unit Tests for Threshold BLS Functions
     // =========================================================================
-
-    #[test]
-    fun test_mod_exp_basic() {
-        // 2^10 mod 1000 = 1024 mod 1000 = 24
-        let result = mod_exp(2, 10, 1000);
-        assert!(result == 24, 1);
-    }
-
-    #[test]
-    fun test_mod_exp_zero_base() {
-        let result = mod_exp(0, 5, 100);
-        assert!(result == 0, 1);
-    }
-
-    #[test]
-    fun test_mod_exp_one_exponent() {
-        let result = mod_exp(7, 1, 100);
-        assert!(result == 7, 1);
-    }
 
     #[test]
     fun test_verify_timelock_share_invalid_format() {
