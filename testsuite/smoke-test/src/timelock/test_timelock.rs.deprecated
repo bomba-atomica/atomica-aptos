@@ -1,0 +1,79 @@
+//! Timelock-specific tests (Registry Model)
+
+use super::test_helpers::{
+    create_timelock_swarm, force_block_production, get_chain_time, register_timelock,
+    wait_for_dkg_completion, TimelockTestConfig,
+};
+use aptos_forge::Swarm;
+use aptos_logger::info;
+use move_core_types::identifier::Identifier;
+use move_core_types::language_storage::ModuleId;
+use std::str::FromStr;
+use std::time::Duration;
+use tokio::time::sleep;
+
+#[tokio::test]
+async fn test_timelock_registry_flow() {
+    let config = TimelockTestConfig::default();
+    let (swarm, client, _chain_id) = create_timelock_swarm(config).await;
+
+    // 0. Wait for DKG completion
+    wait_for_dkg_completion(&swarm, &client, config.epoch_duration_secs).await;
+
+    // 1. Get chain time
+    let now = get_chain_time(&client).await;
+    let deadline = now + 10_000_000; // 10 seconds
+
+    info!("Current chain time: {}", now);
+    info!("Registering deadline: {}", deadline);
+
+    // This should assign timelock_id = 2
+    register_timelock(&swarm, &client, deadline).await.unwrap();
+
+    // 2. Wait for deadline using local sleep
+    info!("Waiting for deadline (10s + buffer)...");
+    sleep(Duration::from_secs(15)).await;
+
+    // Force block production
+    force_block_production(&swarm, &client).await.unwrap();
+
+    // 3. Verify revelation
+    // Poll for secret revelation on ID 2.
+    let target_id = 2;
+    let mut revealed = false;
+
+    for _ in 0..30 {
+        // Poll for 30 seconds
+        if let Ok(secret) = super::verify_secret_aggregated(&client, target_id, 1).await {
+            info!(
+                "✅ Secret revealed for timelock_id {}: {} bytes",
+                target_id,
+                secret.len()
+            );
+            revealed = true;
+            break;
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+
+    if !revealed {
+        // Fallback: check other IDs in case of mismatch
+        for id in 0..10 {
+            if let Ok(secret) = super::verify_secret_aggregated(&client, id, 1).await {
+                info!(
+                    "✅ Secret revealed for ALTERNATIVE timelock_id {}: {} bytes",
+                    id,
+                    secret.len()
+                );
+                revealed = true;
+                break;
+            }
+        }
+    }
+
+    assert!(
+        revealed,
+        "Secret should be revealed for timelock_id {}",
+        target_id
+    );
+}

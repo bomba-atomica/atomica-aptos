@@ -1,0 +1,80 @@
+//! DKG Transcript Availability Tests
+//!
+//! This module verifies that the Distributed Key Generation (DKG) protocol
+//! completes successfully and produces a transcript on-chain.
+//!
+//! # Conceptual Flow (Happy Case)
+//! 1. **Network Startup**: A swarm of validators starts.
+//! 2. **DKG Trigger**: The validators automatically detect the need for a DKG session (usually epoch-based or initial setup).
+//! 3. **Consensus**: Validators exchange messages to generate a distributed key.
+//! 4. **Publication**: The resulting DKG transcript is published to the `0x1::dkg::DKGState` resource.
+//!
+//! # Failure Modes & Debugging
+//!
+//! ## Symptom: Test times out (60s)
+//! - **Cause 1: Validators stuck**: The validators might not be communicating. Check node logs for connectivity issues.
+//! - **Cause 2: DKG aborts**: If DKG fails to reach consensus, it might abort. Check logs for "DKG abort" or "insufficient participation".
+//! - **Cause 3: Event non-emission**: If the `StartKeyGenEvent` wasn't emitted or processed, DKG won't start.
+//!
+//! ## Debugging Steps
+//! 1. Run with `RUST_LOG=debug` to see detailed validator logs.
+//! 2. Inspect the `0x1::dkg::DKGState` resource manually using the REST API to see if `last_completed` is present.
+//! 3. Check if the epoch change triggered ensuring `0x1::reconfiguration::current_epoch` increased if expected.
+
+use crate::smoke_test_environment::SwarmBuilder;
+use aptos_forge::{NodeExt, SwarmExt};
+use aptos_logger::info;
+use aptos_types::{dkg::DKGState, on_chain_config::OnChainRandomnessConfig};
+use std::{sync::Arc, time::Duration};
+
+/// Test: Verify that DKG transcript is available in DKG state
+///
+/// This checks that the standard DKG process completes and stores
+/// the transcript in the `dkg::DKGState` resource.
+///
+/// This is the "upstream" check. If this fails, the MPK publication will definitely fail.
+#[tokio::test]
+async fn test_dkg_transcript_available() {
+    let epoch_duration_secs = 20u64;
+
+    info!("Building swarm with 3 validators for DKG transcript test");
+
+    let (swarm, _cli, _faucet) = SwarmBuilder::new_local(3)
+        .with_num_fullnodes(0)
+        .with_aptos()
+        .with_init_genesis_config(Arc::new(move |conf| {
+            conf.epoch_duration_secs = epoch_duration_secs;
+            conf.consensus_config.enable_validator_txns();
+            conf.randomness_config_override = Some(OnChainRandomnessConfig::default_enabled());
+        }))
+        .build_with_cli(0)
+        .await;
+
+    let client = swarm.validators().next().unwrap().rest_client();
+
+    info!("Waiting for DKG transcript to be available (epoch 2)...");
+
+    // Wait for epoch 2 - DKG runs at end of epoch 1
+    swarm
+        .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(epoch_duration_secs * 2))
+        .await
+        .expect("Epoch 2 taking too long to arrive!");
+
+    info!("Reached epoch 2, checking DKG state...");
+
+    // Check DKG state
+    let dkg_state = crate::utils::get_on_chain_resource::<DKGState>(&client).await;
+
+    assert!(
+        dkg_state.last_completed.is_some(),
+        "DKG transcript should be available after epoch 2"
+    );
+
+    let last_complete = dkg_state.last_complete();
+    info!(
+        "DKG transcript available: dealer_epoch={}, target_epoch={}, {} bytes",
+        last_complete.metadata.dealer_epoch,
+        last_complete.target_epoch(),
+        last_complete.transcript.len()
+    );
+}
