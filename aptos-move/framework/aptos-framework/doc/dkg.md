@@ -17,6 +17,7 @@ DKG on-chain states and helper functions.
 -  [Function `try_clear_incomplete_session`](#0x1_dkg_try_clear_incomplete_session)
 -  [Function `incomplete_session`](#0x1_dkg_incomplete_session)
 -  [Function `session_dealer_epoch`](#0x1_dkg_session_dealer_epoch)
+-  [Function `has_completed`](#0x1_dkg_has_completed)
 -  [Specification](#@Specification_1)
     -  [Function `initialize`](#@Specification_1_initialize)
     -  [Function `start`](#@Specification_1_start)
@@ -412,6 +413,36 @@ Return the dealer epoch of a <code><a href="dkg.md#0x1_dkg_DKGSessionState">DKGS
 
 <pre><code><b>public</b> <b>fun</b> <a href="dkg.md#0x1_dkg_session_dealer_epoch">session_dealer_epoch</a>(session: &<a href="dkg.md#0x1_dkg_DKGSessionState">DKGSessionState</a>): u64 {
     session.metadata.dealer_epoch
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_dkg_has_completed"></a>
+
+## Function `has_completed`
+
+Check if randomness DKG has completed at least once.
+This is used by timelock to ensure it doesn't start IBE DKG before randomness DKG finishes.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="dkg.md#0x1_dkg_has_completed">has_completed</a>(): bool
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="dkg.md#0x1_dkg_has_completed">has_completed</a>(): bool <b>acquires</b> <a href="dkg.md#0x1_dkg_DKGState">DKGState</a> {
+    <b>if</b> (<b>exists</b>&lt;<a href="dkg.md#0x1_dkg_DKGState">DKGState</a>&gt;(@aptos_framework)) {
+        <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option_is_some">option::is_some</a>(&<b>borrow_global</b>&lt;<a href="dkg.md#0x1_dkg_DKGState">DKGState</a>&gt;(@aptos_framework).last_completed)
+    } <b>else</b> {
+        <b>false</b>
+    }
 }
 </code></pre>
 

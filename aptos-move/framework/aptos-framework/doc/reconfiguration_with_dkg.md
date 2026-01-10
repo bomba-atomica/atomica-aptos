@@ -31,7 +31,9 @@ Reconfiguration with DKG helper functions.
 <b>use</b> <a href="reconfiguration_state.md#0x1_reconfiguration_state">0x1::reconfiguration_state</a>;
 <b>use</b> <a href="stake.md#0x1_stake">0x1::stake</a>;
 <b>use</b> <a href="system_addresses.md#0x1_system_addresses">0x1::system_addresses</a>;
+<b>use</b> <a href="threshold_dsa.md#0x1_threshold_dsa">0x1::threshold_dsa</a>;
 <b>use</b> <a href="validator_consensus_info.md#0x1_validator_consensus_info">0x1::validator_consensus_info</a>;
+<b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">0x1::vector</a>;
 <b>use</b> <a href="version.md#0x1_version">0x1::version</a>;
 </code></pre>
 
@@ -138,8 +140,17 @@ Abort if no DKG is in progress.
 <pre><code><b>fun</b> <a href="reconfiguration_with_dkg.md#0x1_reconfiguration_with_dkg_finish_with_dkg_result">finish_with_dkg_result</a>(<a href="account.md#0x1_account">account</a>: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>, dkg_result: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;) {
     // Publish DKG transcript for both <a href="randomness.md#0x1_randomness">randomness</a> and <a href="timelock.md#0x1_timelock">timelock</a>
     <a href="dkg.md#0x1_dkg_finish">dkg::finish</a>(dkg_result);
-    // timelock::on_dkg_complete(dkg_result); // Decoupled
+    // Publish MPK for <a href="timelock.md#0x1_timelock">timelock</a>
+    <b>let</b> mpk_len = 96;
+    <b>let</b> transcript_len = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&dkg_result);
+    <b>if</b> (transcript_len &gt;= mpk_len) {
+        <b>let</b> mpk = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_slice">vector::slice</a>(&dkg_result, transcript_len - mpk_len, transcript_len);
+        <a href="threshold_dsa.md#0x1_threshold_dsa_publish_master_public_key">threshold_dsa::publish_master_public_key</a>(<a href="account.md#0x1_account">account</a>, 1, mpk);
+    };
 
+    // Note: In test environments without <a href="stake.md#0x1_stake">stake</a> pools, <a href="reconfiguration_with_dkg.md#0x1_reconfiguration_with_dkg_finish">finish</a>() may <b>abort</b>
+    // However, the DKG state and MPK have already been saved above
+    // so <a href="timelock.md#0x1_timelock">timelock</a> functionality will still work
     <a href="reconfiguration_with_dkg.md#0x1_reconfiguration_with_dkg_finish">finish</a>(<a href="account.md#0x1_account">account</a>);
 }
 </code></pre>

@@ -5,7 +5,7 @@ use crate::{
     transcript_aggregation::TranscriptAggregationState, types::DKGTranscriptRequest, DKGMessage,
 };
 use aptos_channels::aptos_channel::Sender;
-use aptos_logger::info;
+use aptos_logger::{error, info};
 use aptos_reliable_broadcast::ReliableBroadcast;
 use aptos_types::{dkg::DKGTrait, epoch_state::EpochState};
 use futures::future::AbortHandle;
@@ -61,25 +61,40 @@ impl<DKG: DKGTrait + 'static> TAggTranscriptProducer<DKG> for AggTranscriptProdu
             epoch_state,
         ));
         let task = async move {
-            let agg_trx = rb
-                .broadcast(req, agg_state)
-                .await
-                .expect("broadcast cannot fail");
+            let agg_trx = match rb.broadcast(req, agg_state).await {
+                Ok(transcript) => transcript,
+                Err(e) => {
+                    error!(
+                        epoch = epoch,
+                        my_addr = my_addr,
+                        "[DKG] Broadcast failed: {} - this should not happen, shutting down DKG for this epoch", e
+                    );
+                    return;
+                },
+            };
             info!(
                 epoch = epoch,
                 my_addr = my_addr,
                 "[DKG] aggregated transcript locally"
             );
-            if let Err(e) = agg_trx_tx
-                .expect("[DKG] agg_trx_tx should be available")
-                .push((), agg_trx)
-            {
-                // If the `DKGManager` was dropped, this send will fail by design.
-                info!(
-                    epoch = epoch,
-                    my_addr = my_addr,
-                    "[DKG] Failed to send aggregated transcript to DKGManager, maybe DKGManager stopped and channel dropped: {:?}", e
-                );
+            match agg_trx_tx {
+                Some(tx) => {
+                    if let Err(e) = tx.push((), agg_trx) {
+                        // If the `DKGManager` was dropped, this send will fail by design.
+                        info!(
+                            epoch = epoch,
+                            my_addr = my_addr,
+                            "[DKG] Failed to send aggregated transcript to DKGManager, maybe DKGManager stopped and channel dropped: {:?}", e
+                        );
+                    }
+                },
+                None => {
+                    error!(
+                        epoch = epoch,
+                        my_addr = my_addr,
+                        "[DKG] agg_trx_tx is None - DKGManager may have been dropped"
+                    );
+                },
             }
         };
         let (abort_handle, abort_registration) = AbortHandle::new_pair();

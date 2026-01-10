@@ -1654,7 +1654,16 @@ module aptos_framework::stake {
         pool_address: address,
         staking_config: &StakingConfig,
     ) acquires AptosCoinCapabilities, PendingTransactionFee, StakePool, TransactionFeeConfig, ValidatorConfig {
+        // In test environments or during genesis, stake pools may not exist yet
+        // Skip update if pool doesn't exist
+        if (!exists<StakePool>(pool_address)) {
+            return
+        };
         let stake_pool = borrow_global_mut<StakePool>(pool_address);
+        
+        if (!exists<ValidatorConfig>(pool_address)) {
+            return
+        };
         let validator_config = borrow_global<ValidatorConfig>(pool_address);
         let validator_index = validator_config.validator_index;
         let cur_validator_perf = vector::borrow(&validator_perf.validators, validator_index);

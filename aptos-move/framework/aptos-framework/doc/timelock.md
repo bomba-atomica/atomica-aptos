@@ -30,6 +30,7 @@
 
 <pre><code><b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/hash.md#0x1_aptos_hash">0x1::aptos_hash</a>;
 <b>use</b> <a href="../../aptos-stdlib/doc/debug.md#0x1_debug">0x1::debug</a>;
+<b>use</b> <a href="dkg.md#0x1_dkg">0x1::dkg</a>;
 <b>use</b> <a href="event.md#0x1_event">0x1::event</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option">0x1::option</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">0x1::signer</a>;
@@ -457,20 +458,14 @@ Initialize the timelock system
             mpk_dkg_started: <b>false</b>,
         });
 
-        // Trigger MPK Setup
-        <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
-        <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&validators);
-        <b>let</b> threshold = (n * 2 / 3) + 1;
-        <b>if</b> (n == 0) { n = 1; threshold = 1; };
+        // Note: We do NOT emit <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> here during <a href="genesis.md#0x1_genesis">genesis</a>
+        // The MPK DKG will be triggered in <a href="timelock.md#0x1_timelock_on_new_block">on_new_block</a>() AFTER <a href="randomness.md#0x1_randomness">randomness</a> DKG completes
+        // This <b>ensures</b> we don't run two concurrent DKG sessions which would cause
+        // transcript deserialization errors due <b>to</b> different transcript formats
 
         <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Initializing <a href="timelock.md#0x1_timelock">timelock</a> system"));
-        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&n);
-        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&threshold);
-
-        emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
-            epoch: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
-            config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
-        });
+        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&1);
+        <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&1);
     }
 }
 </code></pre>
@@ -602,19 +597,28 @@ On New Block: Check for passed deadlines
     <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] on_new_block called"));
     <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&now);
 
-    // One-time DKG trigger <b>if</b> missed during <a href="genesis.md#0x1_genesis">genesis</a>
+    // One-time DKG trigger - ONLY after <a href="randomness.md#0x1_randomness">randomness</a> DKG completes
     <b>if</b> (!state.mpk_dkg_started) {
-        <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
-        <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&validators);
-        <b>if</b> (n &gt; 0) {
-            <b>let</b> threshold = (n * 2 / 3) + 1;
-            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Emitting <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> for MPK DKG"));
-            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&n);
-            emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
-                epoch: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
-                config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
-            });
-            state.mpk_dkg_started = <b>true</b>;
+        // Check <b>if</b> <a href="randomness.md#0x1_randomness">randomness</a> DKG <b>has</b> completed at least once
+        // We must wait for <a href="randomness.md#0x1_randomness">randomness</a> DKG <b>to</b> finish before starting <a href="timelock.md#0x1_timelock">timelock</a> IBE DKG
+        // <b>to</b> avoid concurrent DKG sessions that would cause transcript deserialization errors
+        <b>let</b> randomness_dkg_completed = <a href="dkg.md#0x1_dkg_has_completed">dkg::has_completed</a>();
+
+        <b>if</b> (randomness_dkg_completed) {
+            <b>let</b> validators = <a href="stake.md#0x1_stake_cur_validator_consensus_infos">stake::cur_validator_consensus_infos</a>();
+            <b>let</b> n = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&validators);
+            <b>if</b> (n &gt; 0) {
+                <b>let</b> threshold = (n * 2 / 3) + 1;
+                <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Emitting <a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> for MPK DKG"));
+                <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&n);
+                emit(<a href="timelock.md#0x1_timelock_StartKeyGenEvent">StartKeyGenEvent</a> {
+                    epoch: <a href="timelock.md#0x1_timelock_MPK_ID">MPK_ID</a>,
+                    config: <a href="timelock.md#0x1_timelock_TimelockConfig">TimelockConfig</a> { threshold, total_validators: n },
+                });
+                state.mpk_dkg_started = <b>true</b>;
+            };
+        } <b>else</b> {
+            <a href="../../aptos-stdlib/doc/debug.md#0x1_debug_print">debug::print</a>(&<a href="../../aptos-stdlib/../move-stdlib/doc/string.md#0x1_string_utf8">string::utf8</a>(b"[TIMELOCK] Waiting for <a href="randomness.md#0x1_randomness">randomness</a> DKG <b>to</b> complete before starting <a href="timelock.md#0x1_timelock">timelock</a> DKG"));
         };
     };
 

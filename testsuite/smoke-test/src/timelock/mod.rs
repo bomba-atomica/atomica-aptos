@@ -9,6 +9,7 @@
 
 pub mod dkg_startup;
 
+pub mod test_dkg_sequencing;
 pub mod test_dkg_transcript;
 pub mod test_events;
 pub mod test_helpers;

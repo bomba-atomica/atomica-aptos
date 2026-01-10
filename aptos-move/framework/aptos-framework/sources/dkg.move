@@ -127,4 +127,14 @@ module aptos_framework::dkg {
     public fun session_dealer_epoch(session: &DKGSessionState): u64 {
         session.metadata.dealer_epoch
     }
+
+    /// Check if randomness DKG has completed at least once.
+    /// This is used by timelock to ensure it doesn't start IBE DKG before randomness DKG finishes.
+    public fun has_completed(): bool acquires DKGState {
+        if (exists<DKGState>(@aptos_framework)) {
+            option::is_some(&borrow_global<DKGState>(@aptos_framework).last_completed)
+        } else {
+            false
+        }
+    }
 }

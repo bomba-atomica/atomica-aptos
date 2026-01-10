@@ -317,11 +317,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
     async fn await_reconfig_notification(&mut self) {
         info!("[DKG] await_reconfig_notification: waiting for first reconfig event");
-        let reconfig_notification = self
-            .reconfig_events
-            .next()
-            .await
-            .expect("Reconfig sender dropped, unable to start new epoch");
+        let reconfig_notification = match self.reconfig_events.next().await {
+            Some(notification) => notification,
+            None => {
+                error!("[DKG] Reconfig sender dropped, unable to start new epoch - shutting down DKG gracefully");
+                std::process::exit(1);
+            },
+        };
         info!(
             "[DKG] await_reconfig_notification: received reconfig for epoch {}",
             reconfig_notification.on_chain_configs.epoch()

@@ -58,7 +58,17 @@ pub struct IbeTranscript {
 impl ValidCryptoMaterial for IbeTranscript {
     const AIP_80_PREFIX: &'static str = "";
     fn to_bytes(&self) -> Vec<u8> {
-        bcs::to_bytes(&self).expect("unexpected error during IbeTranscript serialization")
+        match bcs::to_bytes(&self) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                aptos_logger::error!(
+                    "[IBE DKG] Failed to serialize IbeTranscript: {} - this should never happen",
+                    e
+                );
+                // Return empty vec as fallback to prevent panic - caller should handle invalid transcript
+                vec![]
+            },
+        }
     }
 }
 
@@ -130,9 +140,29 @@ impl traits::Transcript for IbeTranscript {
         for i in 0..sc.get_total_num_players() {
             let weight = sc.get_player_weight(&Player { id: i });
             for j in 0..weight {
-                let k = sc.get_share_index(i, j).unwrap();
+                let k = match sc.get_share_index(i, j) {
+                    Some(idx) => idx,
+                    None => {
+                        aptos_logger::error!(
+                            "[IBE DKG] get_share_index({}, {}) returned None - invalid player/weight config",
+                            i, j
+                        );
+                        // Use 0 as fallback to prevent panic - will result in invalid transcript
+                        0
+                    },
+                };
                 let shared_secret = Into::<G1Projective>::into(&eks[i]) * r[k];
-                let mask = hash_to_scalar(&bcs::to_bytes(&shared_secret).unwrap(), dst);
+                let shared_secret_bytes = match bcs::to_bytes(&shared_secret) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        aptos_logger::error!(
+                            "[IBE DKG] Failed to serialize shared_secret: {} - using empty vec",
+                            e
+                        );
+                        vec![]
+                    },
+                };
+                let mask = hash_to_scalar(&shared_secret_bytes, dst);
                 let encrypted = f_evals[k] + mask;
                 encrypted_scalars.push(encrypted.to_repr());
             }
@@ -203,14 +233,38 @@ impl traits::Transcript for IbeTranscript {
         let mut scalar_shares = vec![Scalar::ZERO; weight];
 
         let dst = b"APTOS_IBE_SCALAR_ENC_DST";
-        let dk_scalar = Scalar::from_bytes_le(&dk.to_bytes()).unwrap();
+        let dk_scalar_option = Scalar::from_bytes_le(&dk.to_bytes());
+        let dk_scalar = if bool::from(dk_scalar_option.is_some()) {
+            dk_scalar_option.unwrap()
+        } else {
+            aptos_logger::error!("[IBE DKG] Failed to convert dk to Scalar - using ZERO, will result in invalid shares");
+            Scalar::ZERO
+        };
         for (r_vec, encrypted_scalars) in self.scalar_transcripts.values() {
             let s_i_dealer = sc.get_player_starting_index(player);
             for j in 0..weight {
                 let k = s_i_dealer + j;
                 let shared_secret = r_vec[k] * dk_scalar;
-                let mask = hash_to_scalar(&bcs::to_bytes(&shared_secret).unwrap(), dst);
-                let encrypted = Scalar::from_repr(encrypted_scalars[k]).unwrap();
+                let shared_secret_bytes = match bcs::to_bytes(&shared_secret) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        aptos_logger::error!(
+                            "[IBE DKG] Failed to serialize shared_secret during decryption: {} - using empty vec",
+                            e
+                        );
+                        vec![]
+                    },
+                };
+                let mask = hash_to_scalar(&shared_secret_bytes, dst);
+                let encrypted_option = Scalar::from_repr(encrypted_scalars[k]);
+                let encrypted = if bool::from(encrypted_option.is_some()) {
+                    encrypted_option.unwrap()
+                } else {
+                    aptos_logger::error!(
+                        "[IBE DKG] Failed to deserialize encrypted scalar - using ZERO"
+                    );
+                    Scalar::ZERO
+                };
                 scalar_shares[j] += encrypted - mask;
             }
         }

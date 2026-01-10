@@ -55,8 +55,11 @@ pub fn start_dkg_runtime(
         match NetworkTask::new(network_service_events, self_receiver) {
             Ok((task, receiver)) => (task, receiver),
             Err(e) => {
-                aptos_logger::error!("Failed to create DKG network task: {}", e);
-                panic!("DKG network setup failed: {}", e);
+                aptos_logger::error!(
+                    "Failed to create DKG network task: {} - shutting down node",
+                    e
+                );
+                std::process::exit(1);
             },
         };
     runtime.spawn(network_task.start());

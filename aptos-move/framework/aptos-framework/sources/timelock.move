@@ -12,6 +12,7 @@ module aptos_framework::timelock {
     
     // Dependencies - delegating cryptographic operations to specialized modules
     use aptos_framework::threshold_dsa;
+    use aptos_framework::dkg;
 
     friend aptos_framework::block;
     friend aptos_framework::genesis;
@@ -126,20 +127,14 @@ module aptos_framework::timelock {
                 mpk_dkg_started: false,
             });
 
-            // Trigger MPK Setup
-            let validators = stake::cur_validator_consensus_infos();
-            let n = vector::length(&validators);
-            let threshold = (n * 2 / 3) + 1;
-            if (n == 0) { n = 1; threshold = 1; };
-
+            // Note: We do NOT emit StartKeyGenEvent here during genesis
+            // The MPK DKG will be triggered in on_new_block() AFTER randomness DKG completes
+            // This ensures we don't run two concurrent DKG sessions which would cause
+            // transcript deserialization errors due to different transcript formats
+            
             debug::print(&string::utf8(b"[TIMELOCK] Initializing timelock system"));
-            debug::print(&n);
-            debug::print(&threshold);
-
-            emit(StartKeyGenEvent {
-                epoch: MPK_ID,
-                config: TimelockConfig { threshold, total_validators: n },
-            });
+            debug::print(&1);
+            debug::print(&1);
         }
     }
 
@@ -219,19 +214,28 @@ module aptos_framework::timelock {
         debug::print(&string::utf8(b"[TIMELOCK] on_new_block called"));
         debug::print(&now);
 
-        // One-time DKG trigger if missed during genesis
+        // One-time DKG trigger - ONLY after randomness DKG completes
         if (!state.mpk_dkg_started) {
-            let validators = stake::cur_validator_consensus_infos();
-            let n = vector::length(&validators);
-            if (n > 0) {
-                let threshold = (n * 2 / 3) + 1;
-                debug::print(&string::utf8(b"[TIMELOCK] Emitting StartKeyGenEvent for MPK DKG"));
-                debug::print(&n);
-                emit(StartKeyGenEvent {
-                    epoch: MPK_ID,
-                    config: TimelockConfig { threshold, total_validators: n },
-                });
-                state.mpk_dkg_started = true;
+            // Check if randomness DKG has completed at least once
+            // We must wait for randomness DKG to finish before starting timelock IBE DKG
+            // to avoid concurrent DKG sessions that would cause transcript deserialization errors
+            let randomness_dkg_completed = dkg::has_completed();
+            
+            if (randomness_dkg_completed) {
+                let validators = stake::cur_validator_consensus_infos();
+                let n = vector::length(&validators);
+                if (n > 0) {
+                    let threshold = (n * 2 / 3) + 1;
+                    debug::print(&string::utf8(b"[TIMELOCK] Emitting StartKeyGenEvent for MPK DKG"));
+                    debug::print(&n);
+                    emit(StartKeyGenEvent {
+                        epoch: MPK_ID,
+                        config: TimelockConfig { threshold, total_validators: n },
+                    });
+                    state.mpk_dkg_started = true;
+                };
+            } else {
+                debug::print(&string::utf8(b"[TIMELOCK] Waiting for randomness DKG to complete before starting timelock DKG"));
             };
         };
 
@@ -608,5 +612,24 @@ module aptos_framework::timelock {
         assert!(*vector::borrow(deadlines, 0) == 1000, 2);
         assert!(*vector::borrow(deadlines, 1) == 2000, 3);
         assert!(*vector::borrow(deadlines, 2) == 3000, 4);
+    }
+
+    #[test(framework = @aptos_framework)]
+    fun test_mpk_dkg_flag_tracking(framework: &signer) acquires TimelockState {
+        // This test verifies that the mpk_dkg_started flag is properly tracked
+        timestamp::set_time_has_started_for_testing(framework);
+        create_account_for_test(@aptos_framework);
+        stake::initialize_for_test(framework);
+        
+        // Initialize timelock
+        initialize(framework);
+        let state = borrow_global<TimelockState>(@aptos_framework);
+        
+        // Initially, DKG should not be started
+        assert!(!state.mpk_dkg_started, 1);
+        
+        // The mpk_dkg_started flag should persist after initialization
+        // In real execution, on_new_block() will set this to true after randomness DKG completes
+        // This test just verifies the flag exists and is initially false
     }
 }
