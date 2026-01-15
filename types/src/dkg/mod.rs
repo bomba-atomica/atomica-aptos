@@ -2,7 +2,7 @@
 // Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub mod batch_encryption_dkg;
-mod dummy_dkg;
+pub mod dummy_dkg;
 pub mod real_dkg;
 
 use crate::dkg::real_dkg::{rounding::DKGRoundingProfile, RealDKG, Transcripts};
