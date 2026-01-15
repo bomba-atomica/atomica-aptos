@@ -1,11 +1,12 @@
 // Copyright (c) Aptos Foundation
 // Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////
 // Types for Secret Sharing
-////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////
 
 use crate::{account_address::AccountAddress, validator_verifier::ValidatorVerifier};
+use anyhow::Result;
 use aptos_batch_encryption::{
     schemes::fptx_weighted::FPTXWeighted, traits::BatchThresholdEncryption,
 };
@@ -72,10 +73,9 @@ impl SecretShare {
         }
     }
 
-    pub fn verify(&self, config: &SecretShareConfig) -> anyhow::Result<()> {
+    pub fn verify(&self, config: &SecretShareConfig) -> Result<()> {
         let index = config.get_id(self.author());
         let decryption_key_share = self.share().clone();
-        // TODO(ibalajiarun): Check index out of bounds
         config.verification_keys[index]
             .verify_decryption_key_share(&self.metadata.digest, &decryption_key_share)?;
         Ok(())
@@ -84,7 +84,7 @@ impl SecretShare {
     pub fn aggregate<'a>(
         dec_shares: impl Iterator<Item = &'a SecretShare>,
         config: &SecretShareConfig,
-    ) -> anyhow::Result<DecryptionKey> {
+    ) -> Result<DecryptionKey> {
         let threshold = config.threshold();
         let shares: Vec<SecretKeyShare> = dec_shares
             .map(|dec_share| dec_share.share.clone())
@@ -93,7 +93,7 @@ impl SecretShare {
         let decryption_key =
             <FPTXWeighted as BatchThresholdEncryption>::reconstruct_decryption_key(
                 &shares,
-                &config.config,
+                &config.threshold_config,
             )?;
         Ok(decryption_key)
     }
@@ -131,7 +131,6 @@ impl SecretSharedKey {
     }
 }
 
-/// This is temporary and meant to change in future PRs
 #[derive(Clone)]
 pub struct SecretShareConfig {
     _author: Author,
@@ -140,7 +139,7 @@ pub struct SecretShareConfig {
     digest_key: DigestKey,
     msk_share: MasterSecretKeyShare,
     verification_keys: Vec<VerificationKey>,
-    config: <FPTXWeighted as BatchThresholdEncryption>::ThresholdConfig,
+    threshold_config: <FPTXWeighted as BatchThresholdEncryption>::ThresholdConfig,
     encryption_key: EncryptionKey,
     weights: HashMap<Author, u64>,
 }
@@ -153,7 +152,7 @@ impl SecretShareConfig {
         digest_key: DigestKey,
         msk_share: MasterSecretKeyShare,
         verification_keys: Vec<VerificationKey>,
-        config: <FPTXWeighted as BatchThresholdEncryption>::ThresholdConfig,
+        threshold_config: <FPTXWeighted as BatchThresholdEncryption>::ThresholdConfig,
         encryption_key: EncryptionKey,
     ) -> Self {
         Self {
@@ -163,7 +162,30 @@ impl SecretShareConfig {
             digest_key,
             msk_share,
             verification_keys,
-            config,
+            threshold_config,
+            encryption_key,
+            weights: HashMap::new(),
+        }
+    }
+
+    pub fn from_dkg_output(
+        author: Author,
+        epoch: u64,
+        validator: Arc<ValidatorVerifier>,
+        digest_key: DigestKey,
+        encryption_key: EncryptionKey,
+        verification_keys: Vec<VerificationKey>,
+        msk_share: MasterSecretKeyShare,
+        threshold_config: <FPTXWeighted as BatchThresholdEncryption>::ThresholdConfig,
+    ) -> Self {
+        Self {
+            _author: author,
+            _epoch: epoch,
+            validator,
+            digest_key,
+            msk_share,
+            verification_keys,
+            threshold_config,
             encryption_key,
             weights: HashMap::new(),
         }
@@ -186,11 +208,11 @@ impl SecretShareConfig {
     }
 
     pub fn threshold(&self) -> u64 {
-        self.config.get_threshold_config().t as u64
+        self.threshold_config.get_threshold_config().t as u64
     }
 
     pub fn number_of_validators(&self) -> u64 {
-        self.config.get_threshold_config().n as u64
+        self.threshold_config.get_threshold_config().n as u64
     }
 
     pub fn get_peer_weight(&self, _peer: &Author) -> u64 {
@@ -210,7 +232,7 @@ impl SecretShareConfig {
     }
 
     pub fn threshold_config(&self) -> &<FPTXWeighted as BatchThresholdEncryption>::ThresholdConfig {
-        &self.config
+        &self.threshold_config
     }
 
     pub fn validator(&self) -> &ValidatorVerifier {
@@ -238,12 +260,18 @@ impl SecretShareConfig {
         let threshold_weight = (2 * total_weight / 3) as usize;
 
         let weights: Vec<usize> = (0..n).map(|_| 1).collect();
-        let config = aptos_crypto::weighted_config::WeightedConfig::new(threshold_weight, weights)
-            .expect("Failed to create weighted config");
+        let threshold_config =
+            aptos_crypto::weighted_config::WeightedConfig::new(threshold_weight, weights)
+                .expect("Failed to create weighted config");
 
         let (encryption_key, digest_key, verification_keys, msk_shares) =
-            FPTXWeighted::setup_for_testing(seed, max_batch_size, number_of_rounds, &config)
-                .expect("Failed to create FPTXWeighted setup");
+            FPTXWeighted::setup_for_testing(
+                seed,
+                max_batch_size,
+                number_of_rounds,
+                &threshold_config,
+            )
+            .expect("Failed to create FPTXWeighted setup");
 
         let my_index = validator
             .address_to_validator_index()
@@ -258,7 +286,7 @@ impl SecretShareConfig {
             digest_key,
             msk_share,
             verification_keys,
-            config,
+            threshold_config,
             encryption_key,
             weights: HashMap::new(),
         }

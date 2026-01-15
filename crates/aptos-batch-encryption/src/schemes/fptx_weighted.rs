@@ -43,10 +43,10 @@ impl DecryptionKeyShare for WeightedBIBEDecryptionKeyShare {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WeightedBIBEMasterSecretKeyShare {
     #[serde(serialize_with = "ark_se", deserialize_with = "ark_de")]
-    pub(crate) mpk_g2: G2Affine,
-    pub(crate) weighted_player: Player,
+    pub mpk_g2: G2Affine,
+    pub weighted_player: Player,
     #[serde(serialize_with = "ark_se", deserialize_with = "ark_de")]
-    pub(crate) shamir_share_evals: Vec<Fr>,
+    pub shamir_share_evals: Vec<Fr>,
 }
 
 impl WeightedBIBEMasterSecretKeyShare {
@@ -113,10 +113,10 @@ impl WeightedBIBEMasterSecretKeyShare {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WeightedBIBEVerificationKey {
     #[serde(serialize_with = "ark_se", deserialize_with = "ark_de")]
-    pub(crate) mpk_g2: G2Affine,
+    pub mpk_g2: G2Affine,
     #[serde(serialize_with = "ark_se", deserialize_with = "ark_de")]
-    pub(crate) vks_g2: Vec<G2Affine>,
-    pub(crate) weighted_player: Player,
+    pub vks_g2: Vec<G2Affine>,
+    pub weighted_player: Player,
 }
 
 impl WeightedBIBEVerificationKey {
