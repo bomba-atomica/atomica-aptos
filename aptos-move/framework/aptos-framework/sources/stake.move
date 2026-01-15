@@ -1398,6 +1398,13 @@ module aptos_framework::stake {
             i = i + 1;
         };
 
+        if (vector::is_empty(&next_epoch_validators)) {
+            // FALLBACK: If no validators meet requirements, keep the current set
+            next_epoch_validators = validator_set.active_validators;
+            total_voting_power = validator_set.total_voting_power;
+        };
+
+
         validator_set.active_validators = next_epoch_validators;
         validator_set.total_voting_power = total_voting_power;
         validator_set.total_joining_power = 0;

@@ -58,6 +58,10 @@ pub async fn create_timelock_swarm(
             // Enable randomness config (required for DKG manager to start)
             conf.randomness_config_override = Some(OnChainRandomnessConfig::default_enabled());
         }))
+        .with_init_genesis_stake(Arc::new(|_, stake_amount| {
+            // Give each validator 100M APT to ensure they meet minimum stake requirements
+            *stake_amount = 100_000_000_000_000;
+        }))
         .build_with_cli(0)
         .await;
 
