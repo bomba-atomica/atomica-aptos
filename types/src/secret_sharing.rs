@@ -204,4 +204,63 @@ impl SecretShareConfig {
     pub fn encryption_key(&self) -> &EncryptionKey {
         &self.encryption_key
     }
+
+    pub fn verification_keys(&self) -> &[VerificationKey] {
+        &self.verification_keys
+    }
+
+    pub fn threshold_config(&self) -> &<FPTXWeighted as BatchThresholdEncryption>::ThresholdConfig {
+        &self.config
+    }
+
+    pub fn validator(&self) -> &ValidatorVerifier {
+        &self.validator
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self._epoch
+    }
+
+    pub fn author(&self) -> &Author {
+        &self._author
+    }
+
+    pub fn new_for_epoch(
+        author: Author,
+        epoch: u64,
+        validator: Arc<ValidatorVerifier>,
+        seed: u64,
+        max_batch_size: usize,
+        number_of_rounds: usize,
+    ) -> Self {
+        let n = validator.len();
+        let total_weight = n;
+        let threshold_weight = (2 * total_weight / 3) as usize;
+
+        let weights: Vec<usize> = (0..n).map(|_| 1).collect();
+        let config = aptos_crypto::weighted_config::WeightedConfig::new(threshold_weight, weights)
+            .expect("Failed to create weighted config");
+
+        let (encryption_key, digest_key, verification_keys, msk_shares) =
+            FPTXWeighted::setup_for_testing(seed, max_batch_size, number_of_rounds, &config)
+                .expect("Failed to create FPTXWeighted setup");
+
+        let my_index = validator
+            .address_to_validator_index()
+            .get(&author)
+            .expect("Author should be in the validator set");
+        let msk_share = msk_shares[*my_index].clone();
+
+        Self {
+            _author: author,
+            _epoch: epoch,
+            validator,
+            digest_key,
+            msk_share,
+            verification_keys,
+            config,
+            encryption_key,
+            weights: HashMap::new(),
+        }
+    }
 }

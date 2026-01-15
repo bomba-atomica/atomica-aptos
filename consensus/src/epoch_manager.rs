@@ -94,6 +94,7 @@ use aptos_types::{
         RandomnessConfigSeqNum, ValidatorSet,
     },
     randomness::{RandKeys, WvufPP, WVUF},
+    secret_sharing::SecretShareConfig,
     validator_signer::ValidatorSigner,
     validator_verifier::ValidatorVerifier,
 };
@@ -105,7 +106,9 @@ use futures::{
 };
 use itertools::Itertools;
 use mini_moka::sync::Cache;
-use rand::{prelude::StdRng, thread_rng, SeedableRng};
+use rand::thread_rng;
+use rand::RngCore;
+use rand::{prelude::StdRng, SeedableRng};
 use std::{
     cmp::Ordering,
     collections::HashMap,
@@ -861,6 +864,22 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
         let safety_rules_container = Arc::new(Mutex::new(safety_rules));
 
+        let seed_u64 = {
+            let mut seed = [0u8; 32];
+            let mut rng = thread_rng();
+            rng.try_fill_bytes(&mut seed)
+                .expect("Failed to generate random seed");
+            u64::from_le_bytes(seed[..8].try_into().unwrap())
+        };
+        let secret_share_config = SecretShareConfig::new_for_epoch(
+            self.author,
+            epoch,
+            epoch_state.verifier.clone(),
+            seed_u64,
+            self.config.encrypted_block_transactions_max_batch_size,
+            self.config.encrypted_block_transactions_number_of_rounds,
+        );
+
         self.execution_client
             .start_epoch(
                 consensus_key.clone(),
@@ -874,6 +893,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 fast_rand_config.clone(),
                 rand_msg_rx,
                 secret_sharing_msg_rx,
+                secret_share_config,
                 recovery_data.commit_root_block().round(),
             )
             .await;
@@ -1452,6 +1472,22 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             .commit_info()
             .round();
 
+        let seed_u64 = {
+            let mut seed = [0u8; 32];
+            let mut rng = thread_rng();
+            rng.try_fill_bytes(&mut seed)
+                .expect("Failed to generate random seed");
+            u64::from_le_bytes(seed[..8].try_into().unwrap())
+        };
+        let secret_share_config = SecretShareConfig::new_for_epoch(
+            self.author,
+            epoch,
+            epoch_state.verifier.clone(),
+            seed_u64,
+            self.config.encrypted_block_transactions_max_batch_size,
+            self.config.encrypted_block_transactions_number_of_rounds,
+        );
+
         self.execution_client
             .start_epoch(
                 loaded_consensus_key,
@@ -1465,6 +1501,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 fast_rand_config,
                 rand_msg_rx,
                 secret_share_msg_rx,
+                secret_share_config,
                 highest_committed_round,
             )
             .await;

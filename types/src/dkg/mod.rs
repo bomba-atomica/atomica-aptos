@@ -1,13 +1,14 @@
 // Copyright (c) Aptos Foundation
 // Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use self::real_dkg::RealDKG;
-use crate::{
-    dkg::real_dkg::{rounding::DKGRoundingProfile, Transcripts},
-    on_chain_config::{OnChainConfig, OnChainRandomnessConfig, RandomnessConfigMoveStruct},
-    validator_verifier::{
-        ValidatorConsensusInfo, ValidatorConsensusInfoMoveStruct, ValidatorVerifier,
-    },
+pub mod batch_encryption_dkg;
+mod dummy_dkg;
+pub mod real_dkg;
+
+use crate::dkg::real_dkg::{rounding::DKGRoundingProfile, RealDKG, Transcripts};
+use crate::on_chain_config::{OnChainConfig, OnChainRandomnessConfig, RandomnessConfigMoveStruct};
+use crate::validator_verifier::{
+    ValidatorConsensusInfo, ValidatorConsensusInfoMoveStruct, ValidatorVerifier,
 };
 use anyhow::{Context, Result};
 use aptos_crypto::Uniform;
@@ -230,8 +231,5 @@ pub trait DKGTrait: Debug {
     ) -> Result<Self::DealtSecret>;
     fn get_dealers(transcript: &Self::Transcript) -> BTreeSet<u64>;
 }
-
-pub mod dummy_dkg;
-pub mod real_dkg;
 
 pub type DefaultDKG = RealDKG;

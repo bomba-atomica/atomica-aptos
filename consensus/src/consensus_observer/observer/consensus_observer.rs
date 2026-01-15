@@ -51,11 +51,12 @@ use aptos_storage_interface::DbReader;
 use aptos_time_service::TimeService;
 use aptos_types::{
     block_info::Round, epoch_state::EpochState, ledger_info::LedgerInfoWithSignatures,
-    validator_signer::ValidatorSigner,
+    secret_sharing::SecretShareConfig, validator_signer::ValidatorSigner,
 };
 use futures::StreamExt;
 use futures_channel::oneshot;
 use move_core_types::account_address::AccountAddress;
+use rand;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -1083,6 +1084,16 @@ impl ConsensusObserver {
             AccountAddress,
             IncomingSecretShareRequest,
         >(QueueStyle::FIFO, 1, None);
+
+        let secret_share_config = SecretShareConfig::new_for_epoch(
+            AccountAddress::ZERO,
+            epoch_state.epoch,
+            epoch_state.verifier.clone(),
+            rand::random(),
+            1000,
+            100,
+        );
+
         self.execution_client
             .start_epoch(
                 sk,
@@ -1096,6 +1107,7 @@ impl ConsensusObserver {
                 None,
                 rand_msg_rx,
                 secret_share_msg_rx,
+                secret_share_config,
                 0,
             )
             .await;

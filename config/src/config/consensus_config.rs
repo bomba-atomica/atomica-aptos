@@ -101,6 +101,8 @@ pub struct ConsensusConfig {
     pub enable_round_timeout_msg: bool,
     pub enable_optimistic_proposal_rx: bool,
     pub enable_optimistic_proposal_tx: bool,
+    pub encrypted_block_transactions_max_batch_size: usize,
+    pub encrypted_block_transactions_number_of_rounds: usize,
 }
 
 /// Deprecated
@@ -383,6 +385,8 @@ impl Default for ConsensusConfig {
             enable_round_timeout_msg: true,
             enable_optimistic_proposal_rx: true,
             enable_optimistic_proposal_tx: true,
+            encrypted_block_transactions_max_batch_size: 1000,
+            encrypted_block_transactions_number_of_rounds: 100,
         }
     }
 }

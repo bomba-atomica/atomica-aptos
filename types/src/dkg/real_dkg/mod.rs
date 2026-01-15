@@ -12,7 +12,7 @@ use crate::{
 use anyhow::{anyhow, bail, ensure, Context};
 #[cfg(any(test, feature = "testing"))]
 use aptos_crypto::Uniform;
-use aptos_crypto::{bls12381, bls12381::PrivateKey};
+use aptos_crypto::{bls12381, bls12381::PrivateKey, SecretSharingConfig as _};
 use aptos_dkg::{
     pvss,
     pvss::{
@@ -36,6 +36,7 @@ use std::{
 pub mod rounding;
 
 pub type WTrx = pvss::das::WeightedTranscript;
+pub type ChunkTrx<E> = pvss::chunky::SignedWeightedTranscript<E>;
 pub type DkgPP = <WTrx as Transcript>::PublicParameters;
 pub type SSConfig = <WTrx as Transcript>::SecretSharingConfig;
 pub type EncPK = <WTrx as Transcript>::EncryptPubKey;
@@ -145,6 +146,53 @@ pub fn build_dkg_pvss_config(
     )
 }
 
+#[cfg(any(test, feature = "testing"))]
+pub fn build_batch_encryption_config(
+    cur_epoch: u64,
+    next_validators: &[ValidatorConsensusInfo],
+    max_batch_size: usize,
+    number_of_rounds: usize,
+) -> (
+    <ChunkTrx<ark_bls12_381::Bls12_381> as Transcript>::PublicParameters,
+    Vec<<ChunkTrx<ark_bls12_381::Bls12_381> as Transcript>::EncryptPubKey>,
+    aptos_crypto::weighted_config::WeightedConfigArkworks<ark_bls12_381::Fr>,
+) {
+    use ark_bls12_381::G2Affine;
+
+    let n = next_validators.len();
+    let total_weight = n;
+    let threshold_weight = (2 * total_weight / 3) as usize;
+
+    let weights: Vec<usize> = (0..n).map(|_| 1).collect();
+    let chunky_config =
+        aptos_crypto::weighted_config::WeightedConfig::new(threshold_weight, weights)
+            .expect("Failed to create weighted config for batch encryption");
+
+    let validator_consensus_keys: Vec<bls12381::PublicKey> = next_validators
+        .iter()
+        .map(|vi| vi.public_key.clone())
+        .collect();
+
+    let chunky_eks: Vec<<ChunkTrx<ark_bls12_381::Bls12_381> as Transcript>::EncryptPubKey> =
+        validator_consensus_keys
+            .iter()
+            .map(|k| {
+                let bytes = k.to_bytes();
+                bytes.as_slice().try_into().unwrap()
+            })
+            .collect();
+
+    let chunky_pp = <ChunkTrx<ark_bls12_381::Bls12_381> as Transcript>::PublicParameters::new_with_commitment_base(
+        chunky_config.get_total_num_players(),
+        aptos_dkg::pvss::chunky::DEFAULT_ELL_FOR_TESTING,
+        chunky_config.get_total_num_players(),
+        G2Affine::generator(),
+        &mut rand::thread_rng(),
+    );
+
+    (chunky_pp, chunky_eks, chunky_config)
+}
+
 #[derive(Debug)]
 pub struct RealDKG {}
 
@@ -163,10 +211,18 @@ impl MayHaveRoundingSummary for RealDKGPublicParams {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Transcripts {
-    // transcript for main path
+    // transcript for main path (DAS for randomness)
     pub main: WTrx,
-    // transcript for fast path
+    // transcript for fast path (DAS for randomness)
     pub fast: Option<WTrx>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct BatchEncryptionTranscript<E: ark_ec::pairing::Pairing> {
+    pub transcript: ChunkTrx<E>,
+    pub threshold_config: aptos_crypto::weighted_config::WeightedConfig<
+        aptos_crypto::arkworks::shamir::ShamirThresholdConfig<E::ScalarField>,
+    >,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
