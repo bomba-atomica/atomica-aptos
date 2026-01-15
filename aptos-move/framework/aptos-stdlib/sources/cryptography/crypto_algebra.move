@@ -39,6 +39,8 @@ module aptos_std::crypto_algebra {
     use std::option::{Option, some, none};
     use std::features;
 
+    friend aptos_std::lagrange;
+
     const E_NOT_IMPLEMENTED: u64 = 1;
     const E_NON_EQUAL_LENGTHS: u64 = 2;
     const E_TOO_MUCH_MEMORY_USED: u64 = 3;
@@ -175,6 +177,8 @@ module aptos_std::crypto_algebra {
         }
     }
 
+
+
     /// Compute `k*P`, where `P` is an element of a group `G` and `k` is an element of the scalar field `S` associated to the group `G`.
     public fun scalar_mul<G, S>(element_p: &Element<G>, scalar_k: &Element<S>): Element<G> {
         abort_unless_cryptography_algebra_natives_enabled();
@@ -291,6 +295,10 @@ module aptos_std::crypto_algebra {
         std::features::change_feature_flags_for_testing(fx, vector[std::features::get_cryptography_algebra_natives_feature()], vector[]);
     }
 
+    public(friend) fun wrap_element<S>(handle: u64): Element<S> {
+        Element { handle }
+    }
+
     fun handles_from_elements<S>(elements: &vector<Element<S>>): vector<u64> {
         let num_elements = elements.length();
         let element_handles = std::vector::empty();
@@ -327,6 +335,7 @@ module aptos_std::crypto_algebra {
     native fun mul_internal<F>(handle_1: u64, handle_2: u64): u64;
     native fun multi_pairing_internal<G1,G2,Gt>(g1_handles: vector<u64>, g2_handles: vector<u64>): u64;
     native fun multi_scalar_mul_internal<G, S>(element_handles: vector<u64>, scalar_handles: vector<u64>): u64;
+
     native fun neg_internal<F>(handle: u64): u64;
     native fun one_internal<S>(): u64;
     native fun order_internal<G>(): vector<u8>;

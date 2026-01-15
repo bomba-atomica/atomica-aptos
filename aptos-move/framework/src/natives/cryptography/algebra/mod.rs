@@ -21,6 +21,9 @@ use aptos_types::on_chain_config::FeatureFlag;
 use arithmetics::{
     div::div_internal,
     inv::inv_internal,
+    inv::inv_internal,
+    inv::inv_internal,
+    lagrange::lagrange_coefficients_internal,
     scalar_mul::{multi_scalar_mul_internal, scalar_mul_internal},
 };
 use ark_ff::{BigInteger, PrimeField};
@@ -38,6 +41,7 @@ pub mod constants;
 pub mod eq;
 pub mod hash_to_structure;
 pub mod ibe;
+pub mod lagrange;
 pub mod new;
 pub mod pairing;
 #[cfg(feature = "testing")]
@@ -356,6 +360,7 @@ pub fn make_all(
         ("from_u64_internal", from_u64_internal),
         ("double_internal", double_internal),
         ("multi_scalar_mul_internal", multi_scalar_mul_internal),
+
         ("order_internal", order_internal),
         ("scalar_mul_internal", scalar_mul_internal),
         ("hash_to_internal", hash_to_internal),
@@ -371,6 +376,16 @@ pub fn make_all(
         rand_insecure_internal as RawSafeNative,
     )]);
 
+    builder.make_named_natives(natives)
+}
+
+pub fn make_lagrange(
+    builder: &SafeNativeBuilder,
+) -> impl Iterator<Item = (String, NativeFunction)> + '_ {
+    let natives = vec![(
+        "lagrange_coefficients_internal",
+        lagrange_coefficients_internal as RawSafeNative,
+    )];
     builder.make_named_natives(natives)
 }
 

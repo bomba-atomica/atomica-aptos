@@ -6,8 +6,9 @@ module aptos_framework::threshold_dsa {
     use aptos_std::table::{Self, Table};
     use aptos_framework::system_addresses;
     use aptos_framework::stake;
-    use aptos_std::crypto_algebra::{zero, one, from_u64, eq, deserialize, serialize, add, sub, mul, scalar_mul, hash_to, pairing, Element, inv};
+    use aptos_std::crypto_algebra::{zero, one, from_u64, eq, deserialize, serialize, add, sub, mul, scalar_mul, hash_to, pairing, Element};
     use aptos_std::bls12381_algebra::{G1, G2, Gt, Fr, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
+    use aptos_std::lagrange;
 
     friend aptos_framework::timelock;
     friend aptos_framework::ibe_signature; 
@@ -238,15 +239,8 @@ module aptos_framework::threshold_dsa {
         debug::print(&n);
         debug::print(&total_validators);
 
-        // Compute Lagrange coefficients using Fr field operations
-        let lambdas = vector::empty<Element<Fr>>();
-        let j = 0;
-        while (j < n) {
-            let idx = *vector::borrow(validator_indices, j);
-            let lambda = compute_lagrange_coefficient_fr(idx, validator_indices);
-            vector::push_back(&mut lambdas, lambda);
-            j = j + 1;
-        };
+        // Compute Lagrange coefficients using native implementation
+        let lambdas = lagrange::coefficients<Fr>(validator_indices);
 
         // Deserialize shares and multiply by Lagrange coefficients
         let result = zero<G1>();
@@ -269,42 +263,7 @@ module aptos_framework::threshold_dsa {
         serialize<G1, FormatG1Compr>(&result)
     }
 
-    /// Compute Lagrange coefficient λ_k for validator k in Fr field
-    /// 
-    /// λ_k = Π_{i ∈ V, i ≠ k} (0 - i) / (k - i)
-    ///     = Π_{i ∈ V, i ≠ k} (-i) / (k - i)
-    /// 
-    /// Uses BLS12-381 Fr field arithmetic via crypto_algebra natives.
-    fun compute_lagrange_coefficient_fr(k: u64, participants: &vector<u64>): Element<Fr> {
-        let num = from_u64<Fr>(1);
-        let den = from_u64<Fr>(1);
-        let n = vector::length(participants);
-        let i = 0;
-        while (i < n) {
-            let idx = *vector::borrow(participants, i);
-            if (idx != k) {
-                // numerator: -idx
-                let neg_idx = from_u64<Fr>(idx);
-                num = sub(&num, &neg_idx);
 
-                // denominator: (k - idx)
-                let k_fr = from_u64<Fr>(k);
-                let idx_fr = from_u64<Fr>(idx);
-                let diff = sub(&k_fr, &idx_fr);
-                den = mul(&den, &diff);
-            };
-            i = i + 1;
-        };
-
-        // λ = num * den^(-1)
-        let den_inv = inv(&den);
-        if (option::is_some(&den_inv)) {
-            mul(&num, &option::destroy_some(den_inv))
-        } else {
-            // Should never happen for valid participants
-            from_u64<Fr>(0)
-        }
-    }
 
     // =========================================================================
     // Unit Tests for Threshold BLS Functions
