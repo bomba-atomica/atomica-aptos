@@ -115,7 +115,7 @@ impl AptosVM {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aptos_types::dkg::{DKGTranscript, DKGTranscriptMetadata, DecryptionKeyShare};
+    use aptos_types::dkg::{DKGTranscript, DKGTranscriptMetadata};
     use move_core_types::account_address::AccountAddress;
 
     #[test]
@@ -126,6 +126,8 @@ mod tests {
                 author: AccountAddress::ONE,
             },
             transcript_bytes: vec![1, 2, 3],
+            // Added missing field
+            mpk_bytes: vec![],
         };
         assert_eq!(transcript.metadata.epoch, 10);
     }
