@@ -21,11 +21,9 @@ use aptos_types::on_chain_config::FeatureFlag;
 use arithmetics::{
     div::div_internal,
     inv::inv_internal,
-    inv::inv_internal,
-    inv::inv_internal,
-    lagrange::lagrange_coefficients_internal,
     scalar_mul::{multi_scalar_mul_internal, scalar_mul_internal},
 };
+use lagrange::lagrange_coefficients_internal;
 use ark_ff::{BigInteger, PrimeField};
 use ark_serialize::CanonicalDeserialize;
 use better_any::{Tid, TidAble};

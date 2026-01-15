@@ -91,7 +91,7 @@ fn compute_lagrange_coefficients<F: PrimeField>(
         result_handles.push(Value::u64(handle as u64));
     }
 
-    Ok(smallvec![Value::vector(
-        move_vm_types::values::VectorRef::new(&Type::U64, result_handles)?
-    )])
+    Ok(smallvec![Value::vector_unchecked(
+        result_handles
+    )?])
 }
