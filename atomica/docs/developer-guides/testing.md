@@ -34,12 +34,13 @@ Smoke tests provide integration testing for the Aptos validator environment with
 ### Running Smoke Tests
 
 ```bash
-# Run timelock smoke tests with output
-cargo test -p smoke-test --lib timelock -- --nocapture --test-threads=1
+# Run timelock smoke tests with output and increased stack size
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock -- --nocapture --test-threads=1
 ```
 
 **Flags explained:**
 
+- `RUST_MIN_STACK=104857600` — Increases stack size (100MB) to prevent overflows in deep recursive calls (common in debug builds)
 - `--nocapture` — Shows stdout logs during test execution
 - `--test-threads=1` — Runs tests sequentially to avoid port conflicts
 
