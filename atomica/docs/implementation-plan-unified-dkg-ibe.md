@@ -1,9 +1,23 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 1.0
+**Version:** 1.1
 **Date:** January 16, 2026
 **Branch:** timelock-das-vpss
 **Status:** Implementation Plan
+
+---
+
+## Prerequisites
+
+> **IMPORTANT**: Before embarking on this implementation, we presume that all existing
+> randomness smoke tests pass on the forked commit. This establishes our baseline.
+>
+> Verify with:
+> ```bash
+> RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness -- --nocapture --test-threads=1
+> ```
+>
+> If these tests fail, fix them first before proceeding.
 
 ---
 
@@ -51,20 +65,36 @@ Instead of running two DKGs, we **extend RealDKG** to also expose IBE-compatible
 
 ## Implementation Phases
 
-### Phase 0: Baseline Verification (TDD Setup)
+### Phase 0: Feasibility Test (Can RealDKG Do Extra Work?)
 
-**Goal**: Ensure existing randomness DKG works before any changes.
+**Goal**: Verify that we can extend RealDKG to perform additional operations without breaking existing randomness functionality.
 
-**Smoke Test**: `test_baseline_randomness_dkg`
-- Start 4-validator swarm with randomness enabled
-- Wait for epoch 2 (DKG completes)
-- Verify DKG transcript is on-chain
-- Verify randomness is being produced
-- **Must pass before proceeding**
+**Approach**:
+- Modify the DKG completion path to call a simple MoveVM view function
+- This proves we can hook into the DKG lifecycle without causing regressions
+- The "work" is trivial (e.g., call `0x1::chain_id::get()`) - we just need to prove the plumbing works
 
-**Files**:
-- `testsuite/smoke-test/src/timelock/mod.rs` (new module)
-- `testsuite/smoke-test/src/timelock/baseline_randomness.rs`
+**Steps**:
+1. Identify the code path where DKG completes and shares are extracted
+2. Add a call to execute a simple view function via MoveVM
+3. Log the result (no state changes, just proof of concept)
+4. Run `randomness::e2e_correctness` to verify no regressions
+
+**Verification**:
+```bash
+# After modification, this MUST still pass:
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctness -- --nocapture
+```
+
+**Why This Matters**:
+- If we can't call MoveVM from the DKG completion path, the unified approach won't work
+- If calling MoveVM breaks randomness, we need to understand why before proceeding
+- This is a low-risk sanity check before investing in IBE implementation
+
+**Files to Modify**:
+- `consensus/src/epoch_manager.rs` (add MoveVM call after share extraction)
+
+**Commit**: "test(dkg): verify MoveVM callable from DKG completion path"
 
 ---
 
@@ -321,7 +351,7 @@ For each phase:
 
 | Phase | Test Name | Validates |
 |-------|-----------|-----------|
-| 0 | `baseline_randomness` | Existing DKG works |
+| 0 | `randomness::e2e_correctness` | MoveVM callable from DKG path, no regressions |
 | 1 | `ibe_crypto_roundtrip` | IBE primitives correct |
 | 2 | `mpk_extraction_from_dkg` | MPK derivable from transcript |
 | 3 | `ibe_mpk_publication` | MPK stored on-chain |
@@ -363,7 +393,6 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock -- --nocapture 
 - `crates/aptos-dkg/src/ibe/tests.rs`
 - `aptos-move/framework/aptos-framework/sources/ibe_config.move`
 - `testsuite/smoke-test/src/timelock/mod.rs`
-- `testsuite/smoke-test/src/timelock/baseline_randomness.rs`
 - `testsuite/smoke-test/src/timelock/mpk_extraction.rs`
 - `testsuite/smoke-test/src/timelock/mpk_publication.rs`
 - `testsuite/smoke-test/src/timelock/deadline_reveal.rs`
