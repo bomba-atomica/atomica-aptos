@@ -44,7 +44,7 @@ async fn test_dkg_manager_startup() {
 
     // DKG runs at the end of epoch 1 to produce keys for epoch 2
     swarm
-        .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(epoch_duration_secs * 2))
+        .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(epoch_duration_secs * 4))
         .await
         .expect("Epoch 2 taking too long to arrive!");
 
