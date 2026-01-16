@@ -65,16 +65,19 @@ jobs:
         timeout-minutes: 60
 
       - name: Run test_basic_client
+        if: always()
         run: |
           cargo test -p smoke-test --lib rest_api::test_basic_client -- --nocapture --test-threads=1
         timeout-minutes: 60
 
       - name: Run randomness_correctness
+        if: always()
         run: |
           cargo test -p smoke-test --lib randomness::randomness_correctness -- --nocapture --test-threads=1
         timeout-minutes: 60
 
       - name: Run test_validator_execution_sync_epoch_changes
+        if: always()
         run: |
           cargo test -p smoke-test --lib state_sync::test_validator_execution_sync_epoch_changes -- --nocapture --test-threads=1
         timeout-minutes: 60
