@@ -39,6 +39,12 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_basic_co
 
 If these core tests fail, fix them first before proceeding with IBE work.
 
+### Baseline Verification (January 16, 2026)
+
+✅ **`e2e_correctness` PASSED** - Core DKG and WVUF verification working correctly.
+
+The feature flag tests (`enable_feature_*`, `disable_feature_*`) fail due to epoch tracking issues unrelated to core DKG functionality. These can be addressed separately.
+
 ---
 
 ## Problem Statement
