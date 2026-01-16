@@ -6,38 +6,38 @@
 //! This module handles the DKG protocol for generating batch encryption keys.
 //! It runs alongside the randomness DKG and uses chunky PVSS (HKZG) for threshold
 //! encryption key generation.
+//!
+//! Note: This manager handles transcript generation. Transcript aggregation is
+//! done via reliable broadcast in the main DKG flow.
 
-use crate::network::NetworkSender;
-use crate::network_interface::DKGNetworkClient;
-use crate::{agg_trx_producer::AggTranscriptProducer, DKGMessage};
-use anyhow::{anyhow, bail, ensure, Result};
-use aptos_bounded_executor::BoundedExecutor;
-use aptos_channels::{aptos_channel, message_queues::QueueStyle};
-use aptos_config::config::ReliableBroadcastConfig;
+use crate::counters::DKG_STAGE_SECONDS;
+use anyhow::{anyhow, ensure, Result};
 use aptos_crypto::{bls12381, Uniform};
 use aptos_infallible::duration_since_epoch;
 use aptos_logger::{debug, error, info, warn};
-use aptos_reliable_broadcast::ReliableBroadcast;
+use futures::{FutureExt, StreamExt};
+use rand::{prelude::StdRng, thread_rng, SeedableRng};
+use std::{sync::Arc, time::Duration};
+
 use aptos_types::{
     account_address::AccountAddress,
-    dkg::batch_encryption_dkg::{
-        BatchEncryptionDKGConfig, BatchEncryptionDKGPublicParams, BatchEncryptionDKGState,
-        BatchEncryptionDKGTranscript,
+    dkg::{
+        batch_encryption_dkg::{
+            BatchEncryptionDKG, BatchEncryptionDKGConfig, BatchEncryptionDKGPublicParams,
+            BatchEncryptionDKGTranscript,
+        },
+        DKGStartEvent,
     },
     epoch_state::EpochState,
+    validator_verifier::ValidatorConsensusInfo,
 };
-use futures_channel::oneshot;
-use rand::{prelude::StdRng, thread_rng, CryptoRng, RngCore, SeedableRng};
-use std::{sync::Arc, time::Duration};
-use tokio_retry::strategy::ExponentialBackoff;
 
 #[derive(Clone, Debug)]
-enum InnerState {
+pub enum BatchEncryptionDKGStateKind {
     NotStarted,
     InProgress {
         start_time: Duration,
         my_transcript: BatchEncryptionDKGTranscript,
-        abort_handle: futures_util::future::AbortHandle,
     },
     Finished {
         start_time: Duration,
@@ -46,7 +46,7 @@ enum InnerState {
     },
 }
 
-impl Default for InnerState {
+impl Default for BatchEncryptionDKGStateKind {
     fn default() -> Self {
         Self::NotStarted
     }
@@ -57,79 +57,9 @@ pub struct BatchEncryptionDKGManager {
     my_addr: AccountAddress,
     my_index: usize,
     epoch_state: Arc<EpochState>,
-
     dealer_sk: Arc<bls12381::PrivateKey>,
     dealer_pk: Arc<bls12381::PublicKey>,
-
-    agg_trx_producer: Arc<dyn BatchEncryptionAggTranscriptProducer>,
-    agg_trx_tx: Option<aptos_channel::Sender<(), BatchEncryptionDKGTranscript>>,
-
-    state: InnerState,
-    stopped: bool,
-}
-
-#[async_trait::async_trait]
-pub trait BatchEncryptionAggTranscriptProducer: Send + Sync {
-    async fn start_produce(
-        &self,
-        start_time: Duration,
-        my_addr: AccountAddress,
-        epoch_state: Arc<EpochState>,
-        config: BatchEncryptionDKGConfig,
-        tx: Option<aptos_channel::Sender<(), BatchEncryptionDKGTranscript>>,
-    ) -> futures_util::future::AbortHandle;
-}
-
-pub struct BatchEncryptionDKGAggTranscriptProducer {
-    rb: ReliableBroadcast<AccountAddress, BatchEncryptionDKGTranscript, NetworkSender>,
-}
-
-impl BatchEncryptionDKGAggTranscriptProducer {
-    pub fn new(
-        my_addr: AccountAddress,
-        epoch_state: Arc<EpochState>,
-        network_sender: NetworkSender,
-        rb_config: ReliableBroadcastConfig,
-    ) -> Self {
-        let rb = ReliableBroadcast::new(
-            my_addr,
-            epoch_state.verifier.get_ordered_account_addresses(),
-            Arc::new(network_sender),
-            ExponentialBackoff::from_millis(rb_config.backoff_policy_base_ms)
-                .factor(rb_config.backoff_policy_factor)
-                .max_delay(Duration::from_millis(rb_config.backoff_policy_max_delay_ms)),
-            Duration::from_millis(rb_config.rpc_timeout_ms),
-            BoundedExecutor::new(8, tokio::runtime::Handle::current()),
-        );
-        Self { rb }
-    }
-}
-
-#[async_trait::async_trait]
-impl BatchEncryptionAggTranscriptProducer for BatchEncryptionDKGAggTranscriptProducer {
-    async fn start_produce(
-        &self,
-        start_time: Duration,
-        my_addr: AccountAddress,
-        epoch_state: Arc<EpochState>,
-        _config: BatchEncryptionDKGConfig,
-        _tx: Option<aptos_channel::Sender<(), BatchEncryptionDKGTranscript>>,
-    ) -> futures_util::future::AbortHandle {
-        let (abort_handle, abort_registration) = futures_util::future::AbortHandle::new_pair();
-
-        let _guard = futures_util::future::Abortable::new(
-            async move {
-                info!(
-                    epoch = epoch_state.epoch,
-                    my_addr = my_addr.to_hex(),
-                    "[BatchEncryptionDKG] Starting transcript production"
-                );
-            },
-            abort_registration,
-        );
-
-        abort_handle
-    }
+    state: BatchEncryptionDKGStateKind,
 }
 
 impl BatchEncryptionDKGManager {
@@ -139,7 +69,6 @@ impl BatchEncryptionDKGManager {
         epoch_state: Arc<EpochState>,
         dealer_sk: Arc<bls12381::PrivateKey>,
         dealer_pk: Arc<bls12381::PublicKey>,
-        agg_trx_producer: Arc<dyn BatchEncryptionAggTranscriptProducer>,
     ) -> Self {
         Self {
             my_addr,
@@ -147,128 +76,54 @@ impl BatchEncryptionDKGManager {
             epoch_state,
             dealer_sk,
             dealer_pk,
-            agg_trx_producer,
-            agg_trx_tx: None,
-            state: InnerState::NotStarted,
-            stopped: false,
+            state: BatchEncryptionDKGStateKind::NotStarted,
         }
     }
 
-    pub async fn run(
-        mut self,
-        in_progress_state: Option<(BatchEncryptionDKGState, Duration)>,
-        _start_time_us: Option<u64>,
-        mut rpc_msg_rx: tokio::sync::mpsc::Receiver<(
-            AccountAddress,
-            crate::network::IncomingRpcRequest,
-        )>,
-        close_rx: oneshot::Receiver<oneshot::Sender<()>>,
-    ) {
-        info!(
-            epoch = self.epoch_state.epoch,
-            my_addr = self.my_addr.to_hex().as_str(),
-            "[BatchEncryptionDKG] Manager started."
-        );
-
-        let mut interval = tokio::time::interval(Duration::from_millis(5000));
-
-        if let Some((state, _)) = in_progress_state {
-            if let Some(transcript) = state.last_completed_transcript() {
-                if transcript.epoch == self.epoch_state.epoch {
-                    info!(
-                        epoch = self.epoch_state.epoch,
-                        "Found existing DKG transcript, resuming"
-                    );
-                }
-            }
-        }
-
-        let mut close_rx = close_rx.into_stream();
-        while !self.stopped {
-            let handling_result = tokio::select! {
-                msg = rpc_msg_rx.recv() => {
-                    if let Some((peer, req)) = msg {
-                        self.process_peer_rpc_msg((peer, req)).await
-                            .map_err(|e| anyhow!("[BatchEncryptionDKG] process_peer_rpc_msg failed: {e}"))
-                    } else {
-                        Ok(())
-                    }
-                },
-                close_req = close_rx.select_next_some() => {
-                    self.process_close_cmd(close_req.ok())
-                },
-                _ = interval.tick().fuse() => {
-                    self.observe()
-                },
-            };
-
-            if let Err(e) = handling_result {
-                error!(
-                    epoch = self.epoch_state.epoch,
-                    my_addr = self.my_addr.to_hex().as_str(),
-                    "[BatchEncryptionDKG] Manager handling error: {e}"
-                );
-            }
-        }
-        info!(
-            epoch = self.epoch_state.epoch,
-            my_addr = self.my_addr.to_hex().as_str(),
-            "[BatchEncryptionDKG] Manager finished."
-        );
+    pub fn create_config(
+        epoch: u64,
+        next_validators: &[ValidatorConsensusInfo],
+        max_batch_size: usize,
+        number_of_rounds: usize,
+        rng: &mut (impl rand::CryptoRng + rand::RngCore),
+    ) -> BatchEncryptionDKGConfig {
+        BatchEncryptionDKGConfig::new_for_epoch(
+            epoch,
+            next_validators,
+            max_batch_size,
+            number_of_rounds,
+            rng,
+        )
     }
 
-    fn observe(&self) -> Result<()> {
+    pub fn epoch(&self) -> u64 {
+        self.epoch_state.epoch
+    }
+
+    pub fn state(&self) -> &BatchEncryptionDKGStateKind {
+        &self.state
+    }
+
+    pub fn set_state(&mut self, state: BatchEncryptionDKGStateKind) {
+        self.state = state;
+    }
+
+    pub fn observe(&self) {
         debug!("[BatchEncryptionDKG] state={:?}", self.state);
-        Ok(())
     }
 
-    async fn process_close_cmd(&mut self, ack_tx: Option<oneshot::Sender<()>>) -> Result<()> {
-        self.stopped = true;
-        if let Some(tx) = ack_tx {
-            let _ = tx.send(());
+    pub fn my_transcript(&self) -> Option<&BatchEncryptionDKGTranscript> {
+        match &self.state {
+            BatchEncryptionDKGStateKind::Finished { my_transcript, .. } => Some(my_transcript),
+            _ => None,
         }
-        Ok(())
     }
 
-    async fn process_peer_rpc_msg(
-        &mut self,
-        req: (AccountAddress, crate::network::IncomingRpcRequest),
-    ) -> Result<()> {
-        let (peer, req) = req;
-        ensure!(
-            req.msg.epoch() == self.epoch_state.epoch,
-            "[BatchEncryptionDKG] msg not for current epoch"
-        );
-
-        let response = match &self.state {
-            InnerState::Finished { my_transcript, .. } => {
-                Ok(DKGMessage::TranscriptResponse(my_transcript.clone()))
-            },
-            _ => bail!("[BatchEncryptionDKG] unexpected state for request"),
-        };
-
-        req.response_sender.send(response);
-        Ok(())
-    }
-
-    pub async fn start_dkg(
-        &mut self,
-        start_time_us: u64,
-        config: BatchEncryptionDKGConfig,
-    ) -> Result<()> {
-        ensure!(
-            matches!(&self.state, InnerState::NotStarted),
-            "[BatchEncryptionDKG] transcript already dealt"
-        );
-
-        let dkg_start_time = Duration::from_micros(start_time_us);
-        info!(
-            epoch = self.epoch_state.epoch,
-            my_addr = self.my_addr,
-            "[BatchEncryptionDKG] Deal transcript started."
-        );
-
-        let verifier = Arc::new(self.epoch_state.verifier.clone());
+    pub fn generate_transcript(
+        &self,
+        config: &BatchEncryptionDKGConfig,
+    ) -> Result<BatchEncryptionDKGTranscript> {
+        let verifier = self.epoch_state.verifier.clone();
         let pub_params = BatchEncryptionDKGPublicParams::new(config.clone(), verifier);
 
         let mut rng = if cfg!(feature = "smoke-test") {
@@ -282,43 +137,161 @@ impl BatchEncryptionDKGManager {
                 aptos_batch_encryption::group::Pairing,
             > as aptos_dkg::pvss::traits::Transcript>::InputSecret::generate(&mut rng);
 
-        let chunky_transcript =
-            aptos_types::dkg::batch_encryption_dkg::BatchEncryptionDKG::generate_transcript(
-                &mut rng,
-                &pub_params,
-                &input_secret,
-                self.my_index,
-                &self.dealer_sk,
-                &self.dealer_pk,
-            );
+        let chunky_transcript = BatchEncryptionDKG::generate_transcript(
+            &mut rng,
+            &pub_params,
+            &input_secret,
+            self.my_index,
+            &self.dealer_sk,
+            &self.dealer_pk,
+        );
 
-        let my_transcript = BatchEncryptionDKGTranscript::new(
+        let transcript = BatchEncryptionDKGTranscript::new(
             self.epoch_state.epoch,
             self.my_addr,
             bcs::to_bytes(&chunky_transcript)
                 .map_err(|e| anyhow!("[BatchEncryptionDKG] transcript serialization error: {e}"))?,
         );
 
-        let (agg_trx_tx, _agg_trx_rx) = aptos_channel::new(QueueStyle::KLAST, 1, None);
-        self.agg_trx_tx = Some(agg_trx_tx);
+        Ok(transcript)
+    }
 
-        let abort_handle = self
-            .agg_trx_producer
-            .start_produce(
-                dkg_start_time,
-                self.my_addr,
-                self.epoch_state.clone(),
-                config,
-                self.agg_trx_tx.clone(),
-            )
-            .await;
+    pub async fn start_dkg(
+        &mut self,
+        start_time_us: u64,
+        config: BatchEncryptionDKGConfig,
+    ) -> Result<()> {
+        ensure!(
+            matches!(&self.state, BatchEncryptionDKGStateKind::NotStarted),
+            "[BatchEncryptionDKG] transcript already dealt"
+        );
 
-        self.state = InnerState::InProgress {
+        let dkg_start_time = Duration::from_micros(start_time_us);
+        info!(
+            epoch = self.epoch_state.epoch,
+            my_addr = self.my_addr,
+            "[BatchEncryptionDKG] Deal transcript started."
+        );
+
+        let my_transcript = self.generate_transcript(&config)?;
+
+        self.state = BatchEncryptionDKGStateKind::InProgress {
             start_time: dkg_start_time,
             my_transcript,
-            abort_handle,
         };
 
         Ok(())
+    }
+
+    pub fn complete_dkg(&mut self, config: BatchEncryptionDKGConfig) {
+        if let BatchEncryptionDKGStateKind::InProgress {
+            start_time,
+            my_transcript,
+        } = self.state.clone()
+        {
+            self.state = BatchEncryptionDKGStateKind::Finished {
+                start_time,
+                my_transcript,
+                config,
+            };
+        }
+    }
+
+    pub async fn run(
+        mut self,
+        mut dkg_start_event_rx: aptos_channels::aptos_channel::Receiver<(), DKGStartEvent>,
+        close_rx: futures_channel::oneshot::Receiver<futures_channel::oneshot::Sender<()>>,
+    ) {
+        info!(
+            epoch = self.epoch_state.epoch,
+            my_addr = self.my_addr.to_hex().as_str(),
+            "[BatchEncryptionDKG] BatchEncryptionDKGManager started."
+        );
+        let mut interval = tokio::time::interval(Duration::from_millis(5000));
+        let mut close_rx = close_rx.into_stream();
+
+        while !matches!(self.state, BatchEncryptionDKGStateKind::Finished { .. }) {
+            let handling_result = tokio::select! {
+                dkg_start_event = dkg_start_event_rx.select_next_some() => {
+                    self.process_dkg_start_event(dkg_start_event)
+                        .await
+                        .map_err(|e| anyhow!("[BatchEncryptionDKG] process_dkg_start_event failed: {e}"))
+                },
+                close_req = close_rx.select_next_some() => {
+                    self.process_close_cmd(close_req.ok());
+                    Ok(())
+                },
+                _ = interval.tick() => {
+                    self.observe();
+                    Ok(())
+                },
+            };
+
+            if let Err(e) = handling_result {
+                error!(
+                    epoch = self.epoch_state.epoch,
+                    my_addr = self.my_addr.to_hex().as_str(),
+                    "[BatchEncryptionDKG] BatchEncryptionDKGManager handling error: {e}"
+                );
+            }
+        }
+        info!(
+            epoch = self.epoch_state.epoch,
+            my_addr = self.my_addr.to_hex().as_str(),
+            "[BatchEncryptionDKG] BatchEncryptionDKGManager finished."
+        );
+    }
+
+    async fn process_dkg_start_event(&mut self, event: DKGStartEvent) -> Result<()> {
+        info!(
+            epoch = self.epoch_state.epoch,
+            my_addr = self.my_addr,
+            "[BatchEncryptionDKG] Processing DKGStart event."
+        );
+        let DKGStartEvent {
+            session_metadata,
+            start_time_us,
+        } = event;
+
+        if self.epoch_state.epoch != session_metadata.dealer_epoch {
+            warn!(
+                "[BatchEncryptionDKG] event (from epoch {}) not for current epoch ({}), ignoring",
+                session_metadata.dealer_epoch, self.epoch_state.epoch
+            );
+            return Ok(());
+        }
+
+        let validators: Vec<ValidatorConsensusInfo> =
+            session_metadata.target_validator_consensus_infos_cloned();
+
+        let config = BatchEncryptionDKGManager::create_config(
+            session_metadata.dealer_epoch,
+            &validators,
+            100,
+            1,
+            &mut rand::thread_rng(),
+        );
+
+        self.start_dkg(start_time_us, config).await
+    }
+
+    fn process_close_cmd(&mut self, _ack_tx: Option<futures_channel::oneshot::Sender<()>>) {
+        match &self.state {
+            BatchEncryptionDKGStateKind::InProgress { start_time, .. } => {
+                let epoch_change_time = duration_since_epoch();
+                let secs_since_dkg_start =
+                    epoch_change_time.as_secs_f64() - start_time.as_secs_f64();
+                DKG_STAGE_SECONDS
+                    .with_label_values(&[self.my_addr.to_hex().as_str(), "epoch_change"])
+                    .observe(secs_since_dkg_start);
+                info!(
+                    epoch = self.epoch_state.epoch,
+                    my_addr = self.my_addr,
+                    secs_since_dkg_start = secs_since_dkg_start,
+                    "[BatchEncryptionDKG] epoch change, DKG incomplete.",
+                );
+            },
+            _ => {},
+        }
     }
 }

@@ -3,6 +3,7 @@
 
 use crate::{
     agg_trx_producer::AggTranscriptProducer,
+    batch_encryption_dkg_manager::BatchEncryptionDKGManager,
     dkg_manager::DKGManager,
     network::{IncomingRpcRequest, NetworkReceivers, NetworkSender},
     network_interface::DKGNetworkClient,
@@ -28,6 +29,7 @@ use aptos_types::{
         OnChainConfigPayload, OnChainConfigProvider, OnChainConsensusConfig,
         OnChainRandomnessConfig, RandomnessConfigMoveStruct, RandomnessConfigSeqNum, ValidatorSet,
     },
+    validator_verifier::ValidatorConsensusInfo,
 };
 use aptos_validator_transaction_pool::VTxnPoolState;
 use futures::StreamExt;
@@ -36,29 +38,19 @@ use std::{sync::Arc, time::Duration};
 use tokio_retry::strategy::ExponentialBackoff;
 
 pub struct EpochManager<P: OnChainConfigProvider> {
-    // Some useful metadata
     my_addr: AccountAddress,
     epoch_state: Option<Arc<EpochState>>,
-
-    // Inbound events
     reconfig_events: ReconfigNotificationListener<P>,
     dkg_start_events: EventNotificationListener,
-
-    // Msgs to DKG manager
     dkg_rpc_msg_tx:
         Option<aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
     dkg_manager_close_tx: Option<oneshot::Sender<oneshot::Sender<()>>>,
     dkg_start_event_tx: Option<aptos_channel::Sender<(), DKGStartEvent>>,
     vtxn_pool: VTxnPoolState,
-
-    // Network utils
     self_sender: aptos_channels::Sender<Event<DKGMessage>>,
     network_sender: DKGNetworkClient<NetworkClient<DKGMessage>>,
     rb_config: ReliableBroadcastConfig,
-
-    // Randomness overriding.
     randomness_override_seq_num: u64,
-
     key_storage: PersistentSafetyStorage,
 }
 
@@ -222,7 +214,10 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
 
             let (dkg_start_event_tx, dkg_start_event_rx) =
                 aptos_channel::new(QueueStyle::KLAST, 1, None);
-            self.dkg_start_event_tx = Some(dkg_start_event_tx);
+            self.dkg_start_event_tx = Some(dkg_start_event_tx.clone());
+
+            let (batch_encryption_dkg_start_event_tx, batch_encryption_dkg_start_event_rx) =
+                aptos_channel::new(QueueStyle::KLAST, 1, None);
 
             let (dkg_rpc_msg_tx, dkg_rpc_msg_rx) = aptos_channel::new::<
                 AccountAddress,
@@ -231,6 +226,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             self.dkg_rpc_msg_tx = Some(dkg_rpc_msg_tx);
             let (dkg_manager_close_tx, dkg_manager_close_rx) = oneshot::channel();
             self.dkg_manager_close_tx = Some(dkg_manager_close_tx);
+            let (batch_encryption_dkg_manager_close_tx, batch_encryption_dkg_manager_close_rx) =
+                oneshot::channel();
             let my_pk = epoch_state
                 .verifier
                 .get_public_key(&self.my_addr)
@@ -241,12 +238,14 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 .map_err(|e| {
                     anyhow!("dkg new epoch handling failed with consensus sk lookup err: {e}")
                 })?;
+            let dealer_sk_arc = Arc::new(dealer_sk);
+            let my_pk_arc = Arc::new(my_pk);
             let dkg_manager = DKGManager::<DefaultDKG>::new(
-                Arc::new(dealer_sk),
-                Arc::new(my_pk),
+                dealer_sk_arc.clone(),
+                my_pk_arc.clone(),
                 my_index,
                 self.my_addr,
-                epoch_state,
+                epoch_state.clone(),
                 Arc::new(agg_trx_producer),
                 self.vtxn_pool.clone(),
             );
@@ -256,6 +255,46 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 dkg_rpc_msg_rx,
                 dkg_manager_close_rx,
             ));
+
+            let validator_infos: Vec<ValidatorConsensusInfo> = epoch_state
+                .verifier
+                .get_ordered_account_addresses()
+                .iter()
+                .filter_map(|addr| {
+                    let pk = epoch_state.verifier.get_public_key(addr)?;
+                    let voting_power = epoch_state.verifier.get_voting_power(addr)?;
+                    Some(ValidatorConsensusInfo::new(*addr, pk, voting_power))
+                })
+                .collect();
+
+            let mut rng = rand::thread_rng();
+            let batch_encryption_config = BatchEncryptionDKGManager::create_config(
+                epoch_state.epoch,
+                &validator_infos,
+                100, // max_batch_size
+                1,   // number_of_rounds
+                &mut rng,
+            );
+            let batch_encryption_dkg_manager = BatchEncryptionDKGManager::new(
+                self.my_addr,
+                my_index,
+                epoch_state.clone(),
+                dealer_sk_arc.clone(),
+                my_pk_arc.clone(),
+            );
+            tokio::spawn(async move {
+                batch_encryption_dkg_manager
+                    .run(
+                        batch_encryption_dkg_start_event_rx,
+                        batch_encryption_dkg_manager_close_rx,
+                    )
+                    .await
+            });
+            info!(
+                epoch = batch_encryption_config.epoch,
+                num_validators = validator_infos.len(),
+                "[BatchEncryptionDKG] Initialized manager for new epoch"
+            );
         };
         Ok(())
     }

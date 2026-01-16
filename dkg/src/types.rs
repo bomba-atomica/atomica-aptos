@@ -7,7 +7,6 @@ use aptos_reliable_broadcast::RBMessage;
 pub use aptos_types::dkg::DKGTranscript;
 use serde::{Deserialize, Serialize};
 
-/// Once DKG starts, a validator should send this message to peers in order to collect DKG transcripts from peers.
 #[derive(Clone, Serialize, Deserialize, CryptoHasher, Debug, PartialEq)]
 pub struct DKGTranscriptRequest {
     dealer_epoch: u64,
@@ -21,7 +20,6 @@ impl DKGTranscriptRequest {
     }
 }
 
-/// The DKG network message.
 #[derive(Clone, Serialize, Deserialize, Debug, EnumConversion, PartialEq)]
 pub enum DKGMessage {
     TranscriptRequest(DKGTranscriptRequest),
@@ -45,3 +43,35 @@ impl DKGMessage {
 }
 
 impl RBMessage for DKGMessage {}
+
+use aptos_types::dkg::batch_encryption_dkg::{
+    BatchEncryptionDKGTranscript, BatchEncryptionDKGTranscriptRequest,
+};
+
+#[derive(Clone, Serialize, Deserialize, Debug, EnumConversion, PartialEq)]
+pub enum BatchEncryptionDKGMessage {
+    TranscriptRequest(BatchEncryptionDKGTranscriptRequest),
+    TranscriptResponse(BatchEncryptionDKGTranscript),
+}
+
+impl BatchEncryptionDKGMessage {
+    pub fn epoch(&self) -> u64 {
+        match self {
+            BatchEncryptionDKGMessage::TranscriptRequest(request) => request.epoch,
+            BatchEncryptionDKGMessage::TranscriptResponse(response) => response.epoch,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            BatchEncryptionDKGMessage::TranscriptRequest(_) => {
+                "BatchEncryptionDKGTranscriptRequest"
+            },
+            BatchEncryptionDKGMessage::TranscriptResponse(_) => {
+                "BatchEncryptionDKGTranscriptResponse"
+            },
+        }
+    }
+}
+
+impl RBMessage for BatchEncryptionDKGMessage {}

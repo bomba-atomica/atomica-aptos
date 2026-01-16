@@ -2,6 +2,9 @@
 // Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 mod agg_trx_producer;
+mod batch_encryption_agg_trx_producer;
+mod batch_encryption_dkg_manager;
+mod batch_encryption_transcript_aggregation;
 mod counters;
 mod dkg_manager;
 pub mod epoch_manager;
@@ -10,6 +13,7 @@ pub mod network_interface;
 pub mod transcript_aggregation;
 pub mod types;
 
+pub use crate::types::{BatchEncryptionDKGMessage, DKGMessage};
 use crate::{
     epoch_manager::EpochManager, network::NetworkTask, network_interface::DKGNetworkClient,
 };
@@ -21,7 +25,6 @@ use aptos_network::application::interface::{NetworkClient, NetworkServiceEvents}
 use aptos_validator_transaction_pool::VTxnPoolState;
 use move_core_types::account_address::AccountAddress;
 use tokio::runtime::Runtime;
-pub use types::DKGMessage;
 
 pub fn start_dkg_runtime(
     my_addr: AccountAddress,

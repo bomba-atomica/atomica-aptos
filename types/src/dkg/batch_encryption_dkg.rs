@@ -31,6 +31,9 @@ use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+#[cfg(test)]
+pub use self::ChunkTranscript as ChunkTranscriptType;
+
 pub type ChunkTranscript =
     aptos_dkg::pvss::chunky::SignedWeightedTranscript<aptos_batch_encryption::group::Pairing>;
 pub type ChunkPP = <ChunkTranscript as Transcript>::PublicParameters;
@@ -136,7 +139,7 @@ impl BatchEncryptionDKGConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BatchEncryptionDKGTranscript {
     pub epoch: u64,
     pub author: AccountAddress,
@@ -163,6 +166,17 @@ impl BatchEncryptionDKGTranscript {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BatchEncryptionDKGTranscriptRequest {
+    pub epoch: u64,
+}
+
+impl BatchEncryptionDKGTranscriptRequest {
+    pub fn new(epoch: u64) -> Self {
+        Self { epoch }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BatchEncryptionDKGPublicParams {
     pub config: BatchEncryptionDKGConfig,
@@ -172,6 +186,10 @@ pub struct BatchEncryptionDKGPublicParams {
 impl BatchEncryptionDKGPublicParams {
     pub fn new(config: BatchEncryptionDKGConfig, verifier: Arc<ValidatorVerifier>) -> Self {
         Self { config, verifier }
+    }
+
+    pub fn get_transcript_request(&self) -> BatchEncryptionDKGTranscriptRequest {
+        BatchEncryptionDKGTranscriptRequest::new(self.config.epoch)
     }
 }
 
