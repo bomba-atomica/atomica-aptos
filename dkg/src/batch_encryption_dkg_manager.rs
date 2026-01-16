@@ -186,17 +186,38 @@ impl BatchEncryptionDKGManager {
         Ok(())
     }
 
-    pub fn complete_dkg(&mut self, config: BatchEncryptionDKGConfig) {
-        if let BatchEncryptionDKGStateKind::InProgress {
-            start_time,
-            my_transcript,
-        } = self.state.clone()
+    pub fn complete_dkg(&mut self, aggregated_transcript: BatchEncryptionDKGTranscript) {
+        if let (
+            Some(config),
+            BatchEncryptionDKGStateKind::InProgress {
+                start_time,
+                my_transcript,
+            },
+        ) = (self.config.clone(), self.state.clone())
         {
             self.state = BatchEncryptionDKGStateKind::Finished {
                 start_time,
                 my_transcript,
                 config,
             };
+            info!(
+                epoch = self.epoch_state.epoch,
+                my_addr = self.my_addr,
+                "[BatchEncryptionDKG] DKG completed with aggregated transcript"
+            );
+        }
+    }
+
+    pub fn into_on_chain_state(
+        self,
+    ) -> Option<(u64, BatchEncryptionDKGTranscript, BatchEncryptionDKGConfig)> {
+        match self.state {
+            BatchEncryptionDKGStateKind::Finished {
+                start_time: _,
+                my_transcript,
+                config,
+            } => Some((self.epoch_state.epoch, my_transcript, config)),
+            _ => None,
         }
     }
 
