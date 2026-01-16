@@ -9,15 +9,35 @@
 
 ## Prerequisites
 
-> **IMPORTANT**: Before embarking on this implementation, we presume that all existing
-> randomness smoke tests pass on the forked commit. This establishes our baseline.
->
-> Verify with:
-> ```bash
-> RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness -- --nocapture --test-threads=1
-> ```
->
-> If these tests fail, fix them first before proceeding.
+> **IMPORTANT**: Before embarking on this implementation, verify the baseline state of randomness tests.
+
+### Known Failing Tests (as of branch fork)
+
+The following randomness smoke tests are **failing on this branch**:
+
+```
+randomness::disable_feature_0::disable_feature_0
+randomness::disable_feature_1::disable_feature_1
+randomness::enable_feature_0::enable_feature_0
+randomness::enable_feature_1::enable_feature_1
+randomness::enable_feature_2::enable_feature_2
+```
+
+These are feature flag toggle tests, not core DKG functionality tests.
+
+### Required Passing Tests
+
+The following tests **MUST pass** before proceeding with IBE implementation:
+
+```bash
+# Core randomness correctness (DKG + randomness generation)
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctness -- --nocapture
+
+# Basic consumption (DKG + on-chain randomness usage)
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_basic_consumption -- --nocapture
+```
+
+If these core tests fail, fix them first before proceeding with IBE work.
 
 ---
 
