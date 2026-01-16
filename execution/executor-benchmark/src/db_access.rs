@@ -190,22 +190,20 @@ impl DbAccessUtil {
         Ok(TypeInfoResource {
             account_address: struct_tag.address,
             module_name: bcs::to_bytes(&struct_tag.module.to_string())?,
-            struct_name: bcs::to_bytes(
-                &if struct_tag.type_args.is_empty() {
-                    struct_tag.name.to_string()
-                } else {
-                    format!(
-                        "{}<{}>",
-                        struct_tag.name,
-                        struct_tag
-                            .type_args
-                            .iter()
-                            .map(|v| v.to_canonical_string())
-                            .join(", ")
-                    )
-                    .to_string()
-                },
-            )?,
+            struct_name: bcs::to_bytes(&if struct_tag.type_args.is_empty() {
+                struct_tag.name.to_string()
+            } else {
+                format!(
+                    "{}<{}>",
+                    struct_tag.name,
+                    struct_tag
+                        .type_args
+                        .iter()
+                        .map(|v| v.to_canonical_string())
+                        .join(", ")
+                )
+                .to_string()
+            })?,
         })
     }
 }

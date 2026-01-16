@@ -1440,12 +1440,14 @@ name = "aptos-dkg-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aptos-batch-encryption",
  "aptos-bounded-executor",
  "aptos-channels",
  "aptos-config",
  "aptos-consensus-types",
  "aptos-crypto",
  "aptos-crypto-derive",
+ "aptos-dkg",
  "aptos-enum-conversion-derive",
  "aptos-event-notifications",
  "aptos-infallible",

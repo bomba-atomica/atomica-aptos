@@ -768,10 +768,14 @@ mod tests {
                 requirements
                     .get_validation_requirement_to_process(1, 4, &statuses)
                     .unwrap(),
-                (4, 1, ValidationRequirement {
-                    requirements: &BTreeSet::from([100]),
-                    is_deferred: false
-                })
+                (
+                    4,
+                    1,
+                    ValidationRequirement {
+                        requirements: &BTreeSet::from([100]),
+                        is_deferred: false
+                    }
+                )
             );
             assert!(!requirements
                 .validation_requirement_processed(1, 4, 1, false)
@@ -782,10 +786,14 @@ mod tests {
                 requirements
                     .get_validation_requirement_to_process(1, 10, &statuses)
                     .unwrap(),
-                (5, 2, ValidationRequirement {
-                    requirements: &BTreeSet::from([100]),
-                    is_deferred: false
-                })
+                (
+                    5,
+                    2,
+                    ValidationRequirement {
+                        requirements: &BTreeSet::from([100]),
+                        is_deferred: false
+                    }
+                )
             );
             assert!(requirements
                 .validation_requirement_processed(1, 5, 2, false)
@@ -935,10 +943,14 @@ mod tests {
                 requirements
                     .get_validation_requirement_to_process(1, 10, &statuses)
                     .unwrap(),
-                (7, 1, ValidationRequirement {
-                    requirements: &BTreeSet::from([100]),
-                    is_deferred: false
-                })
+                (
+                    7,
+                    1,
+                    ValidationRequirement {
+                        requirements: &BTreeSet::from([100]),
+                        is_deferred: false
+                    }
+                )
             );
             // Wrong worker ID, wrong txn indices, and wrong incarnations should fail.
             assert_err!(requirements.validation_requirement_processed(2, 7, 1, false));
@@ -1028,10 +1040,14 @@ mod tests {
                 requirements
                     .get_validation_requirement_to_process(1, 20, &statuses)
                     .unwrap(),
-                (6, 1, ValidationRequirement {
-                    requirements: &btree_reqs,
-                    is_deferred: false
-                })
+                (
+                    6,
+                    1,
+                    ValidationRequirement {
+                        requirements: &btree_reqs,
+                        is_deferred: false
+                    }
+                )
             );
             assert_ok!(requirements.validation_requirement_processed(1, 6, 1, false));
 
@@ -1039,10 +1055,14 @@ mod tests {
                 requirements
                     .get_validation_requirement_to_process(1, 20, &statuses)
                     .unwrap(),
-                (9, 2, ValidationRequirement {
-                    requirements: &btree_reqs,
-                    is_deferred: true
-                })
+                (
+                    9,
+                    2,
+                    ValidationRequirement {
+                        requirements: &btree_reqs,
+                        is_deferred: true
+                    }
+                )
             );
             assert_ok!(requirements.validation_requirement_processed(1, 9, 2, true));
             test_active_requirements_empty(&requirements);

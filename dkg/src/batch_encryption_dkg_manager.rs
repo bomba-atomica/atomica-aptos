@@ -60,6 +60,7 @@ pub struct BatchEncryptionDKGManager {
     dealer_sk: Arc<bls12381::PrivateKey>,
     dealer_pk: Arc<bls12381::PublicKey>,
     state: BatchEncryptionDKGStateKind,
+    config: Option<BatchEncryptionDKGConfig>,
 }
 
 impl BatchEncryptionDKGManager {
@@ -77,6 +78,7 @@ impl BatchEncryptionDKGManager {
             dealer_sk,
             dealer_pk,
             state: BatchEncryptionDKGStateKind::NotStarted,
+            config: None,
         }
     }
 
@@ -175,6 +177,7 @@ impl BatchEncryptionDKGManager {
 
         let my_transcript = self.generate_transcript(&config)?;
 
+        self.config = Some(config.clone());
         self.state = BatchEncryptionDKGStateKind::InProgress {
             start_time: dkg_start_time,
             my_transcript,

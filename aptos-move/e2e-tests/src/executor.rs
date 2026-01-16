@@ -467,15 +467,23 @@ impl<O: OutputLogger> FakeExecutorImpl<O> {
             .unwrap();
 
         // Publish schedule for next epoch, then force end epoch to apply immediately.
-        self.exec("gas_schedule", "set_for_next_epoch", vec![], vec![
-            core_signer_arg.clone(),
-            MoveValue::vector_u8(schedule_bytes)
-                .simple_serialize()
-                .unwrap(),
-        ]);
-        self.exec("aptos_governance", "force_end_epoch", vec![], vec![
-            core_signer_arg,
-        ]);
+        self.exec(
+            "gas_schedule",
+            "set_for_next_epoch",
+            vec![],
+            vec![
+                core_signer_arg.clone(),
+                MoveValue::vector_u8(schedule_bytes)
+                    .simple_serialize()
+                    .unwrap(),
+            ],
+        );
+        self.exec(
+            "aptos_governance",
+            "force_end_epoch",
+            vec![],
+            vec![core_signer_arg],
+        );
     }
 
     /// Mutably sets the gas unit scaling factor by updating on-chain gas schedule state
@@ -1704,12 +1712,17 @@ impl<O: OutputLogger> FakeExecutorImpl<O> {
 
         // Note: This does not update the mapping of originating addresses but it is probably fine
         //       for testing purposes.
-        self.exec("account", "rotate_authentication_key_call", vec![], vec![
-            MoveValue::Signer(addr).simple_serialize().unwrap(),
-            MoveValue::vector_u8(account.auth_key())
-                .simple_serialize()
-                .unwrap(),
-        ]);
+        self.exec(
+            "account",
+            "rotate_authentication_key_call",
+            vec![],
+            vec![
+                MoveValue::Signer(addr).simple_serialize().unwrap(),
+                MoveValue::vector_u8(account.auth_key())
+                    .simple_serialize()
+                    .unwrap(),
+            ],
+        );
 
         account
     }
@@ -1723,11 +1736,16 @@ impl<O: OutputLogger> FakeExecutorImpl<O> {
     ) {
         let enabled = enabled.into_iter().map(|f| f as u64).collect::<Vec<_>>();
         let disabled = disabled.into_iter().map(|f| f as u64).collect::<Vec<_>>();
-        self.exec("features", "change_feature_flags_internal", vec![], vec![
-            MoveValue::Signer(*signer).simple_serialize().unwrap(),
-            bcs::to_bytes(&enabled).unwrap(),
-            bcs::to_bytes(&disabled).unwrap(),
-        ]);
+        self.exec(
+            "features",
+            "change_feature_flags_internal",
+            vec![],
+            vec![
+                MoveValue::Signer(*signer).simple_serialize().unwrap(),
+                bcs::to_bytes(&enabled).unwrap(),
+                bcs::to_bytes(&disabled).unwrap(),
+            ],
+        );
     }
 }
 

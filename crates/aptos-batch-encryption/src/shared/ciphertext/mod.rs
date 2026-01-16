@@ -200,9 +200,10 @@ pub mod tests {
         let (digest, pfs) = dk.digest(&mut ids, 0).unwrap();
         let pfs = pfs.compute_all(&dk);
 
-        let dk = BIBEDecryptionKey::reconstruct(&tc, &[msk_shares[0]
-            .derive_decryption_key_share(&digest)
-            .unwrap()])
+        let dk = BIBEDecryptionKey::reconstruct(
+            &tc,
+            &[msk_shares[0].derive_decryption_key_share(&digest).unwrap()],
+        )
         .unwrap();
 
         let decrypted_plaintext: String = dk.decrypt(&ct.prepare(&digest, &pfs).unwrap()).unwrap();
@@ -232,9 +233,10 @@ pub mod tests {
         let (digest, pfs) = dk.digest(&mut ids, 0).unwrap();
         let pfs = pfs.compute_all(&dk);
 
-        let dk = BIBEDecryptionKey::reconstruct(&tc, &[msk_shares[0]
-            .derive_decryption_key_share(&digest)
-            .unwrap()])
+        let dk = BIBEDecryptionKey::reconstruct(
+            &tc,
+            &[msk_shares[0].derive_decryption_key_share(&digest).unwrap()],
+        )
         .unwrap();
 
         let decrypted_plaintext: String = dk.decrypt(&ct.prepare(&digest, &pfs).unwrap()).unwrap();

@@ -3,10 +3,13 @@
 
 use crate::{
     agg_trx_producer::AggTranscriptProducer,
+    batch_encryption_agg_trx_producer::BatchEncryptionAggTranscriptProducer,
     batch_encryption_dkg_manager::BatchEncryptionDKGManager,
     dkg_manager::DKGManager,
-    network::{IncomingRpcRequest, NetworkReceivers, NetworkSender},
-    network_interface::DKGNetworkClient,
+    network::{
+        BatchEncryptionDKGNetworkSender, IncomingRpcRequest, NetworkReceivers, NetworkSender,
+    },
+    network_interface::{BatchEncryptionDKGNetworkClient, DKGNetworkClient},
     DKGMessage,
 };
 use anyhow::{anyhow, Result};
@@ -48,7 +51,12 @@ pub struct EpochManager<P: OnChainConfigProvider> {
     dkg_start_event_tx: Option<aptos_channel::Sender<(), DKGStartEvent>>,
     vtxn_pool: VTxnPoolState,
     self_sender: aptos_channels::Sender<Event<DKGMessage>>,
+    batch_encryption_dkg_self_sender:
+        Option<aptos_channels::Sender<Event<crate::types::BatchEncryptionDKGMessage>>>,
     network_sender: DKGNetworkClient<NetworkClient<DKGMessage>>,
+    batch_encryption_dkg_network_sender: Option<
+        BatchEncryptionDKGNetworkClient<NetworkClient<crate::types::BatchEncryptionDKGMessage>>,
+    >,
     rb_config: ReliableBroadcastConfig,
     randomness_override_seq_num: u64,
     key_storage: PersistentSafetyStorage,
@@ -74,7 +82,9 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             dkg_rpc_msg_tx: None,
             dkg_manager_close_tx: None,
             self_sender,
+            batch_encryption_dkg_self_sender: None,
             network_sender,
+            batch_encryption_dkg_network_sender: None,
             vtxn_pool,
             dkg_start_event_tx: None,
             rb_config,
@@ -216,7 +226,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 aptos_channel::new(QueueStyle::KLAST, 1, None);
             self.dkg_start_event_tx = Some(dkg_start_event_tx.clone());
 
-            let (batch_encryption_dkg_start_event_tx, batch_encryption_dkg_start_event_rx) =
+            let (_batch_encryption_dkg_start_event_tx, batch_encryption_dkg_start_event_rx) =
                 aptos_channel::new(QueueStyle::KLAST, 1, None);
 
             let (dkg_rpc_msg_tx, dkg_rpc_msg_rx) = aptos_channel::new::<
@@ -226,7 +236,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             self.dkg_rpc_msg_tx = Some(dkg_rpc_msg_tx);
             let (dkg_manager_close_tx, dkg_manager_close_rx) = oneshot::channel();
             self.dkg_manager_close_tx = Some(dkg_manager_close_tx);
-            let (batch_encryption_dkg_manager_close_tx, batch_encryption_dkg_manager_close_rx) =
+            let (_batch_encryption_dkg_manager_close_tx, batch_encryption_dkg_manager_close_rx) =
                 oneshot::channel();
             let my_pk = epoch_state
                 .verifier

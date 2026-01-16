@@ -587,12 +587,16 @@ impl NativeVMExecutorTask {
         )?
         .ok_or(())?;
 
-        let delta_op = DeltaOp::new(SignedU128::Negative(gas as u128), u128::MAX, DeltaHistory {
-            max_achieved_positive_delta: 0,
-            min_achieved_negative_delta: gas as u128,
-            min_overflow_positive_delta: None,
-            max_underflow_negative_delta: None,
-        });
+        let delta_op = DeltaOp::new(
+            SignedU128::Negative(gas as u128),
+            u128::MAX,
+            DeltaHistory {
+                max_achieved_positive_delta: 0,
+                min_achieved_negative_delta: gas as u128,
+                min_overflow_positive_delta: None,
+                max_underflow_negative_delta: None,
+            },
+        );
         aggregator_v1_delta_set.insert(sender_coin_store.supply_aggregator_state_key(), delta_op);
         Ok(())
     }

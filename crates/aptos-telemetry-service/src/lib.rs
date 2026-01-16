@@ -157,12 +157,15 @@ impl AptosTelemetryServiceArgs {
                     })
                 });
 
-                instances.insert(cc_config.name.clone(), context::CustomContractInstance {
-                    config: cc_config.on_chain_auth.clone(),
-                    metrics_clients,
-                    logs_client,
-                    bigquery_client: cc_bigquery_client,
-                });
+                instances.insert(
+                    cc_config.name.clone(),
+                    context::CustomContractInstance {
+                        config: cc_config.on_chain_auth.clone(),
+                        metrics_clients,
+                        logs_client,
+                        bigquery_client: cc_bigquery_client,
+                    },
+                );
             }
 
             Some(context::CustomContractClients { instances })
