@@ -1062,6 +1062,17 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         )
         .map_err(NoRandomnessReason::SecretShareDecryptionFailed)?;
 
+        // Phase 0 feasibility test: Extract MPK (Master Public Key) for IBE
+        // This proves we can access the dealt public key from the transcript
+        // without breaking the existing randomness flow.
+        let ibe_mpk = transcript.main.get_dealt_public_key();
+        info!(
+            epoch = new_epoch,
+            "[IBE] Extracted Master Public Key from DKG transcript for epoch {}. MPK type: {:?}",
+            new_epoch,
+            std::any::type_name_of_val(&ibe_mpk)
+        );
+
         let fast_randomness_is_enabled = onchain_randomness_config.fast_randomness_enabled()
             && sk.fast.is_some()
             && pk.fast.is_some()
