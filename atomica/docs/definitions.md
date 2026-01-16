@@ -54,6 +54,16 @@ A secret sharing scheme where:
 
 Reference: ["Distributed Key Generation for Distributed Cryptography" (Gennaro et al.)](https://link.springer.com/article/10.1007/s00145-019-09332-0)
 
+### Weighted Das PVSS
+
+A specific implementation of PVSS used in Atomica, named after researcher **Sourav Das** (UIUC/Category Labs).
+
+**Key Details:**
+
+- **"Das"**: Refers to **Sourav Das** (UIUC/Category Labs), specifically for his research on **Time-Lock Encryption** and **Encrypted Mempools** (e.g., *Time-Lock Encrypted Storage for Blockchains*, *Weighted Batched Threshold Encryption*).
+- **"Weighted"**: Extension for Proof-of-Stake where shares are assigned proportional to validator stake. A committee is defined by *total weight* rather than *count*.
+- **Vs VPSS**: This is distinct from "VPSS" (Verifiable Packed Secret Sharing).
+
 ---
 
 ## Key Management
