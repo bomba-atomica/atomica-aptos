@@ -91,36 +91,31 @@ Instead of running two DKGs, we **extend RealDKG** to also expose IBE-compatible
 
 ## Implementation Phases
 
-### Phase 0: Feasibility Test (Can RealDKG Do Extra Work?)
+### Phase 0: Feasibility Test (Can RealDKG Do Extra Work?) ✅ COMPLETE
 
 **Goal**: Verify that we can extend RealDKG to perform additional operations without breaking existing randomness functionality.
 
 **Approach**:
-- Modify the DKG completion path to call a simple MoveVM view function
-- This proves we can hook into the DKG lifecycle without causing regressions
-- The "work" is trivial (e.g., call `0x1::chain_id::get()`) - we just need to prove the plumbing works
+- Extract the Master Public Key (MPK) from the DKG transcript after share decryption
+- This proves we can access the dealt public key needed for IBE
+- Log the result to confirm extraction works
 
-**Steps**:
-1. Identify the code path where DKG completes and shares are extracted
-2. Add a call to execute a simple view function via MoveVM
-3. Log the result (no state changes, just proof of concept)
-4. Run `randomness::e2e_correctness` to verify no regressions
+**Implementation** (January 16, 2026):
+1. Added MPK extraction after `decrypt_secret_share_from_transcript()` in `epoch_manager.rs`
+2. Used `transcript.main.get_dealt_public_key()` to access the dealt public key
+3. Logged the MPK type for verification
 
 **Verification**:
 ```bash
-# After modification, this MUST still pass:
+# PASSED after modification:
 RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctness -- --nocapture
+# Result: ok. 1 passed; 0 failed; finished in 117.45s
 ```
 
-**Why This Matters**:
-- If we can't call MoveVM from the DKG completion path, the unified approach won't work
-- If calling MoveVM breaks randomness, we need to understand why before proceeding
-- This is a low-risk sanity check before investing in IBE implementation
+**Files Modified**:
+- `consensus/src/epoch_manager.rs` (added MPK extraction after share extraction)
 
-**Files to Modify**:
-- `consensus/src/epoch_manager.rs` (add MoveVM call after share extraction)
-
-**Commit**: "test(dkg): verify MoveVM callable from DKG completion path"
+**Commit**: `8abe840f94` - "feat(consensus): Phase 0 - extract MPK from DKG transcript"
 
 ---
 
