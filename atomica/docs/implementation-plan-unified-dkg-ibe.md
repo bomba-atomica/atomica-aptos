@@ -1,9 +1,176 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 1.1
-**Date:** January 16, 2026
+**Version:** 1.2
+**Date:** January 17, 2026
 **Branch:** timelock-das-vpss
 **Status:** Implementation Plan
+
+## Changelog
+
+- **v1.2** (Jan 17, 2026): Restructured phases to prioritize on-chain MPK storage. Added comprehensive test pyramid (unit, integration, smoke) for each phase. Added IBE encryption/decryption verification in smoke tests.
+- **v1.1** (Jan 16, 2026): Initial plan with Phase 0 complete.
+
+---
+
+## Test Philosophy
+
+> **CRITICAL**: Every phase must maintain backward compatibility. Existing randomness tests MUST continue to pass.
+
+### Test Pyramid
+
+Each phase includes three levels of testing:
+
+1. **Unit Tests** - Fast, isolated tests for individual functions
+   - Run in < 1 second per test
+   - No network or blockchain dependencies
+   - Location: `crates/*/src/**/tests.rs` or inline `#[cfg(test)]`
+
+2. **Integration Tests** - Test module interactions
+   - May use mock blockchain state
+   - Location: `aptos-move/e2e-move-tests/` for Move, `crates/*/tests/` for Rust
+
+3. **Smoke Tests** - End-to-end validation with real validator swarm
+   - Full blockchain environment
+   - Location: `testsuite/smoke-test/src/timelock/`
+   - Run with: `RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock::* -- --nocapture`
+
+### Regression Gate
+
+> **CRITICAL INVARIANT**: DKG modifications must NEVER halt the chain. There is no situation where a panic or process exit is acceptable in consensus code. All errors must be handled gracefully with logging and recovery.
+
+Before merging any phase, verify:
+
+#### 1. Core Randomness Tests
+
+```bash
+# MUST PASS - Core randomness (baseline)
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctness -- --nocapture
+
+# MUST PASS - Basic consumption
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_basic_consumption -- --nocapture
+```
+
+#### 2. Chain Liveness Tests
+
+```bash
+# MUST PASS - Blocks continue to be produced
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib consensus::consensus_only -- --nocapture
+
+# MUST PASS - Epoch reconfiguration succeeds
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::dkg_with_validator_join_leave -- --nocapture
+```
+
+#### 3. Chain Liveness Invariants
+
+Every smoke test must verify these invariants:
+
+| Invariant               | How to Verify                                       | Failure Mode             |
+| ----------------------- | --------------------------------------------------- | ------------------------ |
+| Blocks progress         | `client.get_ledger_information().version` increases | Chain halted             |
+| Epoch advances          | `epoch` field increases after reconfiguration       | Stuck in epoch           |
+| Post-epoch blocks       | Version continues increasing after epoch change     | Epoch transition failure |
+| No validator crashes    | All 4 validators remain responsive                  | Process exit/panic       |
+| Graceful error handling | No `panic!` or `unwrap()` on fallible paths         | Crash on edge case       |
+
+**Liveness Check Helper** (add to all smoke tests):
+
+```rust
+async fn verify_chain_liveness(client: &Client, test_name: &str) {
+    let info1 = client.get_ledger_information().await.unwrap().into_inner();
+    let initial_version = info1.version;
+    let initial_epoch = info1.epoch;
+
+    // Wait for blocks to progress
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let info2 = client.get_ledger_information().await.unwrap().into_inner();
+    assert!(
+        info2.version > initial_version,
+        "[{}] Chain halted! Version stuck at {}",
+        test_name,
+        initial_version
+    );
+
+    info!(
+        "[{}] Chain liveness OK: version {} -> {}, epoch {}",
+        test_name, initial_version, info2.version, info2.epoch
+    );
+}
+
+async fn verify_epoch_transition(client: &Client, test_name: &str) {
+    let info1 = client.get_ledger_information().await.unwrap().into_inner();
+    let initial_epoch = info1.epoch;
+
+    // Trigger reconfiguration (implementation-specific)
+    trigger_reconfiguration(client).await;
+
+    // Wait for epoch to advance
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let info = client.get_ledger_information().await.unwrap().into_inner();
+        if info.epoch > initial_epoch {
+            info!(
+                "[{}] Epoch transition OK: {} -> {}",
+                test_name, initial_epoch, info.epoch
+            );
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!(
+                "[{}] Epoch transition FAILED! Stuck at epoch {}",
+                test_name, initial_epoch
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    // Verify blocks continue after epoch change
+    verify_chain_liveness(client, &format!("{}_post_epoch", test_name)).await;
+}
+```
+
+#### 4. Consensus Code Safety Rules
+
+**NEVER allowed in consensus/DKG code paths:**
+
+```rust
+// ❌ FORBIDDEN - Will crash the validator
+panic!("something went wrong");
+unwrap();  // on fallible operations
+expect("should never fail");
+unreachable!();
+std::process::exit(1);
+
+// ✅ REQUIRED - Graceful error handling
+match result {
+    Ok(value) => value,
+    Err(e) => {
+        error!("[DKG] Operation failed: {:?}. Continuing without IBE.", e);
+        return; // Skip IBE, but keep consensus running
+    }
+}
+
+// ✅ REQUIRED - Defensive defaults
+let mpk = transcript.main.get_dealt_public_key()
+    .map(|pk| serialize_g2(&pk))
+    .unwrap_or_else(|e| {
+        warn!("[IBE] Failed to extract MPK: {:?}. IBE disabled for this epoch.", e);
+        Vec::new()  // Empty MPK = IBE not ready
+    });
+```
+
+#### 5. Pre-Merge Checklist
+
+Before merging any IBE/timelock change:
+
+- [ ] `randomness::e2e_correctness` passes
+- [ ] `randomness::e2e_basic_consumption` passes
+- [ ] `consensus::consensus_only` passes (blocks progress)
+- [ ] Epoch reconfiguration test passes
+- [ ] Manual review: no `panic!`, `unwrap()`, or `expect()` in new consensus code
+- [ ] Manual review: all new error paths log and continue, never crash
+- [ ] Smoke test runs for full 2+ minutes without validator crashes
+- [ ] Post-epoch block production verified
 
 ---
 
@@ -58,6 +225,7 @@ The previous approach attempted to run a **parallel IbeDKG** alongside the exist
 ## New Approach: Unified DKG
 
 **Key Insight**: The same PVSS shares produced by RealDKG can be used for both:
+
 - **Randomness**: WVUF evaluation on shares
 - **IBE**: Decryption key derivation from shares
 
@@ -96,16 +264,19 @@ Instead of running two DKGs, we **extend RealDKG** to also expose IBE-compatible
 **Goal**: Verify that we can extend RealDKG to perform additional operations without breaking existing randomness functionality.
 
 **Approach**:
+
 - Extract the Master Public Key (MPK) from the DKG transcript after share decryption
 - This proves we can access the dealt public key needed for IBE
 - Log the result to confirm extraction works
 
 **Implementation** (January 16, 2026):
+
 1. Added MPK extraction after `decrypt_secret_share_from_transcript()` in `epoch_manager.rs`
 2. Used `transcript.main.get_dealt_public_key()` to access the dealt public key
 3. Logged the MPK type for verification
 
 **Verification**:
+
 ```bash
 # PASSED after modification:
 RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctness -- --nocapture
@@ -113,156 +284,396 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctn
 ```
 
 **Files Modified**:
+
 - `consensus/src/epoch_manager.rs` (added MPK extraction after share extraction)
 
 **Commit**: `8abe840f94` - "feat(consensus): Phase 0 - extract MPK from DKG transcript"
 
 ---
 
-### Phase 1: IBE Crypto Primitives
+### Phase 1: On-Chain MPK Storage with IBE Primitives
 
-**Goal**: Add IBE encryption/decryption to `aptos-dkg` crate without touching DKG flow.
+**Goal**: Store the Master Public Key (MPK) on-chain in a Move struct, with a view function to retrieve it. Add IBE crypto primitives for encryption/decryption.
+
+**Rationale**: The MPK is the foundation for all IBE operations. By storing it on-chain first, clients can immediately start encrypting messages. This also enables the key smoke test: encrypt with on-chain MPK → decrypt with corresponding private key.
 
 **Components**:
 
-1. **IBE Module** (`crates/aptos-dkg/src/ibe/mod.rs`)
+1. **Move Module** (`aptos-move/framework/aptos-framework/sources/ibe_config.move`)
+
+   ```move
+   module aptos_framework::ibe_config {
+       use std::option::{Self, Option};
+       use aptos_framework::system_addresses;
+
+       /// Stores IBE public parameters, updated after each DKG
+       struct IBEPublicParams has key {
+           /// Master Public Key (G2, 96 bytes compressed)
+           mpk: vector<u8>,
+           /// Epoch when this MPK was generated
+           epoch: u64,
+       }
+
+       /// Initialize IBE config (called during genesis)
+       public fun initialize(aptos_framework: &signer) {
+           system_addresses::assert_aptos_framework(aptos_framework);
+           move_to(aptos_framework, IBEPublicParams {
+               mpk: vector::empty(),
+               epoch: 0,
+           });
+       }
+
+       /// Update MPK after DKG completes (called by validator transaction handler)
+       public(friend) fun set_mpk(mpk: vector<u8>, epoch: u64) acquires IBEPublicParams {
+           let params = borrow_global_mut<IBEPublicParams>(@aptos_framework);
+           params.mpk = mpk;
+           params.epoch = epoch;
+       }
+
+       /// View function: Get current MPK
+       #[view]
+       public fun get_mpk(): vector<u8> acquires IBEPublicParams {
+           borrow_global<IBEPublicParams>(@aptos_framework).mpk
+       }
+
+       /// View function: Get epoch when MPK was set
+       #[view]
+       public fun get_epoch(): u64 acquires IBEPublicParams {
+           borrow_global<IBEPublicParams>(@aptos_framework).epoch
+       }
+
+       /// View function: Check if IBE is ready for encryption
+       #[view]
+       public fun is_ready(): bool acquires IBEPublicParams {
+           vector::length(&borrow_global<IBEPublicParams>(@aptos_framework).mpk) == 96
+       }
+   }
+   ```
+
+2. **IBE Crypto Module** (`crates/aptos-dkg/src/ibe/mod.rs`)
+
    ```rust
    pub fn compute_identity(timelock_id: u64, deadline_us: u64) -> [u8; 32]
    pub fn hash_to_g1(identity: &[u8]) -> G1Projective
    pub fn derive_decryption_key(secret: &Scalar, identity: &[u8]) -> G1Affine
    pub fn ibe_encrypt(mpk: &G2Affine, identity: &[u8], msg: &[u8]) -> Ciphertext
    pub fn ibe_decrypt(dk: &G1Affine, ciphertext: &Ciphertext) -> Vec<u8>
-   ```
-
-2. **Serialization Helpers**
-   ```rust
-   pub fn serialize_g1(point: &G1Affine) -> [u8; 48]
-   pub fn deserialize_g1(bytes: &[u8]) -> Result<G1Affine>
    pub fn serialize_g2(point: &G2Affine) -> [u8; 96]
    pub fn deserialize_g2(bytes: &[u8]) -> Result<G2Affine>
    ```
 
-**Smoke Test**: `test_ibe_crypto_roundtrip`
-- Unit test IBE encrypt/decrypt with known test vectors
-- Verify cross-compatibility with TypeScript implementation
-- Test identity derivation matches spec
+3. **MPK Publication in Validator Transaction Handler**
+   - Extend `aptos-vm/src/validator_txns/dkg.rs` to call `ibe_config::set_mpk()` after DKG transcript is accepted
+   - Extract MPK from transcript using `transcript.main.get_dealt_public_key()`
+
+**Tests**:
+
+| Type        | Test                                         | Validates                                                   |
+| ----------- | -------------------------------------------- | ----------------------------------------------------------- |
+| Unit        | `ibe::tests::test_identity_computation`      | Identity derivation matches spec                            |
+| Unit        | `ibe::tests::test_hash_to_g1`                | Hash-to-curve produces valid G1 point                       |
+| Unit        | `ibe::tests::test_encrypt_decrypt_roundtrip` | IBE encrypt/decrypt with known keys                         |
+| Unit        | `ibe::tests::test_serialization_roundtrip`   | G1/G2 serialization                                         |
+| Integration | `ibe_config::test_initialize`                | Move module initializes correctly                           |
+| Integration | `ibe_config::test_set_and_get_mpk`           | MPK storage and retrieval                                   |
+| Integration | `ibe_config::test_is_ready`                  | Ready check before/after MPK set                            |
+| **Smoke 1** | `timelock::mpk_on_chain`                     | **DKG stores MPK on-chain, retrievable and deserializable** |
+| **Smoke 2** | `timelock::mpk_encrypt_decrypt`              | **On-chain MPK can encrypt; private key can decrypt**       |
+
+---
+
+#### Smoke Test 1: `mpk_on_chain` (MPK Storage & Retrieval)
+
+**Purpose**: Verify the DKG process correctly stores the MPK on-chain and it can be retrieved and deserialized.
+
+```rust
+#[tokio::test]
+async fn mpk_on_chain() {
+    // === SETUP ===
+    let swarm = new_local_swarm_with_randomness(4).await;
+    let client = swarm.validators().next().unwrap().rest_client();
+
+    // 1. Wait for DKG to complete
+    let dkg_session = wait_for_dkg_finish(&client, None, 120).await;
+    info!("DKG completed for epoch {}", dkg_session.metadata.dealer_epoch);
+
+    // === VERIFY MPK IS ON-CHAIN ===
+
+    // 2. Query MPK from chain via view function
+    let mpk_bytes = view_ibe_config_get_mpk(&client).await;
+
+    // 3. Verify MPK has correct length (G2 compressed = 96 bytes)
+    assert_eq!(
+        mpk_bytes.len(),
+        96,
+        "MPK should be 96 bytes (G2 compressed), got {} bytes",
+        mpk_bytes.len()
+    );
+
+    // 4. Verify MPK can be deserialized to a valid G2 point
+    let mpk = deserialize_g2(&mpk_bytes)
+        .expect("MPK should deserialize to valid G2 point");
+
+    // 5. Verify is_ready() returns true
+    let is_ready = view_ibe_config_is_ready(&client).await;
+    assert!(is_ready, "ibe_config::is_ready() should return true after DKG");
+
+    // 6. Verify epoch matches
+    let on_chain_epoch = view_ibe_config_get_epoch(&client).await;
+    assert_eq!(
+        on_chain_epoch,
+        dkg_session.metadata.dealer_epoch + 1,
+        "On-chain epoch should match DKG target epoch"
+    );
+
+    // === VERIFY MPK MATCHES TRANSCRIPT ===
+
+    // 7. Extract MPK directly from the DKG transcript
+    let transcript: Transcripts = bcs::from_bytes(&dkg_session.transcript)
+        .expect("transcript should deserialize");
+    let transcript_mpk = transcript.main.get_dealt_public_key();
+    let transcript_mpk_bytes = serialize_g2(&transcript_mpk);
+
+    // 8. Verify on-chain MPK matches transcript MPK
+    assert_eq!(
+        mpk_bytes, transcript_mpk_bytes,
+        "On-chain MPK must match MPK extracted from DKG transcript"
+    );
+
+    info!("SUCCESS: MPK correctly stored on-chain and matches transcript");
+
+    // === VERIFY CHAIN LIVENESS ===
+    verify_chain_liveness(&client, "mpk_on_chain").await;
+}
+```
+
+**What This Test Validates**:
+
+- DKG completes successfully
+- MPK is published to `ibe_config` Move module
+- MPK is retrievable via `get_mpk()` view function
+- MPK is exactly 96 bytes (valid G2 compressed format)
+- MPK can be deserialized to a valid G2 curve point
+- `is_ready()` returns true after MPK is set
+- Epoch stored on-chain matches DKG epoch
+- On-chain MPK byte-for-byte matches MPK extracted from transcript
+- Chain continues to make progress (liveness check)
+
+---
+
+#### Smoke Test 2: `mpk_encrypt_decrypt` (IBE Encryption/Decryption)
+
+**Purpose**: Verify that a message encrypted with the on-chain MPK can be decrypted using the private key derived from validator shares.
+
+**Prerequisite**: `mpk_on_chain` test passes (MPK is correctly stored).
+
+```rust
+#[tokio::test]
+async fn mpk_encrypt_decrypt() {
+    // === SETUP ===
+    let swarm = new_local_swarm_with_randomness(4).await;
+    let client = swarm.validators().next().unwrap().rest_client();
+
+    // 1. Wait for DKG to complete
+    wait_for_dkg_finish(&client, None, 120).await;
+
+    // 2. Verify IBE is ready
+    assert!(
+        view_ibe_config_is_ready(&client).await,
+        "IBE must be ready before encryption test"
+    );
+
+    // === READ MPK FROM CHAIN ===
+
+    // 3. Query MPK from chain via view function
+    let mpk_bytes = view_ibe_config_get_mpk(&client).await;
+    let mpk = deserialize_g2(&mpk_bytes).expect("valid G2 point");
+
+    // === ENCRYPT MESSAGE ===
+
+    // 4. Create a test identity (simulating a timelock identity)
+    let test_timelock_id: u64 = 12345;
+    let test_deadline_us: u64 = 1_000_000_000_000; // arbitrary future timestamp
+    let identity = compute_identity(test_timelock_id, test_deadline_us);
+
+    // 5. Encrypt a test message using the on-chain MPK
+    let plaintext = b"Hello, Timelock! This is a secret message.";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext);
+
+    info!(
+        "Encrypted {} bytes -> {} bytes ciphertext",
+        plaintext.len(),
+        ciphertext.serialized_len()
+    );
+
+    // === DERIVE DECRYPTION KEY FROM SHARES ===
+
+    // 6. Get the DKG transcript and validator decrypt keys
+    let dkg_session = get_last_completed_dkg(&client).await;
+    let decrypt_key_map = decrypt_key_map(&swarm);
+
+    // 7. Derive the decryption key by combining validator shares
+    //    This simulates what would happen after validators reveal shares
+    let dk = derive_decryption_key_from_shares(
+        &dkg_session,
+        &decrypt_key_map,
+        &identity,
+    );
+
+    // === DECRYPT AND VERIFY ===
+
+    // 8. Decrypt the ciphertext using the derived decryption key
+    let decrypted = ibe_decrypt(&dk, &ciphertext);
+
+    // 9. Verify the decrypted message matches the original
+    assert_eq!(
+        decrypted.as_slice(),
+        plaintext,
+        "Decrypted message must match original plaintext"
+    );
+
+    info!("SUCCESS: Message encrypted with on-chain MPK, decrypted with derived key");
+
+    // === NEGATIVE TEST: WRONG IDENTITY FAILS ===
+
+    // 10. Verify that wrong identity cannot decrypt
+    let wrong_identity = compute_identity(99999, 0);
+    let wrong_dk = derive_decryption_key_from_shares(
+        &dkg_session,
+        &decrypt_key_map,
+        &wrong_identity,
+    );
+    let wrong_decrypted = ibe_decrypt(&wrong_dk, &ciphertext);
+
+    assert_ne!(
+        wrong_decrypted.as_slice(),
+        plaintext,
+        "Wrong identity should NOT decrypt correctly"
+    );
+
+    info!("SUCCESS: Wrong identity correctly fails to decrypt");
+
+    // === VERIFY CHAIN LIVENESS ===
+    verify_chain_liveness(&client, "mpk_encrypt_decrypt").await;
+}
+```
+
+**What This Test Validates**:
+
+- MPK can be read from chain and used for encryption
+- IBE encryption produces a valid ciphertext
+- Decryption key can be derived from validator secret shares
+- Decrypted message matches original plaintext exactly
+- Wrong identity cannot decrypt the message (security property)
+- Chain continues to make progress (liveness check)
+
+---
+
+**Smoke Test Dependencies**:
+
+```
+┌─────────────────────┐
+│  mpk_on_chain       │  ← Run first: validates storage
+│  (Storage Test)     │
+└──────────┬──────────┘
+           │ depends on
+           ▼
+┌─────────────────────┐
+│ mpk_encrypt_decrypt │  ← Run second: validates crypto
+│  (Crypto Test)      │
+└─────────────────────┘
+```
+
+**Run Commands**:
+
+```bash
+# Run storage test only
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock::mpk_on_chain -- --nocapture
+
+# Run encryption/decryption test only
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock::mpk_encrypt_decrypt -- --nocapture
+
+# Run both in sequence
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib "timelock::mpk_" -- --nocapture --test-threads=1
+```
 
 **Files**:
+
+- `aptos-move/framework/aptos-framework/sources/ibe_config.move` (new)
 - `crates/aptos-dkg/src/ibe/mod.rs` (new)
 - `crates/aptos-dkg/src/ibe/ciphertext.rs` (new)
 - `crates/aptos-dkg/src/ibe/tests.rs` (new)
 - `crates/aptos-dkg/src/lib.rs` (add `pub mod ibe`)
+- `aptos-vm/src/validator_txns/dkg.rs` (extend to publish MPK)
+- `testsuite/smoke-test/src/timelock/mod.rs` (new)
+- `testsuite/smoke-test/src/timelock/mpk_on_chain.rs` (new)
+- `testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs` (new)
+- `testsuite/smoke-test/src/lib.rs` (add `mod timelock`)
 
-**Commit**: "feat(aptos-dkg): add IBE crypto primitives"
+**Commit**: "feat(ibe): add on-chain MPK storage with IBE primitives and smoke tests"
 
 ---
 
-### Phase 2: Extract MPK from DKG Transcript
+### Phase 2: Formalize MPK Extraction in DKGTrait
 
-**Goal**: Derive Master Public Key (MPK) for IBE from existing DKG output.
+**Goal**: Add formal trait methods for MPK extraction to enable type-safe integration across the codebase.
 
-**Key Insight**: The DKG transcript contains a dealt public key. For IBE:
-- **MPK** = dealt public key (G2 point)
-- This is already computed during DKG; we just need to expose it
+**Rationale**: Phase 0 proved feasibility; now we formalize the API so other components can reliably extract MPK from any DKG transcript type.
 
 **Components**:
 
-1. **Add MPK extraction to RealDKG** (`types/src/dkg/real_dkg/mod.rs`)
-   ```rust
-   impl DKGTrait for RealDKG {
-       // Existing methods...
+1. **Extend DKGTrait** (`types/src/dkg/mod.rs`)
 
-       /// Extract MPK (G2) from transcript for IBE
-       fn get_master_public_key(transcript: &Transcripts) -> G2Affine {
-           transcript.main.get_dealt_public_key()
-       }
-   }
-   ```
-
-2. **Add trait method to DKGTrait** (`types/src/dkg/mod.rs`)
    ```rust
    pub trait DKGTrait {
-       // Existing...
+       // Existing methods...
 
-       /// Get the master public key for IBE from a transcript
+       /// Get the master public key for IBE from a transcript (serialized G2)
        fn get_ibe_master_public_key(transcript: &Self::Transcript) -> Vec<u8>;
    }
    ```
 
-**Smoke Test**: `test_mpk_extraction_from_dkg`
-- Run DKG to completion
-- Extract MPK from transcript
-- Verify MPK is valid G2 point (96 bytes)
-- Verify MPK matches dealt public key
-
-**Files**:
-- `types/src/dkg/mod.rs` (extend trait)
-- `types/src/dkg/real_dkg/mod.rs` (implement extraction)
-- `testsuite/smoke-test/src/timelock/mpk_extraction.rs`
-
-**Commit**: "feat(dkg): add MPK extraction for IBE"
-
----
-
-### Phase 3: On-Chain IBE State Storage
-
-**Goal**: Store IBE public parameters on-chain after DKG completes.
-
-**Components**:
-
-1. **Move Module** (`aptos-move/framework/aptos-framework/sources/ibe_config.move`)
-   ```move
-   module aptos_framework::ibe_config {
-       struct IBEPublicParams has key {
-           /// Master Public Key (G2, 96 bytes)
-           mpk: vector<u8>,
-           /// Epoch when this MPK was generated
-           epoch: u64,
+2. **Implement for RealDKG** (`types/src/dkg/real_dkg/mod.rs`)
+   ```rust
+   impl DKGTrait for RealDKG {
+       fn get_ibe_master_public_key(transcript: &Transcripts) -> Vec<u8> {
+           let dpk = transcript.main.get_dealt_public_key();
+           // Serialize G2 point to 96 bytes
+           serialize_dealt_public_key(&dpk)
        }
-
-       /// Called by block prologue after DKG completes
-       public(friend) fun on_dkg_complete(mpk: vector<u8>, epoch: u64)
-
-       /// View function for clients
-       public fun get_mpk(): vector<u8>
-
-       /// Check if IBE is ready for encryption
-       public fun is_ready(): bool
    }
    ```
 
-2. **Integrate with block.move**
-   - After DKG transcript is accepted, extract MPK and store
+**Tests**:
 
-3. **Validator Transaction Handler**
-   - Extend existing DKG result handler to also publish MPK
-
-**Smoke Test**: `test_ibe_mpk_publication`
-- Run DKG to completion
-- Query `ibe_config::get_mpk()` via view function
-- Verify MPK matches extracted value from transcript
-- Verify `is_ready()` returns true
+| Type        | Test                                       | Validates                               |
+| ----------- | ------------------------------------------ | --------------------------------------- |
+| Unit        | `real_dkg::tests::test_get_ibe_mpk`        | MPK extraction returns valid 96-byte G2 |
+| Unit        | `real_dkg::tests::test_mpk_deterministic`  | Same transcript → same MPK              |
+| Integration | `dkg_trait::test_mpk_matches_dealt_pk`     | Extracted MPK matches dealt public key  |
+| Smoke       | `timelock::mpk_extraction_from_transcript` | MPK extracted matches on-chain value    |
 
 **Files**:
-- `aptos-move/framework/aptos-framework/sources/ibe_config.move` (new)
-- `aptos-move/framework/aptos-framework/sources/block.move` (integrate)
-- `aptos-vm/src/validator_txns/dkg.rs` (extend handler)
-- `testsuite/smoke-test/src/timelock/mpk_publication.rs`
 
-**Commit**: "feat(framework): add ibe_config module for MPK storage"
+- `types/src/dkg/mod.rs` (extend trait)
+- `types/src/dkg/real_dkg/mod.rs` (implement extraction)
+- `types/src/dkg/real_dkg/tests.rs` (unit tests)
+
+**Commit**: "feat(dkg): formalize MPK extraction in DKGTrait"
 
 ---
 
-### Phase 4: Deadline Registration & DK Derivation
+### Phase 3: Timelock Registry & Deadline Tracking
 
-**Goal**: Allow registering timelocks and deriving decryption keys from shares.
+**Goal**: Allow users to register timelocks with deadlines. Track deadlines on-chain for coordinated reveal.
 
 **Components**:
 
 1. **Extend ibe_config.move**
+
    ```move
+   /// Registry for active timelocks
    struct TimelockRegistry has key {
-       /// Map: deadline_timestamp_us -> TimelockInfo
        deadlines: Table<u64, TimelockInfo>,
        next_timelock_id: u64,
    }
@@ -270,118 +681,311 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctn
    struct TimelockInfo has store {
        timelock_id: u64,
        deadline_timestamp_us: u64,
-       /// None until revealed, then G1 decryption key (48 bytes)
-       decryption_key: Option<vector<u8>>,
-       /// Accumulated share contributions
-       share_contributions: vector<ShareContribution>,
+       identity: vector<u8>,  // 32-byte identity hash
+       decryption_key: Option<vector<u8>>,  // G1, 48 bytes when revealed
+       reveal_threshold: u64,
+       share_count: u64,
    }
 
    /// Register a new timelock (returns timelock_id)
-   public fun register_timelock(deadline_us: u64): u64
+   public entry fun register_timelock(
+       account: &signer,
+       deadline_us: u64
+   ): u64
 
-   /// Called by validators to submit DK share
-   public(friend) fun submit_dk_share(deadline_us: u64, share: vector<u8>, validator: address)
+   /// View: Get timelock info
+   #[view]
+   public fun get_timelock(timelock_id: u64): TimelockInfo
 
-   /// Get decryption key (only available after deadline + threshold shares)
-   public fun get_decryption_key(deadline_us: u64): Option<vector<u8>>
+   /// View: Get decryption key (None before reveal)
+   #[view]
+   public fun get_decryption_key(timelock_id: u64): Option<vector<u8>>
    ```
 
-2. **Validator Share Submission** (`consensus/src/epoch_manager.rs`)
-   - Watch for deadlines passing via block timestamps
-   - Compute DK contribution: `dk_share = secret_share * H(identity)`
-   - Submit via ValidatorTransaction
+**Tests**:
 
-3. **On-Chain Aggregation**
-   - Collect G1 share contributions
-   - When threshold reached, aggregate using Lagrange coefficients
-   - Store final DK
-
-**Smoke Test**: `test_deadline_reveal`
-- Register a timelock with deadline = now + 10 seconds
-- Wait for deadline to pass
-- Verify validators submit shares
-- Verify DK is aggregated and available
-- Verify DK can decrypt test ciphertext
+| Type        | Test                                    | Validates                                  |
+| ----------- | --------------------------------------- | ------------------------------------------ |
+| Unit        | `ibe_config::test_register_timelock`    | Timelock registration succeeds             |
+| Unit        | `ibe_config::test_identity_derivation`  | Identity computed correctly from deadline  |
+| Integration | `ibe_config::test_registry_persistence` | Timelocks survive across blocks            |
+| Smoke       | `timelock::register_and_query`          | Register timelock, query via view function |
 
 **Files**:
-- `aptos-move/framework/aptos-framework/sources/ibe_config.move` (extend)
-- `consensus/src/epoch_manager.rs` (add deadline monitoring)
-- `types/src/validator_txn/mod.rs` (add TimelockShare variant)
-- `aptos-vm/src/validator_txns/mod.rs` (add handler)
-- `testsuite/smoke-test/src/timelock/deadline_reveal.rs`
 
-**Commit**: "feat(timelock): implement deadline registration and DK reveal"
+- `aptos-move/framework/aptos-framework/sources/ibe_config.move` (extend)
+- `testsuite/smoke-test/src/timelock/register_timelock.rs` (new)
+
+**Commit**: "feat(timelock): add timelock registry with deadline tracking"
 
 ---
 
-### Phase 5: E2E Integration Test
+### Phase 4: Decryption Key Share Submission & Aggregation
 
-**Goal**: Full encryption/decryption cycle test.
+**Goal**: Validators submit DK shares after deadline passes; aggregate to reveal decryption key.
 
-**Smoke Test**: `test_timelock_e2e`
-1. Start swarm, wait for DKG
-2. Query MPK from chain
-3. Register timelock with deadline = now + 15 seconds
-4. Encrypt message off-chain using MPK + identity
-5. Wait for deadline
-6. Query DK from chain
-7. Decrypt message off-chain
-8. Verify plaintext matches original
+**Components**:
+
+1. **Validator Share Submission** (`consensus/src/epoch_manager.rs`)
+   - Monitor block timestamps for passed deadlines
+   - Compute DK contribution: `dk_share = secret_share * H(identity)`
+   - Submit via ValidatorTransaction
+
+2. **New ValidatorTransaction Type** (`types/src/validator_txn/mod.rs`)
+
+   ```rust
+   pub enum ValidatorTransaction {
+       // Existing variants...
+       TimelockShare {
+           timelock_id: u64,
+           share: Vec<u8>,  // G1, 48 bytes
+           validator_index: u64,
+       },
+   }
+   ```
+
+3. **On-Chain Aggregation** (extend `ibe_config.move`)
+
+   ```move
+   /// Submit a DK share (called by validator transaction handler)
+   public(friend) fun submit_dk_share(
+       timelock_id: u64,
+       share: vector<u8>,
+       validator_index: u64
+   )
+
+   /// Internal: Aggregate shares when threshold reached
+   fun try_aggregate_dk(timelock_id: u64)
+   ```
+
+**Tests**:
+
+| Type        | Test                                     | Validates                               |
+| ----------- | ---------------------------------------- | --------------------------------------- |
+| Unit        | `ibe::test_dk_share_derivation`          | DK share computation correct            |
+| Unit        | `ibe::test_lagrange_aggregation`         | Share aggregation produces valid DK     |
+| Integration | `ibe_config::test_share_submission`      | Shares accepted and counted             |
+| Integration | `ibe_config::test_threshold_aggregation` | DK revealed at threshold                |
+| Smoke       | `timelock::deadline_reveal`              | Validators submit shares after deadline |
+| Smoke       | `timelock::dk_aggregation`               | DK aggregated and queryable             |
+
+**Key Smoke Test: `deadline_reveal`**:
+
+```rust
+#[tokio::test]
+async fn deadline_reveal() {
+    let swarm = new_local_swarm_with_randomness(4).await;
+    wait_for_dkg_finish(&client, None, 120).await;
+
+    // Register timelock with deadline = now + 10 seconds
+    let deadline = current_time_us() + 10_000_000;
+    let timelock_id = register_timelock(&client, deadline).await;
+
+    // Wait for deadline to pass
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    // Verify DK is now available
+    let dk = view_get_decryption_key(&client, timelock_id).await;
+    assert!(dk.is_some(), "DK should be revealed after deadline");
+    assert_eq!(dk.unwrap().len(), 48, "DK should be 48 bytes (G1)");
+}
+```
 
 **Files**:
-- `testsuite/smoke-test/src/timelock/e2e.rs`
-- `testsuite/smoke-test/src/timelock/ibe_client.rs` (test helper)
 
-**Commit**: "test(timelock): add E2E smoke test"
+- `consensus/src/epoch_manager.rs` (add deadline monitoring)
+- `types/src/validator_txn/mod.rs` (add TimelockShare)
+- `aptos-vm/src/validator_txns/mod.rs` (add handler)
+- `aptos-move/framework/aptos-framework/sources/ibe_config.move` (extend)
+- `testsuite/smoke-test/src/timelock/deadline_reveal.rs` (new)
+
+**Commit**: "feat(timelock): implement DK share submission and aggregation"
+
+---
+
+### Phase 5: End-to-End Integration Test
+
+**Goal**: Full encryption/decryption cycle test validating the entire flow.
+
+**The Ultimate Smoke Test: `timelock_e2e`**:
+
+This test validates the complete user journey:
+
+```rust
+#[tokio::test]
+async fn timelock_e2e() {
+    // === SETUP ===
+    let swarm = new_local_swarm_with_randomness(4).await;
+    let client = swarm.validators().next().unwrap().rest_client();
+
+    // 1. Wait for DKG to complete
+    wait_for_dkg_finish(&client, None, 120).await;
+
+    // === ENCRYPTION (User side) ===
+
+    // 2. Query MPK from chain via view function
+    let mpk_bytes = view_ibe_config_get_mpk(&client).await;
+    assert!(view_ibe_config_is_ready(&client).await, "IBE should be ready");
+    let mpk = deserialize_g2(&mpk_bytes).expect("valid MPK");
+
+    // 3. Register a timelock with deadline = now + 20 seconds
+    let deadline_us = current_timestamp_us(&client).await + 20_000_000;
+    let timelock_id = register_timelock(&client, deadline_us).await;
+
+    // 4. Compute identity for this timelock
+    let identity = compute_identity(timelock_id, deadline_us);
+
+    // 5. Encrypt message off-chain using MPK + identity
+    let plaintext = b"Secret message for the future!";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext);
+
+    // Message is now encrypted - cannot be decrypted until deadline passes
+
+    // === WAIT FOR DEADLINE ===
+
+    // 6. Wait for deadline to pass + validators to submit shares
+    tokio::time::sleep(Duration::from_secs(25)).await;
+
+    // === DECRYPTION (User side) ===
+
+    // 7. Query decryption key from chain
+    let dk_option = view_get_decryption_key(&client, timelock_id).await;
+    assert!(dk_option.is_some(), "DK should be available after deadline");
+    let dk = deserialize_g1(&dk_option.unwrap()).expect("valid DK");
+
+    // 8. Decrypt message off-chain
+    let decrypted = ibe_decrypt(&dk, &ciphertext);
+
+    // 9. Verify plaintext matches original
+    assert_eq!(decrypted, plaintext, "Decryption must recover original message");
+
+    // === VERIFY NO REGRESSIONS ===
+
+    // 10. Verify randomness still works
+    let randomness = view_per_block_randomness(&client).await;
+    assert!(randomness.seed.is_some(), "Randomness should still work");
+
+    // 11. Verify chain liveness (blocks continue to progress)
+    verify_chain_liveness(&client, "timelock_e2e").await;
+
+    // 12. Verify epoch transition works (if time permits)
+    // This ensures our changes don't break reconfiguration
+    verify_epoch_transition(&client, "timelock_e2e").await;
+}
+```
+
+**Test Coverage Summary**:
+
+| Scenario                    | Validated By                                  |
+| --------------------------- | --------------------------------------------- |
+| MPK published after DKG     | Step 2: `get_mpk()` returns 96 bytes          |
+| View function works         | Step 2: Direct view call succeeds             |
+| IBE encryption works        | Step 5: `ibe_encrypt()` produces ciphertext   |
+| Deadline registration works | Step 3: `register_timelock()` returns ID      |
+| Validators submit shares    | Step 7: DK available after deadline           |
+| IBE decryption works        | Step 8: `ibe_decrypt()` returns plaintext     |
+| Full roundtrip              | Step 9: Decrypted == Original                 |
+| No randomness regression    | Step 10: Randomness seed present              |
+| **Chain liveness**          | Step 11: Blocks continue to progress          |
+| **Epoch transition works**  | Step 12: Chain enters new epoch and continues |
+
+**Files**:
+
+- `testsuite/smoke-test/src/timelock/e2e.rs` (new)
+- `testsuite/smoke-test/src/timelock/ibe_client.rs` (test helper functions)
+- `testsuite/smoke-test/src/timelock/mod.rs` (export all tests)
+
+**Commit**: "test(timelock): add comprehensive E2E smoke test"
 
 ---
 
 ## TDD Workflow
 
-For each phase:
+For each phase, follow strict TDD:
 
-1. **Write failing test first**
-   ```bash
-   # Create test file, run to verify it fails
-   RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock::phase_N -- --nocapture
-   ```
+### Step 1: Write Tests First
 
-2. **Implement minimal code to pass**
-   - Make smallest change possible
-   - Run test after each change
+```bash
+# Unit tests (run fast, iterate quickly)
+cargo test -p aptos-dkg --lib ibe:: -- --nocapture
 
-3. **Commit when green**
-   ```bash
-   git add -A && git commit -m "feat(component): description"
-   ```
+# Integration tests (Move)
+aptos move test --package-dir aptos-move/framework/aptos-framework
 
-4. **Verify no regressions**
-   ```bash
-   # Run baseline randomness test
-   RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_basic_consumption -- --nocapture
-   ```
+# Smoke tests (full validator swarm)
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock::phase_N -- --nocapture
+```
 
-5. **Push for CI**
-   ```bash
-   git push origin timelock-das-vpss
-   ```
+### Step 2: Run Tests (Expect Failure)
+
+```bash
+# Verify tests fail for the right reason (not compilation errors)
+cargo test -p smoke-test --lib timelock::mpk_on_chain -- --nocapture 2>&1 | grep "assertion failed"
+```
+
+### Step 3: Implement Minimal Code
+
+- Make the smallest change possible to pass the test
+- Run tests after each change
+
+### Step 4: Verify Green
+
+```bash
+# All new tests pass
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock -- --nocapture --test-threads=1
+```
+
+### Step 5: Verify No Regressions
+
+```bash
+# CRITICAL: Baseline randomness tests MUST still pass
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctness -- --nocapture
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_basic_consumption -- --nocapture
+```
+
+### Step 6: Commit
+
+```bash
+git add -A && git commit -m "feat(component): description"
+git push origin timelock-das-vpss
+```
 
 ---
 
-## Smoke Test Summary
+## Test Summary Matrix
 
-| Phase | Test Name | Validates |
-|-------|-----------|-----------|
-| 0 | `randomness::e2e_correctness` | MoveVM callable from DKG path, no regressions |
-| 1 | `ibe_crypto_roundtrip` | IBE primitives correct |
-| 2 | `mpk_extraction_from_dkg` | MPK derivable from transcript |
-| 3 | `ibe_mpk_publication` | MPK stored on-chain |
-| 4 | `deadline_reveal` | Share submission + aggregation |
-| 5 | `timelock_e2e` | Full encrypt/decrypt cycle |
+### By Phase
 
-**Run all timelock tests**:
+| Phase | Unit Tests                | Integration Tests         | Smoke Tests                                              |
+| ----- | ------------------------- | ------------------------- | -------------------------------------------------------- |
+| 0     | -                         | -                         | `randomness::e2e_correctness` (baseline)                 |
+| 1     | `ibe::*` (5 tests)        | `ibe_config::*` (3 tests) | `mpk_on_chain` (storage), `mpk_encrypt_decrypt` (crypto) |
+| 2     | `real_dkg::*` (2 tests)   | `dkg_trait::*` (1 test)   | `mpk_extraction_from_transcript`                         |
+| 3     | `ibe_config::*` (2 tests) | `ibe_config::*` (1 test)  | `register_and_query`                                     |
+| 4     | `ibe::*` (2 tests)        | `ibe_config::*` (2 tests) | `deadline_reveal`, `dk_aggregation`                      |
+| 5     | -                         | -                         | `timelock_e2e` (comprehensive)                           |
+
+### By Test Type
+
+| Type               | Location                             | Run Command                                  | Expected Time |
+| ------------------ | ------------------------------------ | -------------------------------------------- | ------------- |
+| Unit               | `crates/*/src/**/tests.rs`           | `cargo test -p aptos-dkg --lib`              | < 10s         |
+| Integration (Move) | `aptos-move/framework/**/*.move`     | `aptos move test`                            | < 30s         |
+| Integration (Rust) | `crates/*/tests/`                    | `cargo test -p <crate>`                      | < 30s         |
+| Smoke              | `testsuite/smoke-test/src/timelock/` | `cargo test -p smoke-test --lib timelock::*` | 2-5 min       |
+
+### Run All Timelock Tests
+
 ```bash
+# Quick validation (unit + integration)
+cargo test -p aptos-dkg --lib ibe:: -- --nocapture && \
+aptos move test --package-dir aptos-move/framework/aptos-framework
+
+# Full validation (including smoke tests)
 RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock -- --nocapture --test-threads=1
+
+# Full validation with randomness regression check
+RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib "randomness::e2e|timelock::" -- --nocapture --test-threads=1
 ```
 
 ---
@@ -409,33 +1013,104 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock -- --nocapture 
 ## File Change Summary
 
 ### New Files
+
+**Move Contracts:**
+
+- `aptos-move/framework/aptos-framework/sources/ibe_config.move`
+
+**Rust IBE Module:**
+
 - `crates/aptos-dkg/src/ibe/mod.rs`
 - `crates/aptos-dkg/src/ibe/ciphertext.rs`
 - `crates/aptos-dkg/src/ibe/tests.rs`
-- `aptos-move/framework/aptos-framework/sources/ibe_config.move`
+
+**Smoke Tests:**
+
 - `testsuite/smoke-test/src/timelock/mod.rs`
+- `testsuite/smoke-test/src/timelock/mpk_on_chain.rs`
+- `testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs`
 - `testsuite/smoke-test/src/timelock/mpk_extraction.rs`
-- `testsuite/smoke-test/src/timelock/mpk_publication.rs`
+- `testsuite/smoke-test/src/timelock/register_timelock.rs`
 - `testsuite/smoke-test/src/timelock/deadline_reveal.rs`
 - `testsuite/smoke-test/src/timelock/e2e.rs`
+- `testsuite/smoke-test/src/timelock/ibe_client.rs`
 
 ### Modified Files
+
+**DKG Types:**
+
 - `crates/aptos-dkg/src/lib.rs` (add `pub mod ibe`)
 - `types/src/dkg/mod.rs` (extend DKGTrait)
 - `types/src/dkg/real_dkg/mod.rs` (implement MPK extraction)
+
+**Validator Transactions:**
+
 - `types/src/validator_txn/mod.rs` (add TimelockShare)
-- `aptos-move/framework/aptos-framework/sources/block.move` (integrate IBE)
-- `aptos-vm/src/validator_txns/mod.rs` (add handler)
+- `aptos-vm/src/validator_txns/dkg.rs` (publish MPK)
+- `aptos-vm/src/validator_txns/mod.rs` (add timelock handler)
+
+**Consensus:**
+
 - `consensus/src/epoch_manager.rs` (deadline monitoring)
+
+**Test Infrastructure:**
+
 - `testsuite/smoke-test/src/lib.rs` (add timelock module)
 
 ---
 
 ## Success Criteria
 
-1. All 6 smoke tests pass
-2. Existing randomness tests still pass
-3. No concurrent DKG sessions
-4. MPK queryable via view function
-5. DK revealed after deadline + threshold
-6. TypeScript client can encrypt/decrypt
+### Functional Requirements
+
+| #   | Requirement                                          | Validated By                                |
+| --- | ---------------------------------------------------- | ------------------------------------------- |
+| 1   | MPK stored on-chain in Move struct                   | `timelock::mpk_on_chain` smoke test         |
+| 2   | MPK retrievable via view function                    | `ibe_config::get_mpk()` returns 96 bytes    |
+| 3   | MPK can be deserialized to valid G2 point            | `mpk_on_chain`: `deserialize_g2()` succeeds |
+| 4   | On-chain MPK matches transcript MPK                  | `mpk_on_chain`: byte-for-byte comparison    |
+| 5   | Message encrypted with on-chain MPK can be decrypted | `timelock::mpk_encrypt_decrypt` smoke test  |
+| 6   | Wrong identity fails to decrypt                      | `mpk_encrypt_decrypt`: negative test case   |
+| 7   | Timelocks can be registered with deadlines           | `timelock::register_and_query` smoke test   |
+| 8   | DK revealed after deadline passes                    | `timelock::deadline_reveal` smoke test      |
+| 9   | Full E2E encrypt/decrypt cycle works                 | `timelock::e2e` smoke test                  |
+| 10  | TypeScript client can encrypt/decrypt                | Cross-compatibility unit tests              |
+
+### Non-Regression Requirements
+
+| #   | Requirement                                | Validated By                              |
+| --- | ------------------------------------------ | ----------------------------------------- |
+| 11  | `randomness::e2e_correctness` passes       | Smoke test (run before every merge)       |
+| 12  | `randomness::e2e_basic_consumption` passes | Smoke test (run before every merge)       |
+| 13  | No concurrent DKG sessions                 | Single DKG architecture (by design)       |
+| 14  | No modifications to existing DKG flow      | Code review (Phase 0-2 are additive only) |
+
+### Chain Liveness Requirements (CRITICAL)
+
+| #   | Requirement                                    | Validated By                                 |
+| --- | ---------------------------------------------- | -------------------------------------------- |
+| 15  | Blocks continue to progress                    | `verify_chain_liveness()` in all smoke tests |
+| 16  | Epoch reconfiguration succeeds                 | `verify_epoch_transition()` in smoke tests   |
+| 17  | Chain produces blocks after epoch transition   | Post-epoch liveness check                    |
+| 18  | No validator crashes during/after DKG          | All 4 validators responsive throughout test  |
+| 19  | No `panic!`/`unwrap()` in consensus code paths | Manual code review before merge              |
+| 20  | All DKG errors handled gracefully with logging | Error paths log and continue, never crash    |
+
+### Test Coverage Requirements
+
+| Level       | Minimum Tests                              | Status  |
+| ----------- | ------------------------------------------ | ------- |
+| Unit        | 11 tests across `ibe::*` and `real_dkg::*` | Planned |
+| Integration | 7 tests in Move and Rust                   | Planned |
+| Smoke       | 8 smoke tests (including 2 for Phase 1)    | Planned |
+
+### Definition of Done
+
+A phase is complete when:
+
+1. All unit tests pass (`cargo test -p aptos-dkg --lib`)
+2. All integration tests pass (`aptos move test`)
+3. All smoke tests pass (`cargo test -p smoke-test --lib timelock::*`)
+4. Baseline randomness tests pass (regression gate)
+5. Code is committed and pushed
+6. CI passes on `timelock-das-vpss` branch
