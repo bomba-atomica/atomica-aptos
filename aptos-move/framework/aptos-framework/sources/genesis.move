@@ -18,6 +18,7 @@ module aptos_framework::genesis {
     use aptos_framework::execution_config;
     use aptos_framework::create_signer::create_signer;
     use aptos_framework::gas_schedule;
+    use aptos_framework::ibe_config;
     use aptos_framework::nonce_validation;
     use aptos_framework::reconfiguration;
     use aptos_framework::stake;
@@ -129,6 +130,7 @@ module aptos_framework::genesis {
 
         chain_id::initialize(&aptos_framework_account, chain_id);
         reconfiguration::initialize(&aptos_framework_account);
+        ibe_config::initialize(&aptos_framework_account);
         block::initialize(&aptos_framework_account, epoch_interval_microsecs);
         state_storage::initialize(&aptos_framework_account);
         nonce_validation::initialize(&aptos_framework_account);

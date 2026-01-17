@@ -48,6 +48,7 @@
 <b>use</b> <a href="execution_config.md#0x1_execution_config">0x1::execution_config</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/fixed_point32.md#0x1_fixed_point32">0x1::fixed_point32</a>;
 <b>use</b> <a href="gas_schedule.md#0x1_gas_schedule">0x1::gas_schedule</a>;
+<b>use</b> <a href="ibe_config.md#0x1_ibe_config">0x1::ibe_config</a>;
 <b>use</b> <a href="nonce_validation.md#0x1_nonce_validation">0x1::nonce_validation</a>;
 <b>use</b> <a href="reconfiguration.md#0x1_reconfiguration">0x1::reconfiguration</a>;
 <b>use</b> <a href="../../aptos-stdlib/doc/simple_map.md#0x1_simple_map">0x1::simple_map</a>;
@@ -361,6 +362,7 @@ Genesis step 1: Initialize aptos framework account and core modules on chain.
 
     <a href="chain_id.md#0x1_chain_id_initialize">chain_id::initialize</a>(&aptos_framework_account, <a href="chain_id.md#0x1_chain_id">chain_id</a>);
     <a href="reconfiguration.md#0x1_reconfiguration_initialize">reconfiguration::initialize</a>(&aptos_framework_account);
+    <a href="ibe_config.md#0x1_ibe_config_initialize">ibe_config::initialize</a>(&aptos_framework_account);
     <a href="block.md#0x1_block_initialize">block::initialize</a>(&aptos_framework_account, epoch_interval_microsecs);
     <a href="state_storage.md#0x1_state_storage_initialize">state_storage::initialize</a>(&aptos_framework_account);
     <a href="nonce_validation.md#0x1_nonce_validation_initialize">nonce_validation::initialize</a>(&aptos_framework_account);
