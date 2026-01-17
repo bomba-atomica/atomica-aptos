@@ -1,12 +1,13 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 1.2
+**Version:** 1.3
 **Date:** January 17, 2026
 **Branch:** timelock-das-vpss
-**Status:** Implementation Plan
+**Status:** Implementation In Progress
 
 ## Changelog
 
+- **v1.3** (Jan 17, 2026): Marked Phase 0 and Phase 1A-1C complete. IBE crypto primitives implemented and tested. Updated architectural notes to reflect actual implementation choices (SHA3-256 for key derivation, BCS for Gt serialization).
 - **v1.2** (Jan 17, 2026): Restructured phases to prioritize on-chain MPK storage. Added comprehensive test pyramid (unit, integration, smoke) for each phase. Added IBE encryption/decryption verification in smoke tests.
 - **v1.1** (Jan 16, 2026): Initial plan with Phase 0 complete.
 
@@ -297,6 +298,21 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctn
 
 **Rationale**: The MPK is the foundation for all IBE operations. By storing it on-chain first, clients can immediately start encrypting messages. This also enables the key smoke test: encrypt with on-chain MPK → decrypt with corresponding private key.
 
+#### Phase 1 Status
+
+| Sub-Phase | Description | Status |
+|-----------|-------------|--------|
+| 1A | Move module `ibe_config.move` | ✅ COMPLETE |
+| 1B | Rust MPK extraction in `dkg.rs` | ✅ COMPLETE |
+| 1C | IBE Crypto Module (`aptos-dkg/src/ibe/`) | ✅ COMPLETE |
+| 1D | Smoke test `mpk_on_chain` | 🔲 TODO |
+| 1E | Smoke test `mpk_encrypt_decrypt` | 🔲 TODO |
+
+**Commits:**
+- `63c0544add` - feat(ibe): Phase 1A - add ibe_config.move module
+- `cca59e5bf0` - feat(ibe): Phase 1B+1C - wire MPK extraction and on-chain storage
+- `8b2410b965` - feat(ibe): add IBE crypto primitives for timelock encryption
+
 **Components**:
 
 1. **Move Module** (`aptos-move/framework/aptos-framework/sources/ibe_config.move`)
@@ -350,17 +366,28 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctn
    }
    ```
 
-2. **IBE Crypto Module** (`crates/aptos-dkg/src/ibe/mod.rs`)
+2. **IBE Crypto Module** (`crates/aptos-dkg/src/ibe/mod.rs`) ✅ IMPLEMENTED
 
    ```rust
+   // Identity derivation
    pub fn compute_identity(timelock_id: u64, deadline_us: u64) -> [u8; 32]
    pub fn hash_to_g1(identity: &[u8]) -> G1Projective
+
+   // Key derivation
    pub fn derive_decryption_key(secret: &Scalar, identity: &[u8]) -> G1Affine
-   pub fn ibe_encrypt(mpk: &G2Affine, identity: &[u8], msg: &[u8]) -> Ciphertext
+   pub fn verify_decryption_key(dk: &G1Affine, identity: &[u8], mpk: &G2Affine) -> bool
+
+   // Encryption/Decryption
+   pub fn ibe_encrypt<R: rand::Rng>(mpk: &G2Affine, identity: &[u8], msg: &[u8], rng: &mut R) -> Ciphertext
    pub fn ibe_decrypt(dk: &G1Affine, ciphertext: &Ciphertext) -> Vec<u8>
-   pub fn serialize_g2(point: &G2Affine) -> [u8; 96]
-   pub fn deserialize_g2(bytes: &[u8]) -> Result<G2Affine>
    ```
+
+   **Implementation Notes:**
+   - Uses SHA3-256 for identity hashing (DST: `APTOS_IBE_IDENTITY_DST`)
+   - Uses SHA3-256 in counter mode for symmetric key derivation from Gt
+   - Gt serialization via BCS (deterministic)
+   - Ciphertext struct: `{ u: G2Affine, v: Vec<u8> }`
+   - 16 unit tests covering roundtrips, serialization, and edge cases
 
 3. **MPK Publication in Validator Transaction Handler**
    - Extend `aptos-vm/src/validator_txns/dkg.rs` to call `ibe_config::set_mpk()` after DKG transcript is accepted
@@ -368,17 +395,28 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctn
 
 **Tests**:
 
-| Type        | Test                                         | Validates                                                   |
-| ----------- | -------------------------------------------- | ----------------------------------------------------------- |
-| Unit        | `ibe::tests::test_identity_computation`      | Identity derivation matches spec                            |
-| Unit        | `ibe::tests::test_hash_to_g1`                | Hash-to-curve produces valid G1 point                       |
-| Unit        | `ibe::tests::test_encrypt_decrypt_roundtrip` | IBE encrypt/decrypt with known keys                         |
-| Unit        | `ibe::tests::test_serialization_roundtrip`   | G1/G2 serialization                                         |
-| Integration | `ibe_config::test_initialize`                | Move module initializes correctly                           |
-| Integration | `ibe_config::test_set_and_get_mpk`           | MPK storage and retrieval                                   |
-| Integration | `ibe_config::test_is_ready`                  | Ready check before/after MPK set                            |
-| **Smoke 1** | `timelock::mpk_on_chain`                     | **DKG stores MPK on-chain, retrievable and deserializable** |
-| **Smoke 2** | `timelock::mpk_encrypt_decrypt`              | **On-chain MPK can encrypt; private key can decrypt**       |
+| Type        | Test                                         | Validates                                                   | Status |
+| ----------- | -------------------------------------------- | ----------------------------------------------------------- | ------ |
+| Unit        | `ibe::tests::test_compute_identity_deterministic` | Identity derivation is deterministic                   | ✅ |
+| Unit        | `ibe::tests::test_hash_to_g1_deterministic`  | Hash-to-curve produces valid G1 point                       | ✅ |
+| Unit        | `ibe::tests::test_encrypt_decrypt_roundtrip` | IBE encrypt/decrypt with known keys                         | ✅ |
+| Unit        | `ibe::tests::test_encrypt_decrypt_large_message` | Large message encryption/decryption                     | ✅ |
+| Unit        | `ibe::tests::test_wrong_decryption_key_fails` | Wrong identity fails to decrypt                            | ✅ |
+| Unit        | `ibe::tests::test_verify_decryption_key_valid` | DK verification against MPK                               | ✅ |
+| Unit        | `ibe::tests::test_ciphertext_serialization_roundtrip` | Ciphertext BCS serialization                       | ✅ |
+| Unit        | `ibe::ciphertext::tests::*` (2 tests)        | Ciphertext struct basics                                    | ✅ |
+| Integration | `ibe_config::test_initialize`                | Move module initializes correctly                           | ✅ |
+| Integration | `ibe_config::test_set_and_get_mpk`           | MPK storage and retrieval                                   | ✅ |
+| Integration | `ibe_config::test_is_ready_before_and_after` | Ready check before/after MPK set                            | ✅ |
+| Integration | `ibe_config::test_mpk_update_across_epochs`  | MPK updates correctly on epoch change                       | ✅ |
+| Integration | `ibe_config::test_set_mpk_invalid_length_*`  | Invalid MPK rejected                                        | ✅ |
+| **Smoke 1** | `timelock::mpk_on_chain`                     | **DKG stores MPK on-chain, retrievable and deserializable** | 🔲 |
+| **Smoke 2** | `timelock::mpk_encrypt_decrypt`              | **On-chain MPK can encrypt; private key can decrypt**       | 🔲 |
+
+**Test Counts:**
+- Unit tests (IBE Rust): 16 tests ✅ PASSING
+- Integration tests (Move): 9 tests ✅ PASSING
+- Smoke tests: 2 tests 🔲 TODO
 
 ---
 
@@ -956,14 +994,14 @@ git push origin timelock-das-vpss
 
 ### By Phase
 
-| Phase | Unit Tests                | Integration Tests         | Smoke Tests                                              |
-| ----- | ------------------------- | ------------------------- | -------------------------------------------------------- |
-| 0     | -                         | -                         | `randomness::e2e_correctness` (baseline)                 |
-| 1     | `ibe::*` (5 tests)        | `ibe_config::*` (3 tests) | `mpk_on_chain` (storage), `mpk_encrypt_decrypt` (crypto) |
-| 2     | `real_dkg::*` (2 tests)   | `dkg_trait::*` (1 test)   | `mpk_extraction_from_transcript`                         |
-| 3     | `ibe_config::*` (2 tests) | `ibe_config::*` (1 test)  | `register_and_query`                                     |
-| 4     | `ibe::*` (2 tests)        | `ibe_config::*` (2 tests) | `deadline_reveal`, `dk_aggregation`                      |
-| 5     | -                         | -                         | `timelock_e2e` (comprehensive)                           |
+| Phase | Unit Tests                | Integration Tests         | Smoke Tests                                              | Status |
+| ----- | ------------------------- | ------------------------- | -------------------------------------------------------- | ------ |
+| 0     | -                         | -                         | `randomness::e2e_correctness` (baseline)                 | ✅ |
+| 1     | `ibe::*` (16 tests)       | `ibe_config::*` (9 tests) | `mpk_on_chain`, `mpk_encrypt_decrypt`                    | 🔶 Unit/Integration done, Smoke TODO |
+| 2     | `real_dkg::*` (2 tests)   | `dkg_trait::*` (1 test)   | `mpk_extraction_from_transcript`                         | 🔲 |
+| 3     | `ibe_config::*` (2 tests) | `ibe_config::*` (1 test)  | `register_and_query`                                     | 🔲 |
+| 4     | `ibe::*` (2 tests)        | `ibe_config::*` (2 tests) | `deadline_reveal`, `dk_aggregation`                      | 🔲 |
+| 5     | -                         | -                         | `timelock_e2e` (comprehensive)                           | 🔲 |
 
 ### By Test Type
 
@@ -1100,9 +1138,9 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib "randomness::e2e|timeloc
 
 | Level       | Minimum Tests                              | Status  |
 | ----------- | ------------------------------------------ | ------- |
-| Unit        | 11 tests across `ibe::*` and `real_dkg::*` | Planned |
-| Integration | 7 tests in Move and Rust                   | Planned |
-| Smoke       | 8 smoke tests (including 2 for Phase 1)    | Planned |
+| Unit        | 16 tests in `ibe::*`                       | ✅ Complete |
+| Integration | 9 tests in `ibe_config::*` (Move)          | ✅ Complete |
+| Smoke       | 8 smoke tests (including 2 for Phase 1)    | 🔲 Pending |
 
 ### Definition of Done
 

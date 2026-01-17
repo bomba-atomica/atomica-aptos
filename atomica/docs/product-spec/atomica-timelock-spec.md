@@ -1,35 +1,70 @@
 # Atomica Timelock DKG & IBE Specification
 
-**Version:** 1.2
-**Last Updated:** January 16, 2026
+**Version:** 1.3
+**Last Updated:** January 17, 2026
 **Status:** Implementation Reference
-**Branch:** timelock-refactor
+**Branch:** timelock-das-vpss
 
 ---
 
 ## Context & Implementation Status
 
-> [!WARNING]
-> **CRITICAL: BROKEN STATE**
-> As of January 2026, the code in the `timelock-refactor` branch is **functional but regression-prone**. The `IbeDKG` implementation caused regressions in the existing Randomness DKG service during development. While `test_basic_client` has been patched to pass, the full dual-DKG system remains unstable.
+> [!NOTE]
+> **NEW APPROACH: UNIFIED DKG**
+> As of January 2026, we have pivoted to a **Unified DKG** architecture on the `timelock-das-vpss` branch. Instead of running a parallel `IbeDKG` alongside `RealDKG`, we now **extend the existing RealDKG** to also support IBE operations. This eliminates the concurrency issues and regressions from the previous approach.
 
 **Background**
-The upstream Aptos repository includes a production-grade DKG service used for **Randomness V2**. The original goal of the Timelock project was to reuse this service to minimize validator overhead.
+The upstream Aptos repository includes a production-grade DKG service used for **Randomness V2**. The Timelock project extends this service to also support Identity-Based Encryption (IBE) for time-locked message encryption.
 
-**Architectural Divergence**
-During implementation, the decision was made to fork the DKG logic into a parallel `IbeDKG` service rather than reusing `RealDKG` (Randomness).
-**Why?**
+**Key Insight**
+The same PVSS shares produced by RealDKG can be used for both:
+- **Randomness**: WVUF evaluation on shares
+- **IBE**: Decryption key derivation from shares
 
-1.  **Cryptographic Incompatibility**: Randomness DKG produces BLS signatures for randomness beacons. Timelock IBE requires extracting **Decryption Keys** (G1 points) from the Master Secret. While the curves are the same, the algebraic operations and transcript formats differ.
-2.  **Isolation**: Sharing the exact same MSK for both consensus-critical Randomness and application-layer Timelock was deemed a security risk.
-3.  **Protocol Constraints**: The IBE scheme required specific weighted secret sharing configurations that were difficult to overlay onto the existing Randomness configuration without breaking changes.
+**Current Architecture (Unified DKG)**
 
-**Current Issues**
-The attempt to run `RealDKG` and `IbeDKG` side-by-side within the same `EpochManager` introduced severe complexity:
+```
+                    ┌─────────────────────────────────────┐
+                    │           SINGLE DKG RUN            │
+                    │  (Existing RealDKG infrastructure)  │
+                    └─────────────────┬───────────────────┘
+                                      │
+                    ┌─────────────────┴───────────────────┐
+                    │                                     │
+                    ▼                                     ▼
+          ┌─────────────────┐                   ┌─────────────────┐
+          │   RANDOMNESS    │                   │      IBE        │
+          │                 │                   │                 │
+          │ WVUF::eval(sk)  │                   │ derive_dk(sk,id)│
+          │ → random seed   │                   │ → decryption key│
+          └─────────────────┘                   └─────────────────┘
+```
 
-- **Concurrency Deadlocks**: The system struggled to handle two simultaneous DKG sessions, leading to the "sequential execution" patch (Timelock waits for Randomness).
-- **Regressions**: Modifications to shared components (`EpochManager`, `DKGManager`) inadvertently broke the stability of the original Randomness DKG.
-- **Status**: The `IbeDKG` flow works in isolation (unit tests) but fails integration tests when running alongside the full validator stack.
+**Implementation Status**
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| Phase 0: Feasibility | ✅ Complete | Proved MPK extraction from DKG transcript works |
+| Phase 1A: Move module | ✅ Complete | `ibe_config.move` with MPK storage |
+| Phase 1B: MPK wiring | ✅ Complete | MPK extracted and stored on-chain after DKG |
+| Phase 1C: IBE primitives | ✅ Complete | `aptos-dkg/src/ibe/` module with encrypt/decrypt |
+| Phase 1D-E: Smoke tests | 🔲 TODO | Full integration smoke tests |
+| Phase 2-5 | 🔲 TODO | DKGTrait formalization, timelock registry, reveals |
+
+**Why This Approach Works**
+
+1.  **No concurrent DKG sessions** - eliminates deadlocks
+2.  **No modifications to EpochManager DKG flow** - reduces regression risk
+3.  **Same security model** - reuses existing threshold (2/3+1)
+4.  **Simpler architecture** - single transcript, single key storage
+
+**Previous Issues (Now Resolved)**
+The old `timelock-refactor` branch attempted to run `RealDKG` and `IbeDKG` side-by-side, which caused:
+- Concurrency deadlocks in `EpochManager`
+- Regressions in the Randomness DKG service
+- Complex "sequential execution" patches
+
+These issues are eliminated with the Unified DKG approach.
 
 ---
 
@@ -187,6 +222,19 @@ Each Fp: 48 bytes, big-endian
 
 **Symmetric Key Derivation:**
 
+> [!IMPORTANT]
+> **Implementation Variance**: The Rust implementation uses a slightly different key derivation approach than originally specified. Cross-implementation testing is required.
+
+**Rust Implementation (`aptos-dkg/src/ibe/`):**
+```
+K = SHA3-256(DST || BCS(Gt) || counter)[0..32]
+where:
+  DST = "APTOS_IBE_KEY_DERIVATION_DST"
+  BCS(Gt) = BCS serialization of Gt element
+  counter = 0 (incremented for key stream expansion)
+```
+
+**TypeScript Implementation (original spec):**
 ```
 K = Keccak256(Gt_bytes)[0..32]
 where Gt_bytes = canonical 576-byte serialization
@@ -194,11 +242,11 @@ where Gt_bytes = canonical 576-byte serialization
 
 **Implementation Notes:**
 
-- TypeScript (`@noble/curves`): Use `bls12_381.fields.Fp12.toBytes(gt)`
-- Rust (`blstrs`): Extract Fp12 coefficients and serialize manually (blstrs does not expose native Gt serialization)
+- **Rust** (`aptos-dkg/src/ibe/`): Uses BCS serialization for Gt, SHA3-256 for key derivation
+- **TypeScript** (`@noble/curves`): Uses `bls12_381.fields.Fp12.toBytes(gt)` with Keccak256
 
 > [!CAUTION]
-> Using non-canonical serialization (e.g., debug format strings) will cause decryption failures when encrypting with one implementation and decrypting with another.
+> The Rust and TypeScript implementations currently use **different** hash functions for key derivation (SHA3-256 vs Keccak256). Cross-implementation compatibility requires aligning on one approach before production use.
 
 ---
 
@@ -291,12 +339,14 @@ let seconds = microseconds / 1_000_000;
 ┌─────────────────────────────────────────────────────────────────┐
 │                   CRYPTOGRAPHY (Rust)                            │
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │ aptos-dkg/src/ibe/                                        │  │
+│  │ aptos-dkg/src/ibe/ ✅ IMPLEMENTED                         │  │
 │  │                                                           │  │
-│  │  - ibe_encrypt(mpk, identity, message) → Ciphertext     │  │
-│  │  - ibe_decrypt(dk, ciphertext) → Plaintext              │  │
-│  │  - derive_decryption_key(msk, identity) → DK            │  │
-│  │  - serialize_g1/g2, deserialize_g1/g2                   │  │
+│  │  - compute_identity(timelock_id, deadline_us) → [u8;32] │  │
+│  │  - hash_to_g1(identity) → G1Projective                  │  │
+│  │  - derive_decryption_key(secret, identity) → G1Affine   │  │
+│  │  - verify_decryption_key(dk, identity, mpk) → bool      │  │
+│  │  - ibe_encrypt(mpk, identity, msg, rng) → Ciphertext    │  │
+│  │  - ibe_decrypt(dk, ciphertext) → Vec<u8>                │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -1304,14 +1354,19 @@ The Atomica Timelock system builds upon existing Aptos infrastructure. This sect
 - Hash-to-curve
 - Serialization (compressed/uncompressed)
 
-**What we added:**
+**What we added:** ✅ IMPLEMENTED
 
-- IBE implementation (`aptos-dkg/src/ibe/`)
-  - `ibe_encrypt()`
-  - `ibe_decrypt()`
-  - `derive_decryption_key()`
-- Timelock identity derivation
-- Serialization helpers (`serialize_g1`, `deserialize_g1`)
+- IBE module (`aptos-dkg/src/ibe/`) with:
+  - `mod.rs` - Core IBE functions (encrypt, decrypt, key derivation)
+  - `ciphertext.rs` - Ciphertext struct with BCS serialization
+  - `tests.rs` - 16 unit tests
+- Functions:
+  - `compute_identity(timelock_id, deadline_us)` → 32-byte hash
+  - `hash_to_g1(identity)` → G1Projective
+  - `derive_decryption_key(secret, identity)` → G1Affine
+  - `verify_decryption_key(dk, identity, mpk)` → bool
+  - `ibe_encrypt(mpk, identity, msg, rng)` → Ciphertext
+  - `ibe_decrypt(dk, ciphertext)` → Vec<u8>
 
 #### 6. Event System
 
