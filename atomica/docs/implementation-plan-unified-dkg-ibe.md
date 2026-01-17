@@ -1,12 +1,13 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 1.3
+**Version:** 1.4
 **Date:** January 17, 2026
 **Branch:** timelock-das-vpss
 **Status:** Implementation In Progress
 
 ## Changelog
 
+- **v1.4** (Jan 17, 2026): Reordered phases to prioritize functionality over refactoring. Phase 2 is now Timelock Registry (was Phase 3), Phase 3 is DK Share Submission (was Phase 4), Phase 4 is DKGTrait Refactoring (was Phase 2, now marked optional).
 - **v1.3** (Jan 17, 2026): Marked Phase 0 and Phase 1A-1C complete. IBE crypto primitives implemented and tested. Updated architectural notes to reflect actual implementation choices (SHA3-256 for key derivation, BCS for Gt serialization).
 - **v1.2** (Jan 17, 2026): Restructured phases to prioritize on-chain MPK storage. Added comprehensive test pyramid (unit, integration, smoke) for each phase. Added IBE encryption/decryption verification in smoke tests.
 - **v1.1** (Jan 16, 2026): Initial plan with Phase 0 complete.
@@ -652,56 +653,7 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib "timelock::mpk_" -- --no
 
 ---
 
-### Phase 2: Formalize MPK Extraction in DKGTrait
-
-**Goal**: Add formal trait methods for MPK extraction to enable type-safe integration across the codebase.
-
-**Rationale**: Phase 0 proved feasibility; now we formalize the API so other components can reliably extract MPK from any DKG transcript type.
-
-**Components**:
-
-1. **Extend DKGTrait** (`types/src/dkg/mod.rs`)
-
-   ```rust
-   pub trait DKGTrait {
-       // Existing methods...
-
-       /// Get the master public key for IBE from a transcript (serialized G2)
-       fn get_ibe_master_public_key(transcript: &Self::Transcript) -> Vec<u8>;
-   }
-   ```
-
-2. **Implement for RealDKG** (`types/src/dkg/real_dkg/mod.rs`)
-   ```rust
-   impl DKGTrait for RealDKG {
-       fn get_ibe_master_public_key(transcript: &Transcripts) -> Vec<u8> {
-           let dpk = transcript.main.get_dealt_public_key();
-           // Serialize G2 point to 96 bytes
-           serialize_dealt_public_key(&dpk)
-       }
-   }
-   ```
-
-**Tests**:
-
-| Type        | Test                                       | Validates                               |
-| ----------- | ------------------------------------------ | --------------------------------------- |
-| Unit        | `real_dkg::tests::test_get_ibe_mpk`        | MPK extraction returns valid 96-byte G2 |
-| Unit        | `real_dkg::tests::test_mpk_deterministic`  | Same transcript → same MPK              |
-| Integration | `dkg_trait::test_mpk_matches_dealt_pk`     | Extracted MPK matches dealt public key  |
-| Smoke       | `timelock::mpk_extraction_from_transcript` | MPK extracted matches on-chain value    |
-
-**Files**:
-
-- `types/src/dkg/mod.rs` (extend trait)
-- `types/src/dkg/real_dkg/mod.rs` (implement extraction)
-- `types/src/dkg/real_dkg/tests.rs` (unit tests)
-
-**Commit**: "feat(dkg): formalize MPK extraction in DKGTrait"
-
----
-
-### Phase 3: Timelock Registry & Deadline Tracking
+### Phase 2: Timelock Registry & Deadline Tracking
 
 **Goal**: Allow users to register timelocks with deadlines. Track deadlines on-chain for coordinated reveal.
 
@@ -758,7 +710,7 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib "timelock::mpk_" -- --no
 
 ---
 
-### Phase 4: Decryption Key Share Submission & Aggregation
+### Phase 3: Decryption Key Share Submission & Aggregation
 
 **Goal**: Validators submit DK shares after deadline passes; aggregate to reveal decryption key.
 
@@ -838,6 +790,56 @@ async fn deadline_reveal() {
 - `testsuite/smoke-test/src/timelock/deadline_reveal.rs` (new)
 
 **Commit**: "feat(timelock): implement DK share submission and aggregation"
+
+---
+
+### Phase 4: Formalize MPK Extraction in DKGTrait (Optional Refactoring)
+
+**Goal**: Add formal trait methods for MPK extraction to enable type-safe integration across the codebase.
+
+**Rationale**: This is a code quality improvement, not new functionality. The MPK extraction already works via `transcript.main.get_dealt_public_key()`. This phase formalizes it as a trait method for cleaner architecture.
+
+**Priority**: LOW - Can be done anytime or skipped entirely.
+
+**Components**:
+
+1. **Extend DKGTrait** (`types/src/dkg/mod.rs`)
+
+   ```rust
+   pub trait DKGTrait {
+       // Existing methods...
+
+       /// Get the master public key for IBE from a transcript (serialized G2)
+       fn get_ibe_master_public_key(transcript: &Self::Transcript) -> Vec<u8>;
+   }
+   ```
+
+2. **Implement for RealDKG** (`types/src/dkg/real_dkg/mod.rs`)
+   ```rust
+   impl DKGTrait for RealDKG {
+       fn get_ibe_master_public_key(transcript: &Transcripts) -> Vec<u8> {
+           let dpk = transcript.main.get_dealt_public_key();
+           // Serialize G2 point to 96 bytes
+           serialize_dealt_public_key(&dpk)
+       }
+   }
+   ```
+
+**Tests**:
+
+| Type        | Test                                       | Validates                               |
+| ----------- | ------------------------------------------ | --------------------------------------- |
+| Unit        | `real_dkg::tests::test_get_ibe_mpk`        | MPK extraction returns valid 96-byte G2 |
+| Unit        | `real_dkg::tests::test_mpk_deterministic`  | Same transcript → same MPK              |
+| Integration | `dkg_trait::test_mpk_matches_dealt_pk`     | Extracted MPK matches dealt public key  |
+
+**Files**:
+
+- `types/src/dkg/mod.rs` (extend trait)
+- `types/src/dkg/real_dkg/mod.rs` (implement extraction)
+- `types/src/dkg/real_dkg/tests.rs` (unit tests)
+
+**Commit**: "refactor(dkg): formalize MPK extraction in DKGTrait"
 
 ---
 
@@ -994,14 +996,14 @@ git push origin timelock-das-vpss
 
 ### By Phase
 
-| Phase | Unit Tests                | Integration Tests         | Smoke Tests                                              | Status |
-| ----- | ------------------------- | ------------------------- | -------------------------------------------------------- | ------ |
-| 0     | -                         | -                         | `randomness::e2e_correctness` (baseline)                 | ✅ |
-| 1     | `ibe::*` (16 tests)       | `ibe_config::*` (9 tests) | `mpk_on_chain`, `mpk_encrypt_decrypt`                    | 🔶 Unit/Integration done, Smoke TODO |
-| 2     | `real_dkg::*` (2 tests)   | `dkg_trait::*` (1 test)   | `mpk_extraction_from_transcript`                         | 🔲 |
-| 3     | `ibe_config::*` (2 tests) | `ibe_config::*` (1 test)  | `register_and_query`                                     | 🔲 |
-| 4     | `ibe::*` (2 tests)        | `ibe_config::*` (2 tests) | `deadline_reveal`, `dk_aggregation`                      | 🔲 |
-| 5     | -                         | -                         | `timelock_e2e` (comprehensive)                           | 🔲 |
+| Phase | Description | Unit Tests | Integration Tests | Smoke Tests | Status |
+| ----- | ----------- | ---------- | ----------------- | ----------- | ------ |
+| 0     | Feasibility | - | - | `randomness::e2e_correctness` | ✅ |
+| 1     | MPK Storage + IBE Primitives | `ibe::*` (16) | `ibe_config::*` (9) | `mpk_on_chain`, `mpk_encrypt_decrypt` | 🔶 Smoke TODO |
+| 2     | Timelock Registry | `ibe_config::*` (2) | `ibe_config::*` (1) | `register_and_query` | 🔲 |
+| 3     | DK Share Submission | `ibe::*` (2) | `ibe_config::*` (2) | `deadline_reveal`, `dk_aggregation` | 🔲 |
+| 4     | DKGTrait Refactor (Optional) | `real_dkg::*` (2) | `dkg_trait::*` (1) | - | 🔲 |
+| 5     | E2E Integration | - | - | `timelock_e2e` | 🔲 |
 
 ### By Test Type
 
