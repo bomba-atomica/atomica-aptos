@@ -12,8 +12,9 @@ use crate::{
     },
     AptosVM,
 };
+use aptos_dkg::pvss::traits::transcript::Transcript;
 use aptos_types::{
-    dkg::{DKGState, DKGTrait, DKGTranscript, DefaultDKG},
+    dkg::{real_dkg::Transcripts, DKGState, DKGTrait, DKGTranscript, DefaultDKG},
     move_utils::as_move_value::AsMoveValue,
     on_chain_config::{ConfigurationResource, OnChainConfig},
     transaction::TransactionStatus,
@@ -46,6 +47,12 @@ enum ExpectedFailure {
 enum ExecutionFailure {
     Expected(ExpectedFailure),
     Unexpected(VMStatus),
+}
+
+fn extract_mpk_from_transcript(transcript_bytes: &[u8]) -> Result<Vec<u8>, ExecutionFailure> {
+    let transcript: Transcripts = bcs::from_bytes(transcript_bytes)
+        .map_err(|_| Expected(ExpectedFailure::TranscriptDeserializationFailed))?;
+    Ok(transcript.main.get_dealt_public_key().to_bytes().to_vec())
 }
 
 impl AptosVM {
@@ -107,12 +114,15 @@ impl AptosVM {
         DefaultDKG::verify_transcript(&pub_params, &transcript)
             .map_err(|_| Expected(TranscriptVerificationFailed))?;
 
+        let mpk = extract_mpk_from_transcript(dkg_node.transcript_bytes.as_slice())?;
+
         // All check passed, invoke VM to publish DKG result on chain.
         let mut gas_meter = UnmeteredGasMeter;
         let mut session = self.new_session(resolver, session_id, None);
         let args = vec![
             MoveValue::Signer(AccountAddress::ONE),
             dkg_node.transcript_bytes.as_move_value(),
+            mpk.as_move_value(),
         ];
 
         let traversal_storage = TraversalStorage::new();

@@ -4870,6 +4870,7 @@ dependencies = [
  "aptos-block-partitioner",
  "aptos-crypto",
  "aptos-crypto-derive",
+ "aptos-dkg",
  "aptos-experimental-runtimes",
  "aptos-framework",
  "aptos-gas-algebra",
