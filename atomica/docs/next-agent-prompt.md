@@ -7,81 +7,77 @@
 
 ### Completed
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 0 | Feasibility - MPK extraction from DKG transcript | ✅ Complete |
-| 1A | Move module `ibe_config.move` | ✅ Complete |
-| 1B | Rust MPK extraction in `dkg.rs` | ✅ Complete |
-| 1C | IBE Crypto Module (`aptos-dkg/src/ibe/`) | ✅ Complete |
-| **1D-E** | **Smoke tests** | **🔲 YOUR TASK** |
+| Phase    | Description                                      | Status                                                      |
+| -------- | ------------------------------------------------ | ----------------------------------------------------------- |
+| 0        | Feasibility - MPK extraction from DKG transcript | ✅ Complete                                                 |
+| 1A       | Move module `ibe_config.move`                    | ✅ Complete                                                 |
+| 1B       | Rust MPK extraction in `dkg.rs`                  | ✅ Complete                                                 |
+| 1C       | IBE Crypto Module (`aptos-dkg/src/ibe/`)         | ✅ Complete                                                 |
+| **1D-E** | **Smoke tests**                                  | **🔶 1/2 PASSED**                                           |
+| ---      | ---                                              | ---                                                         |
+|          |                                                  | `mpk_on_chain`: ✅ PASSED                                   |
+|          |                                                  | `mpk_encrypt_decrypt`: 🔲 BLOCKED (IBE-DKG scalar mismatch) |
 
 ### Test Status
 
 - IBE unit tests: 16/16 passing
 - Move integration tests (`ibe_config`): 9/9 passing
-- Smoke test (`randomness::e2e_correctness`): passing (no regressions)
+- Smoke test `randomness::e2e_correctness`: passing (no regressions)
+- `mpk_on_chain`: ✅ PASSED
+- `mpk_encrypt_decrypt`: 🔲 BLOCKED (requires IBE-DKG scalar fix)
 
 ---
 
-## Your Task: Phase 1D-E Smoke Tests
+## Your Task: Fix Phase 1E (IBE-DKG Integration)
 
-Create smoke tests that validate the full DKG → MPK → IBE flow.
+**Status:** `mpk_on_chain` is complete. `mpk_encrypt_decrypt` is BLOCKED.
 
-### Files to Create
+### The Problem
 
-1. **`testsuite/smoke-test/src/timelock/mod.rs`**
-   ```rust
-   pub mod mpk_on_chain;
-   pub mod mpk_encrypt_decrypt;
-   ```
-
-2. **`testsuite/smoke-test/src/timelock/mpk_on_chain.rs`**
-   - Wait for DKG to complete
-   - Query MPK from chain via `ibe_config::get_mpk()` view function
-   - Verify MPK is 96 bytes (valid G2 compressed)
-   - Verify MPK can be deserialized to valid G2 point
-   - Verify `is_ready()` returns true
-   - Verify chain liveness
-
-3. **`testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs`**
-   - Read MPK from chain
-   - Create test identity using `compute_identity(timelock_id, deadline_us)`
-   - Encrypt a test message using `ibe_encrypt()`
-   - Derive decryption key from validator shares
-   - Decrypt and verify plaintext matches
-   - Verify wrong identity fails to decrypt
-
-4. **Update `testsuite/smoke-test/src/lib.rs`**
-   - Add `pub mod timelock;`
-
-### Reference Implementation
-
-See the implementation plan for detailed test templates:
-- Section "Smoke Test 1: `mpk_on_chain`"
-- Section "Smoke Test 2: `mpk_encrypt_decrypt`"
-
-Existing smoke test to reference: `testsuite/smoke-test/src/randomness/ibe_mpk_on_chain.rs`
-
-### IBE Crypto API (Already Implemented)
+The IBE module expects a `blstrs::Scalar` as the master secret for `derive_decryption_key()`:
 
 ```rust
-use aptos_dkg::ibe::{
-    compute_identity,
-    hash_to_g1,
-    derive_decryption_key,
-    verify_decryption_key,
-    ibe_encrypt,
-    ibe_decrypt,
-    Ciphertext,
-};
+pub fn derive_decryption_key(secret: &Scalar, identity: &[u8]) -> G1Affine
 ```
+
+But the DKG produces a `DealtSecretKey` which is a G1 projective element, not a scalar:
+
+```rust
+pub struct DealtSecretKey {
+    h_hat: G1Projective,  // G1 element, NOT a scalar
+}
+```
+
+### Required Fix
+
+Either:
+
+**Option A:** Modify the DKG to output a scalar secret (not G1 element)
+
+- Change `DealtSecretKey` type from G1 element to Scalar
+- This is a significant architectural change to the PVSS/DKG code
+
+**Option B:** Modify the IBE scheme to work with G1 elements
+
+- Change `derive_decryption_key()` to accept G1 element instead of scalar
+- Derive key as `dk = H(identity) * secret_as_g1` where `secret_as_g1` is the G1 element
+
+**Option C:** Use a hash-to-scalar conversion
+
+- Hash the G1 element bytes to derive a scalar
+- Note: This changes the cryptographic construction and requires analysis
+
+### Files Created
+
+1. ✅ `testsuite/smoke-test/src/timelock/mpk_on_chain.rs` - COMPLETE
+2. ✅ `testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs` - PARTIAL (validates storage, not crypto)
+3. ✅ `testsuite/smoke-test/src/timelock/mod.rs` - Updated
 
 ### Run Commands
 
 ```bash
-# After implementation
+# Run completed test
 RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock::mpk_on_chain -- --nocapture
-RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib timelock::mpk_encrypt_decrypt -- --nocapture
 
 # Verify no regressions
 RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctness -- --nocapture
@@ -89,6 +85,8 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctn
 
 ---
 
-## After Phase 1: What Comes Next
+## What's Next
 
-Once smoke tests pass, proceed to **Phase 2: Timelock Registry** - adding user-facing timelock registration with deadline tracking. See the implementation plan for details.
+Before proceeding to Phase 2, fix the IBE-DKG scalar mismatch (see "Your Task" section above).
+
+Once `mpk_encrypt_decrypt` passes (full encrypt/decrypt roundtrip), proceed to **Phase 2: Timelock Registry** - adding user-facing timelock registration with deadline tracking. See the implementation plan for details.

@@ -301,15 +301,16 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctn
 
 #### Phase 1 Status
 
-| Sub-Phase | Description | Status |
-|-----------|-------------|--------|
-| 1A | Move module `ibe_config.move` | ✅ COMPLETE |
-| 1B | Rust MPK extraction in `dkg.rs` | ✅ COMPLETE |
-| 1C | IBE Crypto Module (`aptos-dkg/src/ibe/`) | ✅ COMPLETE |
-| 1D | Smoke test `mpk_on_chain` | 🔲 TODO |
-| 1E | Smoke test `mpk_encrypt_decrypt` | 🔲 TODO |
+| Sub-Phase | Description                              | Status                               |
+| --------- | ---------------------------------------- | ------------------------------------ |
+| 1A        | Move module `ibe_config.move`            | ✅ COMPLETE                          |
+| 1B        | Rust MPK extraction in `dkg.rs`          | ✅ COMPLETE                          |
+| 1C        | IBE Crypto Module (`aptos-dkg/src/ibe/`) | ✅ COMPLETE                          |
+| 1D        | Smoke test `mpk_on_chain`                | ✅ COMPLETE                          |
+| 1E        | Smoke test `mpk_encrypt_decrypt`         | 🔲 BLOCKED (IBE-DKG scalar mismatch) |
 
 **Commits:**
+
 - `63c0544add` - feat(ibe): Phase 1A - add ibe_config.move module
 - `cca59e5bf0` - feat(ibe): Phase 1B+1C - wire MPK extraction and on-chain storage
 - `8b2410b965` - feat(ibe): add IBE crypto primitives for timelock encryption
@@ -396,28 +397,29 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctn
 
 **Tests**:
 
-| Type        | Test                                         | Validates                                                   | Status |
-| ----------- | -------------------------------------------- | ----------------------------------------------------------- | ------ |
-| Unit        | `ibe::tests::test_compute_identity_deterministic` | Identity derivation is deterministic                   | ✅ |
-| Unit        | `ibe::tests::test_hash_to_g1_deterministic`  | Hash-to-curve produces valid G1 point                       | ✅ |
-| Unit        | `ibe::tests::test_encrypt_decrypt_roundtrip` | IBE encrypt/decrypt with known keys                         | ✅ |
-| Unit        | `ibe::tests::test_encrypt_decrypt_large_message` | Large message encryption/decryption                     | ✅ |
-| Unit        | `ibe::tests::test_wrong_decryption_key_fails` | Wrong identity fails to decrypt                            | ✅ |
-| Unit        | `ibe::tests::test_verify_decryption_key_valid` | DK verification against MPK                               | ✅ |
-| Unit        | `ibe::tests::test_ciphertext_serialization_roundtrip` | Ciphertext BCS serialization                       | ✅ |
-| Unit        | `ibe::ciphertext::tests::*` (2 tests)        | Ciphertext struct basics                                    | ✅ |
-| Integration | `ibe_config::test_initialize`                | Move module initializes correctly                           | ✅ |
-| Integration | `ibe_config::test_set_and_get_mpk`           | MPK storage and retrieval                                   | ✅ |
-| Integration | `ibe_config::test_is_ready_before_and_after` | Ready check before/after MPK set                            | ✅ |
-| Integration | `ibe_config::test_mpk_update_across_epochs`  | MPK updates correctly on epoch change                       | ✅ |
-| Integration | `ibe_config::test_set_mpk_invalid_length_*`  | Invalid MPK rejected                                        | ✅ |
-| **Smoke 1** | `timelock::mpk_on_chain`                     | **DKG stores MPK on-chain, retrievable and deserializable** | 🔲 |
-| **Smoke 2** | `timelock::mpk_encrypt_decrypt`              | **On-chain MPK can encrypt; private key can decrypt**       | 🔲 |
+| Type        | Test                                                  | Validates                                                   | Status     |
+| ----------- | ----------------------------------------------------- | ----------------------------------------------------------- | ---------- |
+| Unit        | `ibe::tests::test_compute_identity_deterministic`     | Identity derivation is deterministic                        | ✅         |
+| Unit        | `ibe::tests::test_hash_to_g1_deterministic`           | Hash-to-curve produces valid G1 point                       | ✅         |
+| Unit        | `ibe::tests::test_encrypt_decrypt_roundtrip`          | IBE encrypt/decrypt with known keys                         | ✅         |
+| Unit        | `ibe::tests::test_encrypt_decrypt_large_message`      | Large message encryption/decryption                         | ✅         |
+| Unit        | `ibe::tests::test_wrong_decryption_key_fails`         | Wrong identity fails to decrypt                             | ✅         |
+| Unit        | `ibe::tests::test_verify_decryption_key_valid`        | DK verification against MPK                                 | ✅         |
+| Unit        | `ibe::tests::test_ciphertext_serialization_roundtrip` | Ciphertext BCS serialization                                | ✅         |
+| Unit        | `ibe::ciphertext::tests::*` (2 tests)                 | Ciphertext struct basics                                    | ✅         |
+| Integration | `ibe_config::test_initialize`                         | Move module initializes correctly                           | ✅         |
+| Integration | `ibe_config::test_set_and_get_mpk`                    | MPK storage and retrieval                                   | ✅         |
+| Integration | `ibe_config::test_is_ready_before_and_after`          | Ready check before/after MPK set                            | ✅         |
+| Integration | `ibe_config::test_mpk_update_across_epochs`           | MPK updates correctly on epoch change                       | ✅         |
+| Integration | `ibe_config::test_set_mpk_invalid_length_*`           | Invalid MPK rejected                                        | ✅         |
+| **Smoke 1** | `timelock::mpk_on_chain`                              | **DKG stores MPK on-chain, retrievable and deserializable** | ✅         |
+| **Smoke 2** | `timelock::mpk_encrypt_decrypt`                       | **On-chain MPK can encrypt; private key can decrypt**       | 🔲 BLOCKED |
 
 **Test Counts:**
+
 - Unit tests (IBE Rust): 16 tests ✅ PASSING
 - Integration tests (Move): 9 tests ✅ PASSING
-- Smoke tests: 2 tests 🔲 TODO
+- Smoke tests: 2 tests 🔲 1 PASSED, 1 BLOCKED
 
 ---
 
@@ -827,11 +829,11 @@ async fn deadline_reveal() {
 
 **Tests**:
 
-| Type        | Test                                       | Validates                               |
-| ----------- | ------------------------------------------ | --------------------------------------- |
-| Unit        | `real_dkg::tests::test_get_ibe_mpk`        | MPK extraction returns valid 96-byte G2 |
-| Unit        | `real_dkg::tests::test_mpk_deterministic`  | Same transcript → same MPK              |
-| Integration | `dkg_trait::test_mpk_matches_dealt_pk`     | Extracted MPK matches dealt public key  |
+| Type        | Test                                      | Validates                               |
+| ----------- | ----------------------------------------- | --------------------------------------- |
+| Unit        | `real_dkg::tests::test_get_ibe_mpk`       | MPK extraction returns valid 96-byte G2 |
+| Unit        | `real_dkg::tests::test_mpk_deterministic` | Same transcript → same MPK              |
+| Integration | `dkg_trait::test_mpk_matches_dealt_pk`    | Extracted MPK matches dealt public key  |
 
 **Files**:
 
@@ -996,14 +998,14 @@ git push origin timelock-das-vpss
 
 ### By Phase
 
-| Phase | Description | Unit Tests | Integration Tests | Smoke Tests | Status |
-| ----- | ----------- | ---------- | ----------------- | ----------- | ------ |
-| 0     | Feasibility | - | - | `randomness::e2e_correctness` | ✅ |
-| 1     | MPK Storage + IBE Primitives | `ibe::*` (16) | `ibe_config::*` (9) | `mpk_on_chain`, `mpk_encrypt_decrypt` | 🔶 Smoke TODO |
-| 2     | Timelock Registry | `ibe_config::*` (2) | `ibe_config::*` (1) | `register_and_query` | 🔲 |
-| 3     | DK Share Submission | `ibe::*` (2) | `ibe_config::*` (2) | `deadline_reveal`, `dk_aggregation` | 🔲 |
-| 4     | DKGTrait Refactor (Optional) | `real_dkg::*` (2) | `dkg_trait::*` (1) | - | 🔲 |
-| 5     | E2E Integration | - | - | `timelock_e2e` | 🔲 |
+| Phase | Description                  | Unit Tests          | Integration Tests   | Smoke Tests                           | Status        |
+| ----- | ---------------------------- | ------------------- | ------------------- | ------------------------------------- | ------------- |
+| 0     | Feasibility                  | -                   | -                   | `randomness::e2e_correctness`         | ✅            |
+| 1     | MPK Storage + IBE Primitives | `ibe::*` (16)       | `ibe_config::*` (9) | `mpk_on_chain`, `mpk_encrypt_decrypt` | 🔶 1/2 PASSED |
+| 2     | Timelock Registry            | `ibe_config::*` (2) | `ibe_config::*` (1) | `register_and_query`                  | 🔲            |
+| 3     | DK Share Submission          | `ibe::*` (2)        | `ibe_config::*` (2) | `deadline_reveal`, `dk_aggregation`   | 🔲            |
+| 4     | DKGTrait Refactor (Optional) | `real_dkg::*` (2)   | `dkg_trait::*` (1)  | -                                     | 🔲            |
+| 5     | E2E Integration              | -                   | -                   | `timelock_e2e`                        | 🔲            |
 
 ### By Test Type
 
@@ -1138,11 +1140,11 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib "randomness::e2e|timeloc
 
 ### Test Coverage Requirements
 
-| Level       | Minimum Tests                              | Status  |
-| ----------- | ------------------------------------------ | ------- |
-| Unit        | 16 tests in `ibe::*`                       | ✅ Complete |
-| Integration | 9 tests in `ibe_config::*` (Move)          | ✅ Complete |
-| Smoke       | 8 smoke tests (including 2 for Phase 1)    | 🔲 Pending |
+| Level       | Minimum Tests                           | Status      |
+| ----------- | --------------------------------------- | ----------- |
+| Unit        | 16 tests in `ibe::*`                    | ✅ Complete |
+| Integration | 9 tests in `ibe_config::*` (Move)       | ✅ Complete |
+| Smoke       | 8 smoke tests (including 2 for Phase 1) | 🔲 Pending  |
 
 ### Definition of Done
 
