@@ -74,7 +74,7 @@ jobs:
       - name: Run randomness_correctness
         if: always()
         run: |
-          cargo test -p smoke-test --lib randomness::randomness_correctness -- --nocapture --test-threads=1
+          cargo test -p smoke-test --lib randomness_correctness -- --nocapture --test-threads=1
         timeout-minutes: 60
 
       - name: Run test_validator_execution_sync_epoch_changes
