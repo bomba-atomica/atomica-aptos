@@ -32,7 +32,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang libssl-dev pkg-config
+          sudo apt-get install -y build-essential binutils lld cmake clang libssl-dev pkg-config libudev-dev libdw-dev
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -60,7 +60,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang libssl-dev pkg-config
+          sudo apt-get install -y build-essential binutils lld cmake clang libssl-dev pkg-config libudev-dev libdw-dev
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -88,7 +88,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake clang libssl-dev pkg-config
+          sudo apt-get install -y build-essential binutils lld cmake clang libssl-dev pkg-config libudev-dev libdw-dev
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
