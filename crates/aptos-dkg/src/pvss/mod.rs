@@ -13,6 +13,7 @@ pub(crate) mod encryption_elgamal;
 pub mod input_secret;
 pub mod insecure_field;
 mod low_degree_test;
+pub mod scalar_elgamal;
 pub mod scalar_secret_key;
 mod schnorr;
 pub mod test_utils;
