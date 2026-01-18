@@ -314,31 +314,26 @@ impl DKGTrait for RealDKG {
                 )
             });
 
-        // TODO(Phase 2): Generate scalar transcript for IBE
+        // Generate scalar transcript for IBE
         //
-        // This should deal the same input_secret using ScalarTrx::deal().
+        // This deals the same input_secret using ScalarTrx::deal().
         // The scalar transcript shares the same underlying secret as the main
         // transcript, but produces scalar shares instead of G1 shares.
-        //
-        // Implementation:
-        // let scalar_trx = ScalarTrx::deal(
-        //     &pub_params.pvss_config.wconfig,
-        //     &pub_params.pvss_config.pp,
-        //     sk,
-        //     &pub_params.pvss_config.eks,
-        //     input_secret,
-        //     &aux,
-        //     &Player { id: my_index },
-        //     rng,
-        // );
-        //
-        // For now, we set this to None until ScalarTrx::deal() is implemented.
-        let scalar_trx: Option<ScalarTrx> = None;
+        let scalar_trx = ScalarTrx::deal(
+            &pub_params.pvss_config.wconfig,
+            &pub_params.pvss_config.pp,
+            sk,
+            &pub_params.pvss_config.eks,
+            input_secret,
+            &aux,
+            &Player { id: my_index },
+            rng,
+        );
 
         Transcripts {
             main: wtrx,
             fast: fast_wtrx,
-            scalar: scalar_trx,
+            scalar: Some(scalar_trx),
         }
     }
 
@@ -510,15 +505,10 @@ impl DKGTrait for RealDKG {
             acc.aggregate_with(config, ele);
         }
 
-        // TODO(Phase 2): Aggregate scalar transcripts
-        //
-        // When ScalarTrx::aggregate_with() is implemented:
-        // if let (Some(acc), Some(ele)) = (
-        //     accumulator.scalar.as_mut(),
-        //     element.scalar.as_ref(),
-        // ) {
-        //     acc.aggregate_with(&params.pvss_config.wconfig, ele);
-        // }
+        // Aggregate scalar transcripts
+        if let (Some(acc), Some(ele)) = (accumulator.scalar.as_mut(), element.scalar.as_ref()) {
+            acc.aggregate_with(&params.pvss_config.wconfig, ele);
+        }
     }
 
     fn decrypt_secret_share_from_transcript(
@@ -557,27 +547,24 @@ impl DKGTrait for RealDKG {
             _ => (None, None),
         };
 
-        // TODO(Phase 2): Decrypt scalar shares for IBE
+        // Decrypt scalar shares for IBE
         //
-        // When ScalarTrx::decrypt_own_share() is implemented:
-        // let (scalar_sk, scalar_pk) = match trx.scalar.as_ref() {
-        //     Some(scalar_trx) => {
-        //         let (scalar_sk, scalar_pk) = scalar_trx.decrypt_own_share(
-        //             &pub_params.pvss_config.wconfig,
-        //             &Player {
-        //                 id: player_idx as usize,
-        //             },
-        //             dk,
-        //             &pub_params.pvss_config.pp,
-        //         );
-        //         (Some(scalar_sk), Some(scalar_pk))
-        //     },
-        //     None => (None, None),
-        // };
-        let (scalar_sk, scalar_pk): (
-            Option<<ScalarTrx as Transcript>::DealtSecretKeyShare>,
-            Option<<ScalarTrx as Transcript>::DealtPubKeyShare>,
-        ) = (None, None);
+        // The scalar transcript produces h1^share which can be combined in the exponent
+        // to reconstruct h1^s. For IBE, this is used as: H(id)^s = (H(id)^h1)^s
+        let (scalar_sk, scalar_pk) = match trx.scalar.as_ref() {
+            Some(scalar_trx) => {
+                let (scalar_sk, scalar_pk) = scalar_trx.decrypt_own_share(
+                    &pub_params.pvss_config.wconfig,
+                    &Player {
+                        id: player_idx as usize,
+                    },
+                    dk,
+                    &pub_params.pvss_config.pp,
+                );
+                (Some(scalar_sk), Some(scalar_pk))
+            },
+            None => (None, None),
+        };
 
         Ok((
             DealtSecretKeyShares {
