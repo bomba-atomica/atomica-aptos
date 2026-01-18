@@ -746,9 +746,23 @@ impl RealDKG {
                     rng,
                 )
             });
+        // Use a third secret for the scalar transcript to make it inconsistent
+        let secret_2 = <RealDKG as DKGTrait>::InputSecret::generate(rng);
+        let scalar_trx = ScalarTrx::deal(
+            &pub_params.pvss_config.wconfig,
+            &pub_params.pvss_config.pp,
+            sk,
+            &pub_params.pvss_config.eks,
+            &secret_2,
+            &aux,
+            &Player { id: my_index },
+            rng,
+        );
+
         Transcripts {
             main: wtrx,
             fast: fast_wtrx,
+            scalar: Some(scalar_trx),
         }
     }
 }
