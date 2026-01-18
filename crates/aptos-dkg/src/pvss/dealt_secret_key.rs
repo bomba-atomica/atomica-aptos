@@ -131,6 +131,80 @@ pub mod g1 {
     );
 }
 
+pub mod scalar {
+    use crate::pvss::traits::ThresholdConfig;
+    use crate::{
+        algebra::lagrange::lagrange_coefficients,
+        pvss::{
+            dealt_secret_key_share::scalar::DealtSecretKeyShare,
+            threshold_config::ThresholdConfigBlstrs, traits, traits::SecretSharingConfig, Player,
+        },
+    };
+    use aptos_crypto::CryptoMaterialError;
+    use aptos_crypto_derive::{SilentDebug, SilentDisplay};
+    use blstrs::Scalar;
+    use ff::Field;
+    use more_asserts::{assert_ge, assert_le};
+    use std::ops::{Add, Mul};
+
+    pub const DEALT_SK_NUM_BYTES: usize = 32;
+
+    #[derive(SilentDebug, SilentDisplay, PartialEq, Clone)]
+    pub struct DealtSecretKey {
+        pub s: Scalar,
+    }
+
+    impl DealtSecretKey {
+        pub fn new(s: Scalar) -> Self {
+            Self { s }
+        }
+
+        pub fn to_bytes(&self) -> [u8; DEALT_SK_NUM_BYTES] {
+            self.s.to_bytes_le()
+        }
+    }
+
+    impl TryFrom<&[u8]> for DealtSecretKey {
+        type Error = CryptoMaterialError;
+
+        fn try_from(bytes: &[u8]) -> std::result::Result<DealtSecretKey, Self::Error> {
+            let s = Scalar::from_bytes_le(
+                bytes
+                    .try_into()
+                    .map_err(|_| CryptoMaterialError::DeserializationError)?,
+            );
+            if s.is_some().into() {
+                Ok(DealtSecretKey { s: s.unwrap() })
+            } else {
+                Err(CryptoMaterialError::DeserializationError)
+            }
+        }
+    }
+
+    impl traits::Reconstructable<ThresholdConfigBlstrs> for DealtSecretKey {
+        type Share = DealtSecretKeyShare;
+
+        fn reconstruct(sc: &ThresholdConfigBlstrs, shares: &Vec<(Player, Self::Share)>) -> Self {
+            assert_ge!(shares.len(), sc.get_threshold());
+            assert_le!(shares.len(), sc.get_total_num_players());
+
+            let ids = shares.iter().map(|(p, _)| p.id).collect::<Vec<usize>>();
+            let lagr = lagrange_coefficients(
+                sc.get_batch_evaluation_domain(),
+                ids.as_slice(),
+                &Scalar::ZERO,
+            );
+
+            let mut acc = Scalar::ZERO;
+            for (coeff, (_, share)) in lagr.iter().zip(shares.iter()) {
+                acc += share.0.s * coeff;
+            }
+
+            DealtSecretKey { s: acc }
+        }
+    }
+}
+
 pub mod g2 {
     // dealt_secret_key_impl!(
     //     G2_PROJ_NUM_BYTES,

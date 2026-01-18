@@ -69,6 +69,47 @@ pub mod g1 {
     dealt_secret_key_share_impl!(G1Projective, g1);
 }
 
+pub mod scalar {
+    use crate::pvss::dealt_secret_key::scalar::{DealtSecretKey, DEALT_SK_NUM_BYTES};
+    use aptos_crypto::{CryptoMaterialError, ValidCryptoMaterial, ValidCryptoMaterialStringExt};
+    use aptos_crypto_derive::{DeserializeKey, SerializeKey, SilentDebug, SilentDisplay};
+    use blstrs::Scalar;
+
+    const DEALT_SK_SHARE_NUM_BYTES: usize = DEALT_SK_NUM_BYTES;
+
+    #[derive(DeserializeKey, SerializeKey, SilentDisplay, SilentDebug, PartialEq, Clone)]
+    pub struct DealtSecretKeyShare(pub(crate) DealtSecretKey);
+
+    impl DealtSecretKeyShare {
+        pub fn new(dealt_sk: DealtSecretKey) -> Self {
+            DealtSecretKeyShare(dealt_sk)
+        }
+
+        pub fn to_bytes(&self) -> [u8; DEALT_SK_SHARE_NUM_BYTES] {
+            self.0.to_bytes()
+        }
+
+        pub fn into_inner(self) -> Scalar {
+            self.0.s
+        }
+    }
+
+    impl ValidCryptoMaterial for DealtSecretKeyShare {
+        const AIP_80_PREFIX: &'static str = "";
+        fn to_bytes(&self) -> Vec<u8> {
+            self.to_bytes().to_vec()
+        }
+    }
+
+    impl TryFrom<&[u8]> for DealtSecretKeyShare {
+        type Error = CryptoMaterialError;
+
+        fn try_from(bytes: &[u8]) -> std::result::Result<DealtSecretKeyShare, Self::Error> {
+            DealtSecretKey::try_from(bytes).map(|sk| DealtSecretKeyShare(sk))
+        }
+    }
+}
+
 pub mod g2 {
     //dealt_secret_key_share_impl!(G2Projective, g2);
 }

@@ -56,6 +56,17 @@ pub mod weighted_protocol;
 pub use transcript::Transcript;
 pub use weighted_protocol::WeightedTranscript;
 
+use crate::pvss::{
+    das::PublicParameters, dealt_secret_key::scalar::DealtSecretKey, input_secret::InputSecret,
+    traits::Convert,
+};
+
+impl Convert<DealtSecretKey, PublicParameters> for InputSecret {
+    fn to(&self, _pp: &PublicParameters) -> DealtSecretKey {
+        DealtSecretKey::new(*self.get_secret_a())
+    }
+}
+
 /// Domain separation tag for Fiat-Shamir in this PVSS scheme.
 ///
 /// Used in DLEQ proof generation to prevent cross-protocol attacks.
