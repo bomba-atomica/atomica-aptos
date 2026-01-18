@@ -27,10 +27,10 @@ mod dkg_with_validator_join_leave;
 mod e2e_basic_consumption;
 mod e2e_correctness;
 mod enable_feature_0;
-mod ibe_mpk_on_chain;
 mod enable_feature_1;
 mod enable_feature_2;
 mod entry_func_attrs;
+mod ibe_mpk_on_chain;
 mod randomness_stall_recovery;
 mod validator_restart_during_dkg;
 

@@ -73,7 +73,8 @@ mod tests {
 
         // Test BCS serialization
         let encoded = bcs::to_bytes(&ct).expect("serialization should succeed");
-        let decoded: Ciphertext = bcs::from_bytes(&encoded).expect("deserialization should succeed");
+        let decoded: Ciphertext =
+            bcs::from_bytes(&encoded).expect("deserialization should succeed");
 
         assert_eq!(ct, decoded);
     }

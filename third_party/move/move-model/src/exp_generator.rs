@@ -382,9 +382,11 @@ pub trait ExpGenerator<'env> {
         let node_id = self.new_node(Type::Primitive(PrimitiveType::Bool), None);
         ExpData::Call(
             node_id,
-            Operation::TestVariants(struct_env.module_env.get_id(), struct_env.get_id(), vec![
-                variant,
-            ]),
+            Operation::TestVariants(
+                struct_env.module_env.get_id(),
+                struct_env.get_id(),
+                vec![variant],
+            ),
             vec![exp],
         )
         .into_exp()
