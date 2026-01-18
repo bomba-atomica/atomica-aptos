@@ -25,11 +25,9 @@ mod tests;
 pub use ciphertext::Ciphertext;
 
 use crate::utils::random::random_scalar_from_uniform_bytes;
-use aptos_crypto::blstrs::{SCALAR_FIELD_ORDER, SCALAR_NUM_BYTES};
+use aptos_crypto::blstrs::SCALAR_NUM_BYTES;
 use blstrs::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
-use group::{Curve, Group, GroupEncoding};
-use num_bigint::BigUint;
-use num_integer::Integer;
+use group::{Curve, Group};
 use sha3::{Digest, Sha3_256};
 use std::ops::Mul;
 
@@ -84,55 +82,6 @@ pub fn hash_to_g1(identity: &[u8]) -> G1Projective {
 pub fn derive_decryption_key(secret: &Scalar, identity: &[u8]) -> G1Affine {
     let h = hash_to_g1(identity);
     h.mul(secret).to_affine()
-}
-
-/// Helper function to convert a G1 element to a scalar for "Shadow Mode" testing.
-///
-/// This is used to bypass the IBE-DKG scalar mismatch by deterministically
-/// deriving a scalar from the G1 element output by the DKG.
-///
-/// WARNING: This is NOT secure for production use as it changes the cryptographic scheme
-/// and potentially exposes the derived secret if the G1 element is public.
-fn g1_to_scalar(g1: &G1Projective) -> Scalar {
-    let mut hasher = Sha3_256::default();
-    hasher.update(b"APTOS_IBE_SHADOW_MODE_SECRET");
-    hasher.update(g1.to_bytes());
-    let result = hasher.finalize();
-
-    // Reduce modulo the scalar field order
-    let bignum = BigUint::from_bytes_be(result.as_slice());
-    let remainder = bignum.mod_floor(&SCALAR_FIELD_ORDER);
-
-    // Convert back to bytes and then to Scalar
-    let mut bytes = remainder.to_bytes_be();
-    // Pad with zeros if necessary
-    while bytes.len() < SCALAR_NUM_BYTES {
-        bytes.insert(0, 0);
-    }
-
-    // Ensure we use the last 32 bytes if it somehow got larger (shouldn't happen with mod)
-    let start = bytes.len().saturating_sub(SCALAR_NUM_BYTES);
-    let slice: [u8; SCALAR_NUM_BYTES] = bytes[start..].try_into().expect("Should be 32 bytes");
-
-    Scalar::from_bytes_be(&slice).unwrap()
-}
-
-/// Derives a decryption key from a G1 master secret (DKG output) using "Shadow Mode".
-///
-/// This uses `g1_to_scalar` to convert the G1 element to a scalar, effectively
-/// creating a new master secret `s' = Hash(g1_secret)`.
-pub fn derive_decryption_key_from_g1(secret: &G1Projective, identity: &[u8]) -> G1Affine {
-    let s = g1_to_scalar(secret);
-    derive_decryption_key(&s, identity)
-}
-
-/// Computes the "Shadow MPK" corresponding to the G1 master secret.
-///
-/// Returns `g2^s'` where `s' = Hash(g1_secret)`.
-/// This must be used for encryption when using `derive_decryption_key_from_g1` for decryption.
-pub fn get_shadow_mpk(secret: &G1Projective) -> G2Affine {
-    let s = g1_to_scalar(secret);
-    (G2Projective::generator() * s).to_affine()
 }
 
 /// Encrypts a message using IBE.

@@ -16,6 +16,7 @@ use aptos_crypto::{bls12381, bls12381::PrivateKey};
 use aptos_dkg::{
     pvss,
     pvss::{
+        scalar_elgamal,
         traits::{Convert, Reconstructable, Transcript},
         Player,
     },
@@ -37,6 +38,16 @@ pub type WTrx = pvss::das::WeightedTranscript;
 pub type DkgPP = <WTrx as Transcript>::PublicParameters;
 pub type SSConfig = <WTrx as Transcript>::SecretSharingConfig;
 pub type EncPK = <WTrx as Transcript>::EncryptPubKey;
+
+/// Weighted transcript type for Scalar ElGamal PVSS (produces scalar shares for IBE).
+///
+/// This is the scalar-output counterpart to `WTrx` (DAS). Both are dealt in parallel
+/// from the same `InputSecret`, producing:
+/// - `WTrx` → G1 shares for WVUF (randomness)
+/// - `ScalarTrx` → Scalar shares for IBE (timelock)
+///
+/// See: `crates/aptos-dkg/src/pvss/scalar_elgamal/` for implementation.
+pub type ScalarTrx = scalar_elgamal::WeightedTranscript;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct DKGPvssConfig {
@@ -161,10 +172,22 @@ impl MayHaveRoundingSummary for RealDKGPublicParams {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Transcripts {
-    // transcript for main path
+    // transcript for main path (DAS PVSS → G1 shares for randomness)
     pub main: WTrx,
-    // transcript for fast path
+    // transcript for fast path (DAS PVSS → G1 shares for randomness fast path)
     pub fast: Option<WTrx>,
+    // transcript for scalar shares (Scalar ElGamal PVSS → scalar shares for IBE)
+    //
+    // This is the dual-output DKG extension (ADR-001). When present, this transcript
+    // shares the same underlying secret as `main`, but produces scalar shares instead
+    // of G1 shares. This enables IBE (timelock encryption) without a separate DKG.
+    //
+    // Both transcripts produce the same MPK (g2^secret), but:
+    // - `main` produces G1 shares for WVUF (randomness)
+    // - `scalar` produces scalar shares for IBE (timelock)
+    //
+    // TODO(Phase 2): Implement ScalarTrx dealing in generate_transcript()
+    pub scalar: Option<ScalarTrx>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -173,6 +196,14 @@ pub struct DealtPubKeyShares {
     pub main: <WTrx as Transcript>::DealtPubKeyShare,
     // dealt public key share for fast path
     pub fast: Option<<WTrx as Transcript>::DealtPubKeyShare>,
+    // dealt public key share for scalar/IBE path
+    //
+    // These are the public key shares corresponding to the scalar secret shares.
+    // They can be used to verify that a validator's scalar share is correct
+    // via pairing checks.
+    //
+    // TODO(Phase 2): Populate this field in decrypt_secret_share_from_transcript()
+    pub scalar: Option<<ScalarTrx as Transcript>::DealtPubKeyShare>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -181,6 +212,15 @@ pub struct DealtSecretKeyShares {
     pub main: <WTrx as Transcript>::DealtSecretKeyShare,
     // dealt secret key share for fast path
     pub fast: Option<<WTrx as Transcript>::DealtSecretKeyShare>,
+    // dealt secret key share for scalar/IBE path
+    //
+    // When present, this is a vector of scalar shares that can be used
+    // for IBE decryption key derivation. The scalar shares can be
+    // reconstructed using Lagrange interpolation to obtain the secret
+    // scalar `s`, which is then used to compute `H(identity)^s`.
+    //
+    // TODO(Phase 2): Populate this field in decrypt_secret_share_from_transcript()
+    pub scalar: Option<<ScalarTrx as Transcript>::DealtSecretKeyShare>,
 }
 
 impl DKGTrait for RealDKG {
@@ -273,9 +313,32 @@ impl DKGTrait for RealDKG {
                     rng,
                 )
             });
+
+        // TODO(Phase 2): Generate scalar transcript for IBE
+        //
+        // This should deal the same input_secret using ScalarTrx::deal().
+        // The scalar transcript shares the same underlying secret as the main
+        // transcript, but produces scalar shares instead of G1 shares.
+        //
+        // Implementation:
+        // let scalar_trx = ScalarTrx::deal(
+        //     &pub_params.pvss_config.wconfig,
+        //     &pub_params.pvss_config.pp,
+        //     sk,
+        //     &pub_params.pvss_config.eks,
+        //     input_secret,
+        //     &aux,
+        //     &Player { id: my_index },
+        //     rng,
+        // );
+        //
+        // For now, we set this to None until ScalarTrx::deal() is implemented.
+        let scalar_trx: Option<ScalarTrx> = None;
+
         Transcripts {
             main: wtrx,
             fast: fast_wtrx,
+            scalar: scalar_trx,
         }
     }
 
@@ -319,6 +382,18 @@ impl DKGTrait for RealDKG {
             ensure!(fast_trx.get_dealers() == main_trx_dealers);
             ensure!(trx.main.get_dealt_public_key() == fast_trx.get_dealt_public_key());
         }
+
+        // TODO(Phase 2): Verify scalar transcript if present
+        //
+        // When scalar transcript is implemented:
+        // 1. Verify dealers match main transcript
+        // 2. Verify MPK matches main transcript (same underlying secret)
+        //
+        // if let Some(scalar_trx) = &trx.scalar {
+        //     ensure!(scalar_trx.get_dealers() == main_trx_dealers);
+        //     ensure!(trx.main.get_dealt_public_key() == scalar_trx.get_dealt_public_key());
+        // }
+
         Ok(())
     }
 
@@ -391,6 +466,31 @@ impl DKGTrait for RealDKG {
             fast_trx.verify(fast_wconfig, &params.pvss_config.pp, &spks, &all_eks, &aux)?;
         }
 
+        // TODO(Phase 2): Verify scalar transcript if present
+        //
+        // When ScalarTrx::verify() is implemented:
+        // if let Some(scalar_trx) = trx.scalar.as_ref() {
+        //     // Verify dealers match main transcript
+        //     let scalar_dealers = scalar_trx
+        //         .get_dealers()
+        //         .iter()
+        //         .map(|player| player.id)
+        //         .collect::<Vec<usize>>();
+        //     ensure!(
+        //         dealers == scalar_dealers,
+        //         "real_dkg::verify_transcript failed with inconsistent dealer index in scalar transcript."
+        //     );
+        //
+        //     // Verify the scalar transcript
+        //     scalar_trx.verify(&params.pvss_config.wconfig, &params.pvss_config.pp, &spks, &all_eks, &aux)?;
+        //
+        //     // Verify MPK matches main transcript (same underlying secret)
+        //     ensure!(
+        //         trx.main.get_dealt_public_key() == scalar_trx.get_dealt_public_key(),
+        //         "real_dkg::verify_transcript failed with mismatched MPK between main and scalar transcripts."
+        //     );
+        // }
+
         Ok(())
     }
 
@@ -409,6 +509,16 @@ impl DKGTrait for RealDKG {
         ) {
             acc.aggregate_with(config, ele);
         }
+
+        // TODO(Phase 2): Aggregate scalar transcripts
+        //
+        // When ScalarTrx::aggregate_with() is implemented:
+        // if let (Some(acc), Some(ele)) = (
+        //     accumulator.scalar.as_mut(),
+        //     element.scalar.as_ref(),
+        // ) {
+        //     acc.aggregate_with(&params.pvss_config.wconfig, ele);
+        // }
     }
 
     fn decrypt_secret_share_from_transcript(
@@ -446,14 +556,39 @@ impl DKGTrait for RealDKG {
             },
             _ => (None, None),
         };
+
+        // TODO(Phase 2): Decrypt scalar shares for IBE
+        //
+        // When ScalarTrx::decrypt_own_share() is implemented:
+        // let (scalar_sk, scalar_pk) = match trx.scalar.as_ref() {
+        //     Some(scalar_trx) => {
+        //         let (scalar_sk, scalar_pk) = scalar_trx.decrypt_own_share(
+        //             &pub_params.pvss_config.wconfig,
+        //             &Player {
+        //                 id: player_idx as usize,
+        //             },
+        //             dk,
+        //             &pub_params.pvss_config.pp,
+        //         );
+        //         (Some(scalar_sk), Some(scalar_pk))
+        //     },
+        //     None => (None, None),
+        // };
+        let (scalar_sk, scalar_pk): (
+            Option<<ScalarTrx as Transcript>::DealtSecretKeyShare>,
+            Option<<ScalarTrx as Transcript>::DealtPubKeyShare>,
+        ) = (None, None);
+
         Ok((
             DealtSecretKeyShares {
                 main: sk,
                 fast: fast_sk,
+                scalar: scalar_sk,
             },
             DealtPubKeyShares {
                 main: pk,
                 fast: fast_pk,
+                scalar: scalar_pk,
             },
         ))
     }
@@ -501,6 +636,57 @@ impl DKGTrait for RealDKG {
             .into_iter()
             .map(|x| x.id as u64)
             .collect()
+    }
+
+    /// Get the IBE Master Public Key (MPK) from the transcript.
+    ///
+    /// For RealDKG, this extracts the dealt public key from the main transcript
+    /// and serializes it as compressed G2 bytes (96 bytes).
+    ///
+    /// # Implementation Status
+    ///
+    /// TODO(Phase 3): This is a stub implementation. The actual implementation
+    /// should serialize the G2 element properly once the aptos-dkg serialization
+    /// helpers are wired up.
+    fn get_ibe_master_public_key(transcript: &Self::Transcript) -> Vec<u8> {
+        // Extract the dealt public key (G2) from the main transcript
+        let _dpk = transcript.main.get_dealt_public_key();
+
+        // TODO(Phase 3): Serialize the G2 element
+        //
+        // The dealt public key is a G2Affine. We need to serialize it:
+        // use aptos_dkg::utils::g2_proj_to_bytes;
+        // g2_proj_to_bytes(&dpk.into())
+        //
+        // For now, return empty until serialization is wired up.
+        // This allows the code to compile while the full implementation is pending.
+        Vec::new()
+    }
+
+    /// Get the scalar secret share from a dealt secret share.
+    ///
+    /// For RealDKG, this extracts the scalar shares from the `DealtSecretKeyShares`
+    /// struct and serializes them as bytes.
+    ///
+    /// # Implementation Status
+    ///
+    /// TODO(Phase 3): This is a stub implementation. Returns None until
+    /// the scalar transcript dealing is fully implemented.
+    fn get_scalar_secret_share(dealt_share: &Self::DealtSecretShare) -> Option<Vec<u8>> {
+        // Check if scalar shares are present
+        let _scalar_shares = dealt_share.scalar.as_ref()?;
+
+        // TODO(Phase 3): Serialize the scalar shares
+        //
+        // Each scalar share is a Vec<Scalar> (for weighted threshold).
+        // Serialize each scalar to 32 bytes (little-endian):
+        //
+        // Some(scalar_shares.iter()
+        //     .flat_map(|s| s.to_bytes_le().to_vec())
+        //     .collect())
+        //
+        // For now, return None until the full implementation is ready.
+        None
     }
 }
 

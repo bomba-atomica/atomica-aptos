@@ -57,15 +57,11 @@
 //! - [ ] Add comprehensive tests
 
 use super::transcript::Transcript;
-use crate::pvss::{
-    self, das, encryption_dlog,
-    traits::{self, Reconstructable, SecretSharingConfig, Transcript as TranscriptTrait},
-    Player, WeightedConfig,
-};
+use crate::pvss::{self, das, encryption_dlog, traits, Player, WeightedConfig};
 use anyhow::Result;
 use aptos_crypto::{bls12381, CryptoMaterialError, ValidCryptoMaterial};
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
-use blstrs::{G2Projective, Scalar};
+use blstrs::Scalar;
 use serde::{Deserialize, Serialize};
 
 /// Scheme name for logging and debugging.
@@ -371,53 +367,13 @@ impl traits::Transcript for WeightedTranscript {
     }
 }
 
-/// Implement reconstruction of the secret from weighted shares.
-///
-/// Uses weighted Lagrange interpolation to combine shares from
-/// multiple validators according to their stakes.
-impl Reconstructable<WeightedConfig> for Scalar {
-    type Share = Vec<Scalar>;
-
-    /// Reconstruct the secret from weighted shares.
-    ///
-    /// # Algorithm
-    ///
-    /// 1. Flatten all shares into (index, value) pairs
-    /// 2. Apply Lagrange interpolation at x=0
-    /// 3. Return the interpolated value
-    ///
-    /// # Weight Handling
-    ///
-    /// Each validator contributes `weight` shares. The Lagrange
-    /// interpolation treats each share independently but uses
-    /// the validator's weight-offset indices.
-    ///
-    /// # Arguments
-    ///
-    /// * `sc` - Weighted secret sharing configuration
-    /// * `shares` - Vector of (player, player's_shares) pairs
-    ///
-    /// # Panics
-    ///
-    /// - If total contributed weight < threshold_weight
-    ///
-    /// # TODO
-    ///
-    /// Implement this function.
-    fn reconstruct(_sc: &WeightedConfig, _shares: &Vec<(Player, Self::Share)>) -> Self {
-        todo!(
-            "Implement reconstruct() for Weighted Scalar.\n\
-             \n\
-             Steps:\n\
-             1. Expand shares to (global_index, value) pairs\n\
-             2. Compute Lagrange coefficients for all indices\n\
-             3. Compute weighted sum: Σ (share_i * λ_i)\n\
-             4. Return sum\n\
-             \n\
-             Reference: das/dealt_secret_key.rs for weighted G1 version"
-        )
-    }
-}
+// NOTE: Reconstructable<WeightedConfig> for Scalar is provided by the generic impl
+// in generic_weighting.rs:
+//   impl<SK: Reconstructable<ThresholdConfigBlstrs>> Reconstructable<WeightedConfig> for SK
+//
+// This generic impl automatically provides weighted reconstruction for any type that
+// implements unweighted reconstruction (like Scalar, which is implemented in scalar_secret_key.rs).
+// The weighted reconstruction flattens all shares and delegates to the unweighted version.
 
 #[cfg(test)]
 mod tests {

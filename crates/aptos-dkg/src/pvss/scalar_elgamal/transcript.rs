@@ -86,17 +86,11 @@
 //! - [ ] Implement DLEQ proof generation and verification
 //! - [ ] Add comprehensive tests
 
-use crate::{
-    pvss::{
-        self,
-        das,
-        dealt_pub_key, dealt_pub_key_share,
-        encryption_dlog,
-        traits::{self, Convert, Reconstructable, SecretSharingConfig, Transcript as TranscriptTrait},
-        Player, ThresholdConfigBlstrs,
-    },
+use crate::pvss::{
+    self, das, dealt_pub_key, dealt_pub_key_share, encryption_dlog, traits, Player,
+    ThresholdConfigBlstrs,
 };
-use anyhow::{bail, Result};
+use anyhow::Result;
 use aptos_crypto::{bls12381, CryptoMaterialError, ValidCryptoMaterial};
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
 use blstrs::{G1Projective, G2Projective, Scalar};
@@ -273,14 +267,10 @@ impl TryFrom<&[u8]> for Transcript {
     }
 }
 
-/// Implement conversion from InputSecret to Scalar for this PVSS scheme.
-///
-/// Unlike DAS which converts `InputSecret → G1`, we keep it as a scalar.
-impl Convert<Scalar, das::PublicParameters> for pvss::input_secret::InputSecret {
-    fn to(&self, _with: &das::PublicParameters) -> Scalar {
-        *self.get_secret_a()
-    }
-}
+// NOTE: The Convert<Scalar, das::PublicParameters> impl for InputSecret is already
+// defined in insecure_field/transcript.rs. We reuse that implementation.
+// Both scalar_elgamal and insecure_field PVSS schemes convert InputSecret to Scalar
+// by extracting the secret_a field.
 
 impl traits::Transcript for Transcript {
     // === Associated Types ===
@@ -397,7 +387,7 @@ impl traits::Transcript for Transcript {
              2. Compute commitments V[i] = g2^f(i) using pp.get_commitment_base()\n\
              3. Encrypt each share using ElGamal: C[i] = (g1^r, ek[i]^r * h^share)\n\
              4. Generate DLEQ proofs for each ciphertext\n\
-             5. Return Transcript { dealers, V, C, proofs }\n\
+             5. Return Transcript with dealers, V, C, proofs\n\
              \n\
              Reference: insecure_field/transcript.rs for structure,\n\
              encryption_elgamal.rs for ElGamal primitives"
@@ -596,64 +586,10 @@ impl traits::Transcript for Transcript {
     }
 }
 
-/// Implement reconstruction of the secret from shares.
-///
-/// Given `t` or more shares, reconstructs the original secret using
-/// Lagrange interpolation in the scalar field.
-impl Reconstructable<ThresholdConfigBlstrs> for Scalar {
-    type Share = Scalar;
-
-    /// Reconstruct the secret from a set of shares.
-    ///
-    /// # Algorithm
-    ///
-    /// Uses Lagrange interpolation:
-    /// ```text
-    /// secret = Σ_i (share_i * λ_i)
-    /// ```
-    /// where `λ_i` are the Lagrange coefficients for evaluation at 0.
-    ///
-    /// # Arguments
-    ///
-    /// * `sc` - Secret sharing configuration
-    /// * `shares` - Vector of (player, share) pairs
-    ///
-    /// # Panics
-    ///
-    /// - If `shares.len() < sc.threshold`
-    /// - If `shares.len() > sc.n`
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let shares = vec![
-    ///     (Player { id: 0 }, scalar_share_0),
-    ///     (Player { id: 2 }, scalar_share_2),
-    ///     (Player { id: 3 }, scalar_share_3),
-    /// ];
-    /// let secret = Scalar::reconstruct(&config, &shares);
-    /// ```
-    ///
-    /// # TODO
-    ///
-    /// Implement this function.
-    fn reconstruct(
-        _sc: &ThresholdConfigBlstrs,
-        _shares: &Vec<(Player, Self::Share)>,
-    ) -> Self {
-        todo!(
-            "Implement reconstruct() for Scalar.\n\
-             \n\
-             Steps:\n\
-             1. Extract player IDs from shares\n\
-             2. Compute Lagrange coefficients using algebra::lagrange::lagrange_coefficients()\n\
-             3. Compute weighted sum: Σ (share_i * λ_i)\n\
-             4. Return the sum as the reconstructed secret\n\
-             \n\
-             Reference: dealt_secret_key.rs for the G1 version"
-        )
-    }
-}
+// NOTE: Reconstructable<ThresholdConfigBlstrs> for Scalar is already implemented
+// in scalar_secret_key.rs. We reuse that implementation for scalar share reconstruction.
+// The weighted version (Reconstructable<WeightedConfig> for Scalar) is provided by
+// the generic impl in generic_weighting.rs.
 
 #[cfg(test)]
 mod tests {
