@@ -36,6 +36,10 @@ macro_rules! dealt_secret_key_share_impl {
             pub fn as_group_element(&self) -> &$GTProjective {
                 self.0.as_group_element()
             }
+
+            pub fn into_inner(self) -> $GTProjective {
+                *self.0.as_group_element()
+            }
         }
 
         impl ValidCryptoMaterial for DealtSecretKeyShare {

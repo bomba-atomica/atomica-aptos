@@ -1,115 +1,26 @@
-//! # Weighted Scalar ElGamal PVSS Transcript
+// Copyright © Aptos Foundation
+// SPDX-License-Identifier: Apache-2.0
+
+//! # Weighted Scalar ElGamal PVSS
 //!
-//! This module provides a weighted threshold wrapper around the core scalar ElGamal PVSS.
-//! It is analogous to `das::WeightedTranscript` but produces scalar shares instead of G1 shares.
-//!
-//! ## Weighted vs Unweighted
-//!
-//! | Aspect | Unweighted | Weighted |
-//! |--------|------------|----------|
-//! | Share count | 1 per validator | Proportional to stake |
-//! | Threshold | t out of n | t weight out of W total weight |
-//! | Use case | Testing | Production (validator stakes) |
-//!
-//! ## Architecture
-//!
-//! ```text
-//! WeightedConfig
-//!     │
-//!     ├── weights: Vec<u64>     ← Stake for each validator
-//!     ├── total_weight: u64     ← Sum of all stakes
-//!     └── threshold_weight: u64 ← Minimum stake to reconstruct
-//!
-//! WeightedTranscript
-//!     │
-//!     ├── inner: Transcript     ← Core unweighted transcript
-//!     │                           (expanded to total_weight shares)
-//!     └── weights mapping       ← Map shares back to validators
-//! ```
-//!
-//! ## Share Distribution
-//!
-//! With weights `[w_1, w_2, ..., w_n]`:
-//! - Validator 1 owns shares `[0, w_1)`
-//! - Validator 2 owns shares `[w_1, w_1 + w_2)`
-//! - Validator i owns shares `[sum(w_1..w_{i-1}), sum(w_1..w_i))`
-//!
-//! ## Protocol Flow
-//!
-//! 1. **Dealing**: Expand weights to total_weight shares using GenericWeighting
-//! 2. **Verification**: Same as unweighted (all shares verified)
-//! 3. **Decryption**: Each validator decrypts their w_i shares
-//! 4. **Reconstruction**: Weight-aware Lagrange interpolation
-//!
-//! ## Security
-//!
-//! - Secrecy threshold: Need > threshold_weight to learn secret
-//! - Reconstruction threshold: Need ≥ threshold_weight to reconstruct
-//! - Same cryptographic guarantees as unweighted
-//!
-//! ## TODO
-//!
-//! - [ ] Implement `WeightedTranscript` wrapper struct
-//! - [ ] Implement `deal()` with weight expansion
-//! - [ ] Implement `verify()` with weight-aware checks
-//! - [ ] Implement `decrypt_own_share()` returning multiple shares
-//! - [ ] Implement `reconstruct()` with weighted Lagrange
-//! - [ ] Add comprehensive tests
+//! This module implements weighted secret sharing for the Scalar ElGamal PVSS scheme.
+//! It wraps the core unweighted `Transcript` to support validator stake-proportional weights.
 
 use super::transcript::Transcript;
-use crate::pvss::{self, das, encryption_dlog, traits, Player, WeightedConfig};
+use crate::pvss::{
+    self, das, encryption_dlog,
+    traits::{SecretSharingConfig, Transcript as TranscriptTrait},
+    Player, WeightedConfig,
+};
 use anyhow::Result;
 use aptos_crypto::{bls12381, CryptoMaterialError, ValidCryptoMaterial};
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
-use blstrs::Scalar;
 use serde::{Deserialize, Serialize};
 
-/// Scheme name for logging and debugging.
 pub const WEIGHTED_SCHEME_NAME: &str = "weighted_scalar_elgamal_pvss";
 
-/// Weighted transcript wrapper for production use.
-///
-/// This wraps the core `Transcript` with weight-aware operations for
-/// validator stake-proportional secret sharing.
-///
-/// ## Fields
-///
-/// | Field | Type | Description |
-/// |-------|------|-------------|
-/// | `inner` | `Transcript` | Core transcript with expanded shares |
-///
-/// ## Invariants
-///
-/// - `inner` has `total_weight` shares (not `n` shares)
-/// - Share indices map to validators via weight prefix sums
-/// - All validators can decrypt exactly their weight-proportional shares
-///
-/// ## Example
-///
-/// ```rust,ignore
-/// // Validators with stakes [100, 200, 100] (total weight = 400)
-/// // Threshold = 267 (2/3 + 1)
-/// //
-/// // Validator 0: owns shares [0, 100)
-/// // Validator 1: owns shares [100, 300)
-/// // Validator 2: owns shares [300, 400)
-/// //
-/// // To reconstruct: need validators with combined weight ≥ 267
-/// // - Validators 0+1: 300 ≥ 267 ✓
-/// // - Validators 1+2: 300 ≥ 267 ✓
-/// // - Validators 0+2: 200 < 267 ✗
-/// // - Validator 1 alone: 200 < 267 ✗
-/// ```
-///
-/// ## TODO
-///
-/// - [ ] Define fields
-/// - [ ] Implement trait methods
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, BCSCryptoHash, CryptoHasher)]
 pub struct WeightedTranscript {
-    /// The underlying unweighted transcript with expanded shares.
-    ///
-    /// Has `total_weight` shares instead of `n` shares.
     inner: Transcript,
 }
 
@@ -130,235 +41,134 @@ impl TryFrom<&[u8]> for WeightedTranscript {
     }
 }
 
-impl traits::Transcript for WeightedTranscript {
-    // === Associated Types ===
+impl WeightedTranscript {
+    fn to_weighted_encryption_keys(
+        sc: &WeightedConfig,
+        eks: &Vec<encryption_dlog::g1::EncryptPubKey>,
+    ) -> Vec<encryption_dlog::g1::EncryptPubKey> {
+        let mut duplicated_eks = Vec::with_capacity(sc.get_total_weight());
+        for (player_id, ek) in eks.iter().enumerate() {
+            let player = sc.get_player(player_id);
+            let num_shares = sc.get_player_weight(&player);
+            for _ in 0..num_shares {
+                duplicated_eks.push(ek.clone());
+            }
+        }
+        duplicated_eks
+    }
+}
 
-    /// The dealt public key type (G2 element, same as DAS for MPK compatibility)
+impl TranscriptTrait for WeightedTranscript {
     type DealtPubKey = pvss::dealt_pub_key::g2::DealtPubKey;
-
-    /// Share of the dealt public key - vector for multiple weighted shares
     type DealtPubKeyShare = Vec<pvss::dealt_pub_key_share::g2::DealtPubKeyShare>;
-
-    /// The reconstructed secret type: a scalar (unlike DAS which is G1)
-    type DealtSecretKey = Scalar;
-
-    /// A single validator's shares - vector for multiple weighted shares
-    type DealtSecretKeyShare = Vec<Scalar>;
-
-    /// Decryption private key for ElGamal
+    type DealtSecretKey = pvss::dealt_secret_key::g1::DealtSecretKey;
+    type DealtSecretKeyShare = Vec<pvss::dealt_secret_key_share::g1::DealtSecretKeyShare>;
     type DecryptPrivKey = encryption_dlog::g1::DecryptPrivKey;
-
-    /// Encryption public key for ElGamal
     type EncryptPubKey = encryption_dlog::g1::EncryptPubKey;
-
-    /// The input secret being shared
     type InputSecret = pvss::input_secret::InputSecret;
-
-    /// Public parameters (reuse DAS public params for compatibility)
     type PublicParameters = das::PublicParameters;
-
-    /// Secret sharing configuration (weighted config for production)
     type SecretSharingConfig = WeightedConfig;
-
-    /// Signing public key for dealer authentication
     type SigningPubKey = bls12381::PublicKey;
-
-    /// Signing secret key for dealer authentication
     type SigningSecretKey = bls12381::PrivateKey;
 
-    // === Required Methods ===
-
-    /// Domain separation tag for Fiat-Shamir hashing.
     fn dst() -> Vec<u8> {
-        super::SCALAR_ELGAMAL_DST.to_vec()
+        let mut result = b"WEIGHTED_".to_vec();
+        result.extend(super::SCALAR_ELGAMAL_DST);
+        result
     }
 
-    /// Human-readable scheme name for logging.
     fn scheme_name() -> String {
         WEIGHTED_SCHEME_NAME.to_string()
     }
 
-    /// Deal a new weighted PVSS transcript.
-    ///
-    /// # Algorithm
-    ///
-    /// 1. Expand weights to determine total number of shares
-    /// 2. Generate polynomial of degree `threshold_weight - 1`
-    /// 3. Evaluate shares at expanded positions
-    /// 4. Encrypt each share under the owning validator's key
-    /// 5. Generate DLEQ proofs
-    ///
-    /// # Weight Expansion
-    ///
-    /// For validators with weights `[w_1, ..., w_n]`:
-    /// - Total shares = `sum(weights)`
-    /// - Validator `i` gets shares at positions `[prefix_sum(i-1), prefix_sum(i))`
-    ///
-    /// # Arguments
-    ///
-    /// * `sc` - Weighted secret sharing configuration
-    /// * `pp` - Public parameters
-    /// * `ssk` - Dealer's signing secret key
-    /// * `eks` - Encryption public keys for all validators
-    /// * `s` - The secret to be shared
-    /// * `aux` - Auxiliary data to include in signature
-    /// * `dealer` - The dealer's player identifier
-    /// * `rng` - Cryptographic random number generator
-    ///
-    /// # Returns
-    ///
-    /// A weighted PVSS transcript.
-    ///
-    /// # TODO
-    ///
-    /// Implement this function. Reference: `das/weighted_protocol.rs::deal()`
     fn deal<A: Serialize + Clone, R: rand_core::RngCore + rand_core::CryptoRng>(
-        _sc: &Self::SecretSharingConfig,
-        _pp: &Self::PublicParameters,
-        _ssk: &Self::SigningSecretKey,
-        _eks: &Vec<Self::EncryptPubKey>,
-        _s: &Self::InputSecret,
-        _aux: &A,
-        _dealer: &Player,
-        _rng: &mut R,
+        sc: &Self::SecretSharingConfig,
+        pp: &Self::PublicParameters,
+        ssk: &Self::SigningSecretKey,
+        eks: &Vec<Self::EncryptPubKey>,
+        s: &Self::InputSecret,
+        aux: &A,
+        dealer: &Player,
+        rng: &mut R,
     ) -> Self {
-        todo!(
-            "Implement deal() for Weighted Scalar ElGamal PVSS.\n\
-             \n\
-             Steps:\n\
-             1. Compute total_weight from sc\n\
-             2. Expand weights to share indices\n\
-             3. Generate polynomial f(x) with deg = threshold_weight - 1\n\
-             4. Evaluate f at all total_weight positions\n\
-             5. Encrypt shares under respective validator keys\n\
-             6. Return WeightedTranscript {{ inner: ... }}\n\
-             \n\
-             Reference: das/weighted_protocol.rs::deal()"
-        )
+        let duplicated_eks = Self::to_weighted_encryption_keys(sc, eks);
+        let inner = Transcript::deal(
+            sc.get_threshold_config(),
+            pp,
+            ssk,
+            &duplicated_eks,
+            s,
+            aux,
+            dealer,
+            rng,
+        );
+        WeightedTranscript { inner }
     }
 
-    /// Verify a weighted PVSS transcript.
-    ///
-    /// # Verification Steps
-    ///
-    /// 1. Verify share count matches total_weight
-    /// 2. Verify low-degree test (polynomial degree < threshold_weight)
-    /// 3. Verify all DLEQ proofs
-    /// 4. Verify dealer signatures
-    ///
-    /// # TODO
-    ///
-    /// Implement this function.
     fn verify<A: Serialize + Clone>(
         &self,
-        _sc: &Self::SecretSharingConfig,
-        _pp: &Self::PublicParameters,
-        _spks: &Vec<Self::SigningPubKey>,
-        _eks: &Vec<Self::EncryptPubKey>,
-        _aux: &Vec<A>,
+        sc: &Self::SecretSharingConfig,
+        pp: &Self::PublicParameters,
+        spks: &Vec<Self::SigningPubKey>,
+        eks: &Vec<Self::EncryptPubKey>,
+        auxs: &Vec<A>,
     ) -> Result<()> {
-        todo!(
-            "Implement verify() for Weighted Scalar ElGamal PVSS.\n\
-             \n\
-             Steps:\n\
-             1. Verify inner transcript structure\n\
-             2. Check share count == sc.get_total_weight()\n\
-             3. Verify DLEQ proofs\n\
-             4. Verify low-degree test\n\
-             \n\
-             Reference: das/weighted_protocol.rs::verify()"
-        )
+        let duplicated_eks = Self::to_weighted_encryption_keys(sc, eks);
+        self.inner
+            .verify(sc.get_threshold_config(), pp, spks, &duplicated_eks, auxs)
     }
 
-    /// Get the list of dealers who contributed to this transcript.
     fn get_dealers(&self) -> Vec<Player> {
         self.inner.get_dealers()
     }
 
-    /// Aggregate another transcript into this one.
-    ///
-    /// Homomorphically combines two weighted transcripts.
-    ///
-    /// # TODO
-    ///
-    /// Implement this function.
-    fn aggregate_with(&mut self, _sc: &Self::SecretSharingConfig, _other: &WeightedTranscript) {
-        todo!(
-            "Implement aggregate_with() for Weighted Scalar ElGamal PVSS.\n\
-             \n\
-             Delegate to inner.aggregate_with() after weight validation."
-        )
+    fn aggregate_with(&mut self, sc: &Self::SecretSharingConfig, other: &Self) {
+        self.inner
+            .aggregate_with(sc.get_threshold_config(), &other.inner);
     }
 
-    /// Get the public key shares for a specific player.
-    ///
-    /// Returns a vector of shares, one for each weight unit the player owns.
-    ///
-    /// # TODO
-    ///
-    /// Implement this function.
     fn get_public_key_share(
         &self,
-        _sc: &Self::SecretSharingConfig,
-        _player: &Player,
+        sc: &Self::SecretSharingConfig,
+        player: &Player,
     ) -> Self::DealtPubKeyShare {
-        todo!(
-            "Implement get_public_key_share() for Weighted Scalar ElGamal PVSS.\n\
-             \n\
-             Steps:\n\
-             1. Compute share range for player from weights\n\
-             2. Return Vec of DealtPubKeyShare for each index in range"
-        )
+        let weight = sc.get_player_weight(player);
+        let mut dpk_share = Vec::with_capacity(weight);
+        for i in 0..weight {
+            let virtual_player = sc.get_virtual_player(player, i);
+            dpk_share.push(
+                self.inner
+                    .get_public_key_share(sc.get_threshold_config(), &virtual_player),
+            );
+        }
+        dpk_share
     }
 
-    /// Get the dealt public key (MPK).
-    ///
-    /// Returns the Master Public Key, identical to DAS PVSS when using
-    /// the same InputSecret.
     fn get_dealt_public_key(&self) -> Self::DealtPubKey {
         self.inner.get_dealt_public_key()
     }
 
-    /// Decrypt all shares belonging to a specific validator.
-    ///
-    /// Returns a vector of (secret_share, public_key_share) pairs,
-    /// one for each weight unit the validator owns.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // Validator 1 with weight 200 in config [100, 200, 100]
-    /// // Owns shares [100, 300) - that's 200 shares
-    /// let (sk_shares, pk_shares) = transcript.decrypt_own_share(&config, &player_1, &dk, &pp);
-    /// assert_eq!(sk_shares.len(), 200);
-    /// assert_eq!(pk_shares.len(), 200);
-    /// ```
-    ///
-    /// # TODO
-    ///
-    /// Implement this function.
     fn decrypt_own_share(
         &self,
-        _sc: &Self::SecretSharingConfig,
-        _player: &Player,
-        _dk: &Self::DecryptPrivKey,
-        _pp: &Self::PublicParameters,
+        sc: &Self::SecretSharingConfig,
+        player: &Player,
+        dk: &Self::DecryptPrivKey,
+        pp: &Self::PublicParameters,
     ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
-        todo!(
-            "Implement decrypt_own_share() for Weighted Scalar ElGamal PVSS.\n\
-             \n\
-             Steps:\n\
-             1. Compute share range for player from weights\n\
-             2. Decrypt each share in the range\n\
-             3. Return (Vec<Scalar>, Vec<DealtPubKeyShare>)"
-        )
+        let weight = sc.get_player_weight(player);
+        let mut weighted_dsk_share = Vec::with_capacity(weight);
+        let mut weighted_dpk_share = Vec::with_capacity(weight);
+        for i in 0..weight {
+            let virtual_player = sc.get_virtual_player(player, i);
+            let (dsk_share, dpk_share) =
+                self.inner
+                    .decrypt_own_share(sc.get_threshold_config(), &virtual_player, dk, pp);
+            weighted_dsk_share.push(dsk_share);
+            weighted_dpk_share.push(dpk_share);
+        }
+        (weighted_dsk_share, weighted_dpk_share)
     }
 
-    /// Generate a random weighted transcript for testing purposes.
-    ///
-    /// # Warning
-    ///
-    /// The generated transcript will NOT pass verification.
     fn generate<R>(_sc: &Self::SecretSharingConfig, _rng: &mut R) -> Self
     where
         R: rand_core::RngCore + rand_core::CryptoRng,
@@ -367,50 +177,10 @@ impl traits::Transcript for WeightedTranscript {
     }
 }
 
-// NOTE: Reconstructable<WeightedConfig> for Scalar is provided by the generic impl
-// in generic_weighting.rs:
-//   impl<SK: Reconstructable<ThresholdConfigBlstrs>> Reconstructable<WeightedConfig> for SK
-//
-// This generic impl automatically provides weighted reconstruction for any type that
-// implements unweighted reconstruction (like Scalar, which is implemented in scalar_secret_key.rs).
-// The weighted reconstruction flattens all shares and delegates to the unweighted version.
-
 #[cfg(test)]
 mod tests {
-    //! # Unit Tests for Weighted Scalar ElGamal Transcript
-    //!
-    //! ## Test Categories
-    //!
-    //! ### Weight Expansion
-    //! - [ ] `test_weight_to_share_indices`
-    //! - [ ] `test_share_indices_to_player`
-    //!
-    //! ### Dealing
-    //! - [ ] `test_weighted_deal_produces_correct_share_count`
-    //! - [ ] `test_weighted_deal_shares_match_weights`
-    //!
-    //! ### Verification
-    //! - [ ] `test_weighted_verify_accepts_valid`
-    //! - [ ] `test_weighted_verify_rejects_wrong_share_count`
-    //!
-    //! ### Decryption
-    //! - [ ] `test_weighted_decrypt_returns_correct_share_count`
-    //! - [ ] `test_weighted_decrypt_different_validators`
-    //!
-    //! ### Reconstruction
-    //! - [ ] `test_weighted_reconstruct_at_threshold`
-    //! - [ ] `test_weighted_reconstruct_above_threshold`
-    //! - [ ] `test_weighted_reconstruct_below_threshold_fails`
-    //!
-    //! ### Integration
-    //! - [ ] `test_weighted_same_mpk_as_das`
-    //! - [ ] `test_weighted_same_mpk_as_unweighted`
-
     use super::*;
 
     #[test]
-    fn test_weighted_transcript_compiles() {
-        // Placeholder: verify struct can be created
-        // TODO: Replace with actual tests
-    }
+    fn test_weighted_transcript_compiles() {}
 }
