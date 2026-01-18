@@ -231,7 +231,285 @@ impl Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        pvss::{
+            test_utils::{get_threshold_configs_for_testing, setup_dealing, NoAux},
+            traits::{SecretSharingConfig, Transcript as TranscriptTrait},
+            Player, ThresholdConfigBlstrs,
+        },
+        traits::ThresholdConfig,
+    };
+    use aptos_crypto::ValidCryptoMaterial;
+    use rand::thread_rng;
 
     #[test]
     fn test_transcript_struct_compiles() {}
+
+    /// Test that deal() creates a transcript with correct structure sizes
+    #[test]
+    fn test_deal_creates_valid_structure() {
+        let mut rng = thread_rng();
+
+        for tc in get_threshold_configs_for_testing::<ThresholdConfigBlstrs>() {
+            let d = setup_dealing::<Transcript, _>(&tc, &mut rng);
+
+            let trx = Transcript::deal(
+                &tc,
+                &d.pp,
+                &d.ssks[0],
+                &d.eks,
+                &d.s,
+                &NoAux,
+                &tc.get_player(0),
+                &mut rng,
+            );
+
+            // Verify structure sizes
+            assert_eq!(
+                trx.V.len(),
+                tc.n + 1,
+                "V should have n+1 elements for t={}, n={}",
+                tc.t,
+                tc.n
+            );
+            assert_eq!(
+                trx.C.len(),
+                tc.n,
+                "C should have n elements for t={}, n={}",
+                tc.t,
+                tc.n
+            );
+            assert_eq!(
+                trx.soks.len(),
+                1,
+                "Should have exactly one SoK after dealing"
+            );
+        }
+    }
+
+    /// Test deal -> decrypt roundtrip: all players can decrypt their shares
+    #[test]
+    fn test_deal_decrypt_roundtrip() {
+        let mut rng = thread_rng();
+
+        // Test with a few representative configs
+        let configs = vec![
+            ThresholdConfigBlstrs::new(1, 1).unwrap(),
+            ThresholdConfigBlstrs::new(2, 3).unwrap(),
+            ThresholdConfigBlstrs::new(3, 5).unwrap(),
+            ThresholdConfigBlstrs::new(4, 7).unwrap(),
+        ];
+
+        for tc in configs {
+            println!("Testing deal/decrypt roundtrip for {}", tc);
+            let d = setup_dealing::<Transcript, _>(&tc, &mut rng);
+
+            let trx = Transcript::deal(
+                &tc,
+                &d.pp,
+                &d.ssks[0],
+                &d.eks,
+                &d.s,
+                &NoAux,
+                &tc.get_player(0),
+                &mut rng,
+            );
+
+            // Each player decrypts their share
+            for i in 0..tc.n {
+                let player = Player { id: i };
+                let (sk_share, pk_share) = trx.decrypt_own_share(&tc, &player, &d.dks[i], &d.pp);
+
+                // Verify public key share matches what's in transcript
+                let expected_pk_share = trx.get_public_key_share(&tc, &player);
+                assert_eq!(
+                    pk_share, expected_pk_share,
+                    "Public key share mismatch for player {} in config {}",
+                    i, tc
+                );
+
+                // Use sk_share to avoid unused warning - the decryption itself is the test
+                let _ = sk_share;
+            }
+        }
+    }
+
+    /// Test that aggregation combines transcripts correctly
+    #[test]
+    fn test_aggregation_preserves_structure() {
+        let mut rng = thread_rng();
+        let tc = ThresholdConfigBlstrs::new(2, 4).unwrap();
+
+        let d = setup_dealing::<Transcript, _>(&tc, &mut rng);
+
+        // Create transcripts from multiple dealers
+        let mut trx1 = Transcript::deal(
+            &tc,
+            &d.pp,
+            &d.ssks[0],
+            &d.eks,
+            &d.iss[0],
+            &NoAux,
+            &tc.get_player(0),
+            &mut rng,
+        );
+
+        let trx2 = Transcript::deal(
+            &tc,
+            &d.pp,
+            &d.ssks[1],
+            &d.eks,
+            &d.iss[1],
+            &NoAux,
+            &tc.get_player(1),
+            &mut rng,
+        );
+
+        let trx3 = Transcript::deal(
+            &tc,
+            &d.pp,
+            &d.ssks[2],
+            &d.eks,
+            &d.iss[2],
+            &NoAux,
+            &tc.get_player(2),
+            &mut rng,
+        );
+
+        // Aggregate
+        trx1.aggregate_with(&tc, &trx2);
+        trx1.aggregate_with(&tc, &trx3);
+
+        // Verify structure is preserved
+        assert_eq!(trx1.V.len(), tc.n + 1, "V length should be preserved");
+        assert_eq!(trx1.C.len(), tc.n, "C length should be preserved");
+        assert_eq!(trx1.soks.len(), 3, "Should have 3 SoKs after aggregation");
+
+        // Verify dealers are tracked
+        let dealers = trx1.get_dealers();
+        assert_eq!(dealers.len(), 3);
+        assert!(dealers.contains(&tc.get_player(0)));
+        assert!(dealers.contains(&tc.get_player(1)));
+        assert!(dealers.contains(&tc.get_player(2)));
+    }
+
+    /// Test BCS serialization roundtrip
+    #[test]
+    fn test_serialization_roundtrip() {
+        let mut rng = thread_rng();
+        let tc = ThresholdConfigBlstrs::new(2, 3).unwrap();
+
+        let d = setup_dealing::<Transcript, _>(&tc, &mut rng);
+
+        let trx = Transcript::deal(
+            &tc,
+            &d.pp,
+            &d.ssks[0],
+            &d.eks,
+            &d.s,
+            &NoAux,
+            &tc.get_player(0),
+            &mut rng,
+        );
+
+        // Serialize
+        let bytes = trx.to_bytes();
+
+        // Deserialize
+        let trx_restored =
+            Transcript::try_from(bytes.as_slice()).expect("Deserialization should succeed");
+
+        // Verify equality
+        assert_eq!(
+            trx, trx_restored,
+            "Transcript should survive serialization roundtrip"
+        );
+    }
+
+    /// Test that dealt public key is consistent
+    #[test]
+    fn test_dealt_public_key_consistency() {
+        let mut rng = thread_rng();
+        let tc = ThresholdConfigBlstrs::new(2, 4).unwrap();
+
+        let d = setup_dealing::<Transcript, _>(&tc, &mut rng);
+
+        let trx = Transcript::deal(
+            &tc,
+            &d.pp,
+            &d.ssks[0],
+            &d.eks,
+            &d.s,
+            &NoAux,
+            &tc.get_player(0),
+            &mut rng,
+        );
+
+        // Get dealt public key
+        let dpk = trx.get_dealt_public_key();
+
+        // Verify it matches the expected public key from the input secret
+        assert_eq!(
+            dpk, d.dpk,
+            "Dealt public key should match expected from input secret"
+        );
+    }
+
+    /// Test aggregated transcript decryption produces combined secret
+    #[test]
+    fn test_aggregated_decrypt_combines_secrets() {
+        let mut rng = thread_rng();
+        let tc = ThresholdConfigBlstrs::new(2, 3).unwrap();
+
+        let d = setup_dealing::<Transcript, _>(&tc, &mut rng);
+
+        // Deal from all players
+        let mut aggregated = Transcript::deal(
+            &tc,
+            &d.pp,
+            &d.ssks[0],
+            &d.eks,
+            &d.iss[0],
+            &NoAux,
+            &tc.get_player(0),
+            &mut rng,
+        );
+
+        for i in 1..tc.n {
+            let trx = Transcript::deal(
+                &tc,
+                &d.pp,
+                &d.ssks[i],
+                &d.eks,
+                &d.iss[i],
+                &NoAux,
+                &tc.get_player(i),
+                &mut rng,
+            );
+            aggregated.aggregate_with(&tc, &trx);
+        }
+
+        // The aggregated dealt public key should match the sum of all input secrets
+        let aggregated_dpk = aggregated.get_dealt_public_key();
+        assert_eq!(
+            aggregated_dpk, d.dpk,
+            "Aggregated public key should match sum of input secrets"
+        );
+
+        // Each player can still decrypt their share from the aggregated transcript
+        for i in 0..tc.n {
+            let player = Player { id: i };
+            let (sk_share, pk_share) = aggregated.decrypt_own_share(&tc, &player, &d.dks[i], &d.pp);
+
+            let expected_pk_share = aggregated.get_public_key_share(&tc, &player);
+            assert_eq!(
+                pk_share, expected_pk_share,
+                "Public key share should match for player {} after aggregation",
+                i
+            );
+
+            // Use sk_share to avoid unused warning
+            let _ = sk_share;
+        }
+    }
 }

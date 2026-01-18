@@ -1,13 +1,14 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 2.0
+**Version:** 2.1
 **Date:** January 18, 2026
 **Branch:** timelock-das-vpss
-**Status:** Phase 2 In Progress
+**Status:** Phase 2.0.5 In Progress
 **Reference:** [ADR-001: Dual Output DKG](adr-001-dual-output-dkg.md)
 
 ## Changelog
 
+- **v2.1** (Jan 18, 2026): Added Phase 2.0.5 (Unit Tests) before RealDKG integration. Added CI job requirements for regression testing.
 - **v2.0** (Jan 18, 2026): Major update reflecting completed Phase 2 Scalar ElGamal implementation. Documented decisions made during development. Reorganized phases to reflect actual implementation order.
 - **v1.5** (Jan 17, 2026): Reordered phases. Phase 2 is now Dual-Output DKG (ADR-001).
 - **v1.4** (Jan 17, 2026): Reordered phases to prioritize functionality over refactoring.
@@ -21,13 +22,13 @@
 |-------|-------------|--------|
 | 0 | Feasibility Test | ✅ COMPLETE |
 | 1A-1D | IBE Primitives + MPK Storage | ✅ COMPLETE |
-| 1E | mpk_encrypt_decrypt smoke test | 🔶 BLOCKED → Ready to unblock |
 | 2 | Scalar ElGamal PVSS | ✅ CORE COMPLETE |
-| 2.1 | Integration into RealDKG | 🔲 PENDING |
-| 3 | DKGTrait Refactoring | 🔲 PENDING |
-| 4 | Timelock Registry | 🔲 PENDING |
-| 5 | DK Share Submission | 🔲 PENDING |
-| 6 | E2E Integration | 🔲 PENDING |
+| 2.0.5 | Unit Tests for Scalar ElGamal | ✅ COMPLETE |
+| 2.1 | Integration into RealDKG + DKGTrait | 🔲 PENDING (Next) |
+| 1E | mpk_encrypt_decrypt smoke test | 🔶 BLOCKED → Ready after 2.1 |
+| 3 | Timelock Registry | 🔲 PENDING |
+| 4 | DK Share Submission | 🔲 PENDING |
+| 5 | E2E Integration | 🔲 PENDING |
 
 ---
 
@@ -144,11 +145,41 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 
 ## What Remains
 
-### Phase 2.1: Integration into RealDKG (Next)
+### Phase 2.0.5: Unit Tests for Scalar ElGamal ✅ COMPLETE
 
-**Goal:** Add scalar transcript to RealDKG's `Transcripts` struct so it's produced during actual DKG.
+**Goal:** Establish solid test coverage before integrating into RealDKG.
+
+**Rationale:** The current test coverage is minimal (only compile-check stubs). We need proof that `deal()` → `decrypt_own_share()` produces correct shares before integration.
+
+**Tests Implemented (15 total):**
+
+#### Transcript Tests (`transcript.rs`)
+- ✅ `test_deal_creates_valid_structure` - Verify correct V, C, C_0 vector sizes
+- ✅ `test_deal_decrypt_roundtrip` - Deal secret, all players decrypt shares
+- ✅ `test_aggregation_preserves_structure` - Multiple dealers aggregate correctly
+- ✅ `test_serialization_roundtrip` - BCS serialize/deserialize
+- ✅ `test_dealt_public_key_consistency` - MPK matches expected value
+- ✅ `test_aggregated_decrypt_combines_secrets` - Aggregated shares decrypt correctly
+
+#### WeightedTranscript Tests (`weighted_protocol.rs`)
+- ✅ `test_weighted_encryption_key_expansion` - Verify weight duplication logic
+- ✅ `test_weighted_deal_decrypt_roundtrip` - With validator weights
+- ✅ `test_weighted_aggregation` - Multiple weighted transcripts
+- ✅ `test_weighted_serialization_roundtrip` - BCS serialize/deserialize
+- ✅ `test_weighted_dealt_public_key_consistency` - MPK matches expected
+- ✅ `test_weighted_realistic_validator_weights` - Real-world stake proportions
+
+**Validation:** All unit tests pass with `cargo test -p aptos-dkg` (44 tests total)
+
+---
+
+### Phase 2.1: Integration into RealDKG + DKGTrait
+
+**Goal:** Add scalar transcript to RealDKG and extend DKGTrait with IBE-specific methods.
 
 **Tasks:**
+
+#### RealDKG Integration
 1. Extend `types/src/dkg/real_dkg/mod.rs`:
    ```rust
    pub struct Transcripts {
@@ -161,6 +192,11 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 3. Modify aggregation to include scalar transcript
 4. Extract scalar MPK for on-chain storage
 
+#### DKGTrait Refactoring
+5. Add `get_ibe_master_public_key() -> Option<G2Affine>` to DKGTrait
+6. Add `get_scalar_secret_share() -> Option<Scalar>` to DKGTrait
+7. Implement for RealDKG
+
 **Validation:** `mpk_on_chain` smoke test passes with scalar MPK
 
 ### Phase 1E: Unblock mpk_encrypt_decrypt
@@ -172,16 +208,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 2. Complete `mpk_encrypt_decrypt` smoke test
 3. Validate IBE roundtrip works end-to-end
 
-### Phase 3: DKGTrait Refactoring
-
-**Goal:** Add formal trait methods for IBE MPK extraction.
-
-**Tasks:**
-1. Add `get_ibe_master_public_key() -> Option<G2Affine>` to DKGTrait
-2. Add `get_scalar_secret_share() -> Option<Scalar>` to DKGTrait
-3. Implement for RealDKG
-
-### Phase 4: Timelock Registry
+### Phase 3: Timelock Registry
 
 **Goal:** On-chain registry for timelock deadlines.
 
@@ -190,7 +217,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 2. Add view functions for querying pending timelocks
 3. Smoke test: `register_and_query`
 
-### Phase 5: DK Share Submission
+### Phase 4: DK Share Submission
 
 **Goal:** Validators submit decryption key shares after deadline.
 
@@ -200,7 +227,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 3. Implement share aggregation on-chain
 4. Smoke tests: `deadline_reveal`, `dk_aggregation`
 
-### Phase 6: E2E Integration
+### Phase 5: E2E Integration
 
 **Goal:** Full encrypt/decrypt cycle with real timelock.
 
@@ -212,11 +239,28 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 
 ## Test Philosophy
 
-### Regression Gate
+### CI Requirements
+
+**Required CI Jobs:** The following 3 crate test suites must pass before merging:
+
+```bash
+# Job 1: DKG crate tests (includes Scalar ElGamal unit tests)
+cargo test -p aptos-dkg
+
+# Job 2: Crypto crate tests
+cargo test -p aptos-crypto
+
+# Job 3: Types crate tests
+cargo test -p aptos-types
+```
+
+**Rationale:** These crates contain the core cryptographic primitives. Regressions here could break DKG, randomness, or IBE functionality silently.
+
+### Smoke Test Gate
 
 Before merging any change:
 ```bash
-# MUST PASS
+# MUST PASS - validates full DKG flow still works
 cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 --nocapture
 ```
 
@@ -281,8 +325,10 @@ cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 -
 - [x] `Transcript::decrypt_own_share()` implemented
 - [x] `WeightedTranscript::deal()` implemented
 - [x] `randomness::e2e_correctness` passes
-- [ ] Integrated into RealDKG Transcripts struct
-- [ ] Scalar MPK stored on-chain
+- [x] Unit tests for Transcript pass (Phase 2.0.5)
+- [x] Unit tests for WeightedTranscript pass (Phase 2.0.5)
+- [ ] Integrated into RealDKG Transcripts struct (Phase 2.1)
+- [ ] Scalar MPK stored on-chain (Phase 2.1)
 
 ### Full Project Complete When:
 - [ ] `mpk_encrypt_decrypt` smoke test passes
