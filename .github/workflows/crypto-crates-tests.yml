@@ -12,89 +12,63 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_BUILD_JOBS: 2
   CARGO_INCREMENTAL: 0
+  RUST_MIN_STACK: 104857600
 
 jobs:
-  aptos-dkg:
-    name: aptos-dkg tests
+  crypto-crates:
+    name: Crypto Crates Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.75.0
 
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential binutils lld cmake clang libssl-dev pkg-config libudev-dev libdw-dev
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "crypto-crates"
           cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
 
       - name: Run aptos-dkg tests
         run: cargo test -p aptos-dkg --verbose
 
-  aptos-crypto:
-    name: aptos-crypto tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.75.0
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential binutils lld cmake clang libssl-dev pkg-config libudev-dev libdw-dev
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "crypto-crates"
-          cache-on-failure: true
-
       - name: Run aptos-crypto tests
         run: cargo test -p aptos-crypto --verbose
-
-  aptos-types:
-    name: aptos-types tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.75.0
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential binutils lld cmake clang libssl-dev pkg-config libudev-dev libdw-dev
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "crypto-crates"
-          cache-on-failure: true
 
       - name: Run aptos-types tests
         run: cargo test -p aptos-types --verbose
