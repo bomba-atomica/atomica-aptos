@@ -1,190 +1,117 @@
-# IBE/DKG Comparison: Same Underlying Crypto
+# IBE/DKG Comparison: Same PVSS, Different Output Types
 
-## The Short Answer
+## Key Correction
 
-Yes, both use BLS12-381. The **same underlying cryptography**, but **different protocol choices** for how the secret is structured and shared.
+Both Atomica and upstream use **PVSS** (Publicly Verifiable Secret Sharing). The difference is the **PVSS variant** and its **output type**:
 
 ```
-Both: BLS12-381 ──► DKG ──► Threshold Crypto
-                    │
-        ┌───────────┴───────────┐
-        │                       │
-   Atomica (DAS)          Upstream (PVSS)
-   Output: G1            Output: Scalar
-        │                       │
-        ▼                       ▼
-   Different IBE        FPTX/BIBE
-   (Boneh-Franklin)     + KZG
+PVSS (Shared Library: crates/aptos-dkg/src/pvss/)
+    │
+    ├─── das (Atomica uses this)
+    │     Output: DealtSecretKey = G1Projective
+    │     Used for: Randomness (WVUF)
+    │
+    └─── chunky (Upstream uses this)
+          Output: DealtSecretKey = Scalar
+          Used for: FPTX/BIBE (batch encryption)
 ```
 
 ---
 
-## What's Actually Different
+## The Real Difference
 
-### 1. DKG Protocol Variant
-
-| Protocol          | Our Atomica                            | Upstream                                  |
-| ----------------- | -------------------------------------- | ----------------------------------------- |
-| **Name**          | DAS (Distributed Aggregation Protocol) | PVSS (Publicly Verifiable Secret Sharing) |
-| **Secret Output** | `DealtSecretKey` (G1 element)          | `MSK Share` (Scalar)                      |
-| **Threshold**     | Weighted Shamir over players           | Weighted Shamir over stake                |
-
-**Same cryptographic primitive:** BLS12-381 pairing-friendly curve
-
-**Different encoding choice:**
-
-- DAS: Secret = group element `h^a` in G1
-- PVSS: Secret = scalar field element `s`
-
-### 2. The Root Cause
+### DAS (Atomica) - G1 Element Output
 
 ```rust
-// DAS Protocol (Atomica)
-// Secret is an element of G1, not the scalar itself
+// crates/aptos-dkg/src/pvss/das/unweighted_protocol.rs
+type DealtSecretKey = pvss::dealt_secret_key::g1::DealtSecretKey;
+
+// crates/aptos-dkg/src/pvss/dealt_secret_key.rs
 pub struct DealtSecretKey {
-    h_hat: G1Projective,  // h^a where h is generator, a is secret
-}
-
-// PVSS (Upstream)
-// Secret is a scalar field element
-pub struct SecretShare {
-    value: Fr,  // The actual secret scalar s
+    h_hat: G1Projective,  // Group element, ~48 bytes
 }
 ```
 
-**This is just a design choice**, not a fundamental requirement. The DAS protocol could be modified to output the scalar.
+### Chunky (Upstream) - Scalar Output
 
-### 3. IBE Scheme Differences
-
-| Aspect             | Our IBE (Boneh-Franklin)        | Upstream FPTX/BIBE                 |
-| ------------------ | ------------------------------- | ---------------------------------- |
-| **Key Derivation** | `dk = H(id)^s` (scalar mult)    | `dk = H(digest) * s` (scalar mult) |
-| **Encryption**     | Pairing-based key encapsulation | KZG commitments over IDs           |
-| **Batching**       | No                              | Yes (polynomial over IDs)          |
-| **Ciphertext**     | 2 G2 elements                   | 3 G2 elements + KZG proof          |
-| **Verification**   | Direct pairing check            | KZG opening proof                  |
-
-**Same underlying math:**
-
-- Both use `e(G1, G2)` pairing
-- Both use scalar multiplication on G1
-- Both use BLS12-381 field arithmetic
-
-### 4. Why Upstream Chose Different
-
-**Upstream's design goals:**
-
-- Batch encryption for many recipients
-- Weighted threshold (stake-based)
-- Efficient proof aggregation
-
-**Our design goals:**
-
-- Simple timelock encryption
-- Player-based threshold (1 validator = 1 share)
-- Minimal protocol overhead
+```rust
+// crates/aptos-dkg/src/pvss/chunky/keys.rs
+pub type DealtSecretKey<F: PrimeField> = Scalar<F>;  // Field element, ~32 bytes
+```
 
 ---
 
-## Can We Bridge the Gap?
+## Why Different Output Types?
 
-### The Scalar Connection
+| Use Case                         | Output Type | Reason                                     |
+| -------------------------------- | ----------- | ------------------------------------------ |
+| **WVUF (Randomness)**            | G1 element  | Pinkas VUF needs G1 for `e(sk, h)` pairing |
+| **FPTX/BIBE (Batch Encryption)** | Scalar      | KZG polynomial commitments need scalars    |
 
-```
-G1 element h^a  ←→  scalar a  (the "discrete log")
-         │
-         │  (This is what DAS hides)
-         ▼
-   "What's the secret?"
-
-   DAS: "The secret IS h^a" (group element)
-   PVSS: "The secret IS a" (scalar)
-```
-
-**Mathematically equivalent** - just different representation.
-
-### If We Extract the Scalar from DAS
-
-The DAS protocol generates `h^a` where `a` is the secret. If we could extract `a` from `h^a`:
-
-```rust
-// Hypothetical: Extract scalar from G1 element
-fn g1_to_scalar(g1: &G1Projective) -> Scalar {
-    // This is the "discrete log" - computationally hard!
-    // Not feasible in practice.
-}
-```
-
-**Problem:** You can't efficiently extract `a` from `h^a`. That's the point of discrete log cryptography.
-
-### The Real Fix: Change DAS Protocol
-
-To get a scalar, DAS needs to be modified at the protocol level:
-
-```
-Current DAS:
-  Input: secret scalar s
-  Output: h^s (G1 element)
-
-Modified DAS:
-  Input: secret scalar s
-  Output: s (Scalar)
-```
-
-This requires changing how the secret is encoded throughout the protocol.
+**Both are valid PVSS instantiations** - just different cryptographic constructions for different purposes.
 
 ---
 
-## Implications for Randomness
+## Code Evidence
 
-### Our WVUF Uses G1 Element
+```bash
+# Atomica uses DAS for randomness
+$ grep -r "type.*SecretKey.*=" crates/aptos-dkg/src/pvss/das/
+type DealtSecretKey = pvss::dealt_secret_key::g1::DealtSecretKey;  # G1!
 
-```rust
-// pinkas/mod.rs:185-188
-fn eval(sk: &Self::SecretKey, msg: &[u8]) -> Self::Evaluation {
-    let h = Self::hash_to_curve(msg).to_affine();
-    pairing(&sk.as_group_element().to_affine(), &h)  // Expects G1!
-}
+# Upstream uses chunky for FPTX
+$ grep -r "type.*SecretKey.*=" crates/aptos-dkg/src/pvss/chunky/
+pub type DealtSecretKey<F: PrimeField> = Scalar<F>;  # Scalar!
 ```
 
-**WVUF needs the G1 element for pairing.** If we change DAS to output scalar, we break WVUF.
+---
 
-### Upstream's Approach
+## Our Problem in Context
 
-Upstream uses a **different VUF scheme** that works with scalar secrets:
-
-```rust
-// upstream: Scalar-based evaluation
-fn eval(sk: &Scalar, msg: &[u8]) -> Gt {
-    pairing(&G1Projective::generator().mul(sk), &hash_to_g2(msg))
-}
 ```
+Atomica:
+  DAS PVSS → DealtSecretKey(G1) → WVUF ✓ (works)
+                                    └──► IBE ✗ (expects Scalar)
+
+Upstream:
+  Chunky PVSS → DealtSecretKey(Scalar) → FPTX/BIBE ✓ (works)
+                                         └──► IBE ✓ (works)
+```
+
+**The mismatch is between DAS's G1 output and our IBE's scalar requirement.**
+
+---
+
+## Solution Paths
+
+| Option | Description                     | Risk to Randomness           |
+| ------ | ------------------------------- | ---------------------------- |
+| **A**  | Modify IBE to accept G1 element | 🟢 None                      |
+| **B**  | Switch to chunky PVSS           | 🔴 High (breaks WVUF)        |
+| **C**  | Adopt upstream's FPTX/BIBE      | 🟡 Medium (different scheme) |
 
 ---
 
 ## Summary Table
 
-| Question            | Answer                                                       |
-| ------------------- | ------------------------------------------------------------ |
-| Same crypto?        | ✅ Yes, both BLS12-381                                       |
-| Same DKG?           | ❌ Different protocols (DAS vs PVSS)                         |
-| Same secret format? | ❌ G1 element vs scalar                                      |
-| Can we bridge?      | ⚠️ Only with protocol changes                                |
-| Risk to randomness? | ✅ Upstream's approach doesn't break WVUF (different scheme) |
+| Aspect              | Atomica (DAS)   | Upstream (Chunky)        |
+| ------------------- | --------------- | ------------------------ |
+| **PVSS Variant**    | das             | chunky                   |
+| **Output Type**     | G1 element      | Scalar                   |
+| **Bytes**           | 48              | 32                       |
+| **WVUF Compatible** | ✅ Yes          | ❌ No (different scheme) |
+| **IBE Compatible**  | ❌ No (our IBE) | ✅ Yes (FPTX)            |
+| **Batching**        | ❌ No           | ✅ Yes (KZG)             |
 
 ---
 
 ## Conclusion
 
-The core difference is **encoding**, not cryptography:
+Both use the same `aptos-dkg` PVSS library. The difference is:
 
-- **Atomica:** DKG secret = G1 element (for WVUF pairing)
-- **Upstream:** DKG secret = scalar (for IBE + KZG)
+- **DAS** → G1 output → Good for WVUF, bad for our IBE
+- **Chunky** → Scalar output → Good for FPTX/BIBE, bad for WVUF
 
-**To fix our IBE-DKG mismatch:**
+Our IBE expects scalar, but DAS gives G1. **The fix is to change IBE, not DKG.**
 
-1. Option A: Modify DAS to output scalar (break WVUF)
-2. Option B: Modify IBE to work with G1 element (cleaner)
-3. Option C: Adopt upstream's FPTX/BIBE (most work, most features)
-
-**Option B is the path of least disruption** for Atomica - keep G1 output, change IBE to accept it.
+---
