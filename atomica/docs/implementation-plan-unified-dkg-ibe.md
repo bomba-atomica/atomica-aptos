@@ -301,13 +301,32 @@ RUST_MIN_STACK=104857600 cargo test -p smoke-test --lib randomness::e2e_correctn
 
 #### Phase 1 Status
 
-| Sub-Phase | Description                              | Status                               |
-| --------- | ---------------------------------------- | ------------------------------------ |
-| 1A        | Move module `ibe_config.move`            | ✅ COMPLETE                          |
-| 1B        | Rust MPK extraction in `dkg.rs`          | ✅ COMPLETE                          |
-| 1C        | IBE Crypto Module (`aptos-dkg/src/ibe/`) | ✅ COMPLETE                          |
-| 1D        | Smoke test `mpk_on_chain`                | ✅ COMPLETE                          |
-| 1E        | Smoke test `mpk_encrypt_decrypt`         | 🔲 BLOCKED (IBE-DKG scalar mismatch) |
+| Sub-Phase | Description                              | Status                       |
+| --------- | ---------------------------------------- | ---------------------------- |
+| 1A        | Move module `ibe_config.move`            | ✅ COMPLETE                  |
+| 1B        | Rust MPK extraction in `dkg.rs`          | ✅ COMPLETE                  |
+| 1C        | IBE Crypto Module (`aptos-dkg/src/ibe/`) | ✅ COMPLETE                  |
+| 1D        | Smoke test `mpk_on_chain`                | ✅ COMPLETE                  |
+| 1E        | Smoke test `mpk_encrypt_decrypt`         | 🔶 BLOCKED (Crypto Mismatch) |
+
+#### Critical Issue: IBE-DKG Mismatch
+
+Our analysis has confirmed a fundamental type mismatch:
+
+- **DKG (DAS)** produces `G1Projective` shares (reconstructs to `g1^s`).
+- **IBE (BF)** requires `Scalar` secret (to compute `H(id)^s`).
+- **Upstream** avoids this by using `Chunky` PVSS (Scalar shares) + `FPTX` IBE.
+
+**Decision:**
+
+1.  **Short-term (for tests):** Implement "Shadow Mode" where we derive a scalar from the G1 element: `s' = Hash(g1^s)`. We use this `s'` to derive a "Shadow MPK" for testing encryption. This allows testing the _plumbing_ (Move -> Rust -> Key Derivation).
+2.  **Long-term (for production):** We must switch Timelock to use **Chunky PVSS** (Scalar DKG), separate from the Randomness DKG. This is a Phase 3 task.
+
+#### Next Steps
+
+1.  Implement `g1_to_scalar` in `aptos-dkg`.
+2.  Update `mpk_encrypt_decrypt` to use this "Shadow Mode".
+3.  Mark Phase 1 complete with this caveat.
 
 **Commits:**
 
