@@ -1,13 +1,14 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 2.1
+**Version:** 2.2
 **Date:** January 18, 2026
 **Branch:** timelock-das-vpss
-**Status:** Phase 2.0.5 In Progress
+**Status:** Phase 1E Next
 **Reference:** [ADR-001: Dual Output DKG](adr-001-dual-output-dkg.md)
 
 ## Changelog
 
+- **v2.2** (Jan 18, 2026): Marked Phase 2.1 complete. Next is Phase 1E (mpk_encrypt_decrypt smoke test).
 - **v2.1** (Jan 18, 2026): Added Phase 2.0.5 (Unit Tests) before RealDKG integration. Added CI job requirements for regression testing.
 - **v2.0** (Jan 18, 2026): Major update reflecting completed Phase 2 Scalar ElGamal implementation. Documented decisions made during development. Reorganized phases to reflect actual implementation order.
 - **v1.5** (Jan 17, 2026): Reordered phases. Phase 2 is now Dual-Output DKG (ADR-001).
@@ -283,15 +284,21 @@ cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 -
 | `testsuite/smoke-test/src/timelock/mpk_on_chain.rs` | MPK smoke test | ✅ |
 | `atomica/docs/adr-001-dual-output-dkg.md` | Architecture decision | ✅ |
 
+### Completed in Phase 2.1
+
+| File | Description | Status |
+|------|-------------|--------|
+| `types/src/dkg/real_dkg/mod.rs` | Add scalar to Transcripts | ✅ |
+| `types/src/dkg/mod.rs` | DKGTrait IBE methods | ✅ |
+
 ### Pending Files
 
 | File | Description | Phase |
 |------|-------------|-------|
-| `types/src/dkg/real_dkg/mod.rs` | Add scalar to Transcripts | 2.1 |
-| `dkg/src/epoch_manager.rs` | Deal scalar transcript | 2.1 |
 | `testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs` | Complete test | 1E |
-| `types/src/validator_txn/mod.rs` | TimelockShare type | 5 |
-| `testsuite/smoke-test/src/timelock/e2e.rs` | E2E test | 6 |
+| `crates/aptos-dkg/src/ibe/mod.rs` | `derive_decryption_key_from_shares()` | 1E |
+| `types/src/validator_txn/mod.rs` | TimelockShare type | 4 |
+| `testsuite/smoke-test/src/timelock/e2e.rs` | E2E test | 5 |
 
 ---
 
