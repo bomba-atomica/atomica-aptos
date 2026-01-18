@@ -27,10 +27,10 @@ Current:
 
 The aptos-dkg library contains multiple PVSS variants:
 
-| PVSS Variant | Output Type                     | Consumer                     |
-| ------------ | ------------------------------- | ---------------------------- |
-| **das**      | `DealtSecretKey = G1Projective` | WVUF (randomness)            |
-| **chunky**   | `DealtSecretKey = Scalar`       | FPTX/BIBE (batch encryption) |
+| PVSS Variant       | Output Type                     | Consumer                    |
+| ------------------ | ------------------------------- | --------------------------- |
+| **das**            | `DealtSecretKey = G1Projective` | WVUF (randomness)           |
+| **scalar_elgamal** | `DealtSecretKey = Scalar`       | IBE, scalar-based protocols |
 
 ### Consumer Requirements
 
@@ -68,13 +68,7 @@ Deterministic conversion: `scalar = hash(G1)` then use scalar for IBE.
 
 **Rejected:** Breaks relationship between MPK and derived keys. Would require separate MPK for IBE, complicating on-chain state.
 
-### Option D: Switch to Chunky PVSS
-
-Replace DAS with Chunky PVSS which outputs scalars.
-
-**Rejected:** Chunky lacks weighted threshold support. Would require significant development to add weighted support.
-
-### Option E: Dual-Output DKG (Selected)
+### Option D: Dual-Output DKG (Selected)
 
 Extend RealDKG to produce both G1 and Scalar shares in a single round using two PVSS protocols with the same InputSecret.
 
@@ -87,16 +81,56 @@ Extend RealDKG to produce both G1 and Scalar shares in a single round using two 
 Extend RealDKG to produce **two types of key material** in a single DKG round:
 
 1. **G1 shares** (existing DAS PVSS) → for WVUF/randomness (unchanged)
-2. **Scalar shares** (new ElGamal PVSS) → for IBE
+2. **Scalar shares** (new Chunked Lifted ElGamal PVSS) → for IBE
 
 ### Architecture
 
 ```
-RealDKG → DAS PVSS      → G1 shares     → WVUF, randomness
-        → ElGamal PVSS  → Scalar shares → IBE, scalar-based protocols
+RealDKG → DAS PVSS           → G1 shares     → WVUF, randomness
+         → Chunked ElGamal PVSS → Scalar shares → IBE, scalar-based protocols
 
 (Both dealt in single round, bundled in single message)
 ```
+
+### Chunked Lifted ElGamal Design
+
+The scalar ElGamal PVSS uses **Chunked Lifted ElGamal encryption** to produce scalar outputs:
+
+#### Secret Sharing
+
+The input scalar `s` is shared using Shamir's Secret Sharing to get shares `sh_i` for each validator.
+
+#### Chunking
+
+Each share `sh_i` (32 bytes) is split into **16 chunks of 16 bits**:
+
+- `u_{i,0} ... u_{i,15}`
+- Each chunk is in range `[0, 2^16)`
+
+#### Encryption (Lifted ElGamal)
+
+Each chunk `u_{i,j}` is encrypted as:
+
+```
+C_{i,j} = g^{u_{i,j}} · pk_i^{r_j}
+```
+
+- `r_j` is a random scalar shared across all validators for chunk index `j`
+- Ephemeral keys `R_j = g^{r_j}` are included in the transcript (one per chunk index)
+
+#### Decryption
+
+Validator `i` recovers their share by:
+
+1. Computing `pk_i^{r_j} = R_j^{sk_i}` using their secret key
+2. Computing `g^{u_{i,j}} = C_{i,j} / pk_i^{r_j}`
+3. Solving the discrete log: `u_{i,j} = log_g(g^{u_{i,j}})`
+
+Since chunks are only 16 bits, the discrete log is computed efficiently using **Baby-step Giant-step (BSGS)** with a precomputed lookup table (~650 entries).
+
+#### Reconstruction
+
+Chunks are concatenated and converted back to a scalar `sh_i`.
 
 ### Transcript Structure
 
@@ -104,7 +138,17 @@ RealDKG → DAS PVSS      → G1 shares     → WVUF, randomness
 pub struct Transcripts {
     pub main: WTrx,              // DAS → G1 (existing)
     pub fast: Option<WTrx>,      // DAS → G1 fast-path (existing)
-    pub scalar: ScalarTrx,       // ElGamal → Scalar (new)
+    pub scalar: ScalarTrx,       // Chunked ElGamal → Scalar (new)
+}
+
+pub struct Transcript {
+    pub soks: Vec<SoK<G2Projective>>,
+    pub hat_w: G2Projective,
+    pub V: Vec<G2Projective>,
+    /// Ephemeral keys R_j = g^{r_j} for each chunk index j=0..15
+    pub ephemeral_keys: Vec<G1Projective>,
+    /// Ciphertexts C_{i,j} for each validator i and chunk j
+    pub ciphertexts: Vec<Vec<G1Projective>>,
 }
 ```
 
@@ -112,7 +156,8 @@ pub struct Transcripts {
 
 1. **Same InputSecret** - Both transcripts share the same underlying scalar `a`
 2. **Same MPK** - Both produce identical public key `g2^a`
-3. **Battle-tested primitives** - Shamir, ElGamal, DLEQ proofs
+3. **Battle-tested primitives** - Shamir, ElGamal, BSGS discrete log
+4. **Efficient decryption** - 16-bit chunks enable fast BSGS lookup
 
 ---
 
@@ -125,10 +170,11 @@ pub struct Transcripts {
 - Single DKG service, single consensus round
 - No novel cryptography
 - MPK is shared (same secret) - no additional on-chain state
+- Efficient decryption via small chunk size (16 bits)
 
 ### Negative
 
-- Increased transcript size (~32 bytes per validator for scalar shares + DLEQ proofs)
+- Increased transcript size (ephemeral keys + ciphertexts)
 - Additional dealing/verification computation per DKG round
 - New code to maintain (scalar_elgamal PVSS module)
 
@@ -145,18 +191,20 @@ Integrate as a new phase in [implementation-plan-unified-dkg-ibe.md](./implement
 
 ### Summary
 
-| Phase | Description |
-|-------|-------------|
-| 1 | Create `scalar_elgamal` PVSS module |
-| 2 | Add weighted threshold wrapper |
-| 3 | Integrate into RealDKG |
-| 4 | Wire up IBE consumer |
+| Phase | Description                                                     |
+| ----- | --------------------------------------------------------------- |
+| 1     | Create `scalar_elgamal` PVSS module with Chunked Lifted ElGamal |
+| 2     | Add weighted threshold wrapper                                  |
+| 3     | Integrate into RealDKG                                          |
+| 4     | Wire up IBE consumer                                            |
 
 ### New Files
 
 - `crates/aptos-dkg/src/pvss/scalar_elgamal/mod.rs`
 - `crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs`
 - `crates/aptos-dkg/src/pvss/scalar_elgamal/weighted_protocol.rs`
+- `crates/aptos-dkg/src/pvss/dealt_secret_key.rs` (scalar module)
+- `crates/aptos-dkg/src/pvss/dealt_secret_key_share.rs` (scalar module)
 
 ### Modified Files
 
@@ -168,7 +216,8 @@ Integrate as a new phase in [implementation-plan-unified-dkg-ibe.md](./implement
 
 - PVSS Library: `crates/aptos-dkg/src/pvss/`
 - DAS Protocol: `crates/aptos-dkg/src/pvss/das/`
-- ElGamal Encryption: `crates/aptos-dkg/src/pvss/encryption_elgamal.rs`
+- Scalar ElGamal PVSS: `crates/aptos-dkg/src/pvss/scalar_elgamal/`
+- DealtSecretKey (Scalar): `crates/aptos-dkg/src/pvss/dealt_secret_key.rs`
 - IBE Module: `crates/aptos-dkg/src/ibe/mod.rs`
 - WVUF: `crates/aptos-dkg/src/weighted_vuf/pinkas/mod.rs`
 - RealDKG: `types/src/dkg/real_dkg/mod.rs`
