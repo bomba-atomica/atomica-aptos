@@ -1,11 +1,91 @@
-/// IBE (Identity-Based Encryption) configuration module.
+/// IBE (Identity-Based Encryption) configuration and Timelock Registry module.
 ///
-/// This module stores the Master Public Key (MPK) derived from the DKG transcript,
-/// enabling clients to perform timelock encryption using the Boneh-Franklin IBE scheme.
+/// This module implements the on-chain components for Atomica's timelock encryption system:
 ///
-/// The MPK is a G2 point (96 bytes compressed) that is updated after each successful DKG.
-/// Clients can query the MPK via view functions to encrypt messages that can only be
-/// decrypted after validators reveal the corresponding decryption key.
+/// 1. **IBE Public Parameters** - Stores the Master Public Key (MPK) from DKG
+/// 2. **Timelock Registry** - Manages registered timelocks with deadlines
+/// 3. **DK Share Aggregation** - Collects and aggregates validator decryption key shares
+/// 4. **Decryption Key Reconstruction** - Reconstructs DK using threshold shares
+///
+/// ## Architecture Overview
+///
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────────────────────┐
+/// │                            ON-CHAIN STATE                                    │
+/// ├─────────────────────────────────────────────────────────────────────────────┤
+/// │                                                                              │
+/// │  @IBEPublicParams                                                            │
+/// │  ┌──────────────────────────────────────────────────────────────────────┐   │
+/// │  │ mpk: vector<u8>     ← G2 point (96 bytes) from DKG                  │   │
+/// │  │ epoch: u64          ← DKG epoch for rotation                         │   │
+/// │  └──────────────────────────────────────────────────────────────────────┘   │
+/// │                                                                              │
+/// │  @TimelockRegistry                                                           │
+/// │  ┌──────────────────────────────────────────────────────────────────────┐   │
+/// │  │ timelocks: Table<u64, TimelockInfo>  ← All registered timelocks     │   │
+/// │  │ next_timelock_id: u64                 ← Auto-incrementing ID        │   │
+│
+
+/// │  │ registration_events: EventHandle      ← Indexed for queries          │   │
+/// │  │ reveal_events: EventHandle            ← Indexed for queries          │   │
+/// │  └──────────────────────────────────────────────────────────────────────┘   │
+/// │                                                                              │
+/// │  @TimelockInfo (per timelock)                                                │
+/// │  ┌──────────────────────────────────────────────────────────────────────┐   │
+/// │  │ identity: vector<u8> ← SHA3-256(timelock_id || deadline_us)         │   │
+/// │  │ decryption_key: vector<u8> ← G1 point, empty before reveal          │   │
+/// │  │ is_revealed: bool       ← True after threshold shares received      │   │
+/// │  │ share_count: u64        ← Weighted count of shares received         │   │
+/// │  └──────────────────────────────────────────────────────────────────────┘   │
+/// │                                                                              │
+/// └─────────────────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// ## Workflow
+///
+/// 1. **Registration** - User calls `register_timelock(deadline_us)` → gets `timelock_id`
+/// 2. **Encryption** - Client queries MPK and identity, encrypts with IBE
+/// 3. **DKG** - Validators run DKG, produce shares, publish MPK
+/// 4. **Reveal** - After deadline, validators submit `TimelockShare` transactions
+/// 5. **Aggregation** - Contract aggregates shares, reconstructs DK when threshold met
+/// 6. **Decryption** - Anyone queries DK, decrypts ciphertext
+///
+/// ## Documentation References
+///
+/// **Design Docs:**
+/// - [ADR-001: Dual-Output DKG](atomica/docs/adr-001-dual-output-dkg.md)
+/// - [Implementation Plan](atomica/docs/implementation-plan-unified-dkg-ibe.md)
+/// - [Timelock Specification](atomica/docs/product-spec/atomica-timelock-spec.md)
+/// - [Definitions](atomica/docs/definitions.md)
+///
+/// **Source Code:**
+/// - [IBE Rust Module](crates/aptos-dkg/src/ibe/mod.rs)
+/// - [Scalar ElGamal PVSS](crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs)
+/// - [DKG Integration](types/src/dkg/real_dkg/mod.rs)
+/// - [Validator Transaction Handling](aptos-vm/src/validator_txns/timelock.rs)
+///
+/// **Tests:**
+/// - [Register and Query Test](testsuite/smoke-test/src/timelock/register_and_query.rs)
+/// - [Deadline Reveal Test](testsuite/smoke-test/src/timelock/deadline_reveal.rs)
+///
+/// ## Error Codes
+///
+/// | Code | Constant | Description |
+/// |------|----------|-------------|
+/// | 1 | `E_INVALID_MPK_LENGTH` | MPK must be 96 bytes (G2 compressed) |
+/// | 2 | `E_IBE_NOT_READY` | MPK not yet set by DKG |
+/// | 3 | `E_DEADLINE_NOT_PASSED` | Cannot reveal before deadline |
+/// | 4 | `E_TIMELOCK_NOT_FOUND` | Timelock ID not registered |
+/// | 5 | `E_DECRYPTION_KEY_NOT_REVEALED` | DK not yet aggregated |
+/// | 6 | `E_INVALID_THRESHOLD` | Threshold must be positive |
+/// | 7 | `E_SHARE_ALREADY_SUBMITTED` | Validator already submitted share |
+///
+/// ## Security Considerations
+///
+/// - Only the framework address can update the MPK (via DKG)
+/// - Only the framework address can submit DK shares (via ValidatorTransaction)
+/// - Threshold reconstruction ensures liveness with honest majority
+/// - Identity includes both timelock_id and deadline to prevent collisions
 module aptos_framework::ibe_config {
     use std::vector;
     use std::hash::sha3_256;
