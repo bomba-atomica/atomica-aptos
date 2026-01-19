@@ -1,10 +1,16 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 2.11
+**Version:** 2.12
 **Date:** January 19, 2026
 **Branch:** feature/scalar-chunked-elgamal
 **Status:** Phase 5 (E2E Integration) IN PROGRESS - Phase 2.6 (DLEQ Proof Verification) COMPLETE
 **Reference:** [ADR-001: Dual Output DKG](adr-001-dual-output-dkg.md)
+**Related Docs:**
+
+- [Technical: Chunked ElGamal](technical/chunked-elgamal-scalar-generation.md)
+- [Definitions](definitions.md)
+- [Phase 1E Prompt](agent-prompt-phase-1e.md)
+- [Phase 3 Prompt](agent-prompt-phase-3.md)
 
 ---
 

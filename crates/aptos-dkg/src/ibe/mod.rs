@@ -11,11 +11,77 @@
 //! - **Encryption**: Uses the pairing `e(H(id), mpk)` to derive a symmetric key
 //! - **Decryption**: Uses the pairing `e(dk, U)` to recover the symmetric key
 //!
-//! # Security
+//! ## Architecture Overview
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────────────┐
+//! │                         IBE Encryption Flow                              │
+//! ├─────────────────────────────────────────────────────────────────────────┤
+//! │                                                                          │
+//! │  Input: (mpk, identity, message)                                        │
+//! │         │                                                               │
+//! │         ▼                                                               │
+//! │  1. h = H(identity) ──► G1 point                                        │
+//! │  2. r ← random scalar                                                   │
+//! │  3. U = g2^r ──► G2 element (sent with ciphertext)                      │
+//! │  4. g_id = e(h, mpk)^r ──► Gt element                                   │
+//! │  5. k = SHA3-256(g_id)[0:32] ──► symmetric key                          │
+//! │  6. V = message XOR k ──► ciphertext payload                            │
+//! │                                                                          │
+//! │  Output: (U, V) ciphertext                                               │
+//! └─────────────────────────────────────────────────────────────────────────┘
+//!
+//! ┌─────────────────────────────────────────────────────────────────────────┐
+//! │                         IBE Decryption Flow                              │
+//! ├─────────────────────────────────────────────────────────────────────────┤
+//! │                                                                          │
+//! │  Input: (dk, identity, ciphertext = (U, V))                             │
+//! │         │                                                               │
+//! │         ▼                                                               │
+//! │  1. h = H(identity) ──► G1 point                                        │
+//! │  2. g_id = e(dk, U) ──► Gt element (reconstructs same as encrypt)       │
+//! │  3. k = SHA3-256(g_id)[0:32] ──► symmetric key                          │
+//! │  4. message = V XOR k ──► plaintext                                     │
+//! │                                                                          │
+//! │  Output: message                                                         │
+//! └─────────────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Integration with DKG
+//!
+//! The IBE module consumes the output of the Scalar ElGamal PVSS:
+//! - DKG produces scalar shares via [`scalar_elgamal::Transcript`](../../pvss/scalar_elgamal/transcript.rs)
+//! - Shares are reconstructed to get the master secret `s`
+//! - Decryption keys are derived: `dk = H(id)^s`
+//!
+//! See [`transcript.rs`](../../pvss/scalar_elgamal/transcript.rs) for DKG integration.
+//!
+//! ## Documentation References
+//!
+//! **Core Documentation:**
+//! - [ADR-001: Dual-Output DKG](atomica/docs/adr-001-dual-output-dkg.md)
+//! - [Implementation Plan](atomica/docs/implementation-plan-unified-dkg-ibe.md)
+//! - [Definitions](atomica/docs/definitions.md)
+//!
+//! **Technical Details:**
+//! - [Chunked ElGamal Scalar Generation](atomica/docs/technical/chunked-elgamal-scalar-generation.md)
+//! - [Scalar ElGamal PVSS](../pvss/scalar_elgamal/transcript.rs)
+//!
+//! **Testing:**
+//! - [IBE Unit Tests](tests.rs)
+//! - [mpk_encrypt_decrypt Smoke Test](../../../../testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs)
+//!
+//! ## Security
 //!
 //! The IBE scheme relies on the Bilinear Diffie-Hellman (BDH) assumption.
 //! The identity derivation includes the timelock ID and deadline to prevent
 //! cross-timelock attacks.
+//!
+//! ## File Structure
+//!
+//! - [`mod.rs`](mod.rs) - Core IBE primitives (encrypt, decrypt, key derivation)
+//! - [`ciphertext.rs`](ciphertext.rs) - Ciphertext structure and serialization
+//! - [`tests.rs`](tests.rs) - Unit tests with known scalar examples
 
 pub mod ciphertext;
 
@@ -33,22 +99,46 @@ use sha3::{Digest, Sha3_256};
 use std::ops::Mul;
 
 /// Domain separation tag for IBE identity hashing.
+/// Ensures unique hash domains for IBE vs other protocols.
 pub const IBE_IDENTITY_DST: &[u8] = b"APTOS_IBE_IDENTITY_DST";
 
 /// Domain separation tag for symmetric key derivation from pairing result.
+/// Prevents key confusion between IBE and other uses of the pairing output.
 pub const IBE_KEY_DERIVATION_DST: &[u8] = b"APTOS_IBE_KEY_DERIVATION_DST";
 
 /// Computes an IBE identity from a timelock ID and deadline.
 ///
 /// The identity is a 32-byte hash that uniquely identifies a timelock
-/// for encryption purposes.
+/// for encryption purposes. The identity is computed as:
+///
+/// ```
+/// identity = SHA3-256(IBE_IDENTITY_DST || timelock_id || deadline_us)
+/// ```
+///
+/// This construction ensures:
+/// 1. **Uniqueness**: Each (timelock_id, deadline_us) pair maps to a unique identity
+/// 2. **Domain Separation**: Different protocols use different DSTs
+/// 3. **Collision Resistance**: SHA3-256 provides 128-bit security
 ///
 /// # Arguments
-/// * `timelock_id` - Unique identifier for the timelock
-/// * `deadline_us` - Deadline in microseconds since epoch
+/// * `timelock_id` - Unique identifier for the timelock (assigned on registration)
+/// * `deadline_us` - Deadline in microseconds since epoch (when decryption becomes possible)
 ///
 /// # Returns
-/// A 32-byte identity hash
+/// A 32-byte identity hash suitable for IBE encryption
+///
+/// # Example
+///
+/// ```
+/// let identity = compute_identity(1, 1704067200000000); // Deadline: 2024-01-01
+/// assert_eq!(identity.len(), 32);
+/// ```
+///
+/// # See Also
+///
+/// - [`hash_to_g1()`] - Maps identity to G1 curve point
+/// - [`derive_decryption_key()`] - Derives decryption key from identity and secret
+/// - [Timelock Registration](atomica/docs/technical/timelock-registration.md)
 pub fn compute_identity(timelock_id: u64, deadline_us: u64) -> [u8; 32] {
     let mut hasher = Sha3_256::new();
     hasher.update(IBE_IDENTITY_DST);
@@ -59,13 +149,28 @@ pub fn compute_identity(timelock_id: u64, deadline_us: u64) -> [u8; 32] {
 
 /// Hashes an identity to a G1 curve point.
 ///
-/// Uses the standard hash-to-curve construction for BLS12-381.
+/// Uses the standard hash-to-curve construction for BLS12-381 G1.
+/// The result is used in the pairing operations for encryption/decryption.
 ///
 /// # Arguments
-/// * `identity` - The identity bytes to hash
+/// * `identity` - The 32-byte identity bytes (from [`compute_identity()`])
 ///
 /// # Returns
 /// A G1 projective point representing the hashed identity
+///
+/// # Algorithm
+///
+/// Uses the `hash_to_curve` method from `blstrs`:
+/// ```text
+/// Q_id = H*(identity || domain_separation_tag)
+/// ```
+/// where H* is the random oracle construction for BLS12-381 G1.
+///
+/// # See Also
+///
+/// - [`compute_identity()`] - Creates the identity bytes
+/// - [`derive_decryption_key()`] - Uses the G1 point to derive decryption keys
+/// - [Boneh-Franklin IBE](atomica/docs/definitions.md#boneh-franklin-identity-based-encryption-ibe)
 pub fn hash_to_g1(identity: &[u8]) -> G1Projective {
     G1Projective::hash_to_curve(identity, IBE_IDENTITY_DST, b"H(id)")
 }
@@ -73,13 +178,35 @@ pub fn hash_to_g1(identity: &[u8]) -> G1Projective {
 /// Derives the decryption key for an identity given the master secret.
 ///
 /// Computes `dk = H(identity)^secret` where H maps the identity to G1.
+/// This is the "Extract" algorithm in Boneh-Franklin IBE.
 ///
 /// # Arguments
-/// * `secret` - The master secret scalar (or a share of it)
-/// * `identity` - The identity bytes
+/// * `secret` - The master secret scalar (from DKG) or a threshold share
+/// * `identity` - The identity bytes (from [`compute_identity()`])
 ///
 /// # Returns
 /// The decryption key as a G1 affine point
+///
+/// # Example
+///
+/// ```
+/// let secret = Scalar::from(42u64);
+/// let identity = compute_identity(1, 1704067200000000);
+/// let dk = derive_decryption_key(&secret, &identity);
+/// ```
+///
+/// # Security Notes
+///
+/// - The secret should come from DKG reconstruction or be a threshold share
+/// - For threshold decryption, each validator computes their contribution:
+///   `dk_i = H(identity)^share_i`
+/// - Contributions are combined with Lagrange coefficients to get full DK
+///
+/// # See Also
+///
+/// - [`compute_identity()`] - Creates identity from timelock parameters
+/// - [`hash_to_g1()`] - Maps identity to G1
+/// - [DKG Integration](atomica/docs/implementation-plan-unified-dkg-ibe.md)
 pub fn derive_decryption_key(secret: &Scalar, identity: &[u8]) -> G1Affine {
     let h = hash_to_g1(identity);
     h.mul(secret).to_affine()

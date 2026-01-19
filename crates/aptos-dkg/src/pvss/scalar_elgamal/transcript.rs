@@ -7,6 +7,25 @@
 //! for sharing scalar secrets using Chunked Lifted ElGamal encryption. This implementation
 //! is designed for Distributed Key Generation (DKG) in threshold cryptography systems.
 //!
+//! ## Overview
+//!
+//! This module is part of Atomica's Dual-Output DKG architecture that produces two types
+//! of key material in a single round:
+//! - **G1 shares** (via DAS PVSS) → for WVUF/randomness
+//! - **Scalar shares** (via this module) → for IBE/timelock encryption
+//!
+//! ## Documentation References
+//!
+//! **Architecture & Design:**
+//! - [ADR-001: Dual-Output DKG](atomica/docs/adr-001-dual-output-dkg.md)
+//! - [Implementation Plan](atomica/docs/implementation-plan-unified-dkg-ibe.md)
+//! - [Definitions](atomica/docs/definitions.md)
+//!
+//! **Technical Details:**
+//! - [Chunked ElGamal Scalar Generation](atomica/docs/technical/chunked-elgamal-scalar-generation.md)
+//! - [Weighted Protocol](weighted_protocol.rs)
+//! - [IBE Integration](../ibe/mod.rs)
+//!
 //! ## Mathematical Background
 //!
 //! ### Problem Statement
@@ -35,11 +54,45 @@
 //!    $C_{i,j} = G \cdot u_{i,j} + PK_i \cdot r_j$
 //!    where $PK_i = H \cdot sk_i$ is player $i$'s public key.
 //!
-//! 5. **Decryption**: Player $i$ computes:
+//! 5. **DLEQ Proofs**: The dealer generates DLEQ (Discrete Log Equality) proofs to prove
+//!    that the same randomness $r_j$ was used in both $R_j$ and $C_{i,j}$. This prevents
+//!    a malicious dealer from encrypting garbage that would decrypt to wrong values.
+//!
+//! 6. **Decryption**: Player $i$ computes:
 //!    $C_{i,j} - R_j^{sk_i} = G \cdot u_{i,j}$
 //!    Then solves discrete log to recover $u_{i,j}$ (since $u_{i,j} \in [0, 65536)$).
 //!
-//! 6. **Reconstruction**: Chunks are combined: $s_i = \sum_{j=0}^{15} u_{i,j} \cdot B^j$.
+//! 7. **Reconstruction**: Chunks are combined: $s_i = \sum_{j=0}^{15} u_{i,j} \cdot B^j$.
+//!
+//! ## DLEQ Proof System
+//!
+//! The DLEQ (Discrete Log Equality) proof ensures encryption correctness. It proves that
+//! for each validator $i$ and chunk $j$, the dealer used the same randomness $r_j$ in both:
+//! - The ephemeral key $R_j = G^{r_j}$
+//! - The ciphertext $C_{i,j} = G \cdot u_{i,j} + PK_i \cdot r_j$
+//!
+//! This prevents a malicious dealer from:
+//! - Encrypting garbage values that decrypt to wrong shares
+//! - Using different randomness for different validators
+//! - Creating ciphertexts that don't correspond to the claimed polynomial
+//!
+//! ### Chaum-Pedersen Protocol
+//!
+//! The proof uses the Chaum-Pedersen protocol with Fiat-Shamir transform:
+//!
+//! **Setup:** Common inputs are $G, H = PK_i, A = R_j, B = C_{i,j} - G \cdot u_{i,j}$, and secret $x = r_j$.
+//!
+//! **Prover (Dealer):**
+//! 1. Sample random $w \leftarrow \mathbb{Z}_r$
+//! 2. Compute commitments: $commitment_g = G^w$, $commitment_h = H^w$
+//! 3. Compute challenge: $c = H(commitment_g \parallel commitment_h \parallel A \parallel B \parallel DST)$
+//! 4. Compute response: $response = w - c \cdot x$
+//! 5. Output proof: $(commitment_g, commitment_h, response)$
+//!
+//! **Verifier:**
+//! 1. Recompute challenge $c$ from commitments and public values
+//! 2. Check: $G^{response} \cdot A^{c} \stackrel{?}{=} commitment_g$
+//! 3. Check: $H^{response} \cdot B^{c} \stackrel{?}{=} commitment_h$
 //!
 //! ## Architecture
 //!
@@ -52,9 +105,10 @@
 //!   3. Split each share into 16 chunks: s_i = Σ u_{i,j} · B^j
 //!   4. Generate correlated randomness: Σ r_j · B^j = 0
 //!   5. Encrypt: C_{i,j} = G · u_{i,j} + PK_i · r_j
-//!   6. Commit: V_i = G2 · f(i), hat_w = G2 · r_0
-//!   7. Prove: Schnorr proof of knowledge of f(0)
-//!   Output: Transcript { C, R, V, hat_w, SoK }
+//!   6. Generate DLEQ proofs for each (i, j) pair
+//!   7. Commit: V_i = G2 · f(i), hat_w = G2 · r_0
+//!   8. Prove: Schnorr proof of knowledge of f(0)
+//!   Output: Transcript { C, R, V, hat_w, SoK, dleq_proofs }
 //!
 //! **VALIDATOR i:**
 //!   Input: Transcript, decryption key sk_i
@@ -65,6 +119,18 @@
 //!   2. Reconstruct share: s_i = Σ u_{i,j} · B^j
 //!   Output: Secret share s_i
 //!
+//! ## File Structure
+//!
+//! - [`mod.rs`](mod.rs) - Module exports and test utilities
+//! - [`transcript.rs`](transcript.rs) - Core Transcript struct and DLEQ implementation
+//! - [`weighted_protocol.rs`](weighted_protocol.rs) - Weighted threshold wrapper
+//!
+//! ## Integration Points
+//!
+//! - **DKG Integration:** [`types/src/dkg/real_dkg/mod.rs`](../../../../types/src/dkg/real_dkg/mod.rs)
+//! - **IBE Consumer:** [`../ibe/mod.rs`](../ibe/mod.rs)
+//! - **Smoke Tests:** [`testsuite/smoke-test/src/timelock/`](../../../../../../testsuite/smoke-test/src/timelock/)
+//!
 //! ## Aggregation
 //!
 //! Multiple dealers can contribute to the same DKG session. Their transcripts are
@@ -73,10 +139,33 @@
 //! - $C_{i,j}^{agg} = \sum_k C_{i,j}^k$ (ciphertexts add)
 //! - $R_j^{agg} = \sum_k R_j^k$ (ephemeral keys add)
 //! - $V^{agg} = \sum_k V^k$ (commitments add)
+//! - dleq_proofs are NOT aggregated (each dealer generates their own)
 //!
 //! Due to the correlated randomness property ($\sum_j r_j \cdot B^j = 0$), when enough
 //! validators participate in threshold decryption, the randomness contributions cancel
 //! appropriately, allowing proper secret reconstruction.
+//!
+//! ## Security Properties
+//!
+//! 1. **Secret Sharing:** Any $t$ shares can reconstruct the secret; fewer reveal nothing
+//! 2. **Encryption Correctness:** DLEQ proofs ensure ciphertexts encrypt the correct shares
+//! 3. **Public Verifiability:** Anyone can verify the transcript without secrets
+//! 4. **Aggregation Safety:** Correlated randomness ensures proper behavior under aggregation
+//!
+//! ## Error Handling
+//!
+//! All public methods return `Result` types for proper error propagation:
+//! - `verify()` returns `Result<()>` for verification failures
+//! - `decrypt_own_share()` returns `Result<(DealtSecretKeyShare, DealtPubKeyShare)>` for decryption failures
+//!
+//! ## Testing
+//!
+//! Run tests with:
+//! ```bash
+//! cargo test -p aptos-dkg --lib scalar_elgamal
+//! cargo test -p smoke-test --lib timelock
+//! cargo test -p smoke-test --lib randomness::e2e_correctness
+//! ```
 
 use crate::{
     algebra::polynomials::shamir_secret_share,
@@ -116,6 +205,9 @@ pub const SCHEME_NAME: &str = "scalar_elgamal_pvss";
 ///
 /// With 16-bit chunks, each chunk is in the range [0, 65536), which makes discrete
 /// log feasible using BSGS with ~256 table entries per chunk.
+///
+/// See [technical documentation](atomica/docs/technical/chunked-elgamal-scalar-generation.md)
+/// for detailed explanation of chunking.
 const CHUNK_BIT_SIZE: usize = 16;
 
 /// Number of chunks per scalar.
@@ -129,6 +221,10 @@ const NUM_CHUNKS: usize = 16;
 
 /// Domain separation tag for DLEQ proofs in Scalar ElGamal PVSS.
 /// Prevents cross-protocol attacks by ensuring unique hash domains.
+///
+/// The DLEQ proof proves: log_G(R_j) = log_{PK_i}(C_{i,j} - G * u_{i,j})
+/// This ensures the dealer used the same randomness r_j in both the ephemeral
+/// key R_j and the ciphertext C_{i,j}.
 const DLEQ_PROOF_DST: &[u8; 28] = b"APTOS_SCALAR_ELGAMAL_DLEQ_V1";
 
 /// DLEQ (Discrete Log Equality) proof for one validator's ciphertexts.
@@ -138,17 +234,37 @@ const DLEQ_PROOF_DST: &[u8; 28] = b"APTOS_SCALAR_ELGAMAL_DLEQ_V1";
 ///
 /// Specifically proves: log_G(R_j) = log_{PK_i}(C_{i,j} - G * u_{i,j})
 ///
+/// ## Security Purpose
+///
+/// Without DLEQ proofs, a malicious dealer could:
+/// 1. Commit to a valid polynomial f(x) with f(0) = s
+/// 2. But encrypt garbage values in the ciphertexts
+/// 3. Validators would "decrypt" and get wrong share values
+/// 4. If enough validators get wrong shares, reconstruction fails
+///
+/// The DLEQ proof prevents this by cryptographically binding the ciphertexts
+/// to the ephemeral keys, proving correct encryption.
+///
 /// ## Structure
 ///
 /// Each proof consists of:
 /// - `commitment_g`: G^w (commitment to randomness w on G1)
 /// - `commitment_h`: PK_i^w (commitment to randomness w on target group)
-/// - `response`: r - c * x (response scalar where x is the secret r_j)
+/// - `response`: w - c * r_j (response scalar where r_j is the secret randomness)
+///
+/// ## Verification
+///
+/// Verifier checks:
+/// - G^response * R_j^c = commitment_g
+/// - PK_i^response * (C_{i,j} - G * u_{i,j})^c = commitment_h
+///
+/// where c = H(commitment_g || commitment_h || R_j || PK_i^r_j || DST)
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, BCSCryptoHash, CryptoHasher)]
 pub struct DleqProof {
     pub commitment_g: G1Projective,
     pub commitment_h: G1Projective,
     pub response: Scalar,
+}
 }
 
 /// The Transcript struct represents a PVSS transcript for a single dealer.
