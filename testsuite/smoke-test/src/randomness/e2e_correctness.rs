@@ -47,7 +47,7 @@ async fn randomness_correctness() {
     info!("Wait for randomness to be available in epoch 2.");
     loop {
         let randomness = get_on_chain_resource::<PerBlockRandomness>(&rest_client).await;
-        if randomness.epoch == 2 && randomness.seed.is_some() {
+        if randomness.epoch >= 2 && randomness.seed.is_some() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -76,7 +76,7 @@ async fn randomness_correctness() {
     info!("Wait for randomness to be available in epoch 3.");
     loop {
         let randomness = get_on_chain_resource::<PerBlockRandomness>(&rest_client).await;
-        if randomness.epoch == 3 && randomness.seed.is_some() {
+        if randomness.epoch >= 3 && randomness.seed.is_some() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
