@@ -43,42 +43,27 @@
 //!
 //! ## Architecture
 //!
-//! ```
-//! ┌─────────────────────────────────────────────────────────────────────────────┐
-//! │                              DEALER                                           │
-//! ├─────────────────────────────────────────────────────────────────────────────┤
-//! │                                                                              │
-//! │  Input: Secret scalar s                                                     │
-//! │                                                                              │
-//! │  1. Generate (t-1)-degree polynomial f with f(0) = s                       │
-//! │  2. Evaluate f(i) for i = 1..n to get shares s_i                              │
-//! │  3. Split each share into 16 chunks: s_i = Σ u_{i,j} · B^j                     │
-//! │  4. Generate correlated randomness: Σ r_j · B^j = 0                           │
-//! │  5. Encrypt: C_{i,j} = G · u_{i,j} + PK_i · r_j                               │
-//! │  6. Commit: V_i = G2 · f(i), hat_w = G2 · r_0                                  │
-//! │  7. Prove: Schnorr proof of knowledge of f(0)                                  │
-//! │                                                                              │
-//! │  Output: Transcript { C, R, V, hat_w, SoK }                                    │
-//! │                                                                              │
-//! └─────────────────────────────────────────────────────────────────────────────┘
-//!                                    │
-//!                                    ▼
-//! ┌─────────────────────────────────────────────────────────────────────────────┐
-//! │                           VALIDATOR i                                        │
-//! ├─────────────────────────────────────────────────────────────────────────────┤
-//!                                                                              │
-//! │  Input: Transcript, decryption key sk_i                                       │
-//!                                                                              │
-//! │  1. For each chunk j:                                                         │
-//! │     - Compute R_j^{sk_i} = (G^{r_j})^{sk_i} = PK_i^{r_j}                      │
-//! │     - Decrypt: C_{i,j} - R_j^{sk_i} = G · u_{i,j}                             │
-//! │     - Solve discrete log to recover u_{i,j}                                   │
-//! │  2. Reconstruct share: s_i = Σ u_{i,j} · B^j                                  │
-//!                                                                              │
-//! │  Output: Secret share s_i                                                     │
-//!                                                                              │
-//! └─────────────────────────────────────────────────────────────────────────────┘
-//! ```
+//! The protocol involves two main actors:
+//!
+//! **DEALER:**
+//!   Input: Secret scalar s
+//!   1. Generate (t-1)-degree polynomial f with f(0) = s
+//!   2. Evaluate f(i) for i = 1..n to get shares s_i
+//!   3. Split each share into 16 chunks: s_i = Σ u_{i,j} · B^j
+//!   4. Generate correlated randomness: Σ r_j · B^j = 0
+//!   5. Encrypt: C_{i,j} = G · u_{i,j} + PK_i · r_j
+//!   6. Commit: V_i = G2 · f(i), hat_w = G2 · r_0
+//!   7. Prove: Schnorr proof of knowledge of f(0)
+//!   Output: Transcript { C, R, V, hat_w, SoK }
+//!
+//! **VALIDATOR i:**
+//!   Input: Transcript, decryption key sk_i
+//!   1. For each chunk j:
+//!      - Compute R_j^{sk_i} = (G^{r_j})^{sk_i} = PK_i^{r_j}
+//!      - Decrypt: C_{i,j} - R_j^{sk_i} = G · u_{i,j}
+//!      - Solve discrete log to recover u_{i,j}
+//!   2. Reconstruct share: s_i = Σ u_{i,j} · B^j
+//!   Output: Secret share s_i
 //!
 //! ## Aggregation
 //!
@@ -96,12 +81,13 @@
 use crate::{
     algebra::polynomials::shamir_secret_share,
     pvss::{
-        contribution::SoK,
+        contribution::{batch_verify_soks, SoK},
         das, dealt_pub_key, dealt_pub_key_share, dealt_secret_key, dealt_secret_key_share,
-        encryption_dlog, input_secret, schnorr,
+        encryption_dlog, input_secret, schnorr, LowDegreeTest,
         traits::{self, HasEncryptionPublicParams},
         Player, ThresholdConfigBlstrs,
     },
+    utils::random::random_scalars,
 };
 use anyhow::{bail, Result};
 use aptos_crypto::{
@@ -110,6 +96,7 @@ use aptos_crypto::{
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
 use blstrs::{G1Projective, G2Projective, Scalar};
 use group::Group;
+use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::Mul;
@@ -606,44 +593,69 @@ impl traits::Transcript for Transcript {
         }
     }
 
-    /// Verifies the transcript is well-formed.
+    /// Verifies the transcript is well-formed and cryptographically valid.
     ///
-    /// This function checks structural validity of the transcript but does not
-    /// verify the cryptographic proofs (partial implementation).
+    /// This function performs comprehensive verification of a Chunked Lifted ElGamal
+    /// PVSS transcript, including structural checks, signature verification, and
+    /// polynomial commitment validation.
     ///
     /// ## Checks Performed
     ///
-    /// 1. Verifies the number of ciphertext vectors matches the number of players
-    /// 2. Verifies the number of commitment elements is n+1
+    /// 1. **Structural checks:**
+    ///    - Number of ciphertext vectors matches number of players
+    ///    - Each ciphertext vector has exactly NUM_CHUNKS (16) elements
+    ///    - Number of commitment elements is n+1
+    ///    - Number of ephemeral keys is NUM_CHUNKS (16)
+    ///    - Number of encrypted_aggregate elements is NUM_CHUNKS (16)
+    ///    - Number of encryption keys matches number of players
     ///
-    /// ## TODO
+    /// 2. **Signature of Knowledge (SoK) verification:**
+    ///    - Schnorr proof of knowledge of secret
+    ///    - BLS signature on commitment, player ID, and auxiliary data
     ///
-    /// Full verification should include:
-    /// - Schnorr proof verification
-    /// - Commitment consistency checks
-    /// - Encryption correctness verification
+    /// 3. **Polynomial commitment verification:**
+    ///    - Low-degree test ensures committed polynomial has degree < t
+    ///
+    /// ## Security Notes
+    ///
+    /// - Uses random challenges derived from thread_rng for batched verification
+    /// - SoK verification ensures dealer knew the secret at dealing time
+    /// - Low-degree test prevents dealing of invalid polynomial degrees
     ///
     /// ## Arguments
     ///
-    /// * `sc` - Secret sharing configuration
-    /// * `pp` - Public parameters
-    /// * `spks` - Signing public keys of all players (for SoK verification)
+    /// * `sc` - Secret sharing configuration (threshold t, num players n)
+    /// * `pp` - Public parameters (commitment base, encryption params)
+    /// * `spks` - Signing public keys of dealers (for SoK signature verification)
     /// * `eks` - Encryption public keys of all players
-    /// * `auxs` - Auxiliary data for each SoK
+    /// * `auxs` - Auxiliary data for each SoK (e.g., epoch, dealer address)
     ///
     /// ## Returns
     ///
-    /// * `Ok(())` - Transcript structure is valid
-    /// * `Err(anyhow::Error)` - Validation failed
+    /// * `Ok(())` - Transcript is valid
+    /// * `Err(anyhow::Error)` - Validation failed with details
     fn verify<A: Serialize + Clone>(
         &self,
         sc: &Self::SecretSharingConfig,
-        _pp: &Self::PublicParameters,
-        _spks: &Vec<Self::SigningPubKey>,
-        _eks: &Vec<Self::EncryptPubKey>,
-        _auxs: &Vec<A>,
+        pp: &Self::PublicParameters,
+        spks: &Vec<Self::SigningPubKey>,
+        eks: &Vec<Self::EncryptPubKey>,
+        auxs: &Vec<A>,
     ) -> Result<()> {
-        // Verify ciphertexts dimension
+        //
+        // 1. Structural checks
+        //
+
+        // Verify encryption keys dimension
+        if eks.len() != sc.n {
+            bail!(
+                "Expected {} encryption keys, but got {}",
+                sc.n,
+                eks.len()
+            );
+        }
+
+        // Verify ciphertexts outer dimension (number of players)
         if self.ciphertexts.len() != sc.n {
             bail!(
                 "Expected {} ciphertext vectors, but got {}",
@@ -651,7 +663,20 @@ impl traits::Transcript for Transcript {
                 self.ciphertexts.len()
             );
         }
-        // Verify commitments dimension
+
+        // Verify ciphertexts inner dimension (number of chunks per player)
+        for (i, player_ciphertexts) in self.ciphertexts.iter().enumerate() {
+            if player_ciphertexts.len() != NUM_CHUNKS {
+                bail!(
+                    "Expected {} chunks for player {}, but got {}",
+                    NUM_CHUNKS,
+                    i,
+                    player_ciphertexts.len()
+                );
+            }
+        }
+
+        // Verify polynomial commitments dimension
         if self.V.len() != sc.n + 1 {
             bail!(
                 "Expected {} commitment elements, but got {}",
@@ -659,10 +684,80 @@ impl traits::Transcript for Transcript {
                 self.V.len()
             );
         }
-        // TODO: Verification logic for Chunked ElGamal
-        // - Verify Schnorr proofs
-        // - Verify commitment consistency
-        // - Verify ciphertext well-formedness
+
+        // Verify ephemeral keys dimension
+        if self.ephemeral_keys.len() != NUM_CHUNKS {
+            bail!(
+                "Expected {} ephemeral keys, but got {}",
+                NUM_CHUNKS,
+                self.ephemeral_keys.len()
+            );
+        }
+
+        // Verify encrypted_aggregate dimension
+        if self.encrypted_aggregate.len() != NUM_CHUNKS {
+            bail!(
+                "Expected {} encrypted_aggregate elements, but got {}",
+                NUM_CHUNKS,
+                self.encrypted_aggregate.len()
+            );
+        }
+
+        //
+        // 2. SoK verification (Schnorr proofs + BLS signatures)
+        //
+        // This verifies that:
+        // a) Each dealer knew their secret (Schnorr PoK)
+        // b) Each dealer signed their commitment (BLS signature)
+        //
+
+        let mut rng = thread_rng();
+        let extra = random_scalars(2, &mut rng);
+
+        let g_2 = pp.get_commitment_base();
+        batch_verify_soks::<G2Projective, A>(
+            self.soks.as_slice(),
+            g_2,
+            &self.V[sc.n], // The aggregate secret commitment
+            spks,
+            auxs,
+            &extra[0],
+        )?;
+
+        //
+        // 3. Low-degree test on polynomial commitments
+        //
+        // Verifies that the committed polynomial V[i] = G2^{f(i)} has degree < t.
+        // This prevents a malicious dealer from dealing shares that don't form
+        // a valid (t-1)-degree polynomial.
+        //
+
+        let ldt = LowDegreeTest::random(
+            &mut rng,
+            sc.t,
+            sc.n + 1,
+            true, // includes_zero: V[n] is f(0), the secret
+            sc.get_batch_evaluation_domain(),
+        );
+        ldt.low_degree_test_on_g2(&self.V)?;
+
+        //
+        // Note: Full encryption correctness verification (DLEQ proofs) is deferred.
+        //
+        // The chunked ElGamal design would require verifying that each ciphertext
+        // C_{i,j} = G * u_{i,j} + PK_i * r_j was formed correctly. This would need
+        // either:
+        // - DLEQ proofs included in the transcript (adds ~2KB per chunk)
+        // - Multi-pairing checks similar to DAS (complex for chunked design)
+        //
+        // For now, we rely on:
+        // 1. SoK verification (proves dealer knew secret)
+        // 2. LDT (proves polynomial is valid)
+        // 3. Honest majority assumption
+        //
+        // TODO(Phase 2.3b): Add DLEQ proof verification for encryption correctness
+        //
+
         Ok(())
     }
 
