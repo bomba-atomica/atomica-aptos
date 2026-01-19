@@ -3,22 +3,125 @@
 
 # Module `0x1::ibe_config`
 
-IBE (Identity-Based Encryption) configuration module.
+IBE (Identity-Based Encryption) configuration and Timelock Registry module.
 
-This module stores the Master Public Key (MPK) derived from the DKG transcript,
-enabling clients to perform timelock encryption using the Boneh-Franklin IBE scheme.
+This module implements the on-chain components for Atomica's timelock encryption system:
 
-The MPK is a G2 point (96 bytes compressed) that is updated after each successful DKG.
-Clients can query the MPK via view functions to encrypt messages that can only be
-decrypted after validators reveal the corresponding decryption key.
+1. **IBE Public Parameters** - Stores the Master Public Key (MPK) from DKG
+2. **Timelock Registry** - Manages registered timelocks with deadlines
+3. **DK Share Aggregation** - Collects and aggregates validator decryption key shares
+4. **Decryption Key Reconstruction** - Reconstructs DK using threshold shares
 
 
+<a id="@Architecture_Overview_0"></a>
+
+### Architecture Overview
+
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            ON-CHAIN STATE                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  @IBEPublicParams                                                            │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │ mpk: vector<u8>     ← G2 point (96 bytes) from DKG                  │   │
+│  │ epoch: u64          ← DKG epoch for rotation                         │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  @TimelockRegistry                                                           │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │ timelocks: Table<u64, TimelockInfo>  ← All registered timelocks     │   │
+│  │ next_timelock_id: u64                 ← Auto-incrementing ID        │   │
+│  │ registration_events: EventHandle      ← Indexed for queries          │   │
+│  │ reveal_events: EventHandle            ← Indexed for queries          │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  @TimelockInfo (per timelock)                                                │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │ identity: vector<u8> ← SHA3-256(timelock_id || deadline_us)         │   │
+│  │ decryption_key: vector<u8> ← G1 point, empty before reveal          │   │
+│  │ is_revealed: bool       ← True after threshold shares received      │   │
+│  │ share_count: u64        ← Weighted count of shares received         │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+
+<a id="@Workflow_1"></a>
+
+### Workflow
+
+
+1. **Registration** - User calls <code><a href="ibe_config.md#0x1_ibe_config_register_timelock">register_timelock</a>(deadline_us)</code> → gets <code>timelock_id</code>
+2. **Encryption** - Client queries MPK and identity, encrypts with IBE
+3. **DKG** - Validators run DKG, produce shares, publish MPK
+4. **Reveal** - After deadline, validators submit <code>TimelockShare</code> transactions
+5. **Aggregation** - Contract aggregates shares, reconstructs DK when threshold met
+6. **Decryption** - Anyone queries DK, decrypts ciphertext
+
+
+<a id="@Documentation_References_2"></a>
+
+### Documentation References
+
+
+**Design Docs:**
+- [ADR-001: Dual-Output DKG](atomica/docs/adr-001-dual-output-dkg.md)
+- [Implementation Plan](atomica/docs/implementation-plan-unified-dkg-ibe.md)
+- [Timelock Specification](atomica/docs/product-spec/atomica-timelock-spec.md)
+- [Definitions](atomica/docs/definitions.md)
+
+**Source Code:**
+- [IBE Rust Module](crates/aptos-dkg/src/ibe/mod.rs)
+- [Scalar ElGamal PVSS](crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs)
+- [DKG Integration](types/src/dkg/real_dkg/mod.rs)
+- [Validator Transaction Handling](aptos-vm/src/validator_txns/timelock.rs)
+
+**Tests:**
+- [Register and Query Test](testsuite/smoke-test/src/timelock/register_and_query.rs)
+- [Deadline Reveal Test](testsuite/smoke-test/src/timelock/deadline_reveal.rs)
+
+
+<a id="@Error_Codes_3"></a>
+
+### Error Codes
+
+
+| Code | Constant | Description |
+|------|----------|-------------|
+| 1 | <code><a href="ibe_config.md#0x1_ibe_config_E_INVALID_MPK_LENGTH">E_INVALID_MPK_LENGTH</a></code> | MPK must be 96 bytes (G2 compressed) |
+| 2 | <code><a href="ibe_config.md#0x1_ibe_config_E_IBE_NOT_READY">E_IBE_NOT_READY</a></code> | MPK not yet set by DKG |
+| 3 | <code><a href="ibe_config.md#0x1_ibe_config_E_DEADLINE_NOT_PASSED">E_DEADLINE_NOT_PASSED</a></code> | Cannot reveal before deadline |
+| 4 | <code><a href="ibe_config.md#0x1_ibe_config_E_TIMELOCK_NOT_FOUND">E_TIMELOCK_NOT_FOUND</a></code> | Timelock ID not registered |
+| 5 | <code><a href="ibe_config.md#0x1_ibe_config_E_DECRYPTION_KEY_NOT_REVEALED">E_DECRYPTION_KEY_NOT_REVEALED</a></code> | DK not yet aggregated |
+| 6 | <code><a href="ibe_config.md#0x1_ibe_config_E_INVALID_THRESHOLD">E_INVALID_THRESHOLD</a></code> | Threshold must be positive |
+| 7 | <code><a href="ibe_config.md#0x1_ibe_config_E_SHARE_ALREADY_SUBMITTED">E_SHARE_ALREADY_SUBMITTED</a></code> | Validator already submitted share |
+
+
+<a id="@Security_Considerations_4"></a>
+
+### Security Considerations
+
+
+- Only the framework address can update the MPK (via DKG)
+- Only the framework address can submit DK shares (via ValidatorTransaction)
+- Threshold reconstruction ensures liveness with honest majority
+- Identity includes both timelock_id and deadline to prevent collisions
+
+
+    -  [Architecture Overview](#@Architecture_Overview_0)
+    -  [Workflow](#@Workflow_1)
+    -  [Documentation References](#@Documentation_References_2)
+    -  [Error Codes](#@Error_Codes_3)
+    -  [Security Considerations](#@Security_Considerations_4)
 -  [Resource `IBEPublicParams`](#0x1_ibe_config_IBEPublicParams)
 -  [Struct `TimelockInfo`](#0x1_ibe_config_TimelockInfo)
 -  [Resource `TimelockRegistry`](#0x1_ibe_config_TimelockRegistry)
 -  [Struct `TimelockRegistrationEvent`](#0x1_ibe_config_TimelockRegistrationEvent)
 -  [Struct `TimelockRevealEvent`](#0x1_ibe_config_TimelockRevealEvent)
--  [Constants](#@Constants_0)
+-  [Constants](#@Constants_5)
 -  [Function `initialize`](#0x1_ibe_config_initialize)
 -  [Function `set_mpk`](#0x1_ibe_config_set_mpk)
 -  [Function `get_mpk`](#0x1_ibe_config_get_mpk)
@@ -26,20 +129,20 @@ decrypted after validators reveal the corresponding decryption key.
 -  [Function `is_ready`](#0x1_ibe_config_is_ready)
 -  [Function `initialize_timelock_registry`](#0x1_ibe_config_initialize_timelock_registry)
 -  [Function `register_timelock`](#0x1_ibe_config_register_timelock)
-    -  [Arguments](#@Arguments_1)
-    -  [Events](#@Events_2)
-    -  [Note](#@Note_3)
+    -  [Arguments](#@Arguments_6)
+    -  [Events](#@Events_7)
+    -  [Note](#@Note_8)
 -  [Function `submit_dk_share`](#0x1_ibe_config_submit_dk_share)
-    -  [Arguments](#@Arguments_4)
-    -  [Errors](#@Errors_5)
-    -  [Side Effects](#@Side_Effects_6)
+    -  [Arguments](#@Arguments_9)
+    -  [Errors](#@Errors_10)
+    -  [Side Effects](#@Side_Effects_11)
 -  [Function `get_timelock`](#0x1_ibe_config_get_timelock)
-    -  [Arguments](#@Arguments_7)
-    -  [Returns](#@Returns_8)
+    -  [Arguments](#@Arguments_12)
+    -  [Returns](#@Returns_13)
 -  [Function `get_deadline`](#0x1_ibe_config_get_deadline)
 -  [Function `get_identity`](#0x1_ibe_config_get_identity)
 -  [Function `get_decryption_key`](#0x1_ibe_config_get_decryption_key)
-    -  [Returns](#@Returns_9)
+    -  [Returns](#@Returns_14)
 -  [Function `is_revealed`](#0x1_ibe_config_is_revealed)
 -  [Function `is_expired`](#0x1_ibe_config_is_expired)
 -  [Function `get_next_timelock_id`](#0x1_ibe_config_get_next_timelock_id)
@@ -285,7 +388,7 @@ Event emitted when a decryption key is revealed.
 
 </details>
 
-<a id="@Constants_0"></a>
+<a id="@Constants_5"></a>
 
 ## Constants
 
@@ -594,7 +697,7 @@ Initialize the timelock registry. Called once at genesis.
 Register a new timelock with the given deadline.
 
 
-<a id="@Arguments_1"></a>
+<a id="@Arguments_6"></a>
 
 ### Arguments
 
@@ -602,14 +705,14 @@ Register a new timelock with the given deadline.
 - <code>deadline_us</code>: Deadline timestamp in microseconds (must be in the future)
 
 
-<a id="@Events_2"></a>
+<a id="@Events_7"></a>
 
 ### Events
 
 Emits <code><a href="ibe_config.md#0x1_ibe_config_TimelockRegistrationEvent">TimelockRegistrationEvent</a></code> with the timelock_id.
 
 
-<a id="@Note_3"></a>
+<a id="@Note_8"></a>
 
 ### Note
 
@@ -683,7 +786,7 @@ Called by validator transaction handler after deadline passes.
 NOT callable by users directly (friend function).
 
 
-<a id="@Arguments_4"></a>
+<a id="@Arguments_9"></a>
 
 ### Arguments
 
@@ -694,7 +797,7 @@ NOT callable by users directly (friend function).
 - <code>total_weight</code>: Total validator weight (for threshold calculation)
 
 
-<a id="@Errors_5"></a>
+<a id="@Errors_10"></a>
 
 ### Errors
 
@@ -703,7 +806,7 @@ NOT callable by users directly (friend function).
 - Aborts if timelock not found
 
 
-<a id="@Side_Effects_6"></a>
+<a id="@Side_Effects_11"></a>
 
 ### Side Effects
 
@@ -784,14 +887,14 @@ then marks timelock as revealed.
 Get information about a registered timelock.
 
 
-<a id="@Arguments_7"></a>
+<a id="@Arguments_12"></a>
 
 ### Arguments
 
 - <code>timelock_id</code>: The ID returned from register_timelock
 
 
-<a id="@Returns_8"></a>
+<a id="@Returns_13"></a>
 
 ### Returns
 
@@ -887,7 +990,7 @@ Get the identity hash for a timelock.
 Get the decryption key for a timelock after reveal.
 
 
-<a id="@Returns_9"></a>
+<a id="@Returns_14"></a>
 
 ### Returns
 

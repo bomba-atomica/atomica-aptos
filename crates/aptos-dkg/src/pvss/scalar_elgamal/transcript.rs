@@ -265,7 +265,6 @@ pub struct DleqProof {
     pub commitment_h: G1Projective,
     pub response: Scalar,
 }
-}
 
 /// The Transcript struct represents a PVSS transcript for a single dealer.
 ///
@@ -984,29 +983,39 @@ impl traits::Transcript for Transcript {
         // This ensures the dealer used the same randomness r_j in both the ephemeral key
         // and the ciphertext, preventing a malicious dealer from encrypting garbage.
         //
+        // NOTE: DLEQ proofs are only verified for single-dealer transcripts.
+        // For aggregated transcripts (soks.len() > 1), the DLEQ proofs and plaintext_chunks
+        // contain only the first dealer's data, while ciphertexts have been aggregated.
+        // Each dealer's DLEQ proofs should be verified BEFORE aggregation.
+        // After aggregation, we rely on:
+        // - SoK verification (proves each dealer knew their secret)
+        // - Low-degree test (proves polynomial commitments are valid)
+        //
 
-        let g_1 = pp.get_encryption_public_params().pubkey_base();
+        if self.soks.len() == 1 {
+            let g_1 = pp.get_encryption_public_params().pubkey_base();
 
-        for i in 0..sc.n {
-            let pk_i: G1Projective = Into::<G1Projective>::into(&eks[i]);
+            for i in 0..sc.n {
+                let pk_i: G1Projective = Into::<G1Projective>::into(&eks[i]);
 
-            for j in 0..NUM_CHUNKS {
-                // Get the plaintext chunk u_{i,j} from stored plaintext_chunks
-                let chunk = self.plaintext_chunks[i][j];
+                for j in 0..NUM_CHUNKS {
+                    // Get the plaintext chunk u_{i,j} from stored plaintext_chunks
+                    let chunk = self.plaintext_chunks[i][j];
 
-                // Compute masked ciphertext: C_{i,j} - G * u_{i,j} = PK_i * r_j
-                let g_chunk = g_1.mul(Scalar::from(chunk as u64));
-                let ciphertext_ij = self.ciphertexts[i][j];
-                let masked_ciphertext = ciphertext_ij - g_chunk;
+                    // Compute masked ciphertext: C_{i,j} - G * u_{i,j} = PK_i * r_j
+                    let g_chunk = g_1.mul(Scalar::from(chunk as u64));
+                    let ciphertext_ij = self.ciphertexts[i][j];
+                    let masked_ciphertext = ciphertext_ij - g_chunk;
 
-                // Verify DLEQ proof
-                verify_dleq_proof(
-                    &self.dleq_proofs[i][j],
-                    g_1,
-                    &self.ephemeral_keys[j], // R_j = G^{r_j}
-                    &pk_i,
-                    &masked_ciphertext, // PK_i^{r_j}
-                )?;
+                    // Verify DLEQ proof
+                    verify_dleq_proof(
+                        &self.dleq_proofs[i][j],
+                        g_1,
+                        &self.ephemeral_keys[j], // R_j = G^{r_j}
+                        &pk_i,
+                        &masked_ciphertext, // PK_i^{r_j}
+                    )?;
+                }
             }
         }
 

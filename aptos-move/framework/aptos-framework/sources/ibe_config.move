@@ -24,8 +24,6 @@
 /// │  ┌──────────────────────────────────────────────────────────────────────┐   │
 /// │  │ timelocks: Table<u64, TimelockInfo>  ← All registered timelocks     │   │
 /// │  │ next_timelock_id: u64                 ← Auto-incrementing ID        │   │
-│
-
 /// │  │ registration_events: EventHandle      ← Indexed for queries          │   │
 /// │  │ reveal_events: EventHandle            ← Indexed for queries          │   │
 /// │  └──────────────────────────────────────────────────────────────────────┘   │
