@@ -3,7 +3,7 @@
 **Version:** 2.11
 **Date:** January 19, 2026
 **Branch:** feature/scalar-chunked-elgamal
-**Status:** Phase 2.6 (DLEQ Proof Verification) COMPLETE - Next: Phase 5 (E2E Integration)
+**Status:** Phase 5 (E2E Integration) IN PROGRESS - Phase 2.6 (DLEQ Proof Verification) COMPLETE
 **Reference:** [ADR-001: Dual Output DKG](adr-001-dual-output-dkg.md)
 
 ---
@@ -73,29 +73,28 @@ InputSecret (scalar a)
 
 ## Current Status Summary
 
-| Phase | Description                         | Status      | Priority    |
-| ----- | ----------------------------------- | ----------- | ----------- |
-| 0     | Feasibility Test                    | ✅ COMPLETE | -           |
-| 1A-1D | IBE Primitives + MPK Storage        | ✅ COMPLETE | -           |
-| 2     | Scalar ElGamal PVSS                 | ✅ COMPLETE | -           |
-| 2.0.5 | Unit Tests for Scalar ElGamal       | ✅ COMPLETE | -           |
-| 2.1   | Integration into RealDKG + DKGTrait | ✅ COMPLETE | -           |
-| 2.2   | Aggregation Bug Fix                 | ✅ COMPLETE | -           |
-| 1E    | IBE Integration Tests               | ✅ COMPLETE | -           |
-| 2.3   | Transcript Verification             | ✅ COMPLETE | -           |
-| 2.4   | Serialization Implementation        | ✅ COMPLETE | -           |
-| 2.5   | Error Handling Hardening            | ✅ COMPLETE | -           |
-| 2.6   | DLEQ Proof Verification             | 🔲 PENDING  | CRITICAL    |
-| 3     | Timelock Registry                   | ✅ COMPLETE | -           |
-| 4     | DK Share Submission                 | ✅ COMPLETE | -           |
-| 5     | E2E Integration                     | 🔲 PENDING  | Medium      |
-| 2.6   | DLEQ Proof Verification             | 🔲 PENDING  | 🔴 CRITICAL |
+| Phase | Description                         | Status      | Priority |
+| ----- | ----------------------------------- | ----------- | -------- |
+| 0     | Feasibility Test                    | ✅ COMPLETE | -        |
+| 1A-1D | IBE Primitives + MPK Storage        | ✅ COMPLETE | -        |
+| 2     | Scalar ElGamal PVSS                 | ✅ COMPLETE | -        |
+| 2.0.5 | Unit Tests for Scalar ElGamal       | ✅ COMPLETE | -        |
+| 2.1   | Integration into RealDKG + DKGTrait | ✅ COMPLETE | -        |
+| 2.2   | Aggregation Bug Fix                 | ✅ COMPLETE | -        |
+| 1E    | IBE Integration Tests               | ✅ COMPLETE | -        |
+| 2.3   | Transcript Verification             | ✅ COMPLETE | -        |
+| 2.4   | Serialization Implementation        | ✅ COMPLETE | -        |
+| 2.5   | Error Handling Hardening            | ✅ COMPLETE | -        |
+| 2.6   | DLEQ Proof Verification             | ✅ COMPLETE | -        |
+| 3     | Timelock Registry                   | ✅ COMPLETE | -        |
+| 4     | DK Share Submission                 | ✅ COMPLETE | -        |
+| 5     | E2E Integration                     | 🔲 PENDING  | Medium   |
 
 ### Current Blockers for Production
 
-| Issue                            | Location            | Impact                                    | Status       |
-| -------------------------------- | ------------------- | ----------------------------------------- | ------------ |
-| DLEQ proof verification required | `transcript.rs:758` | Encryption correctness not fully verified | 🔴 IMMEDIATE |
+| Issue                      | Location | Impact | Status      |
+| -------------------------- | -------- | ------ | ----------- |
+| None - Phase 2.6 complete! | -        | -      | ✅ RESOLVED |
 
 ---
 
@@ -283,19 +282,6 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 
 ## What Remains
 
-### Phase 2.6: DLEQ Proof Verification (IMMEDIATE)
-
-**Goal:** Cryptographically verify that the dealer encrypted the correct shares to each validator.
-
-**Rationale:** Without DLEQ (Discrete Log Equality) proofs, a malicious dealer could commit to a secret scalar `s` but encrypt garbage in the ciphertexts. This would pass current verification but cause decryption to fail for specific validators, potentially preventing reconstruction if enough validators are affected.
-
-**Tasks:**
-
-1. Implement DLEQ proof generation in `Transcript::deal()`
-2. Implement DLEQ proof verification in `Transcript::verify()`
-3. Add unit tests for malicious dealers (invalid encryption)
-4. Verify no significant performance regression in DKG verification
-
 ### Phase 5: E2E Integration
 
 **Goal:** Full encrypt/decrypt cycle with real timelock.
@@ -373,15 +359,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 
 ## Known Issues
 
-### 1. DLEQ Proof Verification Required 🔴 HIGH
-
-**Location:** `scalar_elgamal/transcript.rs:758`
-**Impact:** Full encryption correctness not cryptographically verified
-**Mitigation:** NONE - Must be implemented immediately to ensure DKG robustness
-**Priority:** CRITICAL
-**Assigned Phase:** 2.6 (Immediate)
-
-### 2. generate() Not Implemented 🔵 LOW
+### 1. generate() Not Implemented 🔵 LOW
 
 **Location:** `transcript.rs:892-897`, `weighted_protocol.rs:172-177`
 **Impact:** Cannot generate random transcripts for benchmarking
@@ -408,7 +386,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 - [x] **`get_ibe_master_public_key()` returns valid bytes (Phase 2.4)** ✅
 - [x] **`get_scalar_secret_share()` returns valid bytes (Phase 2.4)** ✅
 - [x] **BSGS failure returns error, not 0 (Phase 2.5)** ✅
-- [ ] **DLEQ proofs verify encryption correctness (Phase 2.6)** 🔴
+- [x] **DLEQ proofs verify encryption correctness (Phase 2.6)** ✅
 
 ### Production Ready When:
 
