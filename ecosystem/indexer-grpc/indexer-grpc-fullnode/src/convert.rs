@@ -1014,6 +1014,10 @@ fn convert_validator_transaction(
                     )
                 )
             },
+            ApiValidatorTransactionEnum::TimelockShare(_) => {
+                // TODO: Implement full TimelockShare conversion when proto is ready
+                None
+            },
         },
         events: convert_events(api_validator_txn.events()),
     })
