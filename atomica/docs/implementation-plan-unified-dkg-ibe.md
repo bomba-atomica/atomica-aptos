@@ -20,18 +20,18 @@
 
 ## Current Status Summary
 
-| Phase | Description                         | Status         |
-| ----- | ----------------------------------- | -------------- |
-| 0     | Feasibility Test                    | ✅ COMPLETE    |
-| 1A-1D | IBE Primitives + MPK Storage        | ✅ COMPLETE    |
-| 2     | Scalar ElGamal PVSS                 | ✅ COMPLETE    |
-| 2.0.5 | Unit Tests for Scalar ElGamal       | ✅ COMPLETE    |
-| 2.1   | Integration into RealDKG + DKGTrait | ✅ COMPLETE    |
-| 2.2   | Aggregation Bug Fix                 | ✅ COMPLETE    |
-| 1E    | mpk_encrypt_decrypt smoke test      | 🔲 IN PROGRESS |
-| 3     | Timelock Registry                   | 🔲 PENDING     |
-| 4     | DK Share Submission                 | 🔲 PENDING     |
-| 5     | E2E Integration                     | 🔲 PENDING     |
+| Phase | Description                         | Status      |
+| ----- | ----------------------------------- | ----------- |
+| 0     | Feasibility Test                    | ✅ COMPLETE |
+| 1A-1D | IBE Primitives + MPK Storage        | ✅ COMPLETE |
+| 2     | Scalar ElGamal PVSS                 | ✅ COMPLETE |
+| 2.0.5 | Unit Tests for Scalar ElGamal       | ✅ COMPLETE |
+| 2.1   | Integration into RealDKG + DKGTrait | ✅ COMPLETE |
+| 2.2   | Aggregation Bug Fix                 | ✅ COMPLETE |
+| 1E    | IBE Integration Tests               | ✅ COMPLETE |
+| 3     | Timelock Registry                   | 🔲 PENDING  |
+| 4     | DK Share Submission                 | 🔲 PENDING  |
+| 5     | E2E Integration                     | 🔲 PENDING  |
 
 ---
 
@@ -285,15 +285,58 @@ cargo test -p aptos-dkg --lib scalar_elgamal  # 15/15 pass
 cargo test -p smoke-test randomness_correctness  # PASS (260s)
 ```
 
-### Phase 1E: Unblock mpk_encrypt_decrypt
+### Phase 1E: IBE Integration Tests ✅ COMPLETE
 
-**Goal:** With scalar shares available, implement the blocked encrypt/decrypt smoke test.
+**Date:** January 19, 2026
 
-**Tasks:**
+**Goal:** Validate full IBE roundtrip with scalar ElGamal PVSS.
 
-1. Implement `derive_decryption_key_from_shares()` using scalar shares
-2. Complete `mpk_encrypt_decrypt` smoke test
-3. Validate IBE roundtrip works end-to-end
+**Tests Added:** `crates/aptos-dkg/src/ibe/tests.rs`
+
+| Test                                               | Description                                                                           | Status  |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------- | ------- |
+| `test_ibe_roundtrip_with_known_scalar`             | IBE encrypt/decrypt with known scalar secret                                          | ✅ PASS |
+| `test_scalar_elgamal_pvss_ibe_roundtrip`           | Deal → decrypt shares → reconstruct → IBE encrypt/decrypt (4 validators, threshold 3) | ✅ PASS |
+| `test_scalar_elgamal_pvss_ibe_multiple_identities` | Multiple IBE identities with reconstructed secret (5 validators)                      | ✅ PASS |
+
+**Implementation Details:**
+
+1. **Test Flow:**
+   - Use `setup_dealing::<WeightedTranscript>()` to generate validator keys
+   - Create `InputSecret` and deal via `WeightedTranscript::deal()`
+   - Each validator decrypts share via `decrypt_own_share()` → returns `DealtSecretKeyShare` containing scalar
+   - Reconstruct master scalar via `Reconstructable::reconstruct()` with `WeightedConfig`
+   - Derive IBE decryption key and validate encrypt/decrypt roundtrip
+
+2. **Type Correctness:**
+   - `DealtSecretKeyShare = Vec<dealt_secret_key_share::scalar::DealtSecretKeyShare>` (weighted)
+   - Single share per validator when weight=1
+   - Blanket impl `Reconstructable<WeightedConfig>` in `generic_weighting.rs` handles weighted reconstruction
+
+3. **Spec Compliance:** Verified against ADR-001:
+   - ✅ Chunked Lifted ElGamal: `C_{i,j} = G · u_{i,j} + PK_i · r_j`
+   - ✅ Scalar output: `DealtSecretKey { s: Scalar }`
+   - ✅ Ephemeral keys: `ephemeral_keys: Vec<G1Projective>`
+   - ✅ Ciphertexts: `ciphertexts: Vec<Vec<G1Projective>>`
+   - ✅ BSGS decryption: 16-bit chunks, range `[0, 2^16)`
+
+**Test Results:**
+
+```
+cargo test -p aptos-dkg --lib ibe::tests  # 17/17 pass (includes 2 new tests)
+cargo test -p aptos-dkg --lib             # 47/47 pass (full DKG suite)
+```
+
+**Files Modified:**
+
+| File                                  | Change                             |
+| ------------------------------------- | ---------------------------------- |
+| `crates/aptos-dkg/src/ibe/tests.rs`   | Added 2 IBE-PVSS integration tests |
+| `crates/aptos-dkg/src/ibe/mod.rs`     | Added `ff::Field` import (minor)   |
+| `testsuite/smoke-test/src/ibe/mod.rs` | Smoke test framework               |
+| `testsuite/smoke-test/src/lib.rs`     | Added `ibe` module                 |
+
+**Commit:** `20553ea074` - feat(ibe): Add scalar ElGamal PVSS IBE integration tests
 
 ### Phase 3: Timelock Registry
 
@@ -378,6 +421,15 @@ cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 -
 | `aptos-move/framework/aptos-framework/sources/ibe_config.move`  | On-chain MPK          | ✅     |
 | `testsuite/smoke-test/src/timelock/mpk_on_chain.rs`             | MPK smoke test        | ✅     |
 | `atomica/docs/adr-001-dual-output-dkg.md`                       | Architecture decision | ✅     |
+
+### Completed in Phase 1E
+
+| File                                  | Description                | Status |
+| ------------------------------------- | -------------------------- | ------ |
+| `crates/aptos-dkg/src/ibe/tests.rs`   | IBE-PVSS integration tests | ✅     |
+| `crates/aptos-dkg/src/ibe/mod.rs`     | Import fix (ff::Field)     | ✅     |
+| `testsuite/smoke-test/src/ibe/mod.rs` | Smoke test framework       | ✅     |
+| `testsuite/smoke-test/src/lib.rs`     | Added ibe module           | ✅     |
 
 ### Completed in Phase 2.1
 
