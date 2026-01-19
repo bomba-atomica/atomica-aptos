@@ -962,9 +962,21 @@ impl traits::Transcript for Transcript {
                     recovered_chunks.push(u_ij as u16);
                 },
                 None => {
-                    // Discrete log failed - this shouldn't happen if encryption was correct
-                    // Fall back to 0 as a safe default
-                    recovered_chunks.push(0u16);
+                    // Discrete log failed - this indicates either:
+                    // 1. The transcript is corrupted/invalid
+                    // 2. The decryption key doesn't match
+                    // 3. A bug in the implementation
+                    //
+                    // We panic rather than silently return 0 because:
+                    // - Silent failures are dangerous (corrupted shares look valid)
+                    // - This should never happen with valid transcripts
+                    // - Better to fail loudly than produce incorrect results
+                    panic!(
+                        "BSGS discrete log failed for player {} chunk {}. \
+                        Search range was [0, {}). This indicates an invalid transcript \
+                        or incorrect decryption key.",
+                        player.id, j, adjusted_limit
+                    );
                 },
             }
         }

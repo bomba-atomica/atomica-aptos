@@ -4,6 +4,27 @@
 
 **Accepted**
 
+## Executive Summary
+
+This ADR defines the dual-output DKG architecture for Atomica:
+
+| Output | PVSS Scheme | Use Case | Key Type |
+|--------|-------------|----------|----------|
+| **G1 shares** | DAS PVSS | WVUF/Randomness | `G1Projective` |
+| **Scalar shares** | Chunked Lifted ElGamal | IBE/Timelock | `Scalar` |
+
+**Key Design Principles:**
+
+1. **Chunked Lifted ElGamal for IBE** - We use Chunked Lifted ElGamal PVSS to produce scalar shares that can be reconstructed into a master scalar for IBE decryption key derivation.
+
+2. **DAS PVSS for Randomness only** - The existing DAS PVSS continues to produce G1 shares exclusively for WVUF/randomness. IBE does NOT use DAS PVSS output.
+
+3. **DKG produces ephemeral IBE keys** - We do NOT use validator BLS keys directly for IBE. The DKG produces fresh ephemeral key material each epoch. This provides forward secrecy and clean key separation.
+
+4. **Same InputSecret, two representations** - Both PVSS schemes share the same underlying scalar secret `a`, producing the same MPK (`g2^a`), but different share formats optimized for their consumers.
+
+---
+
 ## Context
 
 ### Problem
@@ -86,11 +107,41 @@ Extend RealDKG to produce **two types of key material** in a single DKG round:
 ### Architecture
 
 ```
-RealDKG → DAS PVSS           → G1 shares     → WVUF, randomness
-         → Chunked ElGamal PVSS → Scalar shares → IBE, scalar-based protocols
-
-(Both dealt in single round, bundled in single message)
+                              ┌─────────────────────────────────────────────────────┐
+                              │                    RealDKG                          │
+                              │                                                     │
+                              │  InputSecret (scalar a)                             │
+                              │         │                                           │
+                              │         ├───────────────┬───────────────────────┐   │
+                              │         │               │                       │   │
+                              │         ▼               ▼                       │   │
+                              │   ┌──────────┐   ┌─────────────────────┐        │   │
+                              │   │ DAS PVSS │   │ Chunked Lifted      │        │   │
+                              │   │          │   │ ElGamal PVSS        │        │   │
+                              │   └────┬─────┘   └──────────┬──────────┘        │   │
+                              │        │                    │                   │   │
+                              │        ▼                    ▼                   │   │
+                              │   G1 shares            Scalar shares            │   │
+                              │   (for WVUF)           (for IBE)                │   │
+                              │                                                     │
+                              │   MPK = g2^a  (same for both)                       │
+                              └─────────────────────────────────────────────────────┘
+                                       │                    │
+                                       ▼                    ▼
+                              ┌────────────────┐   ┌────────────────────────┐
+                              │ WVUF/Randomness│   │ IBE Decryption Key     │
+                              │ (pairing-based)│   │ Derivation             │
+                              │                │   │                        │
+                              │ e(G1_share, h) │   │ dk = H(identity)^scalar│
+                              └────────────────┘   └────────────────────────┘
 ```
+
+**Important:** The DKG produces fresh ephemeral key material each epoch. Validator BLS signing keys are used only for authenticating DKG messages (Signatures of Knowledge), NOT as the IBE master secret. This provides:
+- **Forward secrecy**: Compromising current epoch keys doesn't reveal past decryptions
+- **Key separation**: IBE keys are independent from consensus signing keys
+- **Clean rotation**: New IBE master key each epoch via DKG
+
+Both transcripts are dealt in a single round and bundled in a single message.
 
 ### Chunked Lifted ElGamal Design
 
@@ -135,22 +186,34 @@ Chunks are concatenated and converted back to a scalar `sh_i`.
 ### Transcript Structure
 
 ```rust
+/// Top-level DKG output containing both PVSS transcripts
 pub struct Transcripts {
-    pub main: WTrx,              // DAS → G1 (existing)
-    pub fast: Option<WTrx>,      // DAS → G1 fast-path (existing)
-    pub scalar: ScalarTrx,       // Chunked ElGamal → Scalar (new)
+    pub main: WTrx,              // DAS PVSS → G1 shares (for WVUF/randomness)
+    pub fast: Option<WTrx>,      // DAS PVSS → G1 fast-path (for randomness)
+    pub scalar: Option<ScalarTrx>, // Chunked ElGamal → Scalar shares (for IBE)
 }
 
+/// Chunked Lifted ElGamal PVSS transcript (scalar_elgamal module)
+/// This produces SCALAR shares for IBE - NOT G1 shares like DAS PVSS
 pub struct Transcript {
+    /// Signatures of Knowledge proving dealer knows the secret
     pub soks: Vec<SoK<G2Projective>>,
+    /// Commitment to first randomness coefficient r_0
     pub hat_w: G2Projective,
+    /// Polynomial commitments V_i = G2^{f(i)} for verification
     pub V: Vec<G2Projective>,
     /// Ephemeral keys R_j = g^{r_j} for each chunk index j=0..15
+    /// (16 elements total, one per chunk - NOT one per validator)
     pub ephemeral_keys: Vec<G1Projective>,
     /// Ciphertexts C_{i,j} for each validator i and chunk j
+    /// Outer: validators (n), Inner: chunks (16)
     pub ciphertexts: Vec<Vec<G1Projective>>,
+    /// Pre-computed aggregate for threshold reconstruction
+    pub encrypted_aggregate: Vec<G1Projective>,
 }
 ```
+
+**Note on naming:** The `scalar` transcript produces `DealtSecretKey { s: Scalar }` which is a raw scalar value. This is fundamentally different from DAS PVSS which produces `DealtSecretKey(G1Projective)`. The scalar output is what IBE needs for `dk = H(identity)^s`.
 
 ### Key Properties
 
