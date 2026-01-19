@@ -309,8 +309,9 @@ fn test_scalar_elgamal_pvss_ibe_roundtrip() {
         <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
     )> = Vec::new();
     for i in 0..4 {
-        let (sk_share, _pk_share) =
-            transcript.decrypt_own_share(&wconfig, &Player { id: i }, &dks[i], &dealing_args.pp);
+        let (sk_share, _pk_share) = transcript
+            .decrypt_own_share(&wconfig, &Player { id: i }, &dks[i], &dealing_args.pp)
+            .expect("decrypt_own_share should not fail for valid transcript");
         shares.push((Player { id: i }, sk_share));
     }
 
@@ -387,12 +388,9 @@ fn test_scalar_elgamal_pvss_ibe_multiple_identities() {
         <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
     )> = (0..3)
         .map(|i| {
-            let (sk_share, _pk_share) = transcript.decrypt_own_share(
-                &wconfig,
-                &Player { id: i },
-                &dks[i],
-                &dealing_args.pp,
-            );
+            let (sk_share, _pk_share) = transcript
+                .decrypt_own_share(&wconfig, &Player { id: i }, &dks[i], &dealing_args.pp)
+                .expect("decrypt_own_share should not fail for valid transcript");
             (Player { id: i }, sk_share)
         })
         .collect();

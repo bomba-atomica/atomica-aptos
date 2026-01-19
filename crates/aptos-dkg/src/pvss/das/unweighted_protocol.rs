@@ -286,16 +286,16 @@ impl traits::Transcript for Transcript {
         player: &Player,
         dk: &Self::DecryptPrivKey,
         _pp: &Self::PublicParameters,
-    ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
+    ) -> anyhow::Result<(Self::DealtSecretKeyShare, Self::DealtPubKeyShare)> {
         let ctxt = self.C[player.id]; // C_i = h_1^m \ek_i^r = h_1^m g_1^{r sk_i}
         let ephemeral_key = self.C_0.mul(dk.dk); // (g_1^r)^{sk_i} = ek_i^r
         let dealt_secret_key_share = ctxt.sub(ephemeral_key);
-        let dealt_pub_key_share = self.V[player.id]; // g_2^{f(\omega^i})
+        let dealt_pub_key_share = self.V[player.id]; // g_2^{f(\omega^i)}
 
-        (
+        Ok((
             Self::DealtSecretKeyShare::new(Self::DealtSecretKey::new(dealt_secret_key_share)),
             Self::DealtPubKeyShare::new(Self::DealtPubKey::new(dealt_pub_key_share)),
-        )
+        ))
     }
 
     #[allow(non_snake_case)]

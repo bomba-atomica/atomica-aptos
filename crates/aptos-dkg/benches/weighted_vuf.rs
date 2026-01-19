@@ -180,7 +180,9 @@ where
             WT::scheme_name()
         );
         for i in 0..wc.get_total_num_players() {
-            let (sk, pk) = trx.decrypt_own_share(&wc, &wc.get_player(i), &d.dks[i], &d.pp);
+            let (sk, pk) = trx
+                .decrypt_own_share(&wc, &wc.get_player(i), &d.dks[i], &d.pp)
+                .expect("decrypt_own_share should not fail for valid transcript");
             let (ask, apk) = WVUF::augment_key_pair(&vuf_pp, sk.clone(), pk.clone(), &mut rng);
 
             sks.push(sk);

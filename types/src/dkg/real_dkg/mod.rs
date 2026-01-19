@@ -476,7 +476,13 @@ impl DKGTrait for RealDKG {
             );
 
             // Verify the scalar transcript (SoK + LDT checks)
-            scalar_trx.verify(&params.pvss_config.wconfig, &params.pvss_config.pp, &spks, &all_eks, &aux)?;
+            scalar_trx.verify(
+                &params.pvss_config.wconfig,
+                &params.pvss_config.pp,
+                &spks,
+                &all_eks,
+                &aux,
+            )?;
 
             // Verify MPK matches main transcript (same underlying secret)
             ensure!(
@@ -523,7 +529,7 @@ impl DKGTrait for RealDKG {
             },
             dk,
             &pub_params.pvss_config.pp,
-        );
+        )?;
         assert_eq!(
             trx.fast.is_some(),
             pub_params.pvss_config.fast_wconfig.is_some()
@@ -540,7 +546,7 @@ impl DKGTrait for RealDKG {
                     },
                     dk,
                     &pub_params.pvss_config.pp,
-                );
+                )?;
                 (Some(fast_sk), Some(fast_pk))
             },
             _ => (None, None),
@@ -559,7 +565,7 @@ impl DKGTrait for RealDKG {
                     },
                     dk,
                     &pub_params.pvss_config.pp,
-                );
+                )?;
                 (Some(scalar_sk), Some(scalar_pk))
             },
             None => (None, None),

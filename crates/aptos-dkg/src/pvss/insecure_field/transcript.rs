@@ -187,8 +187,8 @@ impl traits::Transcript for Transcript {
         player: &Player,
         _dk: &Self::DecryptPrivKey,
         _pp: &Self::PublicParameters,
-    ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
-        (self.C[player.id], self.get_public_key_share(sc, player))
+    ) -> anyhow::Result<(Self::DealtSecretKeyShare, Self::DealtPubKeyShare)> {
+        Ok((self.C[player.id], self.get_public_key_share(sc, player)))
     }
 
     #[allow(non_snake_case)]

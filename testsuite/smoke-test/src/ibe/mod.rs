@@ -78,12 +78,14 @@ async fn elgamal_encrypt_decrypt() {
         <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
     )> = Vec::new();
     for i in 0..4 {
-        let (sk_share, _pk_share) = transcript.decrypt_own_share(
-            &wconfig,
-            &Player { id: i },
-            &dealing_args.dks[i],
-            &dealing_args.pp,
-        );
+        let (sk_share, _pk_share) = transcript
+            .decrypt_own_share(
+                &wconfig,
+                &Player { id: i },
+                &dealing_args.dks[i],
+                &dealing_args.pp,
+            )
+            .expect("decrypt_own_share should not fail for valid transcript");
         shares.push((Player { id: i }, sk_share));
     }
 
@@ -152,12 +154,14 @@ async fn elgamal_encrypt_decrypt_with_different_identities() {
         <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
     )> = (0..3)
         .map(|i| {
-            let (sk_share, _pk_share) = transcript.decrypt_own_share(
-                &wconfig,
-                &Player { id: i },
-                &dealing_args.dks[i],
-                &dealing_args.pp,
-            );
+            let (sk_share, _pk_share) = transcript
+                .decrypt_own_share(
+                    &wconfig,
+                    &Player { id: i },
+                    &dealing_args.dks[i],
+                    &dealing_args.pp,
+                )
+                .expect("decrypt_own_share should not fail for valid transcript");
             (Player { id: i }, sk_share)
         })
         .collect();

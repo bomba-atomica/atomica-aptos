@@ -83,13 +83,13 @@ use crate::{
     pvss::{
         contribution::{batch_verify_soks, SoK},
         das, dealt_pub_key, dealt_pub_key_share, dealt_secret_key, dealt_secret_key_share,
-        encryption_dlog, input_secret, schnorr, LowDegreeTest,
+        encryption_dlog, input_secret, schnorr,
         traits::{self, HasEncryptionPublicParams},
-        Player, ThresholdConfigBlstrs,
+        LowDegreeTest, Player, ThresholdConfigBlstrs,
     },
     utils::random::random_scalars,
 };
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use aptos_crypto::{
     bls12381, blstrs::random_scalar, CryptoMaterialError, SigningKey, ValidCryptoMaterial,
 };
@@ -648,11 +648,7 @@ impl traits::Transcript for Transcript {
 
         // Verify encryption keys dimension
         if eks.len() != sc.n {
-            bail!(
-                "Expected {} encryption keys, but got {}",
-                sc.n,
-                eks.len()
-            );
+            bail!("Expected {} encryption keys, but got {}", sc.n, eks.len());
         }
 
         // Verify ciphertexts outer dimension (number of players)
@@ -914,13 +910,18 @@ impl traits::Transcript for Transcript {
     /// Tuple of (DealtSecretKeyShare, DealtPubKeyShare):
     /// - The decrypted secret share (as a G1 element representing a scalar)
     /// - The player's public key share (for verification)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok((DealtSecretKeyShare, DealtPubKeyShare))` - Successful decryption
+    /// * `Err(Error)` - Decryption failed (invalid transcript, wrong key, or corrupted data)
     fn decrypt_own_share(
         &self,
         _sc: &Self::SecretSharingConfig,
         player: &Player,
         dk: &Self::DecryptPrivKey,
         pp: &Self::PublicParameters,
-    ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
+    ) -> anyhow::Result<(Self::DealtSecretKeyShare, Self::DealtPubKeyShare)> {
         let g_1 = pp.get_encryption_public_params().pubkey_base();
 
         let chunks_ciphertexts = &self.ciphertexts[player.id];
@@ -957,38 +958,27 @@ impl traits::Transcript for Transcript {
             // Solve discrete log: find x such that G * x = m_ij
             let result = solve_discrete_log(&m_ij, &bsgs_table, &giant_step, m);
 
-            match result {
-                Some(u_ij) => {
-                    recovered_chunks.push(u_ij as u16);
-                },
-                None => {
-                    // Discrete log failed - this indicates either:
-                    // 1. The transcript is corrupted/invalid
-                    // 2. The decryption key doesn't match
-                    // 3. A bug in the implementation
-                    //
-                    // We panic rather than silently return 0 because:
-                    // - Silent failures are dangerous (corrupted shares look valid)
-                    // - This should never happen with valid transcripts
-                    // - Better to fail loudly than produce incorrect results
-                    panic!(
-                        "BSGS discrete log failed for player {} chunk {}. \
-                        Search range was [0, {}). This indicates an invalid transcript \
-                        or incorrect decryption key.",
-                        player.id, j, adjusted_limit
-                    );
-                },
-            }
+            let u_ij = result.ok_or_else(|| {
+                anyhow!(
+                    "BSGS discrete log failed for player {} chunk {}. \
+                    Search range was [0, {}). This indicates an invalid transcript \
+                    or incorrect decryption key.",
+                    player.id,
+                    j,
+                    adjusted_limit
+                )
+            })?;
+            recovered_chunks.push(u_ij as u16);
         }
 
         // Reconstruct the share from chunks
         // s_i = Σ_j u_{i,j} * (2^16)^j
         let share = chunks_to_scalar(&recovered_chunks);
 
-        (
+        Ok((
             Self::DealtSecretKeyShare::new(Self::DealtSecretKey::new(share)),
             Self::DealtPubKeyShare::new(Self::DealtPubKey::new(self.V[player.id])),
-        )
+        ))
     }
 
     /// Generates a random transcript for testing purposes.
@@ -1376,7 +1366,9 @@ mod tests {
             // Each player decrypts their share
             for i in 0..tc.n {
                 let player = Player { id: i };
-                let (sk_share, pk_share) = trx.decrypt_own_share(&tc, &player, &d.dks[i], &d.pp);
+                let (sk_share, pk_share) = trx
+                    .decrypt_own_share(&tc, &player, &d.dks[i], &d.pp)
+                    .expect("decrypt_own_share should not fail for valid transcript");
 
                 // Verify public key share matches what's in transcript
                 let expected_pk_share = trx.get_public_key_share(&tc, &player);
@@ -1663,7 +1655,9 @@ mod tests {
         // The decrypted value is the sum of their shares from all dealers
         for i in 0..tc.n {
             let player = Player { id: i };
-            let (sk_share, pk_share) = aggregated.decrypt_own_share(&tc, &player, &d.dks[i], &d.pp);
+            let (sk_share, pk_share) = aggregated
+                .decrypt_own_share(&tc, &player, &d.dks[i], &d.pp)
+                .expect("decrypt_own_share should not fail for valid transcript");
 
             let expected_pk_share = aggregated.get_public_key_share(&tc, &player);
             assert_eq!(

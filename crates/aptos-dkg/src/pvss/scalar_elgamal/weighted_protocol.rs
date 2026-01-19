@@ -154,7 +154,7 @@ impl TranscriptTrait for WeightedTranscript {
         player: &Player,
         dk: &Self::DecryptPrivKey,
         pp: &Self::PublicParameters,
-    ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
+    ) -> anyhow::Result<(Self::DealtSecretKeyShare, Self::DealtPubKeyShare)> {
         let weight = sc.get_player_weight(player);
         let mut weighted_dsk_share = Vec::with_capacity(weight);
         let mut weighted_dpk_share = Vec::with_capacity(weight);
@@ -162,11 +162,11 @@ impl TranscriptTrait for WeightedTranscript {
             let virtual_player = sc.get_virtual_player(player, i);
             let (dsk_share, dpk_share) =
                 self.inner
-                    .decrypt_own_share(sc.get_threshold_config(), &virtual_player, dk, pp);
+                    .decrypt_own_share(sc.get_threshold_config(), &virtual_player, dk, pp)?;
             weighted_dsk_share.push(dsk_share);
             weighted_dpk_share.push(dpk_share);
         }
-        (weighted_dsk_share, weighted_dpk_share)
+        Ok((weighted_dsk_share, weighted_dpk_share))
     }
 
     fn generate<R>(_sc: &Self::SecretSharingConfig, _rng: &mut R) -> Self
@@ -260,7 +260,9 @@ mod tests {
                 let player = Player { id: i };
                 let weight = wc.get_player_weight(&player);
 
-                let (sk_shares, pk_shares) = trx.decrypt_own_share(&wc, &player, &d.dks[i], &d.pp);
+                let (sk_shares, pk_shares) = trx
+                    .decrypt_own_share(&wc, &player, &d.dks[i], &d.pp)
+                    .expect("decrypt_own_share should not fail for valid transcript");
 
                 // Verify correct number of shares for this player's weight
                 assert_eq!(
@@ -349,7 +351,9 @@ mod tests {
         // Each player can still decrypt their shares
         for i in 0..wc.get_total_num_players() {
             let player = Player { id: i };
-            let (sk_shares, pk_shares) = trx1.decrypt_own_share(&wc, &player, &d.dks[i], &d.pp);
+            let (sk_shares, pk_shares) = trx1
+                .decrypt_own_share(&wc, &player, &d.dks[i], &d.pp)
+                .expect("decrypt_own_share should not fail for valid transcript");
 
             let expected_pk_shares = trx1.get_public_key_share(&wc, &player);
             assert_eq!(
@@ -473,8 +477,9 @@ mod tests {
         // All validators can decrypt their proportional shares
         for i in 0..wc.get_total_num_players() {
             let player = Player { id: i };
-            let (sk_shares, pk_shares) =
-                aggregated.decrypt_own_share(&wc, &player, &d.dks[i], &d.pp);
+            let (sk_shares, pk_shares) = aggregated
+                .decrypt_own_share(&wc, &player, &d.dks[i], &d.pp)
+                .expect("decrypt_own_share should not fail for valid transcript");
 
             let expected_weight = wc.get_player_weight(&player);
             assert_eq!(
