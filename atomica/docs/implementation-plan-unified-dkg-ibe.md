@@ -1,9 +1,9 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 2.6
+**Version:** 2.10
 **Date:** January 19, 2026
 **Branch:** feature/scalar-chunked-elgamal
-**Status:** Security Hardening Complete, Feature Work Next
+**Status:** Phase 2.6 (DLEQ Proof Verification) CRITICAL PRIORITY
 **Reference:** [ADR-001: Dual Output DKG](adr-001-dual-output-dkg.md)
 
 ---
@@ -53,6 +53,10 @@ InputSecret (scalar a)
 
 ## Changelog
 
+- **v2.10** (Jan 19, 2026): **Phase 4 complete, returning to Phase 2.6 (DLEQ).** Implemented TimelockShare variant, Topic::TIMELOCK, and timelock.rs handler. Added IBE_CONFIG_MODULE and SUBMIT_DK_SHARE_FUNCTION constants. Created deadline_reveal smoke test. Phase 2.6 (DLEQ Proof Verification) is CRITICAL priority and must be completed before production.
+- **v2.9** (Jan 19, 2026): **Phase 4 (DK Share Submission) in progress.** Added TimelockShare variant to ValidatorTransaction enum. Added Topic::TIMELOCK. Created TimelockShare struct with deadline_id, author, share fields. Created timelock.rs handler for processing TimelockShare transactions. Added IBE_CONFIG_MODULE and SUBMIT_DK_SHARE_FUNCTION constants. Fixed compilation errors and verified build.
+- **v2.8** (Jan 19, 2026): **DLEQ Proofs prioritized.** Elevated DLEQ proof implementation to immediate priority. Encryption correctness verification must happen before proceeding with further feature work.
+- **v2.7** (Jan 19, 2026): **Phase 3 (Timelock Registry) complete.** Implemented TimelockInfo and TimelockRegistry structs in ibe_config.move. Added register_timelock() entry function with SHA3-256 identity computation. Added submit_dk_share() friend function for validator share submissions. Added view functions: get_timelock, get_deadline, get_identity, get_decryption_key, is_revealed, is_expired, get_next_timelock_id. Created smoke test register_and_query.
 - **v2.6** (Jan 19, 2026): **Security hardening complete.** Implemented Phase 2.3 (verify() with SoK + LDT), Phase 2.4 (serialization), Phase 2.5 (error handling). Replaced `panic!` with proper `Result` propagation in `decrypt_own_share()`. Updated documentation to reflect completed work.
 - **v2.5** (Jan 19, 2026): **Code review and phase reordering.** Added comprehensive code review findings. Identified critical gaps: (1) verify() not implemented, (2) serialization stubs return empty, (3) silent BSGS failure. Reordered phases to prioritize security hardening (2.3-2.5) before feature work (Phases 3-5). Added Phase 2.3 (Verification), Phase 2.4 (Serialization), Phase 2.5 (Error Handling).
 - **v2.4** (Jan 19, 2026): **Documentation alignment with ADR-001.** Fixed Decision 2 to show correct Chunked Lifted ElGamal struct (was showing incorrect non-chunked design). Added Overview section clarifying: (1) Chunked Lifted ElGamal for IBE scalars, (2) DAS PVSS for randomness only, (3) DKG produces ephemeral keys not using BLS directly.
@@ -68,27 +72,29 @@ InputSecret (scalar a)
 
 ## Current Status Summary
 
-| Phase | Description                         | Status      | Priority |
-| ----- | ----------------------------------- | ----------- | -------- |
-| 0     | Feasibility Test                    | ✅ COMPLETE | -        |
-| 1A-1D | IBE Primitives + MPK Storage        | ✅ COMPLETE | -        |
-| 2     | Scalar ElGamal PVSS                 | ✅ COMPLETE | -        |
-| 2.0.5 | Unit Tests for Scalar ElGamal       | ✅ COMPLETE | -        |
-| 2.1   | Integration into RealDKG + DKGTrait | ✅ COMPLETE | -        |
-| 2.2   | Aggregation Bug Fix                 | ✅ COMPLETE | -        |
-| 1E    | IBE Integration Tests               | ✅ COMPLETE | -        |
-| 2.3   | Transcript Verification             | ✅ COMPLETE | -        |
-| 2.4   | Serialization Implementation        | ✅ COMPLETE | -        |
-| 2.5   | Error Handling Hardening            | ✅ COMPLETE | -        |
-| 3     | Timelock Registry                   | 🔲 PENDING  | Medium   |
-| 4     | DK Share Submission                 | 🔲 PENDING  | Medium   |
-| 5     | E2E Integration                     | 🔲 PENDING  | Medium   |
+| Phase | Description                         | Status      | Priority    |
+| ----- | ----------------------------------- | ----------- | ----------- |
+| 0     | Feasibility Test                    | ✅ COMPLETE | -           |
+| 1A-1D | IBE Primitives + MPK Storage        | ✅ COMPLETE | -           |
+| 2     | Scalar ElGamal PVSS                 | ✅ COMPLETE | -           |
+| 2.0.5 | Unit Tests for Scalar ElGamal       | ✅ COMPLETE | -           |
+| 2.1   | Integration into RealDKG + DKGTrait | ✅ COMPLETE | -           |
+| 2.2   | Aggregation Bug Fix                 | ✅ COMPLETE | -           |
+| 1E    | IBE Integration Tests               | ✅ COMPLETE | -           |
+| 2.3   | Transcript Verification             | ✅ COMPLETE | -           |
+| 2.4   | Serialization Implementation        | ✅ COMPLETE | -           |
+| 2.5   | Error Handling Hardening            | ✅ COMPLETE | -           |
+| 2.6   | DLEQ Proof Verification             | 🔲 PENDING  | CRITICAL    |
+| 3     | Timelock Registry                   | ✅ COMPLETE | -           |
+| 4     | DK Share Submission                 | ✅ COMPLETE | -           |
+| 5     | E2E Integration                     | 🔲 PENDING  | Medium      |
+| 2.6   | DLEQ Proof Verification             | 🔲 PENDING  | 🔴 CRITICAL |
 
 ### Current Blockers for Production
 
-| Issue                            | Location            | Impact                                    | Status         |
-| -------------------------------- | ------------------- | ----------------------------------------- | -------------- |
-| DLEQ proof verification deferred | `transcript.rs:758` | Encryption correctness not fully verified | 🟡 TODO (2.3b) |
+| Issue                            | Location            | Impact                                    | Status       |
+| -------------------------------- | ------------------- | ----------------------------------------- | ------------ |
+| DLEQ proof verification required | `transcript.rs:758` | Encryption correctness not fully verified | 🔴 IMMEDIATE |
 
 ---
 
@@ -532,7 +538,7 @@ match result {
    - ✅ Verify Schnorr proof (PoK of secret) via `batch_verify_soks`
    - ✅ Verify polynomial commitment sizes and structure
    - ✅ Verify SoK signatures
-   - 🟡 DLEQ proof verification deferred (see TODO at `transcript.rs:758`)
+   - 🔴 DLEQ proof verification MOVED TO PHASE 2.6 (IMMEDIATE)
 
 2. ✅ Enabled scalar verification in RealDKG:
    - ✅ Implemented `verify_transcript()` scalar checks (`real_dkg/mod.rs:466-486`)
@@ -617,17 +623,54 @@ match result {
 
 ---
 
-### Phase 3: Timelock Registry
+### Phase 2.6: DLEQ Proof Verification (IMMEDIATE)
 
-**Goal:** On-chain registry for timelock deadlines.
+**Goal:** Cryptographically verify that the dealer encrypted the correct shares to each validator.
 
-**Priority:** Medium - Feature work, after security hardening.
+**Rationale:** Without DLEQ (Discrete Log Equality) proofs, a malicious dealer could commit to a secret scalar `s` but encrypt garbage in the ciphertexts. This would pass current verification but cause decryption to fail for specific validators, potentially preventing reconstruction if enough validators are affected.
 
 **Tasks:**
 
-1. Extend `ibe_config.move` with deadline registration
-2. Add view functions for querying pending timelocks
-3. Smoke test: `register_and_query`
+1. Implement DLEQ proof generation in `Transcript::deal()`
+2. Implement DLEQ proof verification in `Transcript::verify()`
+3. Add unit tests for malicious dealers (invalid encryption)
+4. Verify no significant performance regression in DKG verification
+
+---
+
+### Phase 3: Timelock Registry ✅ COMPLETE
+
+**Goal:** On-chain registry for timelock deadlines.
+
+**Completed Tasks:**
+
+1. ✅ Extended `ibe_config.move` with deadline registration:
+   - Added `TimelockInfo` struct with deadline, identity, decryption_key, is_revealed, share_count
+   - Added `TimelockRegistry` struct with Table storage and event handles
+   - Added `register_timelock()` entry function with SHA3-256 identity computation
+   - Added `submit_dk_share()` friend function for validator share submission
+
+2. ✅ Added view functions for querying pending timelocks:
+   - `get_timelock(timelock_id)` - returns (deadline_us, identity, is_revealed, share_count)
+   - `get_deadline(timelock_id)` - returns deadline timestamp
+   - `get_identity(timelock_id)` - returns 32-byte identity hash
+   - `get_decryption_key(timelock_id)` - returns G1 decryption key (after reveal)
+   - `is_revealed(timelock_id)` - checks if deadline passed + threshold reached
+   - `is_expired(timelock_id)` - checks if deadline has passed
+   - `get_next_timelock_id()` - returns next available ID
+
+3. ✅ Added smoke test `register_and_query`:
+   - `testsuite/smoke-test/src/timelock/mod.rs` - module definition
+   - `testsuite/smoke-test/src/timelock/register_and_query.rs` - full smoke test
+   - Tests registration, querying, identity determinism, multiple timelocks
+
+**Files Modified:**
+
+- `aptos-move/framework/aptos-framework/sources/ibe_config.move` (+367 lines)
+- `testsuite/smoke-test/src/timelock/mod.rs` (new)
+- `testsuite/smoke-test/src/timelock/register_and_query.rs` (new)
+
+---
 
 ### Phase 4: DK Share Submission
 
@@ -730,11 +773,21 @@ cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 -
 | `crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs`        | Fix `chunks_to_scalar` + BSGS | ✅     |
 | `crates/aptos-dkg/src/pvss/scalar_elgamal/weighted_protocol.rs` | Fix type aliases              | ✅     |
 
+### Completed in Phase 3
+
+| File                                                           | Description                     | Status |
+| -------------------------------------------------------------- | ------------------------------- | ------ |
+| `aptos-move/framework/aptos-framework/sources/ibe_config.move` | TimelockRegistry + registration | ✅     |
+| `testsuite/smoke-test/src/timelock/mod.rs`                     | Timelock smoke test module      | ✅     |
+| `testsuite/smoke-test/src/timelock/register_and_query.rs`      | register_and_query smoke test   | ✅     |
+
 ### Pending Files
 
 | File                                                       | Description                           | Phase |
 | ---------------------------------------------------------- | ------------------------------------- | ----- |
 | `testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs` | Complete test                         | 1E    |
+| `types/src/validator_txn/mod.rs`                           | TimelockShare type                    | 4     |
+| `testsuite/smoke-test/src/timelock/e2e.rs`                 | E2E test                              | 5     |
 | `crates/aptos-dkg/src/ibe/mod.rs`                          | `derive_decryption_key_from_shares()` | 1E    |
 | `types/src/validator_txn/mod.rs`                           | TimelockShare type                    | 4     |
 | `testsuite/smoke-test/src/timelock/e2e.rs`                 | E2E test                              | 5     |
@@ -743,13 +796,13 @@ cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 -
 
 ## Known Issues
 
-### 1. DLEQ Proof Verification Deferred 🟡 MEDIUM
+### 1. DLEQ Proof Verification Required 🔴 HIGH
 
 **Location:** `scalar_elgamal/transcript.rs:758`
 **Impact:** Full encryption correctness not cryptographically verified
-**Mitigation:** SoK + LDT provide partial verification; honest majority assumption
-**Priority:** MEDIUM
-**Assigned Phase:** 2.3b (future)
+**Mitigation:** NONE - Must be implemented immediately to ensure DKG robustness
+**Priority:** CRITICAL
+**Assigned Phase:** 2.6 (Immediate)
 
 ### 2. generate() Not Implemented 🔵 LOW
 
@@ -790,6 +843,7 @@ cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 -
 - [x] **`get_ibe_master_public_key()` returns valid bytes (Phase 2.4)** ✅
 - [x] **`get_scalar_secret_share()` returns valid bytes (Phase 2.4)** ✅
 - [x] **BSGS failure returns error, not 0 (Phase 2.5)** ✅
+- [ ] **DLEQ proofs verify encryption correctness (Phase 2.6)** 🔴
 
 ### Production Ready When:
 

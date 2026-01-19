@@ -3,11 +3,12 @@
 
 #[cfg(any(test, feature = "fuzzing"))]
 use crate::dkg::DKGTranscriptMetadata;
-use crate::{dkg::DKGTranscript, jwks, validator_verifier::ValidatorVerifier};
+use crate::{
+    account_address::AccountAddress, dkg::DKGTranscript, jwks,
+    validator_verifier::ValidatorVerifier,
+};
 use anyhow::Context;
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
-#[cfg(any(test, feature = "fuzzing"))]
-use move_core_types::account_address::AccountAddress;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -15,6 +16,20 @@ use std::fmt::Debug;
 pub enum ValidatorTransaction {
     DKGResult(DKGTranscript),
     ObservedJWKUpdate(jwks::QuorumCertifiedUpdate),
+    TimelockShare(TimelockShare),
+}
+
+/// A decryption key share submitted by a validator for a timelock deadline.
+/// This is submitted after the deadline has passed, as part of the reveal phase.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, CryptoHasher, BCSCryptoHash)]
+pub struct TimelockShare {
+    /// The timelock deadline ID this share is for
+    pub deadline_id: u64,
+    /// The validator who is submitting this share
+    pub author: AccountAddress,
+    /// The decryption key share (G1 point, 48 bytes compressed)
+    /// Computed as: share = sk_share * H(identity) where H(identity) comes from timelock identity
+    pub share: Vec<u8>,
 }
 
 impl ValidatorTransaction {
@@ -39,6 +54,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::ObservedJWKUpdate(_) => {
                 "validator_transaction__observed_jwk_update"
             },
+            ValidatorTransaction::TimelockShare(_) => "validator_transaction__timelock_share",
         }
     }
 
@@ -48,6 +64,13 @@ impl ValidatorTransaction {
                 .verify(verifier)
                 .context("DKGResult verification failed"),
             ValidatorTransaction::ObservedJWKUpdate(_) => Ok(()),
+            ValidatorTransaction::TimelockShare(timelock_share) => {
+                // Verify the author is a valid validator
+                verifier
+                    .get_public_key(&timelock_share.author)
+                    .ok_or_else(|| anyhow::anyhow!("TimelockShare author is not a validator"))?;
+                Ok(())
+            },
         }
     }
 }
@@ -61,4 +84,5 @@ pub enum Topic {
         issuer: jwks::Issuer,
         kid: jwks::KID,
     },
+    TIMELOCK,
 }
