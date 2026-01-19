@@ -8,7 +8,9 @@ use crate::{
 };
 use aptos_forge::{NodeExt, SwarmExt};
 use aptos_logger::info;
-use aptos_types::{dkg::DKGState, on_chain_config::OnChainRandomnessConfig};
+use aptos_types::{
+    dkg::DKGState, on_chain_config::OnChainRandomnessConfig, randomness::PerBlockRandomness,
+};
 use std::{sync::Arc, time::Duration};
 
 /// Verify the correctness of DKG transcript and block-level randomness seed.
@@ -42,6 +44,15 @@ async fn randomness_correctness() {
     let dkg_session = get_on_chain_resource::<DKGState>(&rest_client).await;
     assert!(verify_dkg_transcript(dkg_session.last_complete(), &decrypt_key_map).is_ok());
 
+    info!("Wait for randomness to be available in epoch 2.");
+    loop {
+        let randomness = get_on_chain_resource::<PerBlockRandomness>(&rest_client).await;
+        if randomness.epoch == 2 && randomness.seed.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
     // Verify the randomness in 10 versions.
     for _ in 0..10 {
         let cur_txn_version = get_current_version(&rest_client).await;
@@ -61,6 +72,15 @@ async fn randomness_correctness() {
     info!("Verify DKG correctness for epoch 3.");
     let dkg_session = get_on_chain_resource::<DKGState>(&rest_client).await;
     assert!(verify_dkg_transcript(dkg_session.last_complete(), &decrypt_key_map).is_ok());
+
+    info!("Wait for randomness to be available in epoch 3.");
+    loop {
+        let randomness = get_on_chain_resource::<PerBlockRandomness>(&rest_client).await;
+        if randomness.epoch == 3 && randomness.seed.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     // Again, verify the randomness in 10 versions.
     for _ in 0..10 {
