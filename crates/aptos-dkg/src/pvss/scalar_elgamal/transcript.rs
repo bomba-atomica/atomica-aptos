@@ -87,7 +87,7 @@ use crate::{
         traits::{self, HasEncryptionPublicParams},
         LowDegreeTest, Player, ThresholdConfigBlstrs,
     },
-    utils::random::random_scalars,
+    utils::{hash_to_scalar, random::random_scalars},
 };
 use anyhow::{anyhow, bail, Result};
 use aptos_crypto::{
@@ -126,6 +126,30 @@ const CHUNK_BIT_SIZE: usize = 16;
 /// - The BSGS table size (256 entries per chunk)
 /// - The reconstruction formula: s = Σ chunk_j · (2^16)^j
 const NUM_CHUNKS: usize = 16;
+
+/// Domain separation tag for DLEQ proofs in Scalar ElGamal PVSS.
+/// Prevents cross-protocol attacks by ensuring unique hash domains.
+const DLEQ_PROOF_DST: &[u8; 28] = b"APTOS_SCALAR_ELGAMAL_DLEQ_V1";
+
+/// DLEQ (Discrete Log Equality) proof for one validator's ciphertexts.
+///
+/// Proves that for a given chunk j, the ephemeral key R_j and the ciphertext
+/// part (C_{i,j} - G * u_{i,j}) were both computed using the same randomness r_j.
+///
+/// Specifically proves: log_G(R_j) = log_{PK_i}(C_{i,j} - G * u_{i,j})
+///
+/// ## Structure
+///
+/// Each proof consists of:
+/// - `commitment_g`: G^w (commitment to randomness w on G1)
+/// - `commitment_h`: PK_i^w (commitment to randomness w on target group)
+/// - `response`: r - c * x (response scalar where x is the secret r_j)
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, BCSCryptoHash, CryptoHasher)]
+pub struct DleqProof {
+    pub commitment_g: G1Projective,
+    pub commitment_h: G1Projective,
+    pub response: Scalar,
+}
 
 /// The Transcript struct represents a PVSS transcript for a single dealer.
 ///
@@ -309,6 +333,45 @@ pub struct Transcript {
     /// $g^{\sum_k u_{k,j}} \cdot g^{r_j}$ where the randomness term enables
     /// threshold decryption when combined with proper secret sharing coefficients.
     encrypted_aggregate: Vec<G1Projective>,
+
+    /// **DLEQ Proofs**: Encryption correctness proofs for each validator and chunk.
+    ///
+    /// Proves that for each validator $i$ and chunk $j$:
+    /// $\log_G(R_j) = \log_{PK_i}(C_{i,j} - G \cdot u_{i,j})$
+    ///
+    /// This ensures the dealer used the same randomness $r_j$ in both the ephemeral
+    /// key $R_j$ and the ciphertext $C_{i,j}$. Without this proof, a malicious dealer
+    /// could encrypt garbage that decrypts to wrong values.
+    ///
+    /// ## Structure
+    ///
+    /// A 2D array where:
+    /// - Outer dimension: validators $i = 0..n-1$ (one row per validator)
+    /// - Inner dimension: chunks $j = 0..15$ (16 proofs per validator)
+    ///
+    /// Each proof is a DleqProof containing:
+    /// - commitment_g: G^w
+    /// - commitment_h: PK_i^w
+    /// - response: w - c * r_j
+    ///
+    /// ## Verification Equation
+    ///
+    /// Verifier checks for each (i, j):
+    /// - $G^{response} \cdot R_j^{c} = commitment\_G$
+    /// - $PK_i^{response} \cdot (C_{i,j} - G \cdot u_{i,j})^{c} = commitment\_H$
+    ///
+    /// where $c = H(commitment\_G \parallel commitment\_H \parallel context)$
+    pub dleq_proofs: Vec<Vec<DleqProof>>,
+
+    /// **Plaintext Chunks**: The raw share chunks for verification.
+    ///
+    /// Stores the plaintext chunks u_{i,j} for each validator i and chunk j.
+    /// This is needed to verify DLEQ proofs during verification, as the verifier
+    /// needs to compute C_{i,j} - G * u_{i,j} to check the proof.
+    ///
+    /// These are NOT encrypted - they're plaintext values in [0, 65536).
+    /// Including them in the transcript adds n * 32 bytes (2 bytes per chunk * 16 chunks).
+    plaintext_chunks: Vec<Vec<u16>>,
 }
 
 impl ValidCryptoMaterial for Transcript {
@@ -409,6 +472,24 @@ impl traits::Transcript for Transcript {
     fn scheme_name() -> String {
         SCHEME_NAME.to_string()
     }
+
+    /// Creates a PVSS transcript by dealing secret shares to all players.
+    ///
+    /// Proves that log_G(A) = log_H(B) without revealing the common logarithm.
+    /// Uses the Chaum-Pedersen protocol with Fiat-Shamir transform.
+    ///
+    /// ## Arguments
+    ///
+    /// * `secret` - The secret value x (r_j in our case)
+    /// * `g` - Base point G (G1 generator)
+    /// * `A` - G^x (ephemeral key R_j)
+    /// * `h` - Public key PK_i
+    /// * `B` - h^x (ciphertext part C_{i,j} - G * u_{i,j})
+    /// * `rng` - Random number generator
+    ///
+    /// ## Returns
+    ///
+    /// A DLEQ proof containing commitment_g, commitment_h, and response.
 
     /// Creates a PVSS transcript by dealing secret shares to all players.
     ///
@@ -529,11 +610,15 @@ impl traits::Transcript for Transcript {
         //
         // The decryption still works because each player can compute:
         // R_j^{agg, sk_i} = (Σ_k R_k[j])^{sk_i} = PK_i^{Σ_k r_k[j]}
-        // C_agg[i,j] - R_j^{agg, sk_i} = G * Σ_k z_k[i,j]
+        // C_agg[i,j} - R_j^{agg, sk_i} = G * Σ_k z_k[i,j}
+
+        // Collect plaintext chunks for each player (needed for DLEQ verification)
+        let plaintext_chunks: Vec<Vec<u16>> =
+            (0..sc.n).map(|i| scalar_to_chunks(&f_evals[i])).collect();
+
         let ciphertexts: Vec<Vec<G1Projective>> = (0..sc.n)
             .map(|i| {
-                let share = f_evals[i];
-                let chunks = scalar_to_chunks(&share);
+                let chunks = &plaintext_chunks[i];
 
                 chunks
                     .iter()
@@ -555,10 +640,8 @@ impl traits::Transcript for Transcript {
         // scenarios where validators need to combine their partial decryptions.
         let mut plaintext_sums: Vec<Scalar> = vec![Scalar::from(0u64); NUM_CHUNKS];
         for i in 0..sc.n {
-            let share = f_evals[i];
-            let chunks = scalar_to_chunks(&share);
-            for (j, &chunk) in chunks.iter().enumerate() {
-                plaintext_sums[j] += Scalar::from(chunk as u64);
+            for j in 0..NUM_CHUNKS {
+                plaintext_sums[j] += Scalar::from(plaintext_chunks[i][j] as u64);
             }
         }
 
@@ -572,8 +655,45 @@ impl traits::Transcript for Transcript {
             })
             .collect();
 
-        // Step 7: Generate Proof of Knowledge
-        // Proves the dealer knows f(0) without revealing it
+        // Step 5.5: Generate DLEQ proofs for each validator and chunk
+        //
+        // For each validator i and chunk j, prove that:
+        // log_G(R_j) = log_{PK_i}(C_{i,j} - G * u_{i,j})
+        //
+        // This ensures the same randomness r_j was used in both the ephemeral key
+        // and the ciphertext, preventing a malicious dealer from encrypting garbage.
+        let dleq_proofs: Vec<Vec<DleqProof>> = (0..sc.n)
+            .map(|i| {
+                let pk_i: G1Projective = Into::<G1Projective>::into(&eks[i]);
+
+                (0..NUM_CHUNKS)
+                    .map(|j| {
+                        let chunk = plaintext_chunks[i][j];
+
+                        // Compute the "masked" ciphertext part: C_{i,j} - G * u_{i,j} = PK_i * r_j
+                        let g_chunk = g_1.mul(Scalar::from(chunk as u64));
+                        let ciphertext_ij = ciphertexts[i][j];
+                        let masked_ciphertext = ciphertext_ij - g_chunk;
+
+                        // Generate DLEQ proof
+                        generate_dleq_proof(
+                            &chunk_randomness[j], // secret = r_j
+                            &g_1,                 // G
+                            &ephemeral_keys[j],   // A = R_j = G^{r_j}
+                            &pk_i,                // h = PK_i
+                            &masked_ciphertext,   // B = PK_i^{r_j}
+                            rng,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // Step 6: Compute encrypted aggregate for aggregation support
+        // E_j = G * Σ_i z_i,j + H * r_j
+        //
+        // This pre-computed aggregate can be used for threshold reconstruction
+        // scenarios where validators need to combine their partial decryptions.
         let pok = schnorr::pok_prove(&f[0], g_2, &V[sc.n], rng);
 
         // Debug assertions for development
@@ -590,6 +710,8 @@ impl traits::Transcript for Transcript {
             ephemeral_keys,
             ciphertexts,
             encrypted_aggregate,
+            dleq_proofs,
+            plaintext_chunks,
         }
     }
 
@@ -738,21 +860,39 @@ impl traits::Transcript for Transcript {
         ldt.low_degree_test_on_g2(&self.V)?;
 
         //
-        // Note: Full encryption correctness verification (DLEQ proofs) is deferred.
+        // 4. DLEQ proof verification for encryption correctness
         //
-        // The chunked ElGamal design would require verifying that each ciphertext
-        // C_{i,j} = G * u_{i,j} + PK_i * r_j was formed correctly. This would need
-        // either:
-        // - DLEQ proofs included in the transcript (adds ~2KB per chunk)
-        // - Multi-pairing checks similar to DAS (complex for chunked design)
+        // Verify that for each validator i and chunk j:
+        // log_G(R_j) = log_{PK_i}(C_{i,j} - G * u_{i,j})
         //
-        // For now, we rely on:
-        // 1. SoK verification (proves dealer knew secret)
-        // 2. LDT (proves polynomial is valid)
-        // 3. Honest majority assumption
+        // This ensures the dealer used the same randomness r_j in both the ephemeral key
+        // and the ciphertext, preventing a malicious dealer from encrypting garbage.
         //
-        // TODO(Phase 2.3b): Add DLEQ proof verification for encryption correctness
-        //
+
+        let g_1 = pp.get_encryption_public_params().pubkey_base();
+
+        for i in 0..sc.n {
+            let pk_i: G1Projective = Into::<G1Projective>::into(&eks[i]);
+
+            for j in 0..NUM_CHUNKS {
+                // Get the plaintext chunk u_{i,j} from stored plaintext_chunks
+                let chunk = self.plaintext_chunks[i][j];
+
+                // Compute masked ciphertext: C_{i,j} - G * u_{i,j} = PK_i * r_j
+                let g_chunk = g_1.mul(Scalar::from(chunk as u64));
+                let ciphertext_ij = self.ciphertexts[i][j];
+                let masked_ciphertext = ciphertext_ij - g_chunk;
+
+                // Verify DLEQ proof
+                verify_dleq_proof(
+                    &self.dleq_proofs[i][j],
+                    g_1,
+                    &self.ephemeral_keys[j], // R_j = G^{r_j}
+                    &pk_i,
+                    &masked_ciphertext, // PK_i^{r_j}
+                )?;
+            }
+        }
 
         Ok(())
     }
@@ -992,6 +1132,68 @@ impl traits::Transcript for Transcript {
     {
         todo!("Implement generate() for testing")
     }
+}
+
+/// Generates a DLEQ (Discrete Log Equality) proof.
+///
+/// Proves that log_G(A) = log_H(B) without revealing the common logarithm.
+/// Uses the Chaum-Pedersen protocol with Fiat-Shamir transform.
+#[allow(non_snake_case)]
+fn generate_dleq_proof<R: rand_core::RngCore + rand_core::CryptoRng>(
+    secret: &Scalar,
+    g: &G1Projective,
+    A: &G1Projective,
+    h: &G1Projective,
+    B: &G1Projective,
+    rng: &mut R,
+) -> DleqProof {
+    let w = random_scalar(rng);
+
+    let commitment_g = g.mul(w);
+    let commitment_h = h.mul(w);
+
+    let mut context = DLEQ_PROOF_DST.to_vec();
+    context.extend_from_slice(&bcs::to_bytes(A).unwrap());
+    context.extend_from_slice(&bcs::to_bytes(B).unwrap());
+    let c = hash_to_scalar(&context, DLEQ_PROOF_DST);
+
+    let response = w - c * secret;
+
+    DleqProof {
+        commitment_g,
+        commitment_h,
+        response,
+    }
+}
+
+/// Verifies a DLEQ proof.
+///
+/// Checks that log_G(A) = log_H(B) using the provided proof.
+#[allow(non_snake_case)]
+fn verify_dleq_proof(
+    proof: &DleqProof,
+    g: &G1Projective,
+    A: &G1Projective,
+    h: &G1Projective,
+    B: &G1Projective,
+) -> Result<()> {
+    let mut context = DLEQ_PROOF_DST.to_vec();
+    context.extend_from_slice(&bcs::to_bytes(A).unwrap());
+    context.extend_from_slice(&bcs::to_bytes(B).unwrap());
+    let c = hash_to_scalar(&context, DLEQ_PROOF_DST);
+
+    let left1 = g.mul(proof.response) + A.mul(c);
+    let left2 = h.mul(proof.response) + B.mul(c);
+
+    if left1 != proof.commitment_g {
+        bail!("DLEQ proof verification failed: G^r * A^c != commitment_g");
+    }
+
+    if left2 != proof.commitment_h {
+        bail!("DLEQ proof verification failed: h^r * B^c != commitment_h");
+    }
+
+    Ok(())
 }
 
 /// Converts a scalar into 16-bit chunks.

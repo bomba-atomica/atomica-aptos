@@ -89,7 +89,7 @@ mod tests {
     //! | `test_aggregate_transcripts` | Multiple transcripts aggregate correctly | TODO |
     //! | `test_reconstruct_secret` | Threshold shares reconstruct original | TODO |
     //! | `test_share_consistency` | Shares match commitments | TODO |
-    //! | `test_dleq_proof_valid` | DLEQ proofs verify correctly | TODO |
+    //! | `test_dleq_proof_valid` | DLEQ proofs verify correctly | DONE |
     //! | `test_dleq_proof_tampered` | Tampered DLEQ proofs fail | TODO |
     //!
     //! ## Integration Tests
@@ -106,6 +106,77 @@ mod tests {
     //! ```
 
     use super::*;
+    use crate::pvss::traits::{HasEncryptionPublicParams, ThresholdConfig, Transcript};
+    use crate::pvss::ThresholdConfigBlstrs;
+    use crate::Player;
+    use aptos_crypto::SigningKey;
+    use blstrs::Scalar;
+    use rand::thread_rng;
+
+    /// Test that DLEQ proofs are generated and verified correctly.
+    #[test]
+    fn test_dleq_proof_valid() {
+        use crate::pvss::traits::Transcript as _;
+        use aptos_crypto::Uniform;
+
+        let mut rng = thread_rng();
+        let pp = <super::Transcript as Transcript>::PublicParameters::default();
+        let sc = ThresholdConfigBlstrs::new(3, 5).unwrap();
+
+        let sk = <super::Transcript as Transcript>::SigningSecretKey::generate(&mut rng);
+        let spks = vec![sk.verifying_key()];
+        let eks: Vec<_> = (0..5)
+            .map(|_| {
+                let dk = <super::Transcript as Transcript>::DecryptPrivKey::generate(&mut rng);
+                dk.to(&pp.get_encryption_public_params())
+            })
+            .collect();
+
+        let secret = InputSecret::generate(&mut rng);
+        let dealer = Player { id: 0 };
+        let transcript =
+            super::Transcript::deal(&sc, &pp, &sk, &eks, &secret, &0u64, &dealer, &mut rng);
+
+        let result = transcript.verify(&sc, &pp, &spks, &eks, &vec![0u64]);
+        assert!(
+            result.is_ok(),
+            "Transcript with valid DLEQ proofs should verify"
+        );
+    }
+
+    /// Test that tampered DLEQ proofs are detected.
+    #[test]
+    fn test_dleq_proof_tampered() {
+        use crate::pvss::traits::Transcript as _;
+        use aptos_crypto::Uniform;
+
+        let mut rng = thread_rng();
+        let pp = <super::Transcript as Transcript>::PublicParameters::default();
+        let sc = ThresholdConfigBlstrs::new(3, 5).unwrap();
+
+        let sk = <super::Transcript as Transcript>::SigningSecretKey::generate(&mut rng);
+        let spks = vec![sk.verifying_key()];
+        let eks: Vec<_> = (0..5)
+            .map(|_| {
+                let dk = <super::Transcript as Transcript>::DecryptPrivKey::generate(&mut rng);
+                dk.to(&pp.get_encryption_public_params())
+            })
+            .collect();
+
+        let secret = InputSecret::generate(&mut rng);
+        let dealer = Player { id: 0 };
+        let mut transcript =
+            super::Transcript::deal(&sc, &pp, &sk, &eks, &secret, &0u64, &dealer, &mut rng);
+
+        // Tamper with a DLEQ proof
+        transcript.dleq_proofs[0][0].response = Scalar::from(42u64);
+
+        let result = transcript.verify(&sc, &pp, &spks, &eks, &vec![0u64]);
+        assert!(
+            result.is_err(),
+            "Tampered DLEQ proof should fail verification"
+        );
+    }
 
     /// Placeholder test to ensure module compiles.
     /// TODO: Replace with actual tests once transcript.rs is implemented.
