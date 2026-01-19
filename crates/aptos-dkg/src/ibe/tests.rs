@@ -242,3 +242,176 @@ fn test_key_stream_determinism() {
     let ks3 = derive_key_stream(&pairing_result, 50);
     assert_eq!(&ks1[..50], &ks3[..]);
 }
+
+#[test]
+fn test_ibe_roundtrip_with_known_scalar() {
+    // Test full IBE roundtrip with a known scalar secret
+    let mut rng = rand::rngs::StdRng::seed_from_u64(12345);
+
+    // Use a known scalar as master secret
+    let msk = Scalar::from(42u64);
+    let mpk = G2Projective::generator().mul(&msk).to_affine();
+
+    let identity = compute_identity(12345, 1000000000);
+    let dk = derive_decryption_key(&msk, &identity);
+
+    // Encrypt and decrypt
+    let plaintext = b"Test message for IBE roundtrip";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
+
+    let decrypted = ibe_decrypt(&dk, &ciphertext);
+    assert_eq!(decrypted, plaintext);
+}
+
+#[test]
+fn test_scalar_elgamal_pvss_ibe_roundtrip() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use group::Group;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    // Create a threshold config for 4 validators with threshold 3
+    let weights = vec![1, 1, 1, 1];
+    let wconfig = WeightedConfig::new(3, weights).unwrap();
+
+    // Use test utils to generate key pairs for validators
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+
+    // Extract keys
+    let dks = &dealing_args.dks;
+    let eks = &dealing_args.eks;
+
+    // Create an input secret
+    let input_secret = InputSecret::generate(&mut rng);
+    let secret = *input_secret.get_secret_a();
+
+    // Create the scalar ElGamal transcript
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    // Each validator decrypts their share using their own private key
+    let mut shares: Vec<(
+        Player,
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
+    )> = Vec::new();
+    for i in 0..4 {
+        let (sk_share, _pk_share) =
+            transcript.decrypt_own_share(&wconfig, &Player { id: i }, &dks[i], &dealing_args.pp);
+        shares.push((Player { id: i }, sk_share));
+    }
+
+    // Reconstruct the master secret using any 3 shares
+    let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
+    let reconstructed =
+        <<WeightedTranscript as TranscriptTrait>::DealtSecretKey as Reconstructable<
+            WeightedConfig,
+        >>::reconstruct(&wconfig, &shares_for_recon);
+
+    // The reconstructed secret should equal the original
+    assert_eq!(
+        reconstructed.s, secret,
+        "Reconstructed secret should match original"
+    );
+
+    // Now test IBE encrypt/decrypt with the reconstructed secret
+    let mpk = G2Projective::generator().mul(&secret).to_affine();
+    let identity = compute_identity(12345, 1000000000);
+    let dk = derive_decryption_key(&reconstructed.s, &identity);
+
+    let plaintext = b"Test message from reconstructed secret";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
+
+    let decrypted = ibe_decrypt(&dk, &ciphertext);
+    assert_eq!(decrypted, plaintext);
+}
+
+#[test]
+fn test_scalar_elgamal_pvss_ibe_multiple_identities() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use group::Group;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    // Create threshold config for 5 validators with threshold 3
+    let weights = vec![1, 1, 1, 1, 1];
+    let wconfig = WeightedConfig::new(3, weights).unwrap();
+
+    // Use test utils to generate key pairs for validators
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+
+    // Extract keys
+    let dks = &dealing_args.dks;
+    let eks = &dealing_args.eks;
+
+    // Deal a random secret
+    let input_secret = InputSecret::generate(&mut rng);
+    let secret = *input_secret.get_secret_a();
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    // Decrypt shares from first 3 validators using their correct private keys
+    let shares: Vec<(
+        Player,
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
+    )> = (0..3)
+        .map(|i| {
+            let (sk_share, _pk_share) = transcript.decrypt_own_share(
+                &wconfig,
+                &Player { id: i },
+                &dks[i],
+                &dealing_args.pp,
+            );
+            (Player { id: i }, sk_share)
+        })
+        .collect();
+
+    // Reconstruct
+    let reconstructed =
+        <<WeightedTranscript as TranscriptTrait>::DealtSecretKey as Reconstructable<
+            WeightedConfig,
+        >>::reconstruct(&wconfig, &shares);
+
+    assert_eq!(reconstructed.s, secret);
+
+    // Test IBE with multiple identities using reconstructed secret
+    let mpk = G2Projective::generator().mul(&secret).to_affine();
+
+    for i in 0..5 {
+        let identity = compute_identity(i, 1000000000);
+        let dk = derive_decryption_key(&reconstructed.s, &identity);
+
+        let plaintext = format!("Message for identity {}", i);
+        let ciphertext = ibe_encrypt(&mpk, &identity, plaintext.as_bytes(), &mut rng);
+        let decrypted = ibe_decrypt(&dk, &ciphertext);
+
+        assert_eq!(decrypted, plaintext.as_bytes());
+    }
+}
