@@ -1630,38 +1630,40 @@ impl Transcript {
             .collect();
         let _weighted_eks_sum = g1_multi_exp(&eks_g1, &alphas);
 
-        // Compute Σ_j weighted_share_j
-        let total_weighted_share = weighted_shares
-            .iter()
-            .fold(G1Projective::identity(), |acc, s| acc + s);
+        // Compute Σ_j weighted_share_j * B^j
+        //
+        // We must weight the chunks by powers of the radix B = 2^16 so that
+        // the sum corresponds to the polynomial evaluations in V.
+        //
+        // sum = Σ_j (Σ_i α_i C_{i,j}) * B^j
+        //     = Σ_i α_i (Σ_j C_{i,j} * B^j)
+        //     = Σ_i α_i (g1 * f(i) + PK_i * Σ_j r_j * B^j)
+        //     = Σ_i α_i (g1 * f(i) + PK_i * 0)  [due to correlated randomness]
+        //     = g1 * Σ_i α_i f(i)
+        let radix = Scalar::from(1u64 << CHUNK_BIT_SIZE);
+        let mut cur_radix = Scalar::from(1u64);
+        let mut total_weighted_share = G1Projective::identity();
 
-        // Compute Σ_j R_j
-        let _total_r = self
-            .ephemeral_keys
-            .iter()
-            .fold(G1Projective::identity(), |acc, r| acc + r);
+        for weighted_share in weighted_shares {
+            total_weighted_share += weighted_share * cur_radix;
+            cur_radix *= radix;
+        }
 
         // Perform multi-pairing check:
-        // Verify the encryption equation using a linear combination.
+        // Verify: e(total_weighted_share, g2) == e(g1, weighted_commitment_sum)
         //
-        // For the encryption: C_{i,j} = G·u_{i,j} + PK_i·r_j
-        // After linear combination with coefficients α_i:
-        // Σ_i α_i·C_{i,j} = G·Σ_i α_i·u_{i,j} + Σ_i α_i·PK_i·r_j
+        // Equivalent to: e(total_weighted_share, g2) * e(-g1, weighted_commitment_sum) == 1
         //
-        // And the polynomial commitment: V_i = G2^{f(i)}
-        // where f(i) contains the shares u_{i,j}
+        // LHS: total_weighted_share = g1 * Σ_i α_i f(i)
+        // RHS: weighted_commitment_sum = g2 * Σ_i α_i f(i)
         //
-        // The check verifies:
-        // e(Σ_i α_i·C_{i,j}, G2) = e(G, Σ_i α_i·V_i) * e(Σ_i α_i·PK_i, Σ_j R_j)
-        //
-        // Rearranged to a single multi-pairing:
-        // e(Σ_i α_i·C_{i,j}, G2) * e(G, -Σ_i α_i·V_i) * e(Σ_i α_i·PK_i, -Σ_j R_j) = 1
+        // Check: e(g1 * X, g2) == e(g1, g2 * X) -> e(g1, g2)^X == e(g1, g2)^X
 
         let g_1_ref = *g_1;
         let g_2_ref = *g_2;
 
-        // LHS elements (G1): weighted_share, g_1
-        let lhs1: Vec<G1Projective> = vec![total_weighted_share, g_1_ref];
+        // LHS elements (G1): weighted_share, -g_1
+        let lhs1: Vec<G1Projective> = vec![total_weighted_share, -g_1_ref];
         // RHS elements (G2): g_2, weighted_commitments
         let rhs1: Vec<G2Projective> = vec![g_2_ref, weighted_commitment_sum];
 
