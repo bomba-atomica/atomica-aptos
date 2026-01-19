@@ -61,8 +61,8 @@ impl WeightedTranscript {
 impl TranscriptTrait for WeightedTranscript {
     type DealtPubKey = pvss::dealt_pub_key::g2::DealtPubKey;
     type DealtPubKeyShare = Vec<pvss::dealt_pub_key_share::g2::DealtPubKeyShare>;
-    type DealtSecretKey = pvss::dealt_secret_key::g1::DealtSecretKey;
-    type DealtSecretKeyShare = Vec<pvss::dealt_secret_key_share::g1::DealtSecretKeyShare>;
+    type DealtSecretKey = pvss::dealt_secret_key::scalar::DealtSecretKey;
+    type DealtSecretKeyShare = Vec<pvss::dealt_secret_key_share::scalar::DealtSecretKeyShare>;
     type DecryptPrivKey = encryption_dlog::g1::DecryptPrivKey;
     type EncryptPubKey = encryption_dlog::g1::EncryptPubKey;
     type InputSecret = pvss::input_secret::InputSecret;
