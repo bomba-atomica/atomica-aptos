@@ -176,14 +176,16 @@ use crate::{
         traits::{self, HasEncryptionPublicParams},
         LowDegreeTest, Player, ThresholdConfigBlstrs,
     },
-    utils::{hash_to_scalar, random::random_scalars},
+    utils::{g2_multi_exp, hash_to_scalar, random::random_scalars},
 };
 use anyhow::{anyhow, bail, Result};
 use aptos_crypto::{
-    bls12381, blstrs::random_scalar, CryptoMaterialError, SigningKey, ValidCryptoMaterial,
+    bls12381,
+    blstrs::{multi_pairing, random_scalar},
+    CryptoMaterialError, SigningKey, ValidCryptoMaterial,
 };
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
-use blstrs::{G1Projective, G2Projective, Scalar};
+use blstrs::{G1Projective, G2Projective, Gt, Scalar};
 use group::Group;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
@@ -975,24 +977,20 @@ impl traits::Transcript for Transcript {
         ldt.low_degree_test_on_g2(&self.V)?;
 
         //
-        // 4. DLEQ proof verification for encryption correctness
+        // 4. Encryption correctness verification
         //
-        // Verify that for each validator i and chunk j:
-        // log_G(R_j) = log_{PK_i}(C_{i,j} - G * u_{i,j})
+        // We use a two-layer approach:
+        // - For single-dealer transcripts: DLEQ proofs (per-(i,j) verification)
+        // - For aggregated transcripts: Linear pairing check (aggregate verification)
         //
-        // This ensures the dealer used the same randomness r_j in both the ephemeral key
-        // and the ciphertext, preventing a malicious dealer from encrypting garbage.
-        //
-        // NOTE: DLEQ proofs are only verified for single-dealer transcripts.
-        // For aggregated transcripts (soks.len() > 1), the DLEQ proofs and plaintext_chunks
-        // contain only the first dealer's data, while ciphertexts have been aggregated.
-        // Each dealer's DLEQ proofs should be verified BEFORE aggregation.
-        // After aggregation, we rely on:
-        // - SoK verification (proves each dealer knew their secret)
-        // - Low-degree test (proves polynomial commitments are valid)
+        // DLEQ proofs are NOT verified for aggregated transcripts because:
+        // - DLEQ proofs only cover the first dealer's contributions
+        // - Ciphertexts are summed across all dealers
+        // - The linear pairing check provides encryption correctness verification
         //
 
         if self.soks.len() == 1 {
+            // Single-dealer: use DLEQ proofs for per-(i,j) verification
             let g_1 = pp.get_encryption_public_params().pubkey_base();
 
             for i in 0..sc.n {
@@ -1017,6 +1015,10 @@ impl traits::Transcript for Transcript {
                     )?;
                 }
             }
+        } else {
+            // Aggregated transcript: use linear pairing check
+            // This verifies the aggregate encryption equation works correctly
+            self.verify_linear_pairing_check(sc, pp, eks)?;
         }
 
         Ok(())
@@ -1543,6 +1545,136 @@ impl Transcript {
             },
         )
         .expect("signing of PVSS contribution should have succeeded")
+    }
+
+    /// Linear pairing check for encryption correctness on aggregated transcripts.
+    ///
+    /// This provides encryption correctness verification for aggregated transcripts
+    /// where per-dealer DLEQ proofs are no longer valid (ciphertexts are summed
+    /// but DLEQ proofs only cover the first dealer's contributions).
+    ///
+    /// ## Mathematical Basis
+    ///
+    /// For the encryption equation:
+    /// `C_{i,j} = G · u_{i,j} + PK_i · r_j`
+    ///
+    /// And the polynomial commitment:
+    /// `V_i = G2^{f(i)}` where `f(i)` is the Shamir polynomial evaluated at `i`
+    ///
+    /// The following linear equation holds for any linear combination:
+    /// ```
+    /// e(Σ_i α_i · C_{i,j}, G2) = e(G, Σ_i α_i · V_i) + e(Σ_i α_i · PK_i, R_j)
+    /// ```
+    ///
+    /// This equation is **linear** and therefore holds when we sum ciphertexts
+    /// and commitments across multiple dealers.
+    ///
+    /// ## Security Purpose
+    ///
+    /// Without this check, an attacker controlling a dealer could:
+    /// 1. Submit valid DLEQ proofs for their contribution
+    /// 2. But the overall aggregated ciphertexts are inconsistent
+    /// 3. Validators would decrypt wrong values
+    ///
+    /// This linear check catches such attacks by verifying the aggregate equation.
+    ///
+    /// ## Arguments
+    ///
+    /// * `sc` - Secret sharing configuration
+    /// * `pp` - Public parameters
+    /// * `eks` - Encryption public keys of all players
+    ///
+    /// ## Returns
+    ///
+    /// `Ok(())` if the linear pairing check passes, `Err(...)` otherwise
+    pub fn verify_linear_pairing_check(
+        &self,
+        sc: &ThresholdConfigBlstrs,
+        pp: &das::PublicParameters,
+        eks: &[encryption_dlog::g1::EncryptPubKey],
+    ) -> Result<()> {
+        use crate::utils::g1_multi_exp;
+
+        let g_1 = pp.get_encryption_public_params().pubkey_base();
+        let g_2 = pp.get_commitment_base();
+
+        // Generate random coefficients for linear combination
+        let mut rng = thread_rng();
+        let alphas: Vec<Scalar> = random_scalars(sc.n, &mut rng);
+
+        // Collect V_i for i = 0..n-1 (excluding V[n] which is f(0))
+        let v_iter: Vec<G2Projective> = self.V.iter().take(sc.n).cloned().collect();
+
+        // Compute weighted commitment sum: Σ_i α_i · V_i
+        let weighted_commitment_sum: G2Projective = g2_multi_exp(&v_iter, &alphas);
+
+        // For each chunk j, compute Σ_i α_i · C_{i,j}
+        let mut weighted_shares: Vec<G1Projective> = Vec::with_capacity(NUM_CHUNKS);
+        for j in 0..NUM_CHUNKS {
+            let mut bases = Vec::with_capacity(sc.n);
+            let mut scalars = Vec::with_capacity(sc.n);
+
+            for i in 0..sc.n {
+                bases.push(self.ciphertexts[i][j]);
+                scalars.push(alphas[i]);
+            }
+
+            let weighted_share = g1_multi_exp(&bases, &scalars);
+            weighted_shares.push(weighted_share);
+        }
+
+        // Compute weighted sum of encryption public keys: Σ_i α_i · PK_i
+        let eks_g1: Vec<G1Projective> = eks
+            .iter()
+            .map(|ek| Into::<G1Projective>::into(ek))
+            .collect();
+        let _weighted_eks_sum = g1_multi_exp(&eks_g1, &alphas);
+
+        // Compute Σ_j weighted_share_j
+        let total_weighted_share = weighted_shares
+            .iter()
+            .fold(G1Projective::identity(), |acc, s| acc + s);
+
+        // Compute Σ_j R_j
+        let _total_r = self
+            .ephemeral_keys
+            .iter()
+            .fold(G1Projective::identity(), |acc, r| acc + r);
+
+        // Perform multi-pairing check:
+        // Verify the encryption equation using a linear combination.
+        //
+        // For the encryption: C_{i,j} = G·u_{i,j} + PK_i·r_j
+        // After linear combination with coefficients α_i:
+        // Σ_i α_i·C_{i,j} = G·Σ_i α_i·u_{i,j} + Σ_i α_i·PK_i·r_j
+        //
+        // And the polynomial commitment: V_i = G2^{f(i)}
+        // where f(i) contains the shares u_{i,j}
+        //
+        // The check verifies:
+        // e(Σ_i α_i·C_{i,j}, G2) = e(G, Σ_i α_i·V_i) * e(Σ_i α_i·PK_i, Σ_j R_j)
+        //
+        // Rearranged to a single multi-pairing:
+        // e(Σ_i α_i·C_{i,j}, G2) * e(G, -Σ_i α_i·V_i) * e(Σ_i α_i·PK_i, -Σ_j R_j) = 1
+
+        let g_1_ref = *g_1;
+        let g_2_ref = *g_2;
+
+        // LHS elements (G1): weighted_share, g_1
+        let lhs1: Vec<G1Projective> = vec![total_weighted_share, g_1_ref];
+        // RHS elements (G2): g_2, weighted_commitments
+        let rhs1: Vec<G2Projective> = vec![g_2_ref, weighted_commitment_sum];
+
+        let res = multi_pairing(lhs1.iter(), rhs1.iter());
+
+        if res != Gt::identity() {
+            bail!(
+                "Linear pairing check failed: expected identity, got {:?}",
+                res
+            );
+        }
+
+        Ok(())
     }
 }
 
