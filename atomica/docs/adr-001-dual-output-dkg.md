@@ -8,10 +8,10 @@
 
 This ADR defines the dual-output DKG architecture for Atomica:
 
-| Output | PVSS Scheme | Use Case | Key Type |
-|--------|-------------|----------|----------|
-| **G1 shares** | DAS PVSS | WVUF/Randomness | `G1Projective` |
-| **Scalar shares** | Chunked Lifted ElGamal | IBE/Timelock | `Scalar` |
+| Output            | PVSS Scheme            | Use Case        | Key Type       |
+| ----------------- | ---------------------- | --------------- | -------------- |
+| **G1 shares**     | DAS PVSS               | WVUF/Randomness | `G1Projective` |
+| **Scalar shares** | Chunked Lifted ElGamal | IBE/Timelock    | `Scalar`       |
 
 **Key Design Principles:**
 
@@ -137,6 +137,7 @@ Extend RealDKG to produce **two types of key material** in a single DKG round:
 ```
 
 **Important:** The DKG produces fresh ephemeral key material each epoch. Validator BLS signing keys are used only for authenticating DKG messages (Signatures of Knowledge), NOT as the IBE master secret. This provides:
+
 - **Forward secrecy**: Compromising current epoch keys doesn't reveal past decryptions
 - **Key separation**: IBE keys are independent from consensus signing keys
 - **Clean rotation**: New IBE master key each epoch via DKG
@@ -221,6 +222,96 @@ pub struct Transcript {
 2. **Same MPK** - Both produce identical public key `g2^a`
 3. **Battle-tested primitives** - Shamir, ElGamal, BSGS discrete log
 4. **Efficient decryption** - 16-bit chunks enable fast BSGS lookup
+
+### Verification Strategy: DLEQ + Linear Pairing Check
+
+The scalar ElGamal PVSS uses a **two-layer verification strategy** to ensure encryption correctness:
+
+#### Layer 1: DLEQ Proofs (Per-Dealer Verification)
+
+For single-dealer transcripts, we use **DLEQ (Discrete Log Equality) proofs** to verify that each dealer used the same randomness `r_j` in both:
+
+- The ephemeral key `R_j = G^{r_j}`
+- The ciphertext `C_{i,j} = G·u_{i,j} + PK_i·r_j`
+
+The proof guarantees: `log_G(R_j) = log_{PK_i}(C_{i,j} - G·u_{i,j})`
+
+**Limitation:** DLEQ proofs are per-dealer and cannot be aggregated. After multiple dealers contribute to the same DKG session, the DLEQ proofs are no longer valid for the summed ciphertexts.
+
+#### Layer 2: Linear Multi-Pairing Check (Aggregated Verification)
+
+To verify encryption correctness on **aggregated transcripts**, we need a linear check that works on summed values. The upstream Aptos chunky PVSS uses this approach:
+
+```rust
+// Upstream pattern (chunky/transcript.rs:303-313)
+let res = E::multi_pairing(
+    [weighted_Cs, h],
+    [g2, (-weighted_Vs)],
+);
+if res != Gt::identity() {
+    bail!("Expected zero during multi-pairing check");
+}
+```
+
+**For our scalar ElGamal, the linear check verifies:**
+
+Given the encryption equation: `C_{i,j} = G·u_{i,j} + PK_i·r_j`
+
+And the polynomial commitment: `V_i = G2^{f(i)}`
+
+The pairing equation holds for summed values:
+
+```
+e(Σ_i α_i·C_{i,j}, G2) = e(G, Σ_i α_i·V_i) + e(Σ_i α_i·PK_i, R_j)
+```
+
+This equation is **linear** and therefore holds when we sum across multiple dealers.
+
+#### Verification Flow
+
+```
+DKG Session:
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ 1. Dealer broadcasts transcript with DLEQ proofs                                │
+│                                                                                  │
+│ 2. Receiver verifies PER-DEALER (soks.len() == 1):                              │
+│    ✓ SoK verification (dealer knew secret)                                      │
+│    ✓ Low-degree test (polynomial degree < t)                                    │
+│    ✓ DLEQ proofs (encryption correctness) ← Per-(i,j) pair                      │
+│                                                                                  │
+│ 3. If valid → AGGREGATE (ciphertexts, V, R all add linearly)                    │
+│                                                                                  │
+│ 4. Aggregated transcript verification (soks.len() > 1):                         │
+│    ✓ SoK verification (all dealers knew their secrets)                          │
+│    ✓ Low-degree test (all polynomials valid)                                    │
+│    ✓ Linear pairing check (encryption correctness for sum) ← NEW                │
+│                                                                                  │
+│ 5. On-chain: Final verification (same as step 4)                                │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Why Both Layers Matter
+
+| Property           | DLEQ (Per-Dealer)               | Linear Check (Aggregated)        |
+| ------------------ | ------------------------------- | -------------------------------- |
+| **Scope**          | Individual ciphertexts          | Summed ciphertexts               |
+| **When**           | Before aggregation              | After aggregation                |
+| **Granularity**    | Per (validator, chunk)          | Global per-chunk                 |
+| **What it proves** | Each dealer encrypted correctly | Overall encryption is consistent |
+
+**Security Implication:** Without the linear pairing check, an attacker who controls a dealer could:
+
+1. Submit a valid-looking transcript (passes DLEQ for their contribution)
+2. But the overall aggregated transcript has incorrect ciphertexts
+3. Validators would decrypt wrong values, potentially breaking reconstruction
+
+The linear pairing check prevents this by verifying the **aggregate** encryption equation.
+
+#### Implementation Reference
+
+- **Upstream Implementation:** `~/atomica-aptos-upstream-main/crates/aptos-dkg/src/pvss/chunky/transcript.rs:303-313`
+- **Our DLEQ Implementation:** `crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs:1173-1197`
+- **Implementation Plan:** [implementation-plan-unified-dkg-ibe.md](implementation-plan-unified-dkg-ibe.md) (Phase 5.1)
 
 ---
 

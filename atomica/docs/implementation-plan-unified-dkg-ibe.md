@@ -1,9 +1,9 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 2.12
+**Version:** 2.13
 **Date:** January 19, 2026
 **Branch:** feature/scalar-chunked-elgamal
-**Status:** Phase 5 (E2E Integration) IN PROGRESS - Phase 2.6 (DLEQ Proof Verification) COMPLETE
+**Status:** Phase 5.1 (Linear Pairing Check) PENDING - Phase 2.6 (DLEQ Proof Verification) COMPLETE
 **Reference:** [ADR-001: Dual Output DKG](adr-001-dual-output-dkg.md)
 **Related Docs:**
 
@@ -94,7 +94,8 @@ InputSecret (scalar a)
 | 2.6   | DLEQ Proof Verification             | ✅ COMPLETE | -        |
 | 3     | Timelock Registry                   | ✅ COMPLETE | -        |
 | 4     | DK Share Submission                 | ✅ COMPLETE | -        |
-| 5     | E2E Integration                     | 🔲 PENDING  | Medium   |
+| 5     | E2E Integration                     | ✅ COMPLETE | -        |
+| 5.1   | Linear Pairing Check                | 🔲 PENDING  | High     |
 
 ### Current Blockers for Production
 
@@ -287,6 +288,68 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 ---
 
 ## What Remains
+
+### Phase 5.1: Linear Pairing Check for Aggregated Transcripts 🔴 HIGH PRIORITY
+
+**Goal:** Add a linear multi-pairing verification check that works on aggregated transcripts, providing encryption correctness verification without relying on per-dealer DLEQ proofs.
+
+**Context:**
+
+The current DLEQ proof approach verifies encryption correctness per-dealer BEFORE aggregation. After aggregation:
+
+- DLEQ proofs are NOT aggregated (they would be invalid for summed ciphertexts)
+- Verification skips DLEQ checks for aggregated transcripts
+- We rely on SoK + LDT as fallback verification
+
+This is correct behavior but leaves a gap: **we cannot verify encryption correctness on aggregated transcripts**.
+
+**Solution: Linear Multi-Pairing Check**
+
+The upstream Aptos chunky PVSS uses a linear check that works on summed values:
+
+```rust
+// Upstream approach (chunky/transcript.rs)
+let res = E::multi_pairing(
+    [weighted_Cs, h],
+    [g2, (-weighted_Vs)],
+);
+if res != Gt::identity() {
+    bail!("Expected zero during multi-pairing check");
+}
+```
+
+For our scalar ElGamal, the equivalent check would verify:
+
+- `e(C_{i,j}, g2) = e(G, V_i) + e(PK_i, R_j)` for each (i, j)
+
+**Why This Matters:**
+
+1. **Complete Verification:** After aggregation, DLEQ proofs are invalid but we can still verify encryption correctness
+2. **Defense in Depth:** Provides a second line of verification beyond SoK + LDT
+3. **Production Readiness:** Upstream uses this pattern - it's battle-tested
+4. **Linear Property:** Works on summed ciphertexts without needing per-dealer proofs
+
+**Tasks:**
+
+1. Derive the linear equation for our scalar ElGamal scheme:
+   - Start from encryption: `C_{i,j} = G·u_{i,j} + PK_i·r_j`
+   - Start from commitment: `V_i = G2^{f(i)}`
+   - Derive pairing equation that holds for summed values
+
+2. Implement `verify_linear_pairing_check()` in `transcript.rs`:
+   - Compute weighted sum of ciphertexts
+   - Compute weighted sum of polynomial commitments
+   - Verify multi-pairing equation equals identity
+
+3. Integrate into `Transcript::verify()` after aggregation:
+   - If `soks.len() == 1`: current DLEQ verification (per-dealer)
+   - If `soks.len() > 1`: linear pairing check (aggregated)
+
+4. Add unit tests:
+   - Valid aggregated transcript passes
+   - Tampered aggregated transcript fails
+
+**Reference:** Upstream implementation in `~/atomica-aptos-upstream-main/crates/aptos-dkg/src/pvss/chunky/transcript.rs:303-313`
 
 ### Phase 5: E2E Integration
 
