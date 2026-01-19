@@ -316,10 +316,14 @@ fn test_scalar_elgamal_pvss_ibe_roundtrip() {
 
     // Reconstruct the master secret using any 3 shares
     let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
-    let reconstructed =
-        <<WeightedTranscript as TranscriptTrait>::DealtSecretKey as Reconstructable<
-            WeightedConfig,
-        >>::reconstruct(&wconfig, &shares_for_recon);
+
+    // Explicitly annotate the expected type to verify it matches
+    // This should fail if Share type doesn't match
+    let reconstructed: <WeightedTranscript as TranscriptTrait>::DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
 
     // The reconstructed secret should equal the original
     assert_eq!(
