@@ -1,13 +1,14 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 2.2
-**Date:** January 18, 2026
-**Branch:** timelock-das-vpss
-**Status:** Phase 1E Next
+**Version:** 2.3
+**Date:** January 19, 2026
+**Branch:** feature/scalar-chunked-elgamal
+**Status:** Phase 1E In Progress
 **Reference:** [ADR-001: Dual Output DKG](adr-001-dual-output-dkg.md)
 
 ## Changelog
 
+- **v2.3** (Jan 19, 2026): Fixed scalar ElGamal aggregation bug. `chunks_to_scalar` incorrectly reconstructed scalars for aggregated transcripts. Added proper field arithmetic. All 15 unit tests and `randomness_correctness` smoke test pass.
 - **v2.2** (Jan 18, 2026): Marked Phase 2.1 complete. Next is Phase 1E (mpk_encrypt_decrypt smoke test).
 - **v2.1** (Jan 18, 2026): Added Phase 2.0.5 (Unit Tests) before RealDKG integration. Added CI job requirements for regression testing.
 - **v2.0** (Jan 18, 2026): Major update reflecting completed Phase 2 Scalar ElGamal implementation. Documented decisions made during development. Reorganized phases to reflect actual implementation order.
@@ -19,17 +20,18 @@
 
 ## Current Status Summary
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 0 | Feasibility Test | ✅ COMPLETE |
-| 1A-1D | IBE Primitives + MPK Storage | ✅ COMPLETE |
-| 2 | Scalar ElGamal PVSS | ✅ CORE COMPLETE |
-| 2.0.5 | Unit Tests for Scalar ElGamal | ✅ COMPLETE |
-| 2.1 | Integration into RealDKG + DKGTrait | ✅ COMPLETE |
-| 1E | mpk_encrypt_decrypt smoke test | 🔲 PENDING (Next) |
-| 3 | Timelock Registry | 🔲 PENDING |
-| 4 | DK Share Submission | 🔲 PENDING |
-| 5 | E2E Integration | 🔲 PENDING |
+| Phase | Description                         | Status         |
+| ----- | ----------------------------------- | -------------- |
+| 0     | Feasibility Test                    | ✅ COMPLETE    |
+| 1A-1D | IBE Primitives + MPK Storage        | ✅ COMPLETE    |
+| 2     | Scalar ElGamal PVSS                 | ✅ COMPLETE    |
+| 2.0.5 | Unit Tests for Scalar ElGamal       | ✅ COMPLETE    |
+| 2.1   | Integration into RealDKG + DKGTrait | ✅ COMPLETE    |
+| 2.2   | Aggregation Bug Fix                 | ✅ COMPLETE    |
+| 1E    | mpk_encrypt_decrypt smoke test      | 🔲 IN PROGRESS |
+| 3     | Timelock Registry                   | 🔲 PENDING     |
+| 4     | DK Share Submission                 | 🔲 PENDING     |
+| 5     | E2E Integration                     | 🔲 PENDING     |
 
 ---
 
@@ -41,6 +43,7 @@
 **Context:** IBE requires scalar secrets, but existing DKG produces G1 elements for WVUF.
 
 **Options Considered:**
+
 1. Modify DKG to output scalar only → Rejected (breaks WVUF)
 2. Modify IBE to accept G1 → Rejected (novel crypto)
 3. Hash G1 to scalar → Rejected (breaks MPK relationship)
@@ -57,6 +60,7 @@
 **Context:** Need a PVSS scheme that outputs scalar shares for IBE.
 
 **Design Choices:**
+
 - Encrypt scalar shares under ElGamal (not polynomial commitments like Chunky)
 - Use G2 for polynomial commitments (`V` vector) to enable DLEQ proofs
 - Use G1 for ciphertexts (`C` vector) matching encryption key group
@@ -64,6 +68,7 @@
 - Ephemeral key: `C_0 = g1 * r` for decryption
 
 **Implementation:**
+
 ```rust
 // transcript.rs
 pub struct Transcript {
@@ -102,11 +107,51 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 **Context:** Full DLEQ verification is complex; need to make progress.
 
 **Decision:** `verify()` returns error stub for now. Acceptable because:
+
 1. DKG currently relies on honest majority assumption
 2. Verification can be added incrementally
 3. Smoke tests validate correctness via encrypt/decrypt roundtrip
 
 **TODO:** Implement full verification before mainnet.
+
+### Decision 5: Scalar Reconstruction Bug Fix
+
+**Date:** January 19, 2026
+**Context:** `randomness_correctness` smoke test was failing with discrete log solver errors.
+
+**Root Cause:** The `chunks_to_scalar()` function incorrectly reconstructed scalars from chunks. It assumed chunk values fit in u16 range and used byte conversion. For aggregated transcripts (multiple dealers), the decrypted value is the sum of chunks from all dealers, which can exceed u16 (e.g., 3 dealers × 65535 = 196605).
+
+**Fix Applied:**
+
+1. Replaced byte conversion with proper field arithmetic:
+
+   ```rust
+   fn chunks_to_scalar(chunks: &[u16]) -> Scalar {
+       let radix = Scalar::from(1u64 << CHUNK_BIT_SIZE);
+       let mut result = Scalar::from(0u64);
+       let mut multiplier = Scalar::from(1u64);
+       for &chunk in chunks {
+           result += Scalar::from(chunk as u64) * multiplier;
+           multiplier *= radix;
+       }
+       result
+   }
+   ```
+
+2. Expanded BSGS search range for aggregated transcripts:
+   - Single dealer: `[0, 2^16)`
+   - Multiple dealers: `[0, num_dealers × 2^16)`
+
+3. Fixed type aliases in `TranscriptTrait` impl (`g1::` → `scalar::`)
+
+4. Added missing `Mul` trait import for blstrs operations
+
+**Test Results:**
+
+- All 15 scalar ElGamal unit tests: ✅ PASS
+- `randomness_correctness` smoke test: ✅ PASS (260s)
+
+**Commit:** `66122d345c` - fix(dkg): Fix scalar ElGamal PVSS aggregation bug
 
 ---
 
@@ -115,32 +160,37 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 ### Phase 2: Scalar ElGamal PVSS
 
 **Files Created:**
+
 - `crates/aptos-dkg/src/pvss/scalar_elgamal/mod.rs` - Module exports
 - `crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs` - Core PVSS transcript
 - `crates/aptos-dkg/src/pvss/scalar_elgamal/weighted_protocol.rs` - Weighted wrapper
 
 **Implemented Functions:**
 
-| Function | File | Status |
-|----------|------|--------|
-| `Transcript::deal()` | transcript.rs | ✅ Complete |
-| `Transcript::verify()` | transcript.rs | 🔶 Stub (returns error) |
-| `Transcript::aggregate_with()` | transcript.rs | ✅ Complete |
-| `Transcript::decrypt_own_share()` | transcript.rs | ✅ Complete |
-| `Transcript::get_dealt_public_key()` | transcript.rs | ✅ Complete |
-| `Transcript::get_public_key_share()` | transcript.rs | ✅ Complete |
-| `WeightedTranscript::deal()` | weighted_protocol.rs | ✅ Complete |
-| `WeightedTranscript::verify()` | weighted_protocol.rs | ✅ Delegates to inner |
-| `WeightedTranscript::decrypt_own_share()` | weighted_protocol.rs | ✅ Complete |
+| Function                                  | File                 | Status                  |
+| ----------------------------------------- | -------------------- | ----------------------- |
+| `Transcript::deal()`                      | transcript.rs        | ✅ Complete             |
+| `Transcript::verify()`                    | transcript.rs        | 🔶 Stub (returns error) |
+| `Transcript::aggregate_with()`            | transcript.rs        | ✅ Complete             |
+| `Transcript::decrypt_own_share()`         | transcript.rs        | ✅ Complete             |
+| `Transcript::get_dealt_public_key()`      | transcript.rs        | ✅ Complete             |
+| `Transcript::get_public_key_share()`      | transcript.rs        | ✅ Complete             |
+| `WeightedTranscript::deal()`              | weighted_protocol.rs | ✅ Complete             |
+| `WeightedTranscript::verify()`            | weighted_protocol.rs | ✅ Delegates to inner   |
+| `WeightedTranscript::decrypt_own_share()` | weighted_protocol.rs | ✅ Complete             |
 
 **Test Status:**
+
 - `randomness::e2e_correctness` - ✅ PASSING (validates DKG still works)
+- `scalar_elgamal::tests` - ✅ ALL 15 PASSING (Jan 19, 2026)
 
 **Commits:**
+
 - `5644e16d84` - feat(dkg): add Scalar ElGamal PVSS and Timelock Registry stubs
 - `5c9a7f095b` - feat(timelock): Phase 2 & 3 stubs for Dual-Output DKG
 - `8801244943` - feat(timelock): Phase 2 Scalar ElGamal PVSS implementation
 - `79bbe2002b` - feat(timelock): Implement WeightedTranscript::deal() for Dual-Output DKG
+- `66122d345c` - fix(dkg): Fix scalar ElGamal PVSS aggregation bug
 
 ---
 
@@ -155,6 +205,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 **Tests Implemented (15 total):**
 
 #### Transcript Tests (`transcript.rs`)
+
 - ✅ `test_deal_creates_valid_structure` - Verify correct V, C, C_0 vector sizes
 - ✅ `test_deal_decrypt_roundtrip` - Deal secret, all players decrypt shares
 - ✅ `test_aggregation_preserves_structure` - Multiple dealers aggregate correctly
@@ -163,6 +214,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 - ✅ `test_aggregated_decrypt_combines_secrets` - Aggregated shares decrypt correctly
 
 #### WeightedTranscript Tests (`weighted_protocol.rs`)
+
 - ✅ `test_weighted_encryption_key_expansion` - Verify weight duplication logic
 - ✅ `test_weighted_deal_decrypt_roundtrip` - With validator weights
 - ✅ `test_weighted_aggregation` - Multiple weighted transcripts
@@ -181,6 +233,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 **Implemented:**
 
 #### RealDKG Integration
+
 - ✅ Extended `Transcripts` struct with `scalar: Option<ScalarTrx>` field
 - ✅ Added `ScalarTrx` type alias for `scalar_elgamal::WeightedTranscript`
 - ✅ Modified `generate_transcript()` to deal scalar transcript from same input secret
@@ -189,17 +242,55 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 - ✅ Added `DealtSecretKeyShares.scalar` and `DealtPubKeyShares.scalar` fields
 
 #### DKGTrait Refactoring
+
 - ✅ Added `get_ibe_master_public_key(transcript) -> Vec<u8>` to DKGTrait (stub)
 - ✅ Added `get_scalar_secret_share(dealt_share) -> Option<Vec<u8>>` to DKGTrait (stub)
 - ✅ Implemented for RealDKG (stubs return empty/None, full impl in Phase 3)
 
 **Note:** The `get_ibe_master_public_key` and `get_scalar_secret_share` implementations are stubs that return empty/None. Full serialization implementation is Phase 3 work.
 
+### Phase 2.2: Aggregation Bug Fix ✅ COMPLETE
+
+**Date:** January 19, 2026
+
+**Bug:** Validator nodes crashed during DKG with discrete log solver failure when using aggregated transcripts (multiple dealers).
+
+**Root Cause:** `chunks_to_scalar()` used byte conversion which assumed chunk values < 2^16. Aggregated transcripts produce sum of chunks from all dealers, exceeding this limit.
+
+**Fix:**
+
+1. **Fixed scalar reconstruction** (`transcript.rs:949-973`):
+   - Replaced byte-based conversion with proper field arithmetic
+   - Uses `result += chunk * multiplier` with `multiplier *= 2^16`
+
+2. **Expanded BSGS search range** (`transcript.rs:848-855`):
+   - Single dealer: `[0, 2^16)`
+   - Multiple dealers: `[0, num_dealers × 2^16)`
+
+3. **Fixed type aliases** (`weighted_protocol.rs:64-65`):
+   - Changed `g1::DealtSecretKey` → `scalar::DealtSecretKey`
+
+4. **Added `Mul` trait import** (`transcript.rs:114`):
+   - Required for blstrs `G1Projective.mul()` operations
+
+**Files Modified:**
+
+- `crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs` (+1094/-94 lines)
+- `crates/aptos-dkg/src/pvss/scalar_elgamal/weighted_protocol.rs` (+4/-0 lines)
+
+**Validation:**
+
+```
+cargo test -p aptos-dkg --lib scalar_elgamal  # 15/15 pass
+cargo test -p smoke-test randomness_correctness  # PASS (260s)
+```
+
 ### Phase 1E: Unblock mpk_encrypt_decrypt
 
 **Goal:** With scalar shares available, implement the blocked encrypt/decrypt smoke test.
 
 **Tasks:**
+
 1. Implement `derive_decryption_key_from_shares()` using scalar shares
 2. Complete `mpk_encrypt_decrypt` smoke test
 3. Validate IBE roundtrip works end-to-end
@@ -209,6 +300,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 **Goal:** On-chain registry for timelock deadlines.
 
 **Tasks:**
+
 1. Extend `ibe_config.move` with deadline registration
 2. Add view functions for querying pending timelocks
 3. Smoke test: `register_and_query`
@@ -218,6 +310,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 **Goal:** Validators submit decryption key shares after deadline.
 
 **Tasks:**
+
 1. Add `TimelockShare` ValidatorTransaction type
 2. Implement deadline monitoring in epoch_manager
 3. Implement share aggregation on-chain
@@ -228,6 +321,7 @@ fn to_weighted_encryption_keys(sc, eks) -> Vec<EncryptPubKey> {
 **Goal:** Full encrypt/decrypt cycle with real timelock.
 
 **Tasks:**
+
 1. Implement `timelock_e2e` smoke test
 2. Verify complete user journey works
 
@@ -255,6 +349,7 @@ cargo test -p aptos-types
 ### Smoke Test Gate
 
 Before merging any change:
+
 ```bash
 # MUST PASS - validates full DKG flow still works
 cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 --nocapture
@@ -273,32 +368,39 @@ cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 -
 
 ### Completed Files
 
-| File | Description | Status |
-|------|-------------|--------|
-| `crates/aptos-dkg/src/pvss/scalar_elgamal/mod.rs` | Module exports | ✅ |
-| `crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs` | Core PVSS | ✅ |
-| `crates/aptos-dkg/src/pvss/scalar_elgamal/weighted_protocol.rs` | Weighted wrapper | ✅ |
-| `crates/aptos-dkg/src/ibe/mod.rs` | IBE primitives | ✅ |
-| `crates/aptos-dkg/src/ibe/ciphertext.rs` | Ciphertext struct | ✅ |
-| `aptos-move/framework/aptos-framework/sources/ibe_config.move` | On-chain MPK | ✅ |
-| `testsuite/smoke-test/src/timelock/mpk_on_chain.rs` | MPK smoke test | ✅ |
-| `atomica/docs/adr-001-dual-output-dkg.md` | Architecture decision | ✅ |
+| File                                                            | Description           | Status |
+| --------------------------------------------------------------- | --------------------- | ------ |
+| `crates/aptos-dkg/src/pvss/scalar_elgamal/mod.rs`               | Module exports        | ✅     |
+| `crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs`        | Core PVSS             | ✅     |
+| `crates/aptos-dkg/src/pvss/scalar_elgamal/weighted_protocol.rs` | Weighted wrapper      | ✅     |
+| `crates/aptos-dkg/src/ibe/mod.rs`                               | IBE primitives        | ✅     |
+| `crates/aptos-dkg/src/ibe/ciphertext.rs`                        | Ciphertext struct     | ✅     |
+| `aptos-move/framework/aptos-framework/sources/ibe_config.move`  | On-chain MPK          | ✅     |
+| `testsuite/smoke-test/src/timelock/mpk_on_chain.rs`             | MPK smoke test        | ✅     |
+| `atomica/docs/adr-001-dual-output-dkg.md`                       | Architecture decision | ✅     |
 
 ### Completed in Phase 2.1
 
-| File | Description | Status |
-|------|-------------|--------|
-| `types/src/dkg/real_dkg/mod.rs` | Add scalar to Transcripts | ✅ |
-| `types/src/dkg/mod.rs` | DKGTrait IBE methods | ✅ |
+| File                            | Description               | Status |
+| ------------------------------- | ------------------------- | ------ |
+| `types/src/dkg/real_dkg/mod.rs` | Add scalar to Transcripts | ✅     |
+| `types/src/dkg/mod.rs`          | DKGTrait IBE methods      | ✅     |
+
+### Completed in Phase 2.2
+
+| File                                                            | Description                   | Status |
+| --------------------------------------------------------------- | ----------------------------- | ------ |
+| `crates/aptos-dkg/src/pvss/scalar_elgamal/transcript.rs`        | Fix `chunks_to_scalar` + BSGS | ✅     |
+| `crates/aptos-dkg/src/pvss/scalar_elgamal/weighted_protocol.rs` | Fix type aliases              | ✅     |
 
 ### Pending Files
 
-| File | Description | Phase |
-|------|-------------|-------|
-| `testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs` | Complete test | 1E |
-| `crates/aptos-dkg/src/ibe/mod.rs` | `derive_decryption_key_from_shares()` | 1E |
-| `types/src/validator_txn/mod.rs` | TimelockShare type | 4 |
-| `testsuite/smoke-test/src/timelock/e2e.rs` | E2E test | 5 |
+| File                                                       | Description                           | Phase |
+| ---------------------------------------------------------- | ------------------------------------- | ----- |
+| `testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs` | Complete test                         | 1E    |
+| `crates/aptos-dkg/src/ibe/mod.rs`                          | `derive_decryption_key_from_shares()` | 1E    |
+| `types/src/validator_txn/mod.rs`                           | TimelockShare type                    | 4     |
+| `testsuite/smoke-test/src/timelock/e2e.rs`                 | E2E test                              | 5     |
 
 ---
 
@@ -323,6 +425,7 @@ cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 -
 ## Success Criteria
 
 ### Phase 2 Complete When:
+
 - [x] `Transcript::deal()` implemented
 - [x] `Transcript::decrypt_own_share()` implemented
 - [x] `WeightedTranscript::deal()` implemented
@@ -331,10 +434,13 @@ cargo test -p smoke-test --lib randomness::e2e_correctness -- --test-threads=1 -
 - [x] Unit tests for WeightedTranscript pass (Phase 2.0.5)
 - [x] Integrated into RealDKG Transcripts struct (Phase 2.1)
 - [x] DKGTrait IBE methods added (Phase 2.1)
+- [x] Aggregation bug fixed (Phase 2.2) - `chunks_to_scalar` uses field arithmetic
+- [x] All scalar ElGamal tests pass after aggregation fix
 - [ ] Scalar MPK serialization (Phase 3 - stubs in place)
 
 ### Full Project Complete When:
+
 - [ ] `mpk_encrypt_decrypt` smoke test passes
 - [ ] `timelock_e2e` smoke test passes
 - [ ] All Phase 1-6 tasks complete
-- [ ] No regressions in randomness tests
+- [x] No regressions in randomness tests
