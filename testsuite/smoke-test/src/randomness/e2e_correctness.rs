@@ -16,7 +16,7 @@ use std::{sync::Arc, time::Duration};
 /// Verify the correctness of DKG transcript and block-level randomness seed.
 #[tokio::test]
 async fn randomness_correctness() {
-    let epoch_duration_secs = 20;
+    let epoch_duration_secs = 60;
 
     let (swarm, _cli, _faucet) = SwarmBuilder::new_local(4)
         .with_num_fullnodes(1)
@@ -43,7 +43,9 @@ async fn randomness_correctness() {
 
     info!("Verify DKG correctness for epoch 2.");
     let dkg_session = get_on_chain_resource::<DKGState>(&rest_client).await;
-    assert!(verify_dkg_transcript(dkg_session.last_complete(), &decrypt_key_map).is_ok());
+    let last_complete = dkg_session.last_complete();
+    assert_eq!(last_complete.metadata.dealer_epoch, 1);
+    assert!(verify_dkg_transcript(last_complete, &decrypt_key_map).is_ok());
 
     info!("Wait for randomness to be available in epoch 2.");
     loop {
@@ -72,7 +74,9 @@ async fn randomness_correctness() {
 
     info!("Verify DKG correctness for epoch 3.");
     let dkg_session = get_on_chain_resource::<DKGState>(&rest_client).await;
-    assert!(verify_dkg_transcript(dkg_session.last_complete(), &decrypt_key_map).is_ok());
+    let last_complete = dkg_session.last_complete();
+    assert_eq!(last_complete.metadata.dealer_epoch, 2);
+    assert!(verify_dkg_transcript(last_complete, &decrypt_key_map).is_ok());
 
     info!("Wait for randomness to be available in epoch 3.");
     loop {
