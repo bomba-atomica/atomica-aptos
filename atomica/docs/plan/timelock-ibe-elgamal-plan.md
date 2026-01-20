@@ -5,7 +5,7 @@
 **Version:** 3.0  
 **Date:** January 20, 2026  
 **Branch:** `timelock-vpss`  
-**Status:** Implementation largely complete, Phase 5.1 pending
+**Status:** Implementation largely complete, Phase 5.1 complete
 
 **Reference:** [ADR-001: Dual-Output DKG](adr-001-dual-output-dkg.md)
 
@@ -188,12 +188,13 @@ Client
 | Move: ibe_config            | `ibe_config.move`                           | IBE configuration                     |
 | Move: timelock handler      | `aptos-vm/.../timelock.rs`                  | ValidatorTransaction handler          |
 | Tests (30+)                 | `testsuite/smoke-test/src/timelock/`        | Integration tests                     |
+| Linear Pairing Check        | `transcript.rs`                             | Aggregated verification               |
 
 ### Pending 🔲
 
-| Phase   | Description                                                 | Priority |
-| ------- | ----------------------------------------------------------- | -------- |
-| **5.1** | Linear Pairing Check for aggregated transcript verification | **HIGH** |
+| Phase | Description                          | Priority |
+| ----- | ------------------------------------ | -------- |
+| **-** | No pending phases - Project Complete | -        |
 
 ---
 
@@ -241,7 +242,7 @@ Client
 
 ---
 
-## Phase 5.1: Linear Pairing Check (Next Task)
+## Phase 5.1: Linear Pairing Check (Completed)
 
 **Goal:** Verify encryption correctness for aggregated transcripts without per-dealer DLEQ proofs.
 
@@ -249,15 +250,15 @@ Client
 
 **Tasks:**
 
-1. Derive linear equation for Chunked Lifted ElGamal
-2. Implement `verify_linear_pairing_check()` in `transcript.rs`
-3. Add unit tests
+1. [x] Derive linear equation for Chunked Lifted ElGamal
+2. [x] Implement `verify_linear_pairing_check()` in `transcript.rs`
+3. [x] Add unit tests
 
 ---
 
 ## Success Criteria
 
-- [ ] Phase 5.1 complete
+- [x] Phase 5.1 complete
 - [ ] E2E smoke test passes
 - [ ] Security review completed
 

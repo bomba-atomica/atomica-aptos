@@ -2,20 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Smoke test to verify DK Share Submission works correctly.
-//!
-//! This test:
-//! 1. Starts a local swarm with DKG enabled
-//! 2. Registers a timelock with a past deadline (already expired)
-//! 3. Waits for deadline to expire
-//! 4. Submits a TimelockShare via validator transaction
-//! 5. Verifies the share was recorded on-chain
 
 use crate::smoke_test_environment::SwarmBuilder;
-use crate::TestName;
-use aptos_forge::{NodeExt, SwarmExt};
+use aptos_api_types::ViewRequest;
+use aptos_forge::{NodeExt, Swarm, SwarmExt};
 use aptos_logger::info;
-use aptos_rest_client::{Client, ViewRequest};
-use move_core_types::language_storage::CORE_CODE_ADDRESS;
+use aptos_rest_client::Client;
+use aptos_types::transaction::{EntryFunction, TransactionPayload};
+use move_core_types::{
+    ident_str,
+    language_storage::{ModuleId, CORE_CODE_ADDRESS},
+};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 
@@ -31,19 +28,23 @@ pub struct TimelockInfo {
 async fn get_timelock_info(rest_client: &Client, timelock_id: u64) -> Option<TimelockInfo> {
     let response = rest_client
         .view(
-            &format!("{}/views/{}", CORE_CODE_ADDRESS, timelock_id),
-            &[format!("{}", timelock_id)],
+            &ViewRequest {
+                function: "0x1::ibe_config::get_timelock".parse().unwrap(),
+                type_arguments: vec![],
+                arguments: vec![serde_json::Value::Number(timelock_id.into())],
+            },
+            None,
         )
         .await;
 
     match response {
         Ok(view_response) => {
-            let values = view_response.inner().as_array()?;
+            let values = view_response.inner();
             if values.len() >= 4 {
                 Some(TimelockInfo {
                     timelock_id,
                     deadline_us: values[0].as_u64()?,
-                    identity: values[1].as_string().ok()?.into_bytes(),
+                    identity: values[1].as_str()?.as_bytes().to_vec(),
                     is_revealed: values[2].as_bool()?,
                     share_count: values[3].as_u64()?,
                 })
@@ -60,62 +61,28 @@ async fn get_share_count(rest_client: &Client, timelock_id: u64) -> u64 {
     info.map(|i| i.share_count).unwrap_or(0)
 }
 
-async fn is_revealed(rest_client: &Client, timelock_id: u64) -> bool {
-    let response = rest_client
-        .view(
-            &format!("{}/views/{}", CORE_CODE_ADDRESS, "is_revealed"),
-            &[format!("{}", timelock_id)],
-        )
-        .await;
-
-    match response {
-        Ok(view_response) => view_response.inner().as_bool().unwrap_or(false),
-        Err(_) => false,
-    }
-}
-
 async fn get_next_timelock_id(rest_client: &Client) -> u64 {
     let response = rest_client
         .view(
-            &format!("{}/views/{}", CORE_CODE_ADDRESS, "get_next_timelock_id"),
-            &[],
+            &ViewRequest {
+                function: "0x1::ibe_config::get_next_timelock_id".parse().unwrap(),
+                type_arguments: vec![],
+                arguments: vec![],
+            },
+            None,
         )
         .await;
 
     match response {
-        Ok(view_response) => view_response.inner().as_u64().unwrap_or(0),
+        Ok(view_response) => view_response.inner()[0].as_u64().unwrap_or(0),
         Err(_) => 0,
     }
-}
-
-async fn register_timelock(
-    rest_client: &Client,
-    sender: &str,
-    deadline_us: u64,
-) -> anyhow::Result<()> {
-    use aptos_types::transaction::{EntryFunction, TransactionPayload};
-
-    let payload = TransactionPayload::EntryFunction(EntryFunction::new(
-        CORE_CODE_ADDRESS,
-        "ibe_config".to_string(),
-        "register_timelock".to_string(),
-        vec![],
-        vec![bcs::to_bytes(&deadline_us).unwrap()],
-    ));
-
-    let txn = rest_client
-        .create_transaction(sender.to_string(), payload)
-        .await?
-        .sign();
-    rest_client.submit_and_wait(&txn).await?;
-    Ok(())
 }
 
 #[tokio::test]
 async fn test_deadline_reveal() {
     let epoch_duration_secs = 20;
 
-    let _test_name = TestName::new("test_deadline_reveal");
     let (swarm, _cli, _faucet) = SwarmBuilder::new_local(4)
         .with_num_fullnodes(1)
         .with_aptos()
@@ -127,9 +94,16 @@ async fn test_deadline_reveal() {
         .build_with_cli(0)
         .await;
 
-    let rest_client = swarm.validators().next().unwrap().rest_client();
-    let validator = swarm.validators().next().unwrap();
-    let validator_address = validator.address();
+    let mut info = swarm.aptos_public_info();
+
+    // Create user account
+    let mut user = info
+        .create_and_fund_user_account(10_000_000_000)
+        .await
+        .unwrap();
+
+    // Clone client
+    let rest_client = info.client().clone();
 
     info!("Wait for epoch 2 to ensure DKG has completed.");
     swarm
@@ -142,14 +116,24 @@ async fn test_deadline_reveal() {
         .unwrap()
         .as_micros() as u64;
 
-    let deadline_us = current_time.saturating_sub(1_000_000);
+    let deadline_us = current_time.saturating_sub(1_000_000); // 1 sec in past
     info!(
         "Registering expired timelock with deadline {} (current: {})",
         deadline_us, current_time
     );
-    register_timelock(&rest_client, &validator_address.to_hex(), deadline_us)
-        .await
-        .expect("Failed to register timelock");
+
+    let module_id = ModuleId::new(CORE_CODE_ADDRESS, ident_str!("ibe_config").to_owned());
+    let function = ident_str!("register_timelock").to_owned();
+
+    let payload = TransactionPayload::EntryFunction(EntryFunction::new(
+        module_id,
+        function,
+        vec![],
+        vec![bcs::to_bytes(&deadline_us).unwrap()],
+    ));
+
+    let txn = user.sign_with_transaction_builder(info.transaction_factory().payload(payload));
+    rest_client.submit_and_wait(&txn).await.unwrap();
 
     let timelock_id = get_next_timelock_id(&rest_client).await - 1;
     info!("Timelock {} registered", timelock_id);

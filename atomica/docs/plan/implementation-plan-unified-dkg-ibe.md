@@ -3,7 +3,7 @@
 **Version:** 2.13
 **Date:** January 19, 2026
 **Branch:** feature/scalar-chunked-elgamal
-**Status:** Phase 5.1 (Linear Pairing Check) PENDING - Phase 2.6 (DLEQ Proof Verification) COMPLETE
+**Status:** Phase 5.1 (Linear Pairing Check) COMPLETE - Phase 2.6 (DLEQ Proof Verification) COMPLETE
 **Reference:** [ADR-001: Dual Output DKG](adr-001-dual-output-dkg.md)
 **Related Docs:**
 
@@ -95,13 +95,13 @@ InputSecret (scalar a)
 | 3     | Timelock Registry                   | ✅ COMPLETE | -        |
 | 4     | DK Share Submission                 | ✅ COMPLETE | -        |
 | 5     | E2E Integration                     | ✅ COMPLETE | -        |
-| 5.1   | Linear Pairing Check                | 🔲 PENDING  | High     |
+| 5.1   | Linear Pairing Check                | ✅ COMPLETE | -        |
 
 ### Current Blockers for Production
 
 | Issue                      | Location | Impact | Status      |
 | -------------------------- | -------- | ------ | ----------- |
-| None - Phase 2.6 complete! | -        | -      | ✅ RESOLVED |
+| None - Phase 5.1 complete! | -        | -      | ✅ RESOLVED |
 
 ---
 

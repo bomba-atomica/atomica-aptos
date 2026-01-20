@@ -1,0 +1,47 @@
+{
+  "version": "1.0.0",
+  "generated_at": "2026-01-20T22:14:32.451206169+00:00",
+  "description": "Golden test vectors for Atomica timelock identity computation",
+  "vectors": [
+    {
+      "description": "Basic timelock with ID 0",
+      "timelock_id": 0,
+      "deadline_us": 1000000000000,
+      "timelock_id_bcs_hex": "0000000000000000",
+      "deadline_us_bcs_hex": "0010a5d4e8000000",
+      "identity_hash_hex": "dadcc1614575180d09b4d638b16eb2ee581dae80bbd3ac9c95b06605e51718f3"
+    },
+    {
+      "description": "Different ID, same deadline as test 1 (should have different identity)",
+      "timelock_id": 1,
+      "deadline_us": 1000000000000,
+      "timelock_id_bcs_hex": "0100000000000000",
+      "deadline_us_bcs_hex": "0010a5d4e8000000",
+      "identity_hash_hex": "4134ff8aacd5ba4f0ef9ae20560a164d094459ea3a8947488437c33d9166d455"
+    },
+    {
+      "description": "Same ID as test 1, different deadline (should have different identity)",
+      "timelock_id": 0,
+      "deadline_us": 2000000000000,
+      "timelock_id_bcs_hex": "0000000000000000",
+      "deadline_us_bcs_hex": "00204aa9d1010000",
+      "identity_hash_hex": "7c3fc51186e5df4095db07f83134961cc45f1fb2134625d4c93244aefe7b7769"
+    },
+    {
+      "description": "Large timelock ID and deadline values",
+      "timelock_id": 999999,
+      "deadline_us": 9999999999999,
+      "timelock_id_bcs_hex": "3f420f0000000000",
+      "deadline_us_bcs_hex": "ff9f724e18090000",
+      "identity_hash_hex": "2cf06f4465e687b1222e73cab0dced4d586a58433ba0fd3411bdb3a06761ffa5"
+    },
+    {
+      "description": "Maximum u64 values for stress testing",
+      "timelock_id": 18446744073709551615,
+      "deadline_us": 18446744073709551615,
+      "timelock_id_bcs_hex": "ffffffffffffffff",
+      "deadline_us_bcs_hex": "ffffffffffffffff",
+      "identity_hash_hex": "7319752fd75659e9144df3008e27d08d3bfa354316f5edb7124d7c41b30de064"
+    }
+  ]
+}

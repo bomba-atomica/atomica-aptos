@@ -88,6 +88,9 @@ pub mod ciphertext;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod golden_vectors;
+
 pub use ciphertext::Ciphertext;
 
 use crate::utils::random::random_scalar_from_uniform_bytes;

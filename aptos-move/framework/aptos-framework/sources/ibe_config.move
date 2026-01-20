@@ -190,7 +190,9 @@ module aptos_framework::ibe_config {
                 mpk: vector::empty(),
                 epoch: 0,
             });
-        }
+        };
+        // Note: TimelockRegistry initialization is deferred to first use
+        // because it requires event handles which need Account resource
     }
 
     /// Update MPK after DKG completes.
@@ -241,7 +243,7 @@ module aptos_framework::ibe_config {
     // Timelock Registry Functions
     // ================================
 
-    /// Initialize the timelock registry. Called once at genesis.
+    /// Initialize the timelock registry. Called separately after genesis is complete.
     public fun initialize_timelock_registry(aptos_framework: &signer) {
         system_addresses::assert_aptos_framework(aptos_framework);
         if (!exists<TimelockRegistry>(@aptos_framework)) {
@@ -456,14 +458,9 @@ module aptos_framework::ibe_config {
     // ================================
 
     #[test_only]
-    use aptos_framework::account;
-
-    #[test_only]
     public fun initialize_for_testing(aptos_framework: &signer) {
-        // Create framework account if it doesn't exist
-        if (!account::exists_at(@aptos_framework)) {
-            account::create_account_for_test(@aptos_framework);
-        };
+        account::create_account_for_test(@aptos_framework);
+        timestamp::set_time_has_started_for_testing(aptos_framework);
         initialize(aptos_framework);
         initialize_timelock_registry(aptos_framework);
     }
@@ -624,16 +621,14 @@ module aptos_framework::ibe_config {
     // Timelock Registry Tests
     // ================================
 
-    #[test_only]
-    use std::signer;
-
     #[test(aptos_framework = @aptos_framework, user = @0x123)]
     fun test_register_timelock(aptos_framework: &signer, user: &signer) acquires TimelockRegistry {
         initialize_for_testing(aptos_framework);
 
         // Register a timelock with deadline 1 minute in the future
         let deadline = timestamp::now_microseconds() + 60_000_000;
-        let timelock_id = register_timelock(user, deadline);
+        register_timelock(user, deadline);
+        let timelock_id = get_next_timelock_id() - 1;
 
         // Verify timelock was registered
         assert!(timelock_id == 0, 0);
@@ -653,10 +648,12 @@ module aptos_framework::ibe_config {
 
         // Register multiple timelocks
         let deadline1 = timestamp::now_microseconds() + 60_000_000;
-        let id1 = register_timelock(user, deadline1);
+        register_timelock(user, deadline1);
+        let id1 = get_next_timelock_id() - 1;
 
         let deadline2 = timestamp::now_microseconds() + 120_000_000;
-        let id2 = register_timelock(user, deadline2);
+        register_timelock(user, deadline2);
+        let id2 = get_next_timelock_id() - 1;
 
         // Verify IDs are sequential
         assert!(id1 == 0, 0);
@@ -673,7 +670,8 @@ module aptos_framework::ibe_config {
         initialize_for_testing(aptos_framework);
 
         let deadline = timestamp::now_microseconds() + 60_000_000;
-        let timelock_id = register_timelock(user, deadline);
+        register_timelock(user, deadline);
+        let timelock_id = get_next_timelock_id() - 1;
 
         // Identity should be consistent
         let identity1 = get_identity(timelock_id);
@@ -686,7 +684,8 @@ module aptos_framework::ibe_config {
         initialize_for_testing(aptos_framework);
 
         let deadline = timestamp::now_microseconds() + 60_000_000;
-        let timelock_id = register_timelock(user, deadline);
+        register_timelock(user, deadline);
+        let timelock_id = get_next_timelock_id() - 1;
 
         // Before deadline, should not be expired
         assert!(!is_expired(timelock_id), 0);
@@ -700,6 +699,89 @@ module aptos_framework::ibe_config {
         // Registry should be initialized
         assert!(exists<TimelockRegistry>(@aptos_framework), 0);
         assert!(get_next_timelock_id() == 0, 1);
+    }
+
+    // ================================
+    // Golden Vector Tests
+    // ================================
+    // These tests use pre-computed golden vectors from atomica/test_vectors/
+    // to ensure consistency across Rust and Move implementations.
+
+    #[test(aptos_framework = @aptos_framework, user = @0x123)]
+    fun test_identity_golden_vector_1(aptos_framework: &signer, user: &signer) acquires TimelockRegistry {
+        initialize_for_testing(aptos_framework);
+
+        // Golden vector #1: timelock_id=0, deadline_us=1000000000000
+        let timelock_id = 0u64;
+        let deadline_us = 1000000000000u64;
+        let expected_identity = x"dadcc1614575180d09b4d638b16eb2ee581dae80bbd3ac9c95b06605e51718f3";
+
+        register_timelock(user, deadline_us);
+        let actual_timelock_id = get_next_timelock_id() - 1;
+
+        assert!(actual_timelock_id == timelock_id, 0);
+        
+        let actual_identity = get_identity(actual_timelock_id);
+        assert!(actual_identity == expected_identity, 1);
+    }
+
+    #[test(aptos_framework = @aptos_framework, user = @0x123)]
+    fun test_identity_golden_vector_2(aptos_framework: &signer, user: &signer) acquires TimelockRegistry {
+        initialize_for_testing(aptos_framework);
+
+        // Golden vector #2: timelock_id=1, deadline_us=1000000000000
+        let deadline_us = 1000000000000u64;
+        let expected_identity = x"4134ff8aacd5ba4f0ef9ae20560a164d094459ea3a8947488437c33d9166d455";
+
+        // Register timelock with ID 0 first
+        register_timelock(user, deadline_us);
+        // Register timelock with ID 1
+        register_timelock(user, deadline_us);
+        
+        let timelock_id = 1u64;
+        let actual_identity = get_identity(timelock_id);
+        assert!(actual_identity == expected_identity, 0);
+        
+        // Verify it differs from timelock ID 0 (even with same deadline)
+        let identity_0 = get_identity(0);
+        assert!(actual_identity != identity_0, 1);
+    }
+
+    #[test(aptos_framework = @aptos_framework, user = @0x123)]
+    fun test_identity_golden_vector_3(aptos_framework: &signer, user: &signer) acquires TimelockRegistry {
+        initialize_for_testing(aptos_framework);
+
+        // Golden vector #3: timelock_id=0, deadline_us=2000000000000
+        let timelock_id = 0u64;
+        let deadline_us = 2000000000000u64;
+        let expected_identity = x"7c3fc51186e5df4095db07f83134961cc45f1fb2134625d4c93244aefe7b7769";
+
+        register_timelock(user, deadline_us);
+        let actual_timelock_id = get_next_timelock_id() - 1;
+
+        assert!(actual_timelock_id == timelock_id, 0);
+        
+        let actual_identity = get_identity(actual_timelock_id);
+        assert!(actual_identity == expected_identity, 1);
+    }
+
+    #[test(aptos_framework = @aptos_framework, user = @0x123)]
+    fun test_identity_uniqueness_across_vectors(aptos_framework: &signer, user: &signer) acquires TimelockRegistry {
+        initialize_for_testing(aptos_framework);
+
+        // Register all three test vectors
+        register_timelock(user, 1000000000000u64); // ID 0, deadline 1T
+        register_timelock(user, 1000000000000u64); // ID 1, deadline 1T  
+        register_timelock(user, 2000000000000u64); // ID 2, deadline 2T
+
+        let id0 = get_identity(0);
+        let id1 = get_identity(1);
+        let id2 = get_identity(2);
+
+        // All three should be unique
+        assert!(id0 != id1, 0);
+        assert!(id0 != id2, 1);
+        assert!(id1 != id2, 2);
     }
 
     #[test_only]

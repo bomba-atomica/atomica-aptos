@@ -1376,6 +1376,7 @@ dependencies = [
  "bcs 0.1.4",
  "blst",
  "blstrs",
+ "chrono",
  "criterion",
  "derive_more 0.99.17",
  "ff",
@@ -1393,6 +1394,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_bytes",
+ "serde_json",
  "sha3 0.9.1",
  "static_assertions",
 ]

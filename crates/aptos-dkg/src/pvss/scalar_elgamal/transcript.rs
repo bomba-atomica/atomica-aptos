@@ -2131,4 +2131,61 @@ mod tests {
             let _ = sk_share;
         }
     }
+
+    /// Tests that verification passes for aggregated transcripts.
+    ///
+    /// This validates the linear pairing check logic (Phase 5.1).
+    ///
+    /// ## Test Strategy
+    ///
+    /// 1. Create transcripts from 3 dealers
+    /// 2. Aggregate them
+    /// 3. Call verify() on the aggregated transcript
+    /// 4. Verify it returns Ok
+    #[test]
+    fn test_aggregated_verify() {
+        let mut rng = thread_rng();
+        let tc = ThresholdConfigBlstrs::new(2, 3).unwrap();
+
+        let d = setup_dealing::<Transcript, _>(&tc, &mut rng);
+
+        // Deal from all 3 players
+        let mut aggregated = Transcript::deal(
+            &tc,
+            &d.pp,
+            &d.ssks[0],
+            &d.eks,
+            &d.iss[0],
+            &NoAux,
+            &tc.get_player(0),
+            &mut rng,
+        );
+
+        // Aggregate others
+        for i in 1..tc.n {
+            let trx = Transcript::deal(
+                &tc,
+                &d.pp,
+                &d.ssks[i],
+                &d.eks,
+                &d.iss[i],
+                &NoAux,
+                &tc.get_player(i),
+                &mut rng,
+            );
+            aggregated.aggregate_with(&tc, &trx);
+        }
+
+        // Verify the aggregated transcript
+        // This triggers the verify_linear_pairing_check path since soks.len() > 1
+        let spks: Vec<_> = d.ssks.iter().map(|s| s.verifying_key()).collect();
+        let auxs = vec![NoAux; tc.n];
+
+        let result = aggregated.verify(&tc, &d.pp, &spks, &d.eks, &auxs);
+        assert!(
+            result.is_ok(),
+            "Aggregated transcript verification failed: {:?}",
+            result.err()
+        );
+    }
 }

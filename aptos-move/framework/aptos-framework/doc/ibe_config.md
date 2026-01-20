@@ -525,7 +525,8 @@ Called in genesis to initialize IBE config.
             mpk: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>(),
             epoch: 0,
         });
-    }
+    };
+    <a href="ibe_config.md#0x1_ibe_config_initialize_timelock_registry">initialize_timelock_registry</a>(aptos_framework);
 }
 </code></pre>
 
