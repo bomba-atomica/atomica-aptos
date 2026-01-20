@@ -3,7 +3,20 @@ name: Debug Smoke Tests
 on:
   push:
     branches:
-      - timelock-das-vpss
+      - main
+      - dev-atomica
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - ".github/workflows/debug-tests.yml"
+  pull_request:
+    branches:
+      - main
+      - dev-atomica
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
