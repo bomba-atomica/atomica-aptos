@@ -46,6 +46,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+          override: true
 
       - name: Check formatting
         run: |
@@ -67,6 +68,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          override: true
 
       - name: Install build dependencies
         run: |
