@@ -94,4 +94,4 @@ jobs:
       - name: Run Clippy
         run: |
           echo "Running Clippy lints..."
-          RUSTFLAGS="--cap-lints=warn" cargo clippy --package aptos-dkg --package aptos-dkg-runtime --package smoke-test --package aptos-types --all-targets --all-features -- -D warnings
+          RUSTFLAGS="--cap-lints=warn" cargo clippy --package aptos-dkg --package aptos-dkg-runtime --package aptos-vm --package smoke-test --package aptos-types --all-targets --all-features -- -D warnings
