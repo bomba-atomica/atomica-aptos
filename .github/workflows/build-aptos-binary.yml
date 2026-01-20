@@ -3,23 +3,12 @@ name: Build Aptos Binary
 on:
   push:
     branches:
-      - main
       - dev-atomica
-      - docker-testnet-org-refactor
     paths:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - ".github/workflows/build-aptos-binary.yml"
-  pull_request:
-    branches:
-      - main
-      - dev-atomica
-      - docker-testnet-org-refactor
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
   workflow_dispatch:
     inputs:
       git_ref:
@@ -155,12 +144,12 @@ jobs:
         run: |
           echo "Building Move framework release bundle (.mrb)..."
           cargo run --release --package aptos-framework -- release
-          
+
           # Compute hash of Move source files for versioning
           FRAMEWORK_HASH=$(find aptos-move/framework -name "*.move" -type f -exec sha256sum {} \; | sort | sha256sum | cut -c1-16)
           echo "framework_hash=$FRAMEWORK_HASH" >> $GITHUB_ENV
           echo "Move framework hash: $FRAMEWORK_HASH"
-          
+
           ls -lh head.mrb
 
       - name: Prepare release artifacts
@@ -174,7 +163,7 @@ jobs:
           chmod +x artifacts/aptos
           chmod +x artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
           chmod +x artifacts/aptos-node
-          
+
           # Copy framework bundle with hash
           cp head.mrb artifacts/framework-${{ env.framework_hash }}.mrb
           cp head.mrb artifacts/framework.mrb
