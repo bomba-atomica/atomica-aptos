@@ -93,7 +93,6 @@ pub use ciphertext::Ciphertext;
 use crate::utils::random::random_scalar_from_uniform_bytes;
 use aptos_crypto::blstrs::SCALAR_NUM_BYTES;
 use blstrs::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
-use ff::Field;
 use group::{Curve, Group};
 use sha3::{Digest, Sha3_256};
 use std::ops::Mul;

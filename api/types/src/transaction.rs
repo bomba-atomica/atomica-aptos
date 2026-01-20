@@ -34,7 +34,6 @@ use aptos_types::{
         webauthn::{PartialAuthenticatorAssertionResponse, MAX_WEBAUTHN_SIGNATURE_BYTES},
         Script, SignedTransaction, TransactionOutput, TransactionWithProof,
     },
-    validator_txn::TimelockShare,
 };
 use bcs::to_bytes;
 use once_cell::sync::Lazy;

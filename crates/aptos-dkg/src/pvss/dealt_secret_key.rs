@@ -145,7 +145,6 @@ pub mod scalar {
     use blstrs::Scalar;
     use ff::Field;
     use more_asserts::{assert_ge, assert_le};
-    use std::ops::{Add, Mul};
 
     pub const DEALT_SK_NUM_BYTES: usize = 32;
 
