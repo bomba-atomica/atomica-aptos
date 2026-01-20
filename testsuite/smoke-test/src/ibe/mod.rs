@@ -23,9 +23,6 @@ use blstrs::G2Projective;
 use group::{Curve, Group};
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
-use std::ops::Mul;
-
-const G2_COMPRESSED_LENGTH: usize = 96;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct IBEPublicParams {
@@ -36,11 +33,6 @@ struct IBEPublicParams {
 impl OnChainConfig for IBEPublicParams {
     const MODULE_IDENTIFIER: &'static str = "ibe_config";
     const TYPE_IDENTIFIER: &'static str = "IBEPublicParams";
-}
-
-fn deserialize_mpk(mpk_bytes: &[u8]) -> blstrs::G2Affine {
-    let bytes: [u8; G2_COMPRESSED_LENGTH] = mpk_bytes.try_into().expect("MPK should be 96 bytes");
-    blstrs::G2Affine::from_compressed(&bytes).expect("MPK should be valid G2 point")
 }
 
 /// Test IBE with scalar ElGamal PVSS using test setup (not full DKG).
