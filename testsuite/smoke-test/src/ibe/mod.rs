@@ -23,6 +23,7 @@ use blstrs::G2Projective;
 use group::{Curve, Group};
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
+use std::ops::Mul;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct IBEPublicParams {
