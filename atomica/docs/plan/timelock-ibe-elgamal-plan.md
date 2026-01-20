@@ -228,17 +228,168 @@ Client
 
 ### Move
 
-| File                 | Purpose                  |
-| -------------------- | ------------------------ |
-| `timelock.move`      | Registry and aggregation |
-| `threshold_dsa.move` | MPK and threshold DSA    |
+| File              | Purpose                  |
+| ----------------- | ------------------------ |
+| `ibe_config.move` | Registry, MPK, DK        |
+| `genesis.move`    | Framework initialization |
+| Native functions  | DK reconstruction        |
 
 ### Tests
 
-| File                                 | Purpose          |
-| ------------------------------------ | ---------------- |
-| `testsuite/smoke-test/src/timelock/` | 30+ smoke tests  |
-| `atomica/timelock-tests/test/`       | TypeScript tests |
+| File                                                      | Purpose             |
+| --------------------------------------------------------- | ------------------- |
+| `testsuite/smoke-test/src/timelock/`                      | Timelock E2E tests  |
+| `testsuite/smoke-test/src/randomness/ibe_mpk_on_chain.rs` | MPK verification    |
+| `testsuite/smoke-test/src/randomness/e2e_correctness.rs`  | DKG correctness     |
+| `atomica/golden_vectors/`                                 | Golden test vectors |
+
+---
+
+## Current Test Coverage Analysis
+
+### ✅ Existing Smoke Tests (Complete)
+
+#### 1. Timelock Registration (`testsuite/smoke-test/src/timelock/register_and_query.rs`)
+
+**Purpose:** Verify Timelock Registry works correctly on-chain
+
+**Tests:**
+
+- `register_timelock()` entry function execution
+- View functions: `get_timelock`, `get_next_timelock_id`, `is_expired`, `is_revealed`
+- Identity computation and determinism
+- Multiple timelock registration with different deadlines
+
+**Status:** ✅ **PASS** - Infrastructure ready, basic registration works
+
+**Key Assertions:**
+
+```rust
+// Registration creates timelock
+let next_id_after_first = get_next_timelock_id(&rest_client).await;
+assert_eq!(next_id_after_first, 1);
+
+// Identity is 32 bytes (SHA3-256)
+assert_eq!(timelock1_info.identity.len(), 32);
+
+// Different timelocks have different identities
+assert_ne!(timelock1_info.identity, timelock2_info.identity);
+```
+
+#### 2. IBE MPK On-Chain (`testsuite/smoke-test/src/randomness/ibe_mpk_on_chain.rs`)
+
+**Purpose:** Verify IBE Master Public Key is stored on-chain after DKG
+
+**Tests:**
+
+- `IBEPublicParams` resource exists after DKG completion
+- MPK is 96 bytes (compressed G2 point)
+- MPK matches DKG transcript dealt public key
+- MPK updates correctly each epoch
+
+**Status:** ✅ **PASS** - Fully implemented and working
+
+**Key Logic:**
+
+```rust
+// Verify MPK is 96 bytes (BLS12-381 G2 compressed)
+assert_eq!(ibe_params.mpk.len(), G2_COMPRESSED_LENGTH);
+
+// Verify MPK matches DKG transcript
+let expected_mpk = extract_mpk_from_transcript(&dkg_session.transcript);
+assert_eq!(ibe_params.mpk, expected_mpk);
+```
+
+#### 3. DKG Correctness (`testsuite/smoke-test/src/randomness/e2e_correctness.rs`)
+
+**Purpose:** Verify DKG transcript and block-level randomness seed
+
+**Tests:**
+
+- DKG transcript verification for multiple epochs
+- WVUF (Weighted Verifiable Uniform Function) output correctness
+- Randomness seed availability and consistency
+
+**Status:** ✅ **PASS** - Fully implemented and working
+
+**Key Utilities:**
+
+```rust
+let decrypt_key_map = decrypt_key_map(&swarm);
+let dkg_session = get_on_chain_resource::<DKGState>(&rest_client).await;
+assert!(verify_dkg_transcript(last_complete, &decrypt_key_map).is_ok());
+```
+
+### ⚠️ Partial Tests (Infrastructure Ready, Missing Full Flow)
+
+#### 4. Deadline/Reveal Infrastructure (`testsuite/smoke-test/src/timelock/deadline_reveal.rs`)
+
+**Purpose:** Verify DK Share Submission infrastructure
+
+**Current Tests:**
+
+- Registers timelock with expired deadline
+- Checks share count is 0
+
+**Status:** ⚠️ **INCOMPLETE** - Infrastructure ready, but **DOES NOT submit DK shares**
+
+**What's Missing:**
+
+- `submit_dk_share()` function calls
+- `ibe::reconstruct_ibe_dk_internal()` native function usage
+- DK storage on-chain after threshold reached
+- `TimelockRevealEvent` emission
+
+### ❌ Missing Tests
+
+#### 5. Full IBE Encryption/Decryption Flow
+
+**Not Yet Implemented**
+
+**Required Tests:**
+
+- Encrypt message off-chain using IBE with on-chain MPK
+- Submit ciphertext to chain or store off-chain
+- Query MPK and identity from chain
+- Full encrypt/decrypt round-trip verification
+
+#### 6. DK Share Submission & Reconstruction
+
+**Not Yet Implemented**
+
+**Required Tests:**
+
+- Call `submit_dk_share()` with validator DK shares
+- Use `ibe::reconstruct_ibe_dk_internal()` native function
+- Verify threshold-based DK reconstruction
+- Verify DK is stored on-chain in `TimelockInfo.decryption_key`
+- Verify `is_revealed` flag is set correctly
+
+#### 7. Event-Driven Reveal Flow
+
+**Not Yet Implemented**
+
+**Required Tests:**
+
+- `TimelockExpiredEvent` emission when deadline passes
+- Validator subscription to expired events
+- Automatic DK share submission trigger
+- Automatic DK reconstruction when threshold reached
+
+---
+
+## Test Coverage Matrix
+
+| Feature                    | Rust Unit | Move Test | Smoke Test            | Status     |
+| -------------------------- | --------- | --------- | --------------------- | ---------- |
+| MPK storage                | ❌        | ❌        | ✅ `ibe_mpk_on_chain` | ✅ Done    |
+| Timelock registration      | ✅        | ✅        | ✅                    | ✅ Done    |
+| Identity computation       | ✅        | ✅        | ✅                    | ✅ Done    |
+| DK share submission        | ❌        | ❌        | ❌                    | ❌ Missing |
+| DK reconstruction (native) | ❌        | ❌        | ❌                    | ❌ Missing |
+| IBE encrypt/decrypt        | ✅        | ❌        | ❌                    | ❌ Missing |
+| Full E2E flow              | ❌        | ❌        | ❌                    | ❌ Missing |
+| Event-driven reveal        | ❌        | ❌        | ❌                    | ❌ Missing |
 
 ---
 
@@ -259,8 +410,235 @@ Client
 ## Success Criteria
 
 - [x] Phase 5.1 complete
-- [ ] E2E smoke test passes
+- [x] Golden test vectors generated and integrated
+- [x] Native function for DK reconstruction implemented
+- [ ] Rust unit test for native function with golden vectors
+- [ ] Move language test with golden vectors
+- [ ] E2E smoke test passes (IBE flow + on-chain reconstruction)
+- [ ] Timelock deadline passing and event flow implemented
 - [ ] Security review completed
+
+---
+
+## Testing Roadmap
+
+### 1. Rust Unit Tests (Native Function)
+
+**Location:** `aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`
+
+**Goal:** Test the `reconstruct_ibe_dk_internal()` native function using golden vectors
+
+**Tasks:**
+
+- [ ] Add unit test module to `ibe.rs`
+- [ ] Load golden vectors from `atomica/golden_vectors/`
+- [ ] Test reconstruction from DK shares matches expected DK
+- [ ] Verify aggregation: `DK = Σ λ_i * dk_share_i`
+- [ ] Test with weighted validator configurations
+
+**Example Test Structure:**
+
+```rust
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_reconstruct_ibe_dk_with_golden_vectors() {
+        // Load golden vectors from JSON
+        let vectors = load_golden_vectors();
+
+        // For each vector, reconstruct DK and verify
+        for v in vectors.vectors {
+            let dk_reconstructed = reconstruct_ibe_dk_internal(
+                &v.validator_indices,
+                &v.dk_share_handles,
+                &v.weights,
+                v.threshold,
+                v.total_weight
+            );
+
+            assert_eq!(dk_reconstructed, v.expected_dk);
+        }
+    }
+}
+```
+
+### 2. Move Language Tests (with Golden Vectors)
+
+**Location:** `aptos-move/framework/aptos-framework/sources/ibe_config.move`
+
+**Goal:** Test IBE operations using Move native functions with golden vectors
+
+**Prerequisites:**
+
+- Rebuild `aptos` CLI tool to include new native function
+- Publish updated framework to testnet/localnet
+
+**Tasks:**
+
+- [ ] Add Move test module `ibe_config::test_golden_vectors`
+- [ ] Define golden vector constants in Move
+- [ ] Test `crypto_algebra::deserialize<G1>()` matches expected
+- [ ] Test `ibe::reconstruct_ibe_dk_internal()` aggregation
+- [ ] Test full round-trip: encrypt in Rust, decrypt with Move-reconstructed DK
+
+**Example Move Test:**
+
+```move
+#[test(framework = @aptos_framework)]
+fun test_golden_vector_reconstruction(framework: &signer) {
+    let g1_point = crypto_algebra::deserialize<G1, FormatG1Compr>(
+        x"9fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    );
+    let result = ibe::reconstruct_ibe_dk_internal<G1>(
+        vector[1, 2, 3],  // validator indices
+        vector[g1_handle1, g2_handle2, g3_handle3],  // DK shares
+        vector[1, 1, 1],  // weights
+        2,  // threshold
+        3   // total_weight
+    );
+    // Verify result matches expected
+}
+```
+
+### 3. E2E Smoke Tests
+
+**Location:** `testsuite/smoke-test/src/timelock/`
+
+**Goal:** Test full IBE flow on-chain with validator share submission and DK reconstruction
+
+**Test Flow:**
+
+1. User registers timelock with deadline
+2. Validators decrypt their scalar shares from DKG
+3. Each validator computes DK share: `dk_share_i = H(identity) * s_i`
+4. User encrypts message with IBE (off-chain)
+5. Deadline passes (on_new_block)
+6. System emits `TimelockRevealEvent`
+7. Validators submit `TimelockShare` transactions
+8. Contract reconstructs DK via `reconstruct_ibe_dk_internal()`
+9. User queries and decrypts message
+
+**Tasks:**
+
+- [ ] Implement `test_ibe_encrypt_decrypt_onchain()`
+- [ ] Implement `test_timelock_deadline_passes()`
+- [ ] Implement `test_validator_submit_dk_shares()`
+- [ ] Implement `test_dk_reconstruction_event_flow()`
+- [ ] Test with multiple validator configurations
+
+---
+
+## Feature: Timelock Deadline Event Flow
+
+### Current State
+
+The timelock registry is implemented, but the event-driven reveal flow is not yet complete.
+
+### Required Implementation
+
+#### 1. Deadline Check in `on_new_block()`
+
+**Location:** Likely in `aptos-framework` or `reconfiguration` module
+
+**Logic:**
+
+```rust
+public fun on_new_block(block_height: u64) {
+    // Check all timelocks
+    let registry = borrow_global<TimelockRegistry>(@aptos_framework);
+    let current_time = timestamp::now_microseconds();
+
+    // For each timelock where deadline has passed but not revealed
+    for (timelock_id, timelock_info) in registry.timelocks.iter() {
+        if (!timelock_info.is_revealed && current_time >= timelock_info.deadline_us) {
+            // Emit event to notify validators
+            event::emit_event<TimelockExpiredEvent>(
+                &mut registry.expired_events,
+                TimelockExpiredEvent { timelock_id }
+            );
+        }
+    }
+}
+```
+
+#### 2. Validator Subscription
+
+**Location:** Validator consensus/replication layer
+
+**Logic:**
+
+```rust
+// Validator subscribes to TimelockExpiredEvent
+fn handle_timelock_expired(event: TimelockExpiredEvent) {
+    let timelock_id = event.timelock_id;
+
+    // Get timelock info from registry
+    let (deadline_us, identity, _, _) = ibe_config::get_timelock(timelock_id);
+
+    // Compute DK share: dk_share = H(identity) * scalar_share
+    let dk_share = compute_dk_share(validator_key, &identity);
+
+    // Submit TimelockShare transaction
+    submit_timelock_share(timelock_id, dk_share);
+}
+```
+
+#### 3. On-Chain Reconstruction
+
+**Location:** `ibe_config.move::submit_dk_share()`
+
+**Updated Logic:**
+
+```move
+public(friend) fun submit_dk_share(
+    timelock_id: u64,
+    dk_share: vector<u8>,
+    validator_address: address,
+    weight: u64,
+    total_weight: u64
+) acquires TimelockRegistry {
+    // Deserialize DK share to G1 element
+    let dk_share_g1 = crypto_algebra::deserialize<G1, FormatG1Compr>(dk_share);
+
+    // Get handles for reconstruction
+    let shares_vector = vector::push_back(
+        existing_shares_handles,
+        dk_share_g1.handle
+    );
+
+    // Check if threshold reached
+    let current_weight = get_current_weight(timelock_id) + weight;
+    if (current_weight >= reveal_threshold) {
+        // Reconstruct DK using native function
+        let dk = ibe::reconstruct_ibe_dk_internal<G1>(
+            validator_indices,  // All validators who submitted
+            shares_vector,       // G1 element handles
+            validator_weights,   // Weights
+            threshold,           // Threshold
+            total_weight         // Total weight
+        );
+
+        // Store reconstructed DK
+        timelock_info.decryption_key = crypto_algebra::serialize(dk);
+        timelock_info.is_revealed = true;
+
+        // Emit reveal event
+        event::emit_event(&mut registry.reveal_events, TimelockRevealEvent {
+            timelock_id,
+            timestamp_us: current_time,
+        });
+    }
+}
+```
+
+### Tasks
+
+- [ ] Add `TimelockExpiredEvent` to `ibe_config.move`
+- [ ] Add `expired_events` to `TimelockRegistry`
+- [ ] Implement deadline check in `on_new_block()` or similar
+- [ ] Update validator code to subscribe to `TimelockExpiredEvent`
+- [ ] Implement `submit_dk_share()` using new native function
+- [ ] Add integration test for full event flow
 
 ---
 
