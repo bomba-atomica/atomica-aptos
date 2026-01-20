@@ -1,8 +1,35 @@
 # Atomica Timelock DKG & IBE Specification
 
-**Version:** 1.1
-**Last Updated:** January 8, 2026
-**Status:** Reference Specification
+**Version:** 1.2
+**Last Updated:** January 16, 2026
+**Status:** Implementation Reference
+**Branch:** timelock-refactor
+
+---
+
+## Context & Implementation Status
+
+> [!WARNING]
+> **CRITICAL: BROKEN STATE**
+> As of January 2026, the code in the `timelock-refactor` branch is **functional but regression-prone**. The `IbeDKG` implementation caused regressions in the existing Randomness DKG service during development. While `test_basic_client` has been patched to pass, the full dual-DKG system remains unstable.
+
+**Background**
+The upstream Aptos repository includes a production-grade DKG service used for **Randomness V2**. The original goal of the Timelock project was to reuse this service to minimize validator overhead.
+
+**Architectural Divergence**
+During implementation, the decision was made to fork the DKG logic into a parallel `IbeDKG` service rather than reusing `RealDKG` (Randomness).
+**Why?**
+
+1.  **Cryptographic Incompatibility**: Randomness DKG produces BLS signatures for randomness beacons. Timelock IBE requires extracting **Decryption Keys** (G1 points) from the Master Secret. While the curves are the same, the algebraic operations and transcript formats differ.
+2.  **Isolation**: Sharing the exact same MSK for both consensus-critical Randomness and application-layer Timelock was deemed a security risk.
+3.  **Protocol Constraints**: The IBE scheme required specific weighted secret sharing configurations that were difficult to overlay onto the existing Randomness configuration without breaking changes.
+
+**Current Issues**
+The attempt to run `RealDKG` and `IbeDKG` side-by-side within the same `EpochManager` introduced severe complexity:
+
+- **Concurrency Deadlocks**: The system struggled to handle two simultaneous DKG sessions, leading to the "sequential execution" patch (Timelock waits for Randomness).
+- **Regressions**: Modifications to shared components (`EpochManager`, `DKGManager`) inadvertently broke the stability of the original Randomness DKG.
+- **Status**: The `IbeDKG` flow works in isolation (unit tests) but fails integration tests when running alongside the full validator stack.
 
 ---
 
@@ -99,6 +126,21 @@ DK = s × Q_id  (G1 point, 48 bytes)
 - On reveal, each validator computes `DK_contribution_i = DK_share_i × Q_id` (G1 point)
 - Contract aggregates G1 contributions using Lagrange coefficients
 - Result is the full DK (G1 point)
+
+### DKG Protocol Implementation
+
+**Sequence:**
+
+1. **Trigger**: `on_new_block` emits `StartKeyGenEvent` (only after Randomness DKG completes).
+2. **Dealing**: Validators generate random polynomials.
+3. **Encryption**: Shares encrypted with Consensus Public Keys (BLS12-381).
+4. **Aggregation**: `DKGManager` aggregates transcript.
+5. **Publication**: `TimelockDKGResult` transaction submits global MPK.
+6. **Storage**: `EpochManager` decrypts individual shares and persists to `PersistentSafetyStorage`.
+
+> [!NOTE]
+> The Master Secret Key (MSK) is **never** reconstructed. Only the MPK is public.
+> The Decryption Key (DK) for a specific identity is the only secret material ever reconstructed (on-chain).
 
 ### Encryption Algorithm (Boneh-Franklin IBE)
 
@@ -299,6 +341,16 @@ let seconds = microseconds / 1_000_000;
 - **DKG** → Runs on system initialization → produces global MPK + DK_shares (polynomial)
 - **Deadlines** → Multiple deadlines → all use same DKG output (derived from polynomial)
 - **Reveal** → Each deadline triggers share submission → DK revealed after threshold
+
+### Implementation Specifics
+
+- **Sequencing**: Timelock DKG strictly waits for Randomness DKG completion to avoid transcript collisions.
+- **Transactions**:
+  - `TimelockDKGResult`: Publishing the MPK/Transcript (System Tx).
+  - `TimelockShare`: Publishing a G1 share for a specific deadline (System Tx).
+- **Storage**:
+  - MPK: Stored in `0x1::threshold_dsa::State`.
+  - DK: Stored in `0x1::timelock::TimelockState`.
 
 ---
 
