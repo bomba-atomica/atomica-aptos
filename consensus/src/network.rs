@@ -215,6 +215,7 @@ pub trait QuorumStoreSender: Send + Clone {
 
 /// Implements the actual networking support for all consensus messaging.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct NetworkSender {
     author: Author,
     pub(crate) consensus_network_client: ConsensusNetworkClient<NetworkClient<ConsensusMsg>>,
