@@ -37,6 +37,7 @@ pub mod casting;
 pub mod constants;
 pub mod eq;
 pub mod hash_to_structure;
+pub mod ibe;
 pub mod new;
 pub mod pairing;
 #[cfg(feature = "testing")]
@@ -371,6 +372,16 @@ pub fn make_all(
         rand_insecure_internal as RawSafeNative,
     )]);
 
+    builder.make_named_natives(natives)
+}
+
+pub fn make_ibe(
+    builder: &SafeNativeBuilder,
+) -> impl Iterator<Item = (String, NativeFunction)> + '_ {
+    let natives = vec![(
+        "reconstruct_ibe_dk_internal",
+        ibe::reconstruct_ibe_dk_internal as RawSafeNative,
+    )];
     builder.make_named_natives(natives)
 }
 
