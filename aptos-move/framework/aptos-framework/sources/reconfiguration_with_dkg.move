@@ -2,10 +2,12 @@
 module aptos_framework::reconfiguration_with_dkg {
     use std::features;
     use std::option;
+    use std::vector;
     use aptos_framework::consensus_config;
     use aptos_framework::dkg;
     use aptos_framework::execution_config;
     use aptos_framework::gas_schedule;
+    use aptos_framework::ibe_config;
     use aptos_framework::jwk_consensus_config;
     use aptos_framework::jwks;
     use aptos_framework::keyless_account;
@@ -62,8 +64,12 @@ module aptos_framework::reconfiguration_with_dkg {
 
     /// Complete the current reconfiguration with DKG.
     /// Abort if no DKG is in progress.
-    fun finish_with_dkg_result(account: &signer, dkg_result: vector<u8>) {
+    fun finish_with_dkg_result(account: &signer, dkg_result: vector<u8>, mpk: vector<u8>) {
         dkg::finish(dkg_result);
+        if (!vector::is_empty(&mpk)) {
+            let new_epoch = reconfiguration::current_epoch() + 1;
+            ibe_config::set_mpk(mpk, new_epoch);
+        };
         finish(account);
     }
 }

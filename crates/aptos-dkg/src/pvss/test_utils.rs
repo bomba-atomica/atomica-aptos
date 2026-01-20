@@ -243,7 +243,9 @@ where
         .get_random_eligible_subset_of_players(rng)
         .into_iter()
         .map(|p| {
-            let (sk, pk) = trx.decrypt_own_share(sc, &p, &dks[p.get_id()], pp);
+            let (sk, pk) = trx
+                .decrypt_own_share(sc, &p, &dks[p.get_id()], pp)
+                .expect("decrypt_own_share should not fail for valid transcript");
 
             assert_eq!(pk, trx.get_public_key_share(sc, &p));
 

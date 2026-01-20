@@ -79,3 +79,12 @@ pub static TRANSACTION_FEE_MODULE: Lazy<ModuleId> = Lazy::new(|| {
 });
 
 pub const EMIT_FEE_STATEMENT: &IdentStr = ident_str!("emit_fee_statement");
+
+pub static IBE_CONFIG_MODULE: Lazy<ModuleId> = Lazy::new(|| {
+    ModuleId::new(
+        account_config::CORE_CODE_ADDRESS,
+        ident_str!("ibe_config").to_owned(),
+    )
+});
+
+pub const SUBMIT_DK_SHARE_FUNCTION: &IdentStr = ident_str!("submit_dk_share");

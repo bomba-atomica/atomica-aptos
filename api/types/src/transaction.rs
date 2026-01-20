@@ -679,6 +679,7 @@ impl BlockMetadataTransaction {
 pub enum ValidatorTransaction {
     ObservedJwkUpdate(JWKUpdateTransaction),
     DkgResult(DKGResultTransaction),
+    TimelockShare(TimelockShareTransaction),
 }
 
 impl ValidatorTransaction {
@@ -688,6 +689,7 @@ impl ValidatorTransaction {
                 "validator_transaction__observed_jwk_update"
             },
             ValidatorTransaction::DkgResult(_) => "validator_transaction__dkg_result",
+            ValidatorTransaction::TimelockShare(_) => "validator_transaction__timelock_share",
         }
     }
 
@@ -695,6 +697,7 @@ impl ValidatorTransaction {
         match self {
             ValidatorTransaction::ObservedJwkUpdate(t) => &t.info,
             ValidatorTransaction::DkgResult(t) => &t.info,
+            ValidatorTransaction::TimelockShare(t) => &t.info,
         }
     }
 
@@ -702,6 +705,7 @@ impl ValidatorTransaction {
         match self {
             ValidatorTransaction::ObservedJwkUpdate(t) => &mut t.info,
             ValidatorTransaction::DkgResult(t) => &mut t.info,
+            ValidatorTransaction::TimelockShare(t) => &mut t.info,
         }
     }
 
@@ -709,6 +713,7 @@ impl ValidatorTransaction {
         match self {
             ValidatorTransaction::ObservedJwkUpdate(t) => t.timestamp,
             ValidatorTransaction::DkgResult(t) => t.timestamp,
+            ValidatorTransaction::TimelockShare(t) => t.timestamp,
         }
     }
 
@@ -716,6 +721,7 @@ impl ValidatorTransaction {
         match self {
             ValidatorTransaction::ObservedJwkUpdate(t) => &t.events,
             ValidatorTransaction::DkgResult(t) => &t.events,
+            ValidatorTransaction::TimelockShare(t) => &t.events,
         }
     }
 }
@@ -753,6 +759,16 @@ impl
                 timestamp: U64::from(timestamp),
                 quorum_certified_update: quorum_certified_update.into(),
             }),
+            aptos_types::validator_txn::ValidatorTransaction::TimelockShare(timelock_share) => {
+                Self::TimelockShare(TimelockShareTransaction {
+                    info,
+                    events,
+                    timestamp: U64::from(timestamp),
+                    deadline_id: timelock_share.deadline_id.into(),
+                    author: timelock_share.author.into(),
+                    share: timelock_share.share.into(),
+                })
+            },
         }
     }
 }
@@ -837,6 +853,18 @@ pub struct DKGResultTransaction {
     pub events: Vec<Event>,
     pub timestamp: U64,
     pub dkg_transcript: ExportedDKGTranscript,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct TimelockShareTransaction {
+    #[serde(flatten)]
+    #[oai(flatten)]
+    pub info: TransactionInfo,
+    pub events: Vec<Event>,
+    pub timestamp: U64,
+    pub deadline_id: U64,
+    pub author: Address,
+    pub share: HexEncodedBytes,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]

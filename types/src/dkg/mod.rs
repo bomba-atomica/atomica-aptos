@@ -227,6 +227,70 @@ pub trait DKGTrait: Debug {
         player_share_pairs: Vec<(u64, Self::DealtSecretShare)>,
     ) -> Result<Self::DealtSecret>;
     fn get_dealers(transcript: &Self::Transcript) -> BTreeSet<u64>;
+
+    // === IBE Extension Methods (Phase 3) ===
+    //
+    // These methods support Identity-Based Encryption (IBE) / Timelock functionality
+    // by exposing the scalar secret material needed for IBE key derivation.
+
+    /// Get the IBE Master Public Key (MPK) from a transcript.
+    ///
+    /// The MPK is a G2 element: `g2^secret` where `secret` is the dealt scalar.
+    /// This is the same public key used for both WVUF (randomness) and IBE (timelock).
+    ///
+    /// # Returns
+    ///
+    /// The serialized MPK as bytes (96 bytes for compressed G2).
+    ///
+    /// # Implementation Notes
+    ///
+    /// For RealDKG, this extracts the dealt public key from the main transcript
+    /// and serializes it. The MPK is identical whether extracted from `main`,
+    /// `fast`, or `scalar` transcripts (all share the same underlying secret).
+    ///
+    /// # TODO
+    ///
+    /// This is a stub. Implement the actual extraction logic.
+    fn get_ibe_master_public_key(_transcript: &Self::Transcript) -> Vec<u8> {
+        // TODO(Phase 3): Implement MPK extraction
+        //
+        // For RealDKG:
+        // let mpk = transcript.main.get_dealt_public_key();
+        // serialize_g2(&mpk.into())
+        Vec::new()
+    }
+
+    /// Get the scalar secret share for a validator (for IBE key derivation).
+    ///
+    /// The scalar secret share can be used to compute IBE decryption key contributions:
+    /// `dk_share = H(identity)^scalar_share`
+    ///
+    /// # Arguments
+    ///
+    /// * `dealt_share` - The validator's dealt secret share
+    ///
+    /// # Returns
+    ///
+    /// The scalar shares as a vector of bytes, or None if scalar shares are not available.
+    /// Each scalar is 32 bytes.
+    ///
+    /// # Implementation Notes
+    ///
+    /// For RealDKG, this extracts the `scalar` field from `DealtSecretKeyShares`.
+    /// Returns `None` if the scalar transcript was not present in the DKG.
+    ///
+    /// # TODO
+    ///
+    /// This is a stub. Implement the actual extraction logic.
+    fn get_scalar_secret_share(_dealt_share: &Self::DealtSecretShare) -> Option<Vec<u8>> {
+        // TODO(Phase 3): Implement scalar share extraction
+        //
+        // For RealDKG:
+        // dealt_share.scalar.as_ref().map(|shares| {
+        //     shares.iter().flat_map(|s| s.to_bytes_le()).collect()
+        // })
+        None
+    }
 }
 
 pub mod dummy_dkg;

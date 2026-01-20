@@ -341,7 +341,7 @@ impl traits::Transcript for Transcript {
         player: &Player,
         dk: &Self::DecryptPrivKey,
         _pp: &Self::PublicParameters,
-    ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
+    ) -> anyhow::Result<(Self::DealtSecretKeyShare, Self::DealtPubKeyShare)> {
         let weight = sc.get_player_weight(player);
         let mut sk_shares = Vec::with_capacity(weight);
         let pk_shares = self.get_public_key_share(sc, player);
@@ -358,7 +358,7 @@ impl traits::Transcript for Transcript {
             ));
         }
 
-        (sk_shares, pk_shares)
+        Ok((sk_shares, pk_shares))
     }
 
     #[allow(non_snake_case)]

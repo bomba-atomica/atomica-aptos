@@ -1,0 +1,97 @@
+name: Lint & Format
+
+on:
+  push:
+    branches:
+      - main
+      - dev-atomica
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/lint-format.yml"
+      - "rustfmt.toml"
+      - "clippy.toml"
+  pull_request:
+    branches:
+      - main
+      - dev-atomica
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "rustfmt.toml"
+      - "clippy.toml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Reduce memory pressure during builds
+  CARGO_BUILD_JOBS: 2
+  # Disable incremental compilation (not useful in CI and uses extra disk space)
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  format:
+    name: Check Formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: |
+          echo "Checking code formatting..."
+          cargo fmt -- --check
+
+  clippy:
+    name: Clippy Lints
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "atomica-test"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+
+      - name: Run Clippy
+        run: |
+          echo "Running Clippy lints with xclippy..."
+          cargo xclippy

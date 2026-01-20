@@ -1,0 +1,97 @@
+name: Debug Smoke Tests
+
+on:
+  push:
+    branches:
+      - main
+      - dev-atomica
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - ".github/workflows/debug-tests.yml"
+  pull_request:
+    branches:
+      - main
+      - dev-atomica
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_BUILD_JOBS: 2
+  CARGO_INCREMENTAL: 0
+  RUST_MIN_STACK: 104857600
+
+jobs:
+  debug-tests:
+    name: Debug Smoke Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "atomica-test"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+
+      - name: Build aptos-node
+        run: |
+          cargo build -p aptos-node --features=failpoints,indexer,smoke-test
+        timeout-minutes: 60
+
+      - name: Run test_basic_client
+        if: always()
+        run: |
+          cargo test -p smoke-test --lib rest_api::test_basic_client -- --nocapture --test-threads=1
+        timeout-minutes: 60
+
+      - name: Run randomness_correctness
+        if: always()
+        run: |
+          cargo test -p smoke-test --lib randomness_correctness -- --nocapture --test-threads=1
+        timeout-minutes: 60
+
+      - name: Run test_validator_execution_sync_epoch_changes
+        if: always()
+        run: |
+          cargo test -p smoke-test --lib state_sync::test_validator_execution_sync_epoch_changes -- --nocapture --test-threads=1
+        timeout-minutes: 60

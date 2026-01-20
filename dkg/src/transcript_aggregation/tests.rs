@@ -61,55 +61,70 @@ fn test_transcript_aggregation_state() {
     let good_trx_0_bytes = bcs::to_bytes(&good_trx_0).unwrap();
 
     // Node with incorrect epoch should be rejected.
-    let result = trx_agg_state.add(addrs[0], DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 998,
-            author: addrs[0],
+    let result = trx_agg_state.add(
+        addrs[0],
+        DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 998,
+                author: addrs[0],
+            },
+            transcript_bytes: good_trx_0_bytes.clone(),
         },
-        transcript_bytes: good_trx_0_bytes.clone(),
-    });
+    );
     assert!(result.is_err());
 
     // Node authored by X but sent by Y should be rejected: case 0
-    let result = trx_agg_state.add(addrs[1], DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 999,
-            author: addrs[0],
+    let result = trx_agg_state.add(
+        addrs[1],
+        DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 999,
+                author: addrs[0],
+            },
+            transcript_bytes: good_trx_0_bytes.clone(),
         },
-        transcript_bytes: good_trx_0_bytes.clone(),
-    });
+    );
     assert!(result.is_err());
 
     // Node authored by X but sent by Y should be rejected: case 1
-    let result = trx_agg_state.add(addrs[1], DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 999,
-            author: addrs[1],
+    let result = trx_agg_state.add(
+        addrs[1],
+        DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 999,
+                author: addrs[1],
+            },
+            transcript_bytes: good_trx_0_bytes.clone(),
         },
-        transcript_bytes: good_trx_0_bytes.clone(),
-    });
+    );
     assert!(result.is_err());
 
     // Node authored by non-active-validator should be rejected.
-    let result = trx_agg_state.add(vfn_addr, DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 999,
-            author: vfn_addr,
+    let result = trx_agg_state.add(
+        vfn_addr,
+        DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 999,
+                author: vfn_addr,
+            },
+            transcript_bytes: good_trx_0_bytes.clone(),
         },
-        transcript_bytes: good_trx_0_bytes.clone(),
-    });
+    );
     assert!(result.is_err());
 
     // Node with invalid transcript should be rejected.
     let mut bad_trx_0_bytes = good_trx_0_bytes.clone();
     *bad_trx_0_bytes.last_mut().unwrap() = 0xAB;
-    let result = trx_agg_state.add(addrs[0], DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 999,
-            author: addrs[0],
+    let result = trx_agg_state.add(
+        addrs[0],
+        DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 999,
+                author: addrs[0],
+            },
+            transcript_bytes: bad_trx_0_bytes,
         },
-        transcript_bytes: bad_trx_0_bytes,
-    });
+    );
     assert!(result.is_err());
 
     // Transcript where fast-path secret and main-path secret do not match should be rejected.
@@ -119,49 +134,61 @@ fn test_transcript_aggregation_state() {
         2,
         &private_keys[2],
     );
-    let result = trx_agg_state.add(addrs[2], DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 999,
-            author: addrs[2],
+    let result = trx_agg_state.add(
+        addrs[2],
+        DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 999,
+                author: addrs[2],
+            },
+            transcript_bytes: bcs::to_bytes(&bad_trx_2).unwrap(),
         },
-        transcript_bytes: bcs::to_bytes(&bad_trx_2).unwrap(),
-    });
+    );
     assert!(result.is_err());
 
     // Good node should be accepted.
     let good_trx_3 =
         RealDKG::sample_secret_and_generate_transcript(&mut rng, &pub_params, 3, &private_keys[3]);
-    let result = trx_agg_state.add(addrs[3], DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 999,
-            author: addrs[3],
+    let result = trx_agg_state.add(
+        addrs[3],
+        DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 999,
+                author: addrs[3],
+            },
+            transcript_bytes: bcs::to_bytes(&good_trx_3).unwrap(),
         },
-        transcript_bytes: bcs::to_bytes(&good_trx_3).unwrap(),
-    });
+    );
     println!("{:?}", result);
     assert!(matches!(result, Ok(None)));
 
     // Repeated contribution should be ignored.
     let good_trx_3_another =
         RealDKG::sample_secret_and_generate_transcript(&mut rng, &pub_params, 3, &private_keys[3]);
-    let result = trx_agg_state.add(addrs[3], DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 999,
-            author: addrs[3],
+    let result = trx_agg_state.add(
+        addrs[3],
+        DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 999,
+                author: addrs[3],
+            },
+            transcript_bytes: bcs::to_bytes(&good_trx_3_another).unwrap(),
         },
-        transcript_bytes: bcs::to_bytes(&good_trx_3_another).unwrap(),
-    });
+    );
     assert!(matches!(result, Ok(None)));
 
     // Aggregated trx should be returned if after adding a node, the threshold is exceeded.
     let good_trx_4 =
         RealDKG::sample_secret_and_generate_transcript(&mut rng, &pub_params, 4, &private_keys[4]);
-    let result = trx_agg_state.add(addrs[4], DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 999,
-            author: addrs[4],
+    let result = trx_agg_state.add(
+        addrs[4],
+        DKGTranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 999,
+                author: addrs[4],
+            },
+            transcript_bytes: bcs::to_bytes(&good_trx_4).unwrap(),
         },
-        transcript_bytes: bcs::to_bytes(&good_trx_4).unwrap(),
-    });
+    );
     assert!(matches!(result, Ok(Some(_))));
 }

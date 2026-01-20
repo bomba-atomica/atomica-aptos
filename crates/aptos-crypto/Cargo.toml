@@ -12,6 +12,9 @@ publish = { workspace = true }
 repository = { workspace = true }
 rust-version = { workspace = true }
 
+[lib]
+doctest = false
+
 [dependencies]
 aes-gcm = { workspace = true }
 anyhow = { workspace = true }

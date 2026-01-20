@@ -204,7 +204,7 @@ impl<T: Transcript<SecretSharingConfig = ThresholdConfigBlstrs>> Transcript
         player: &Player,
         dk: &Self::DecryptPrivKey,
         pp: &Self::PublicParameters,
-    ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
+    ) -> anyhow::Result<(Self::DealtSecretKeyShare, Self::DealtPubKeyShare)> {
         let weight = sc.get_player_weight(player);
 
         let mut weighted_dsk_share = Vec::with_capacity(weight);
@@ -219,12 +219,12 @@ impl<T: Transcript<SecretSharingConfig = ThresholdConfigBlstrs>> Transcript
                 &virtual_player,
                 dk,
                 pp,
-            );
+            )?;
             weighted_dsk_share.push(dsk_share);
             weighted_dpk_share.push(dpk_share);
         }
 
-        (weighted_dsk_share, weighted_dpk_share)
+        Ok((weighted_dsk_share, weighted_dpk_share))
     }
 
     fn generate<R>(sc: &Self::SecretSharingConfig, rng: &mut R) -> Self

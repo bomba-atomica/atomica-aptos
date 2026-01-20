@@ -293,7 +293,8 @@ fn pvss_decrypt_own_share<T: Transcript, M: Measurement>(
         b.iter_with_setup(
             || rng.gen_range(0, sc.get_total_num_players()),
             |i| {
-                trx.decrypt_own_share(&sc, &sc.get_player(i), &dks[i], pp);
+                trx.decrypt_own_share(&sc, &sc.get_player(i), &dks[i], pp)
+                    .expect("decrypt_own_share should not fail for valid transcript");
             },
         )
     });

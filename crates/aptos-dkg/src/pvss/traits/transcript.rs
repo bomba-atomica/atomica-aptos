@@ -189,13 +189,18 @@ pub trait Transcript: Debug + ValidCryptoMaterial + Clone + PartialEq + Eq {
 
     /// Given a valid transcript, returns the decrypted `DealtSecretShare` for the player with ID
     /// `player_id`.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok((DealtSecretKeyShare, DealtPubKeyShare))` - Successful decryption
+    /// * `Err(Error)` - Decryption failed (invalid transcript, wrong key, or corrupted data)
     fn decrypt_own_share(
         &self,
         sc: &Self::SecretSharingConfig,
         player: &Player,
         dk: &Self::DecryptPrivKey,
         pp: &Self::PublicParameters,
-    ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare);
+    ) -> anyhow::Result<(Self::DealtSecretKeyShare, Self::DealtPubKeyShare)>;
 
     /// Generates a random looking transcript (but not a valid one).
     /// Useful for testing and benchmarking.
