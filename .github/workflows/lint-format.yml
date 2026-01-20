@@ -31,6 +31,7 @@ env:
   CARGO_BUILD_JOBS: 2
   # Disable incremental compilation (not useful in CI and uses extra disk space)
   CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "--cap-lints=warn --cfg tokio_unstable"
 
 jobs:
   format:
