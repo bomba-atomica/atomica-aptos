@@ -31,7 +31,6 @@ env:
   CARGO_BUILD_JOBS: 2
   # Disable incremental compilation (not useful in CI and uses extra disk space)
   CARGO_INCREMENTAL: 0
-  RUSTFLAGS: "--cap-lints=warn --cfg tokio_unstable"
 
 jobs:
   format:
@@ -51,7 +50,7 @@ jobs:
       - name: Check formatting
         run: |
           echo "Checking code formatting..."
-          cargo fmt --package aptos-dkg --package aptos-dkg-runtime --package aptos-vm --package smoke-test --package aptos-types -- --check
+          cargo fmt -- --check
 
   clippy:
     name: Clippy Lints
@@ -94,5 +93,5 @@ jobs:
 
       - name: Run Clippy
         run: |
-          echo "Running Clippy lints..."
-          RUSTFLAGS="--cap-lints=warn" cargo clippy --package aptos-dkg --package aptos-dkg-runtime --package aptos-vm --package smoke-test --package aptos-types --all-targets --all-features -- -D warnings
+          echo "Running Clippy lints with xclippy..."
+          cargo xclippy
