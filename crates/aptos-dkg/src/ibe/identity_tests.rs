@@ -8,8 +8,6 @@
 //!
 //! Tests use golden vectors from `atomica/golden_vectors/timelock_golden_vectors.json`
 
-use blstrs::Scalar;
-use ff::Field;
 use sha3::Digest;
 
 /// Golden test vector for identity computation
@@ -38,8 +36,8 @@ fn load_golden_vectors() -> Vec<GoldenVector> {
                     .vectors
                     .iter()
                     .map(|v| GoldenVector {
-                        timelock_id: v["timelock_id"].as_u64().unwrap() as u64,
-                        deadline_us: v["deadline_us"].as_u64().unwrap() as u64,
+                        timelock_id: v["timelock_id"].as_u64().unwrap(),
+                        deadline_us: v["deadline_us"].as_u64().unwrap(),
                         identity_hash: v["identity_hash"].as_str().unwrap().to_string(),
                     })
                     .collect(),
@@ -77,8 +75,8 @@ fn get_default_test_vectors() -> Vec<GoldenVector> {
 /// Compute identity hash following the Move contract logic
 fn compute_identity_hash(timelock_id: u64, deadline_us: u64) -> Vec<u8> {
     let mut hasher = sha3::Sha3_256::new();
-    hasher.update(&bcs::to_bytes(&timelock_id).unwrap());
-    hasher.update(&bcs::to_bytes(&deadline_us).unwrap());
+    hasher.update(bcs::to_bytes(&timelock_id).unwrap());
+    hasher.update(bcs::to_bytes(&deadline_us).unwrap());
     hasher.finalize().to_vec()
 }
 
@@ -123,8 +121,8 @@ fn test_identity_determinism() {
 
     let compute = || {
         let mut hasher = sha3::Sha3_256::new();
-        hasher.update(&bcs::to_bytes(&timelock_id).unwrap());
-        hasher.update(&bcs::to_bytes(&deadline_us).unwrap());
+        hasher.update(bcs::to_bytes(&timelock_id).unwrap());
+        hasher.update(bcs::to_bytes(&deadline_us).unwrap());
         hasher.finalize().to_vec()
     };
 
@@ -139,8 +137,8 @@ fn test_identity_determinism() {
 fn test_identity_uniqueness() {
     let compute = |id: u64, deadline: u64| {
         let mut hasher = sha3::Sha3_256::new();
-        hasher.update(&bcs::to_bytes(&id).unwrap());
-        hasher.update(&bcs::to_bytes(&deadline).unwrap());
+        hasher.update(bcs::to_bytes(&id).unwrap());
+        hasher.update(bcs::to_bytes(&deadline).unwrap());
         hasher.finalize().to_vec()
     };
 
@@ -156,7 +154,7 @@ fn test_identity_uniqueness() {
 #[test]
 fn test_bcs_encoding_is_little_endian() {
     // Test with a larger value to ensure proper encoding
-    let value = 0xABCD_EFu64; // Use a value that won't fit in 1 byte
+    let value = 0x00AB_CDEF_u64; // Use a value that won't fit in 1 byte
     let bytes = bcs::to_bytes(&value).unwrap();
 
     // BCS encodes u64 with variable length

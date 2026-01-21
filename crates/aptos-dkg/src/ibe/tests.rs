@@ -420,8 +420,6 @@ fn test_scalar_elgamal_pvss_ibe_multiple_identities() {
 
 #[test]
 fn test_dk_share_aggregation_roundtrip() {
-    use crate::algebra::evaluation_domain::BatchEvaluationDomain;
-    use crate::algebra::lagrange::lagrange_coefficients;
     use crate::pvss::input_secret::InputSecret;
     use crate::pvss::scalar_elgamal::WeightedTranscript;
     use crate::pvss::test_utils::setup_dealing;
@@ -429,7 +427,6 @@ fn test_dk_share_aggregation_roundtrip() {
     use crate::pvss::{Player, WeightedConfig};
     use aptos_crypto::Uniform;
     use blstrs::G1Projective;
-    use ff::Field;
     use group::Group;
     use rand::thread_rng;
 

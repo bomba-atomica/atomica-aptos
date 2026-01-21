@@ -5,7 +5,7 @@
 
 use crate::smoke_test_environment::SwarmBuilder;
 use aptos_api_types::ViewRequest;
-use aptos_forge::{NodeExt, Swarm, SwarmExt};
+use aptos_forge::{Swarm, SwarmExt};
 use aptos_logger::info;
 use aptos_rest_client::Client;
 use aptos_types::transaction::{EntryFunction, TransactionPayload};
@@ -97,7 +97,7 @@ async fn test_deadline_reveal() {
     let mut info = swarm.aptos_public_info();
 
     // Create user account
-    let mut user = info
+    let user = info
         .create_and_fund_user_account(10_000_000_000)
         .await
         .unwrap();

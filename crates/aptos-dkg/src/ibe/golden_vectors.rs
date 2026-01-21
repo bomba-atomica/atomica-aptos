@@ -44,8 +44,8 @@ struct TimelockGoldenVectors {
 fn compute_identity_hash(timelock_id: u64, deadline_us: u64) -> Vec<u8> {
     let mut hasher = Sha3_256::new();
     // BCS encoding of u64 is little-endian 8 bytes
-    hasher.update(&bcs::to_bytes(&timelock_id).unwrap());
-    hasher.update(&bcs::to_bytes(&deadline_us).unwrap());
+    hasher.update(bcs::to_bytes(&timelock_id).unwrap());
+    hasher.update(bcs::to_bytes(&deadline_us).unwrap());
     hasher.finalize().to_vec()
 }
 

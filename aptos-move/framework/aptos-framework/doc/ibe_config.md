@@ -526,7 +526,8 @@ Called in genesis to initialize IBE config.
             epoch: 0,
         });
     };
-    <a href="ibe_config.md#0x1_ibe_config_initialize_timelock_registry">initialize_timelock_registry</a>(aptos_framework);
+    // Note: <a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a> initialization is deferred <b>to</b> first <b>use</b>
+    // because it <b>requires</b> <a href="event.md#0x1_event">event</a> handles which need Account resource
 }
 </code></pre>
 
@@ -662,7 +663,7 @@ Returns true if a valid MPK (96 bytes) has been set.
 
 ## Function `initialize_timelock_registry`
 
-Initialize the timelock registry. Called once at genesis.
+Initialize the timelock registry. Called separately after genesis is complete.
 
 
 <pre><code><b>public</b> <b>fun</b> <a href="ibe_config.md#0x1_ibe_config_initialize_timelock_registry">initialize_timelock_registry</a>(aptos_framework: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>)

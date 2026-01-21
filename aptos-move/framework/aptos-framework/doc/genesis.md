@@ -662,6 +662,9 @@ If it exists, it just returns the signer.
     // validators.
     <a href="aptos_coin.md#0x1_aptos_coin_destroy_mint_cap">aptos_coin::destroy_mint_cap</a>(aptos_framework);
 
+    // Initialize timelock registry after <a href="account.md#0x1_account">account</a> resources are set up
+    <a href="ibe_config.md#0x1_ibe_config_initialize_timelock_registry">ibe_config::initialize_timelock_registry</a>(aptos_framework);
+
     <a href="stake.md#0x1_stake_on_new_epoch">stake::on_new_epoch</a>();
 }
 </code></pre>
