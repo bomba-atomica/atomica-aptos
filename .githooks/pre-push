@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -e
+
+echo "Running cargo clippy..."
+cargo clippy
+
+echo "Running cargo fmt -- --check..."
+cargo fmt -- --check
+
+echo "All checks passed!"
