@@ -453,10 +453,18 @@ fn test_dk_share_aggregation_roundtrip() {
         &mut rng,
     );
 
-    let mut shares: Vec<(Player, <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare)> = Vec::new();
+    let mut shares: Vec<(
+        Player,
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
+    )> = Vec::new();
     for i in 0..5 {
         let (sk_share, _pk_share) = transcript
-            .decrypt_own_share(&wconfig, &Player { id: i }, &dealing_args.dks[i], &dealing_args.pp)
+            .decrypt_own_share(
+                &wconfig,
+                &Player { id: i },
+                &dealing_args.dks[i],
+                &dealing_args.pp,
+            )
             .expect("decrypt_own_share should succeed");
         shares.push((Player { id: i }, sk_share));
     }
