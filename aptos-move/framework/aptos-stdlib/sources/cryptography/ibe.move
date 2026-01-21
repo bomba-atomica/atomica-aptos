@@ -7,6 +7,7 @@
 /// and registered via the `natives::cryptography::algebra::ibe` module.
 module aptos_std::ibe {
     use std::option::Option;
+    use aptos_std::crypto_algebra;
 
     /// Reconstruct an IBE decryption key from threshold shares using Lagrange interpolation.
     ///
