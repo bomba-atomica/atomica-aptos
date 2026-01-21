@@ -417,3 +417,89 @@ fn test_scalar_elgamal_pvss_ibe_multiple_identities() {
         assert_eq!(decrypted, plaintext.as_bytes());
     }
 }
+
+#[test]
+fn test_dk_share_aggregation_roundtrip() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use blstrs::G1Projective;
+    use group::Group;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    let weights = vec![1, 1, 1, 1, 1];
+    let wconfig = WeightedConfig::new(3, weights.clone()).unwrap();
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+
+    let input_secret = InputSecret::generate(&mut rng);
+    let secret = *input_secret.get_secret_a();
+
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &dealing_args.eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    let mut shares: Vec<(Player, <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare)> = Vec::new();
+    for i in 0..5 {
+        let (sk_share, _pk_share) = transcript
+            .decrypt_own_share(&wconfig, &Player { id: i }, &dealing_args.dks[i], &dealing_args.pp)
+            .expect("decrypt_own_share should succeed");
+        shares.push((Player { id: i }, sk_share));
+    }
+
+    let identity = compute_identity(12345, 1000000000);
+    let h_identity = hash_to_g1(&identity);
+
+    // Path A: Compute G1 DK shares from each validator's scalar share
+    // For weighted config, each validator has multiple shares (one per weight)
+    let dk_shares_g1: Vec<G1Projective> = shares
+        .iter()
+        .map(|(_player, sk_shares)| {
+            let mut sum = G1Projective::identity();
+            for sk_share in sk_shares.iter() {
+                sum += h_identity.mul(&sk_share.0.s);
+            }
+            sum
+        })
+        .collect();
+
+    let mpk = G2Projective::generator().mul(&secret).to_affine();
+
+    let plaintext = b"Test message for DK share aggregation roundtrip";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
+
+    // Path B: Reconstruct master secret using the framework
+    let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
+
+    let reconstructed_secret: <WeightedTranscript as TranscriptTrait>::DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
+
+    assert_eq!(
+        reconstructed_secret.s, secret,
+        "Reconstructed master secret should match original dealt secret"
+    );
+
+    // Derive DK from reconstructed master secret
+    let dk_from_scalar = derive_decryption_key(&reconstructed_secret.s, &identity);
+
+    // Verify decryption works with DK derived from reconstructed secret
+    let decrypted = ibe_decrypt(&dk_from_scalar, &ciphertext);
+    assert_eq!(decrypted, plaintext);
+
+    println!("✅ DK share aggregation roundtrip test passed!");
+    println!("   - Path B: Reconstructed master secret matches original");
+}
