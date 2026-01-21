@@ -9,6 +9,7 @@ module aptos_framework::block {
 
     use aptos_framework::account;
     use aptos_framework::event::{Self, EventHandle};
+    use aptos_framework::ibe_config;
     use aptos_framework::reconfiguration;
     use aptos_framework::reconfiguration_with_dkg;
     use aptos_framework::stake;
@@ -194,6 +195,7 @@ module aptos_framework::block {
         // transition is the last block in the previous epoch.
         stake::update_performance_statistics(proposer_index, failed_proposer_indices);
         state_storage::on_new_block(reconfiguration::current_epoch());
+        ibe_config::on_new_block(vm);
 
         block_metadata_ref.epoch_interval
     }

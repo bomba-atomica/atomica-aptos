@@ -286,6 +286,16 @@ module aptos_std::crypto_algebra {
         std::features::change_feature_flags_for_testing(fx, vector[std::features::get_cryptography_algebra_natives_feature()], vector[]);
     }
 
+    /// Get the internal handle of an element.
+    public fun get_handle<S>(element: &Element<S>): u64 {
+        element.handle
+    }
+
+    /// Create an element from an internal handle.
+    public fun new_element<S>(handle: u64): Element<S> {
+        Element<S> { handle }
+    }
+
     fun handles_from_elements<S>(elements: &vector<Element<S>>): vector<u64> {
         let num_elements = elements.length();
         let element_handles = std::vector::empty();

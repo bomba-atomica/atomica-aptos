@@ -119,7 +119,6 @@ pub fn reconstruct_ibe_dk_internal(
                 lagrange_coeffs.push(weighted_coeff);
             }
 
-            // Aggregate: DK = Σ λ_i * dk_share_i
             let mut result = ark_bls12_381::G1Projective::zero();
 
             for (i, dk_share_handle) in dk_shares_handles.iter().enumerate() {
@@ -137,8 +136,7 @@ pub fn reconstruct_ibe_dk_internal(
                 result += weighted_share;
             }
 
-            let result_affine = result.into_affine();
-            let new_handle = store_element!(context, result_affine)?;
+            let new_handle = store_element!(context, result)?;
 
             Ok(smallvec![Value::u64(new_handle as u64)])
         },

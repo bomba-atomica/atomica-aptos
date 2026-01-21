@@ -12,12 +12,12 @@ The native functions are implemented in Rust in the algebra natives
 and registered via the <code>natives::cryptography::algebra::ibe</code> module.
 
 
--  [Function `reconstruct_ibe_dk_internal`](#0x1_ibe_reconstruct_ibe_dk_internal)
+-  [Function `reconstruct_ibe_dk`](#0x1_ibe_reconstruct_ibe_dk)
     -  [Arguments](#@Arguments_0)
     -  [Returns](#@Returns_1)
     -  [Aborts](#@Aborts_2)
     -  [Example](#@Example_3)
--  [Function `reconstruct_ibe_dk_internal_internal`](#0x1_ibe_reconstruct_ibe_dk_internal_internal)
+-  [Function `reconstruct_ibe_dk_internal`](#0x1_ibe_reconstruct_ibe_dk_internal)
 
 
 <pre><code><b>use</b> <a href="crypto_algebra.md#0x1_crypto_algebra">0x1::crypto_algebra</a>;
@@ -25,9 +25,9 @@ and registered via the <code>natives::cryptography::algebra::ibe</code> module.
 
 
 
-<a id="0x1_ibe_reconstruct_ibe_dk_internal"></a>
+<a id="0x1_ibe_reconstruct_ibe_dk"></a>
 
-## Function `reconstruct_ibe_dk_internal`
+## Function `reconstruct_ibe_dk`
 
 Reconstruct an IBE decryption key from threshold shares using Lagrange interpolation.
 
@@ -77,7 +77,7 @@ vector[1, 1, 1],           // weights
 ```
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal">reconstruct_ibe_dk_internal</a>&lt;G1&gt;(validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, dk_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;&gt;, weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, threshold: u64, total_weight: u64): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;
+<pre><code><b>public</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk">reconstruct_ibe_dk</a>&lt;G1&gt;(validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, dk_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;&gt;, weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, threshold: u64, total_weight: u64): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;
 </code></pre>
 
 
@@ -86,19 +86,30 @@ vector[1, 1, 1],           // weights
 <summary>Implementation</summary>
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal">reconstruct_ibe_dk_internal</a>&lt;G1&gt;(
+<pre><code><b>public</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk">reconstruct_ibe_dk</a>&lt;G1&gt;(
     validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
     dk_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;&gt;,
     weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
     threshold: u64,
     total_weight: u64,
 ): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt; {
-    <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal_internal">reconstruct_ibe_dk_internal_internal</a>(
-        validator_indices,
-        dk_shares,
-        weights,
-        threshold,
-        total_weight
+    <b>let</b> dk_shares_handles = <a href="../../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u64&gt;();
+    <b>let</b> i = 0;
+    <b>let</b> n = <a href="../../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&dk_shares);
+    <b>while</b> (i &lt; n) {
+        <b>let</b> element = <a href="../../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&dk_shares, i);
+        <a href="../../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> dk_shares_handles, <a href="crypto_algebra.md#0x1_crypto_algebra_get_handle">crypto_algebra::get_handle</a>(element));
+        i = i + 1;
+    };
+
+    <a href="crypto_algebra.md#0x1_crypto_algebra_new_element">crypto_algebra::new_element</a>&lt;G1&gt;(
+        <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal">reconstruct_ibe_dk_internal</a>&lt;G1&gt;(
+            validator_indices,
+            dk_shares_handles,
+            weights,
+            threshold,
+            total_weight
+        )
     )
 }
 </code></pre>
@@ -107,16 +118,15 @@ vector[1, 1, 1],           // weights
 
 </details>
 
-<a id="0x1_ibe_reconstruct_ibe_dk_internal_internal"></a>
+<a id="0x1_ibe_reconstruct_ibe_dk_internal"></a>
 
-## Function `reconstruct_ibe_dk_internal_internal`
+## Function `reconstruct_ibe_dk_internal`
 
 Internal native function wrapper.
 This is called via the algebra natives infrastructure.
 
 
-<pre><code>#[deprecated]
-<b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal_internal">reconstruct_ibe_dk_internal_internal</a>&lt;G1&gt;(validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, dk_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;&gt;, weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, threshold: u64, total_weight: u64): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;
+<pre><code><b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal">reconstruct_ibe_dk_internal</a>&lt;G1&gt;(validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, dk_shares_handles: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, threshold: u64, total_weight: u64): u64
 </code></pre>
 
 
@@ -125,13 +135,13 @@ This is called via the algebra natives infrastructure.
 <summary>Implementation</summary>
 
 
-<pre><code><b>native</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal_internal">reconstruct_ibe_dk_internal_internal</a>&lt;G1&gt;(
+<pre><code><b>native</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal">reconstruct_ibe_dk_internal</a>&lt;G1&gt;(
     validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
-    dk_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;&gt;,
+    dk_shares_handles: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
     weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
     threshold: u64,
     total_weight: u64,
-): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;;
+): u64;
 </code></pre>
 
 

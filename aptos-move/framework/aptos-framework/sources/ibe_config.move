@@ -92,9 +92,14 @@ module aptos_framework::ibe_config {
     use aptos_framework::timestamp;
     use aptos_framework::event;
     use aptos_framework::account;
+    use aptos_framework::stake;
     use aptos_std::table::{Self, Table};
+    use aptos_std::crypto_algebra;
+    use aptos_std::bls12381_algebra::{G1, FormatG1Compr};
+    use aptos_std::ibe;
 
     friend aptos_framework::reconfiguration_with_dkg;
+    friend aptos_framework::block;
 
     /// MPK length must be exactly 96 bytes (G2 compressed)
     const E_INVALID_MPK_LENGTH: u64 = 1;
@@ -154,18 +159,30 @@ module aptos_framework::ibe_config {
         share_count: u64,
         /// Threshold required to reveal (in weighted units)
         reveal_threshold: u64,
+        /// Validator indices who submitted shares (1-indexed)
+        validator_indices: vector<u64>,
+        /// Submitted shares (G1 compressed, 48 bytes)
+        submitted_shares: vector<vector<u8>>,
+        /// Validator weights corresponding to each share
+        validator_weights: vector<u64>,
+        /// Addresses of validators who have already submitted a share
+        submitters: vector<address>,
     }
 
     /// Registry of all registered timelocks.
     struct TimelockRegistry has key {
         /// Map from timelock_id to TimelockInfo
         timelocks: Table<u64, TimelockInfo>,
+        /// List of timelock IDs that have not yet been revealed
+        pending_timelock_ids: vector<u64>,
         /// Counter for generating unique timelock IDs
         next_timelock_id: u64,
         /// Event handle for timelock registration events
         registration_events: event::EventHandle<TimelockRegistrationEvent>,
         /// Event handle for decryption key reveal events
         reveal_events: event::EventHandle<TimelockRevealEvent>,
+        /// Event handle for timelock expiration events
+        expired_events: event::EventHandle<TimelockExpiredEvent>,
     }
 
     /// Event emitted when a new timelock is registered.
@@ -178,6 +195,12 @@ module aptos_framework::ibe_config {
 
     /// Event emitted when a decryption key is revealed.
     struct TimelockRevealEvent has drop, store {
+        timelock_id: u64,
+        timestamp_us: u64,
+    }
+
+    /// Event emitted when a timelock's deadline has passed.
+    struct TimelockExpiredEvent has drop, store {
         timelock_id: u64,
         timestamp_us: u64,
     }
@@ -249,9 +272,11 @@ module aptos_framework::ibe_config {
         if (!exists<TimelockRegistry>(@aptos_framework)) {
             move_to(aptos_framework, TimelockRegistry {
                 timelocks: table::new(),
+                pending_timelock_ids: vector::empty<u64>(),
                 next_timelock_id: 0,
                 registration_events: account::new_event_handle<TimelockRegistrationEvent>(aptos_framework),
                 reveal_events: account::new_event_handle<TimelockRevealEvent>(aptos_framework),
+                expired_events: account::new_event_handle<TimelockExpiredEvent>(aptos_framework),
             });
         }
     }
@@ -296,10 +321,15 @@ module aptos_framework::ibe_config {
             is_revealed: false,
             share_count: 0,
             reveal_threshold: 0, // Will be set during reveal phase
+            validator_indices: vector::empty<u64>(),
+            submitted_shares: vector::empty<vector<u8>>(),
+            validator_weights: vector::empty<u64>(),
+            submitters: vector::empty<address>(),
         };
 
         // Add to registry
         table::add(&mut registry.timelocks, timelock_id, timelock_info);
+        vector::push_back(&mut registry.pending_timelock_ids, timelock_id);
 
         // Emit registration event
         event::emit_event(&mut registry.registration_events, TimelockRegistrationEvent {
@@ -346,29 +376,56 @@ module aptos_framework::ibe_config {
         let current_time = timestamp::now_microseconds();
         assert!(current_time >= timelock_info.deadline_us, E_DEADLINE_NOT_PASSED);
 
+        // Check if already revealed
+        assert!(!timelock_info.is_revealed, E_DECRYPTION_KEY_NOT_REVEALED);
+
+        // Check if validator already submitted
+        assert!(!vector::contains(&timelock_info.submitters, &validator_address), E_SHARE_ALREADY_SUBMITTED);
+
         // Initialize threshold on first share if not set
         if (timelock_info.reveal_threshold == 0) {
             timelock_info.reveal_threshold = (total_weight * DEFAULT_REVEAL_THRESHOLD_NUMERATOR) / DEFAULT_REVEAL_THRESHOLD_DENOMINATOR + 1;
         };
 
-        // Check if already revealed
-        assert!(!timelock_info.is_revealed, E_DECRYPTION_KEY_NOT_REVEALED);
+        // Get validator index (1-indexed for IBE native)
+        let validator_index = stake::get_validator_index(validator_address) + 1;
 
-        // Add share to decryption key (accumulate in exponent)
-        // For G1 points, we add them: DK = sum(share_i)
-        if (vector::is_empty(&timelock_info.decryption_key)) {
-            timelock_info.decryption_key = share;
-        } else {
-            // Simple accumulation - in production, would need proper point addition
-            // This is a placeholder for the aggregation logic
-            vector::append(&mut timelock_info.decryption_key, share);
-        };
+        // Store share and metadata
+        vector::push_back(&mut timelock_info.validator_indices, validator_index);
+        vector::push_back(&mut timelock_info.submitted_shares, share);
+        vector::push_back(&mut timelock_info.validator_weights, weight);
+        vector::push_back(&mut timelock_info.submitters, validator_address);
 
         timelock_info.share_count = timelock_info.share_count + weight;
 
         // Check if threshold reached
         if (timelock_info.share_count >= timelock_info.reveal_threshold) {
+            // Reconstruct DK using native function
+            let shares_count = vector::length(&timelock_info.submitted_shares);
+            let dk_shares = vector::empty<crypto_algebra::Element<G1>>();
+            let j = 0;
+            while (j < shares_count) {
+                let share_bytes = vector::borrow(&timelock_info.submitted_shares, j);
+                let share_element_opt = crypto_algebra::deserialize<G1, FormatG1Compr>(share_bytes);
+                // In production we should handle none here, but shares were verified on submission
+                vector::push_back(&mut dk_shares, std::option::extract(&mut share_element_opt));
+                j = j + 1;
+            };
+
+            let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
+                timelock_info.validator_indices,
+                dk_shares,
+                timelock_info.validator_weights,
+                timelock_info.reveal_threshold,
+                total_weight
+            );
+
+            // Store reconstructed DK (serialize to 48 bytes)
+            timelock_info.decryption_key = crypto_algebra::serialize<G1, FormatG1Compr>(&reconstructed_dk);
             timelock_info.is_revealed = true;
+
+            // Remove from pending_timelock_ids
+            remove_pending_timelock_id(registry, timelock_id);
 
             // Emit reveal event
             event::emit_event(&mut registry.reveal_events, TimelockRevealEvent {
@@ -376,10 +433,48 @@ module aptos_framework::ibe_config {
                 timestamp_us: current_time,
             });
         };
+    }
 
-        // Note: In production, would need to track which validators have submitted
-        // to prevent duplicate submissions and enable proper aggregation
-        let _ = validator_address; // Suppress unused warning
+    /// Helper to remove a timelock ID from pending list.
+    fun remove_pending_timelock_id(registry: &mut TimelockRegistry, timelock_id: u64) {
+        let (found, index) = vector::index_of(&registry.pending_timelock_ids, &timelock_id);
+        if (found) {
+            vector::swap_remove(&mut registry.pending_timelock_ids, index);
+        };
+    }
+
+    /// Check for expired timelocks and emit events.
+    /// Called by the block prologue to notify validators of deadlines.
+    public(friend) fun on_new_block(
+        vm: &signer
+    ) acquires TimelockRegistry {
+        system_addresses::assert_vm(vm);
+        
+        if (!exists<TimelockRegistry>(@aptos_framework)) {
+            return
+        };
+
+        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
+        let current_time = timestamp::now_microseconds();
+        let i = 0;
+        let pending_count = vector::length(&registry.pending_timelock_ids);
+        
+        while (i < pending_count) {
+            let timelock_id = *vector::borrow(&registry.pending_timelock_ids, i);
+            let timelock_info = table::borrow(&registry.timelocks, timelock_id);
+            
+            if (!timelock_info.is_revealed && current_time >= timelock_info.deadline_us) {
+                // Emit event to notify validators
+                event::emit_event<TimelockExpiredEvent>(
+                    &mut registry.expired_events,
+                    TimelockExpiredEvent { 
+                        timelock_id,
+                        timestamp_us: current_time,
+                    }
+                );
+            };
+            i = i + 1;
+        };
     }
 
     #[view]
@@ -459,6 +554,7 @@ module aptos_framework::ibe_config {
 
     #[test_only]
     public fun initialize_for_testing(aptos_framework: &signer) {
+        crypto_algebra::enable_cryptography_algebra_natives(aptos_framework);
         account::create_account_for_test(@aptos_framework);
         timestamp::set_time_has_started_for_testing(aptos_framework);
         initialize(aptos_framework);
@@ -620,6 +716,118 @@ module aptos_framework::ibe_config {
     // ================================
     // Timelock Registry Tests
     // ================================
+
+    #[test_only]
+    /// Submit a decryption key share for a timelock (test-only version).
+    public fun submit_dk_share_for_testing(
+        timelock_id: u64,
+        share: vector<u8>,
+        validator_index: u64,
+        validator_address: address,
+        weight: u64,
+        total_weight: u64
+    ) acquires TimelockRegistry {
+        assert!(vector::length(&share) == G1_LENGTH, E_INVALID_MPK_LENGTH);
+
+        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
+        let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
+
+        // Verify deadline has passed
+        let current_time = timestamp::now_microseconds();
+        assert!(current_time >= timelock_info.deadline_us, E_DEADLINE_NOT_PASSED);
+
+        // Check if already revealed
+        assert!(!timelock_info.is_revealed, E_DECRYPTION_KEY_NOT_REVEALED);
+
+        // Check if validator already submitted
+        assert!(!vector::contains(&timelock_info.submitters, &validator_address), E_SHARE_ALREADY_SUBMITTED);
+
+        // Initialize threshold on first share if not set
+        if (timelock_info.reveal_threshold == 0) {
+            timelock_info.reveal_threshold = (total_weight * DEFAULT_REVEAL_THRESHOLD_NUMERATOR) / DEFAULT_REVEAL_THRESHOLD_DENOMINATOR + 1;
+        };
+
+        // Store share and metadata
+        vector::push_back(&mut timelock_info.validator_indices, validator_index);
+        vector::push_back(&mut timelock_info.submitted_shares, share);
+        vector::push_back(&mut timelock_info.validator_weights, weight);
+        vector::push_back(&mut timelock_info.submitters, validator_address);
+
+        timelock_info.share_count = timelock_info.share_count + weight;
+
+        // Check if threshold reached
+        if (timelock_info.share_count >= timelock_info.reveal_threshold) {
+            // Reconstruct DK using native function
+            let shares_count = vector::length(&timelock_info.submitted_shares);
+            let dk_shares = vector::empty<crypto_algebra::Element<G1>>();
+            let j = 0;
+            while (j < shares_count) {
+                let share_bytes = vector::borrow(&timelock_info.submitted_shares, j);
+                let share_element_opt = crypto_algebra::deserialize<G1, FormatG1Compr>(share_bytes);
+                vector::push_back(&mut dk_shares, std::option::extract(&mut share_element_opt));
+                j = j + 1;
+            };
+
+            let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
+                timelock_info.validator_indices,
+                dk_shares,
+                timelock_info.validator_weights,
+                timelock_info.reveal_threshold,
+                total_weight
+            );
+
+            // Store reconstructed DK
+            timelock_info.decryption_key = crypto_algebra::serialize<G1, FormatG1Compr>(&reconstructed_dk);
+            timelock_info.is_revealed = true;
+
+            // Remove from pending_timelock_ids
+            remove_pending_timelock_id(registry, timelock_id);
+
+            // Emit reveal event
+            event::emit_event(&mut registry.reveal_events, TimelockRevealEvent {
+                timelock_id,
+                timestamp_us: current_time,
+            });
+        };
+    }
+
+    #[test(aptos_framework = @aptos_framework, vm = @0x0, user = @0x123)]
+    fun test_full_reveal_flow(aptos_framework: &signer, vm: &signer, user: &signer) acquires TimelockRegistry {
+        initialize_for_testing(aptos_framework);
+
+        // 1. Register a timelock
+        let deadline = timestamp::now_microseconds() + 60_000_000;
+        register_timelock(user, deadline);
+        let timelock_id = 0;
+
+        // 2. Fast forward time to deadline
+        timestamp::update_global_time_for_test_secs(deadline + 1);
+        
+        // 3. Check for expiration
+        on_new_block(vm);
+        assert!(is_expired(timelock_id), 0);
+
+        // 4. Submit shares from 2 validators (threshold 2/3 * 3 + 1 = 3?)
+        // Wait, if total weight is 3, threshold is (3 * 2 / 3) + 1 = 3.
+        // Let's use 4 validators, total weight 4, threshold (4 * 2 / 3) + 1 = 3.
+        let total_weight = 4;
+        
+        // G1 generator point for shares
+        let g1_generator = x"97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb";
+
+        submit_dk_share_for_testing(timelock_id, g1_generator, 1, @0x1, 1, total_weight);
+        assert!(!is_revealed(timelock_id), 1);
+        
+        submit_dk_share_for_testing(timelock_id, g1_generator, 2, @0x2, 1, total_weight);
+        assert!(!is_revealed(timelock_id), 2);
+
+        submit_dk_share_for_testing(timelock_id, g1_generator, 3, @0x3, 1, total_weight);
+        
+        // 5. Verify revealed
+        assert!(is_revealed(timelock_id), 3);
+        let dk = get_decryption_key(timelock_id);
+        assert!(vector::length(&dk) == 48, 4);
+    }
 
     #[test(aptos_framework = @aptos_framework, user = @0x123)]
     fun test_register_timelock(aptos_framework: &signer, user: &signer) acquires TimelockRegistry {
@@ -791,9 +999,7 @@ module aptos_framework::ibe_config {
     // The crypto_algebra module provides: deserialize, add, scalar_mul, etc.
 
     #[test_only]
-    use aptos_std::crypto_algebra;
-    #[test_only]
-    use aptos_std::bls12381_algebra::{G1, FormatG1Compr};
+    use std::option;
 
     #[test(aptos_framework = @aptos_framework)]
     fun test_g1_point_operations(aptos_framework: &signer) {
@@ -802,7 +1008,7 @@ module aptos_framework::ibe_config {
         // Test 1: Deserialize a valid compressed G1 point
         // This is the BLS12-381 generator point in compressed format
         // G1 generator: (0x89e137e0719bf872abb08411010f437a8955bd42f5ba20fca64361af58ce188b1, 0x1adb96ef229698bb7860b79e24ba1200000000000000000000000000000000)
-        let g1_compressed = x"8959e137e0719bf872abb08411010f437a8955bd42f5ba20fca64361af58ce188b1adb96ef229698bb7860b79e24ba12";
+        let g1_compressed = x"97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb";
         let g1_point = crypto_algebra::deserialize<G1, FormatG1Compr>(&g1_compressed);
         assert!(option::is_some(&g1_point), 0);
 
@@ -834,11 +1040,8 @@ module aptos_framework::ibe_config {
         assert!(!crypto_algebra::eq(&g1_1, &sum), 5);
     }
 
-    #[test_only]
-    use aptos_std::crypto_algebra;
-    #[test_only]
-    use aptos_std::bls12381_algebra::{G1, FormatG1Compr};
-
+    // ================================
+    // DK Share Aggregation Tests (with Golden Vectors)
     // ================================
     // DK Share Aggregation Tests (with Golden Vectors)
     // ================================
@@ -856,7 +1059,7 @@ module aptos_framework::ibe_config {
 
         // BLS12-381 generator point in compressed format
         // This is used as a test DK share
-        let g1_generator = x"8959e137e0719bf872abb08411010f437a8955bd42f5ba20fca64361af58ce188b1adb96ef229698bb7860b79e24ba12";
+        let g1_generator = x"97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb";
 
         // Deserialize the generator point
         let generator_opt = crypto_algebra::deserialize<G1, FormatG1Compr>(&g1_generator);
@@ -874,7 +1077,7 @@ module aptos_framework::ibe_config {
         // For testing, we use the generator as a share
         let dk_share_1 = generator;
         let dk_share_2 = generator;
-        let dk_share_3 = generator;
+        let _dk_share_3 = generator;
 
         // Verify the structure of inputs
         assert!(vector::length(&validator_indices) == 3, 2);
@@ -921,7 +1124,7 @@ module aptos_framework::ibe_config {
 
         // Test G1 point deserialization with known values
         // Using the BLS12-381 generator point
-        let g1_generator = x"8959e137e0719bf872abb08411010f437a8955bd42f5ba20fca64361af58ce188b1adb96ef229698bb7860b79e24ba12";
+        let g1_generator = x"97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb";
         let g1_point_opt = crypto_algebra::deserialize<G1, FormatG1Compr>(&g1_generator);
         assert!(option::is_some(&g1_point_opt), 0);
         let g1_point = g1_point_opt.extract();

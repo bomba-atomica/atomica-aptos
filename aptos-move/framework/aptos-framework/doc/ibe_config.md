@@ -121,6 +121,7 @@ This module implements the on-chain components for Atomica's timelock encryption
 -  [Resource `TimelockRegistry`](#0x1_ibe_config_TimelockRegistry)
 -  [Struct `TimelockRegistrationEvent`](#0x1_ibe_config_TimelockRegistrationEvent)
 -  [Struct `TimelockRevealEvent`](#0x1_ibe_config_TimelockRevealEvent)
+-  [Struct `TimelockExpiredEvent`](#0x1_ibe_config_TimelockExpiredEvent)
 -  [Constants](#@Constants_5)
 -  [Function `initialize`](#0x1_ibe_config_initialize)
 -  [Function `set_mpk`](#0x1_ibe_config_set_mpk)
@@ -136,6 +137,8 @@ This module implements the on-chain components for Atomica's timelock encryption
     -  [Arguments](#@Arguments_9)
     -  [Errors](#@Errors_10)
     -  [Side Effects](#@Side_Effects_11)
+-  [Function `remove_pending_timelock_id`](#0x1_ibe_config_remove_pending_timelock_id)
+-  [Function `on_new_block`](#0x1_ibe_config_on_new_block)
 -  [Function `get_timelock`](#0x1_ibe_config_get_timelock)
     -  [Arguments](#@Arguments_12)
     -  [Returns](#@Returns_13)
@@ -150,9 +153,14 @@ This module implements the on-chain components for Atomica's timelock encryption
 
 <pre><code><b>use</b> <a href="account.md#0x1_account">0x1::account</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/bcs.md#0x1_bcs">0x1::bcs</a>;
+<b>use</b> <a href="../../aptos-stdlib/doc/bls12381_algebra.md#0x1_bls12381_algebra">0x1::bls12381_algebra</a>;
+<b>use</b> <a href="../../aptos-stdlib/doc/crypto_algebra.md#0x1_crypto_algebra">0x1::crypto_algebra</a>;
 <b>use</b> <a href="event.md#0x1_event">0x1::event</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/hash.md#0x1_hash">0x1::hash</a>;
+<b>use</b> <a href="../../aptos-stdlib/doc/ibe.md#0x1_ibe">0x1::ibe</a>;
+<b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/option.md#0x1_option">0x1::option</a>;
 <b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">0x1::signer</a>;
+<b>use</b> <a href="stake.md#0x1_stake">0x1::stake</a>;
 <b>use</b> <a href="system_addresses.md#0x1_system_addresses">0x1::system_addresses</a>;
 <b>use</b> <a href="../../aptos-stdlib/doc/table.md#0x1_table">0x1::table</a>;
 <b>use</b> <a href="timestamp.md#0x1_timestamp">0x1::timestamp</a>;
@@ -257,6 +265,30 @@ Information about a registered timelock.
 <dd>
  Threshold required to reveal (in weighted units)
 </dd>
+<dt>
+<code>validator_indices: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;</code>
+</dt>
+<dd>
+ Validator indices who submitted shares (1-indexed)
+</dd>
+<dt>
+<code>submitted_shares: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;</code>
+</dt>
+<dd>
+ Submitted shares (G1 compressed, 48 bytes)
+</dd>
+<dt>
+<code>validator_weights: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;</code>
+</dt>
+<dd>
+ Validator weights corresponding to each share
+</dd>
+<dt>
+<code>submitters: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<b>address</b>&gt;</code>
+</dt>
+<dd>
+ Addresses of validators who have already submitted a share
+</dd>
 </dl>
 
 
@@ -286,6 +318,12 @@ Registry of all registered timelocks.
  Map from timelock_id to TimelockInfo
 </dd>
 <dt>
+<code>pending_timelock_ids: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;</code>
+</dt>
+<dd>
+ List of timelock IDs that have not yet been revealed
+</dd>
+<dt>
 <code>next_timelock_id: u64</code>
 </dt>
 <dd>
@@ -302,6 +340,12 @@ Registry of all registered timelocks.
 </dt>
 <dd>
  Event handle for decryption key reveal events
+</dd>
+<dt>
+<code>expired_events: <a href="event.md#0x1_event_EventHandle">event::EventHandle</a>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockExpiredEvent">ibe_config::TimelockExpiredEvent</a>&gt;</code>
+</dt>
+<dd>
+ Event handle for timelock expiration events
 </dd>
 </dl>
 
@@ -362,6 +406,40 @@ Event emitted when a decryption key is revealed.
 
 
 <pre><code><b>struct</b> <a href="ibe_config.md#0x1_ibe_config_TimelockRevealEvent">TimelockRevealEvent</a> <b>has</b> drop, store
+</code></pre>
+
+
+
+<details>
+<summary>Fields</summary>
+
+
+<dl>
+<dt>
+<code>timelock_id: u64</code>
+</dt>
+<dd>
+
+</dd>
+<dt>
+<code>timestamp_us: u64</code>
+</dt>
+<dd>
+
+</dd>
+</dl>
+
+
+</details>
+
+<a id="0x1_ibe_config_TimelockExpiredEvent"></a>
+
+## Struct `TimelockExpiredEvent`
+
+Event emitted when a timelock's deadline has passed.
+
+
+<pre><code><b>struct</b> <a href="ibe_config.md#0x1_ibe_config_TimelockExpiredEvent">TimelockExpiredEvent</a> <b>has</b> drop, store
 </code></pre>
 
 
@@ -680,9 +758,11 @@ Initialize the timelock registry. Called separately after genesis is complete.
     <b>if</b> (!<b>exists</b>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a>&gt;(@aptos_framework)) {
         <b>move_to</b>(aptos_framework, <a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a> {
             timelocks: <a href="../../aptos-stdlib/doc/table.md#0x1_table_new">table::new</a>(),
+            pending_timelock_ids: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u64&gt;(),
             next_timelock_id: 0,
             registration_events: <a href="account.md#0x1_account_new_event_handle">account::new_event_handle</a>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockRegistrationEvent">TimelockRegistrationEvent</a>&gt;(aptos_framework),
             reveal_events: <a href="account.md#0x1_account_new_event_handle">account::new_event_handle</a>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockRevealEvent">TimelockRevealEvent</a>&gt;(aptos_framework),
+            expired_events: <a href="account.md#0x1_account_new_event_handle">account::new_event_handle</a>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockExpiredEvent">TimelockExpiredEvent</a>&gt;(aptos_framework),
         });
     }
 }
@@ -759,10 +839,15 @@ after the transaction (which returns the ID that will be assigned to the next re
         is_revealed: <b>false</b>,
         share_count: 0,
         reveal_threshold: 0, // Will be set during reveal phase
+        validator_indices: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u64&gt;(),
+        submitted_shares: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;(),
+        validator_weights: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u64&gt;(),
+        submitters: <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;<b>address</b>&gt;(),
     };
 
     // Add <b>to</b> registry
     <a href="../../aptos-stdlib/doc/table.md#0x1_table_add">table::add</a>(&<b>mut</b> registry.timelocks, timelock_id, timelock_info);
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> registry.pending_timelock_ids, timelock_id);
 
     // Emit registration <a href="event.md#0x1_event">event</a>
     <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> registry.registration_events, <a href="ibe_config.md#0x1_ibe_config_TimelockRegistrationEvent">TimelockRegistrationEvent</a> {
@@ -841,29 +926,56 @@ then marks timelock as revealed.
     <b>let</b> current_time = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
     <b>assert</b>!(current_time &gt;= timelock_info.deadline_us, <a href="ibe_config.md#0x1_ibe_config_E_DEADLINE_NOT_PASSED">E_DEADLINE_NOT_PASSED</a>);
 
+    // Check <b>if</b> already revealed
+    <b>assert</b>!(!timelock_info.is_revealed, <a href="ibe_config.md#0x1_ibe_config_E_DECRYPTION_KEY_NOT_REVEALED">E_DECRYPTION_KEY_NOT_REVEALED</a>);
+
+    // Check <b>if</b> validator already submitted
+    <b>assert</b>!(!<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_contains">vector::contains</a>(&timelock_info.submitters, &validator_address), <a href="ibe_config.md#0x1_ibe_config_E_SHARE_ALREADY_SUBMITTED">E_SHARE_ALREADY_SUBMITTED</a>);
+
     // Initialize threshold on first share <b>if</b> not set
     <b>if</b> (timelock_info.reveal_threshold == 0) {
         timelock_info.reveal_threshold = (total_weight * <a href="ibe_config.md#0x1_ibe_config_DEFAULT_REVEAL_THRESHOLD_NUMERATOR">DEFAULT_REVEAL_THRESHOLD_NUMERATOR</a>) / <a href="ibe_config.md#0x1_ibe_config_DEFAULT_REVEAL_THRESHOLD_DENOMINATOR">DEFAULT_REVEAL_THRESHOLD_DENOMINATOR</a> + 1;
     };
 
-    // Check <b>if</b> already revealed
-    <b>assert</b>!(!timelock_info.is_revealed, <a href="ibe_config.md#0x1_ibe_config_E_DECRYPTION_KEY_NOT_REVEALED">E_DECRYPTION_KEY_NOT_REVEALED</a>);
+    // Get validator index (1-indexed for IBE <b>native</b>)
+    <b>let</b> validator_index = <a href="stake.md#0x1_stake_get_validator_index">stake::get_validator_index</a>(validator_address) + 1;
 
-    // Add share <b>to</b> decryption key (accumulate in exponent)
-    // For G1 points, we add them: DK = sum(share_i)
-    <b>if</b> (<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_is_empty">vector::is_empty</a>(&timelock_info.decryption_key)) {
-        timelock_info.decryption_key = share;
-    } <b>else</b> {
-        // Simple accumulation - in production, would need proper point addition
-        // This is a placeholder for the aggregation logic
-        <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_append">vector::append</a>(&<b>mut</b> timelock_info.decryption_key, share);
-    };
+    // Store share and metadata
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> timelock_info.validator_indices, validator_index);
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> timelock_info.submitted_shares, share);
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> timelock_info.validator_weights, weight);
+    <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> timelock_info.submitters, validator_address);
 
     timelock_info.share_count = timelock_info.share_count + weight;
 
     // Check <b>if</b> threshold reached
     <b>if</b> (timelock_info.share_count &gt;= timelock_info.reveal_threshold) {
+        // Reconstruct DK using <b>native</b> function
+        <b>let</b> shares_count = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&timelock_info.submitted_shares);
+        <b>let</b> dk_shares = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;<a href="../../aptos-stdlib/doc/crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;&gt;();
+        <b>let</b> j = 0;
+        <b>while</b> (j &lt; shares_count) {
+            <b>let</b> share_bytes = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&timelock_info.submitted_shares, j);
+            <b>let</b> share_element_opt = <a href="../../aptos-stdlib/doc/crypto_algebra.md#0x1_crypto_algebra_deserialize">crypto_algebra::deserialize</a>&lt;G1, FormatG1Compr&gt;(share_bytes);
+            // In production we should handle none here, but shares were verified on submission
+            <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> dk_shares, std::option::extract(&<b>mut</b> share_element_opt));
+            j = j + 1;
+        };
+
+        <b>let</b> reconstructed_dk = <a href="../../aptos-stdlib/doc/ibe.md#0x1_ibe_reconstruct_ibe_dk">ibe::reconstruct_ibe_dk</a>&lt;G1&gt;(
+            timelock_info.validator_indices,
+            dk_shares,
+            timelock_info.validator_weights,
+            timelock_info.reveal_threshold,
+            total_weight
+        );
+
+        // Store reconstructed DK (serialize <b>to</b> 48 bytes)
+        timelock_info.decryption_key = <a href="../../aptos-stdlib/doc/crypto_algebra.md#0x1_crypto_algebra_serialize">crypto_algebra::serialize</a>&lt;G1, FormatG1Compr&gt;(&reconstructed_dk);
         timelock_info.is_revealed = <b>true</b>;
+
+        // Remove from pending_timelock_ids
+        <a href="ibe_config.md#0x1_ibe_config_remove_pending_timelock_id">remove_pending_timelock_id</a>(registry, timelock_id);
 
         // Emit reveal <a href="event.md#0x1_event">event</a>
         <a href="event.md#0x1_event_emit_event">event::emit_event</a>(&<b>mut</b> registry.reveal_events, <a href="ibe_config.md#0x1_ibe_config_TimelockRevealEvent">TimelockRevealEvent</a> {
@@ -871,10 +983,88 @@ then marks timelock as revealed.
             timestamp_us: current_time,
         });
     };
+}
+</code></pre>
 
-    // Note: In production, would need <b>to</b> track which validators have submitted
-    // <b>to</b> prevent duplicate submissions and enable proper aggregation
-    <b>let</b> _ = validator_address; // Suppress unused warning
+
+
+</details>
+
+<a id="0x1_ibe_config_remove_pending_timelock_id"></a>
+
+## Function `remove_pending_timelock_id`
+
+Helper to remove a timelock ID from pending list.
+
+
+<pre><code><b>fun</b> <a href="ibe_config.md#0x1_ibe_config_remove_pending_timelock_id">remove_pending_timelock_id</a>(registry: &<b>mut</b> <a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">ibe_config::TimelockRegistry</a>, timelock_id: u64)
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>fun</b> <a href="ibe_config.md#0x1_ibe_config_remove_pending_timelock_id">remove_pending_timelock_id</a>(registry: &<b>mut</b> <a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a>, timelock_id: u64) {
+    <b>let</b> (found, index) = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_index_of">vector::index_of</a>(&registry.pending_timelock_ids, &timelock_id);
+    <b>if</b> (found) {
+        <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_swap_remove">vector::swap_remove</a>(&<b>mut</b> registry.pending_timelock_ids, index);
+    };
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_ibe_config_on_new_block"></a>
+
+## Function `on_new_block`
+
+Check for expired timelocks and emit events.
+Called by the block prologue to notify validators of deadlines.
+
+
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="ibe_config.md#0x1_ibe_config_on_new_block">on_new_block</a>(vm: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>)
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="ibe_config.md#0x1_ibe_config_on_new_block">on_new_block</a>(
+    vm: &<a href="../../aptos-stdlib/../move-stdlib/doc/signer.md#0x1_signer">signer</a>
+) <b>acquires</b> <a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a> {
+    <a href="system_addresses.md#0x1_system_addresses_assert_vm">system_addresses::assert_vm</a>(vm);
+
+    <b>if</b> (!<b>exists</b>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a>&gt;(@aptos_framework)) {
+        <b>return</b>
+    };
+
+    <b>let</b> registry = <b>borrow_global_mut</b>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a>&gt;(@aptos_framework);
+    <b>let</b> current_time = <a href="timestamp.md#0x1_timestamp_now_microseconds">timestamp::now_microseconds</a>();
+    <b>let</b> i = 0;
+    <b>let</b> pending_count = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&registry.pending_timelock_ids);
+
+    <b>while</b> (i &lt; pending_count) {
+        <b>let</b> timelock_id = *<a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&registry.pending_timelock_ids, i);
+        <b>let</b> timelock_info = <a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow">table::borrow</a>(&registry.timelocks, timelock_id);
+
+        <b>if</b> (!timelock_info.is_revealed && current_time &gt;= timelock_info.deadline_us) {
+            // Emit <a href="event.md#0x1_event">event</a> <b>to</b> notify validators
+            <a href="event.md#0x1_event_emit_event">event::emit_event</a>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockExpiredEvent">TimelockExpiredEvent</a>&gt;(
+                &<b>mut</b> registry.expired_events,
+                <a href="ibe_config.md#0x1_ibe_config_TimelockExpiredEvent">TimelockExpiredEvent</a> {
+                    timelock_id,
+                    timestamp_us: current_time,
+                }
+            );
+        };
+        i = i + 1;
+    };
 }
 </code></pre>
 

@@ -515,3 +515,75 @@ fn test_dk_share_aggregation_roundtrip() {
     println!("   - Path A: G1 DK shares (dk_share_i = s_i × H) computed but require");
     println!("     correct Lagrange coefficients for aggregation, handled by framework");
 }
+
+#[test]
+fn test_scalar_elgamal_pvss_ibe_roundtrip_unequal_weights() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use group::Group;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    // Unequal weights: [2, 1, 2] - total weight 5, threshold 3
+    let weights = vec![2, 1, 2];
+    let wconfig = WeightedConfig::new(3, weights).unwrap();
+
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+    let input_secret = InputSecret::generate(&mut rng);
+    let secret = *input_secret.get_secret_a();
+
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &dealing_args.eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    let mut shares: Vec<(
+        Player,
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
+    )> = Vec::new();
+    for i in 0..3 {
+        let (sk_share, _pk_share) = transcript
+            .decrypt_own_share(
+                &wconfig,
+                &Player { id: i },
+                &dealing_args.dks[i],
+                &dealing_args.pp,
+            )
+            .expect("decrypt_own_share should succeed");
+        shares.push((Player { id: i }, sk_share));
+    }
+
+    // Reconstruct with all 3 players (total weight = 5 >= threshold 3)
+    let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
+    let reconstructed_secret: <WeightedTranscript as TranscriptTrait>::DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
+
+    assert_eq!(reconstructed_secret.s, secret);
+
+    // IBE operations with reconstructed secret
+    let identity = compute_identity(42, 1_000_000_000_000);
+    let dk = derive_decryption_key(&reconstructed_secret.s, &identity);
+    let mpk = G2Projective::generator().mul(&secret).to_affine();
+
+    // Encrypt and decrypt
+    let plaintext = b"Unequal weights IBE roundtrip test [2,1,2]";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
+    let decrypted = ibe_decrypt(&dk, &ciphertext);
+
+    assert_eq!(decrypted, plaintext);
+    println!("✅ Unequal weights [2,1,2] IBE roundtrip test passed!");
+}

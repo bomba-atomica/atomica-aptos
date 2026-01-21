@@ -1,0 +1,28 @@
+IBE Golden Test Vectors
+=======================
+Generated: 2026-01-21T20:38:14.384817507+00:00
+Version: 2.0.0
+
+Golden test vectors for IBE identity computation and DK reconstruction
+
+Identity Vectors:
+  1. Basic timelock with ID 0 (ID=0, deadline=1000000000000)
+     identity: cd2f0ecdda375c87027bcbd9a8b429057062065239267bfd2496e844b81f7355
+  2. Different ID, same deadline (should differ) (ID=1, deadline=1000000000000)
+     identity: 1235cfe3eb61fd7c5aa850477532822bbef4d9ca30decc2ca4405ebb30d5cab1
+  3. Same ID, different deadline (should differ) (ID=0, deadline=2000000000000)
+     identity: ee623d0d70b0a085f0e91a197853c627a9cd7b24cdac79d2782e912e35ddefe6
+  4. Large values (ID=999999, deadline=9999999999999)
+     identity: f355ee7d4a1e1cca0bb037f35b74c0d317e745366a8beae1f6bc21828c7208e6
+  5. Maximum u64 values (ID=18446744073709551615, deadline=18446744073709551615)
+     identity: dfc6bbb77b5a21d8f42ce5a0db83131fa75d65a2fad956d47e107ae9218682b1
+
+IBE Roundtrip Vectors:
+  1. 5 validators, threshold 3, equal weights (PVSS-based)
+     threshold: 3/5
+     validators: [0, 1, 2, 3, 4]
+     dk_shares: 5 shares
+  2. 4 validators, threshold 2, equal weights
+     threshold: 2/4
+     validators: [0, 1, 2, 3]
+     dk_shares: 4 shares
