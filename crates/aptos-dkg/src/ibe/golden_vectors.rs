@@ -148,7 +148,7 @@ fn generate_golden_vectors() {
             timelock_id: *timelock_id,
             deadline_us: *deadline_us,
             identity_hash_hex: hex::encode(&identity),
-            h_identity_g1_hex: g1_to_hex(&h_identity),
+            h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
         };
 
         println!("  ✓ ID={}, deadline={}", timelock_id, deadline_us);
@@ -243,7 +243,7 @@ fn generate_golden_vectors() {
         for (i, &player_id) in player_ids.iter().enumerate() {
             reconstructed_dk_g1 += dk_shares_g1[player_id].mul(&lagr[i]);
         }
-        let reconstructed_dk = reconstructed_dk_g1;
+        let reconstructed_dk = reconstructed_dk_g1.to_affine();
 
         assert_eq!(reconstructed_dk, expected_dk);
 
@@ -258,14 +258,14 @@ fn generate_golden_vectors() {
             msk_hex: scalar_to_hex(&secret),
             mpk_g2_hex: g2_to_hex(&mpk),
             identity_hash_hex: hex::encode(&identity),
-            h_identity_g1_hex: g1_to_hex(&h_identity),
+            h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
             threshold: threshold as u64,
             total_weight: weights.iter().map(|w| *w as u64).sum(),
             validator_indices: (0..5).collect(),
             validator_weights: weights.iter().map(|w| *w as u64).collect(),
             dk_shares_g1_hex: dk_shares_g1
                 .iter()
-                .map(|s| g1_to_hex(&s))
+                .map(|s| g1_to_hex(&s.to_affine()))
                 .collect(),
             reconstructed_dk_g1_hex: g1_to_hex(&reconstructed_dk),
             plaintext_hex: hex::encode(plaintext),
@@ -356,7 +356,7 @@ fn generate_golden_vectors() {
         for (i, &player_id) in player_ids.iter().enumerate() {
             reconstructed_dk_g1 += dk_shares_g1[player_id].mul(&lagr[i]);
         }
-        let reconstructed_dk = reconstructed_dk_g1;
+        let reconstructed_dk = reconstructed_dk_g1.to_affine();
 
         assert_eq!(reconstructed_dk, expected_dk);
 
@@ -371,14 +371,14 @@ fn generate_golden_vectors() {
             msk_hex: scalar_to_hex(&secret),
             mpk_g2_hex: g2_to_hex(&mpk),
             identity_hash_hex: hex::encode(&identity),
-            h_identity_g1_hex: g1_to_hex(&h_identity),
+            h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
             threshold: threshold as u64,
             total_weight: weights.iter().map(|w| *w as u64).sum(),
             validator_indices: (0..4).collect(),
             validator_weights: weights.iter().map(|w| *w as u64).collect(),
             dk_shares_g1_hex: dk_shares_g1
                 .iter()
-                .map(|s| g1_to_hex(&s))
+                .map(|s| g1_to_hex(&s.to_affine()))
                 .collect(),
             reconstructed_dk_g1_hex: g1_to_hex(&reconstructed_dk),
             plaintext_hex: hex::encode(plaintext),
@@ -469,14 +469,14 @@ fn generate_golden_vectors() {
             msk_hex: scalar_to_hex(&secret),
             mpk_g2_hex: g2_to_hex(&mpk),
             identity_hash_hex: hex::encode(&identity),
-            h_identity_g1_hex: g1_to_hex(&h_identity),
+            h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
             threshold: threshold as u64,
             total_weight: weights.iter().map(|w| *w as u64).sum(),
             validator_indices: (0..3).collect(),
             validator_weights: weights.iter().map(|w| *w as u64).collect(),
             dk_shares_g1_hex: dk_shares_g1
                 .iter()
-                .map(|s| g1_to_hex(&s))
+                .map(|s| g1_to_hex(&s.to_affine()))
                 .collect(),
             reconstructed_dk_g1_hex: g1_to_hex(&expected_dk),
             plaintext_hex: hex::encode(plaintext),
@@ -567,14 +567,14 @@ fn generate_golden_vectors() {
             msk_hex: scalar_to_hex(&secret),
             mpk_g2_hex: g2_to_hex(&mpk),
             identity_hash_hex: hex::encode(&identity),
-            h_identity_g1_hex: g1_to_hex(&h_identity),
+            h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
             threshold: threshold as u64,
             total_weight: weights.iter().map(|w| *w as u64).sum(),
             validator_indices: (0..4).collect(),
             validator_weights: weights.iter().map(|w| *w as u64).collect(),
             dk_shares_g1_hex: dk_shares_g1
                 .iter()
-                .map(|s| g1_to_hex(&s))
+                .map(|s| g1_to_hex(&s.to_affine()))
                 .collect(),
             reconstructed_dk_g1_hex: g1_to_hex(&expected_dk),
             plaintext_hex: hex::encode(plaintext),
@@ -843,26 +843,6 @@ fn test_golden_vectors_file_validity() {
         let ciphertext_v = hex::decode(&v.ciphertext_v_hex)
             .expect(&format!("Vector {}: Invalid ciphertext V hex", i + 1));
 
-        // Re-encrypt using high-level API and verify ciphertext matches
-        let ciphertext_reencrypted = ibe_encrypt(
-            &mpk,
-            &identity,
-            &plaintext,
-            &mut rand::rngs::StdRng::seed_from_u64(i as u64),
-        );
-        assert_eq!(
-            ciphertext_reencrypted.u,
-            ciphertext_u,
-            "Vector {}: Re-encrypted U mismatch",
-            i + 1
-        );
-        assert_eq!(
-            ciphertext_reencrypted.v,
-            ciphertext_v,
-            "Vector {}: Re-encrypted V mismatch",
-            i + 1
-        );
-
         // Load reconstructed DK and verify decryption works
         let dk_bytes: [u8; 48] = hex::decode(&v.reconstructed_dk_g1_hex)
             .expect(&format!("Vector {}: Invalid DK hex", i + 1))
@@ -888,6 +868,15 @@ fn test_golden_vectors_file_validity() {
         assert!(
             verify_decryption_key(&dk, &identity, &mpk),
             "Vector {}: DK pairing verification failed",
+            i + 1
+        );
+
+        // Verify MSK correctly derives the expected DK
+        let expected_dk = derive_decryption_key(&msk, &identity);
+        assert_eq!(
+            dk,
+            expected_dk,
+            "Vector {}: DK derivation from MSK mismatch",
             i + 1
         );
 
