@@ -2,10 +2,10 @@
 
 ## IBE + DKG with Chunked Lifted ElGamal PVSS
 
-**Version:** 3.1  
-**Date:** January 20, 2026  
-**Branch:** `timelock-vpss`  
-**Status:** Phase 4 complete, E2E tests pending
+**Version:** 3.2  
+**Date:** January 21, 2026  
+**Branch:** `timelock-elgamal-pvss`  
+**Status:** Phase 4 complete, E2E tests ready for CLI build
 
 **Reference:** [ADR-001: Dual-Output DKG](adr-001-dual-output-dkg.md)
 
@@ -478,7 +478,28 @@ pub fn reconstruct_ibe_dk_internal(
 - [x] Add basic tests for module structure
 - [x] Add golden vector identity test
 
-### Phase 4: Move Language Tests (with Golden Vectors) ✅ IN PROGRESS
+### Phase 4: Rust Unit Tests (DK Share Aggregation) ✅ COMPLETE
+
+**Location:** `crates/aptos-dkg/src/ibe/tests.rs`
+
+**Status:** Test implemented and passing
+
+**Completed Tasks:**
+
+- [x] Add `test_dk_share_aggregation_roundtrip()` test
+- [x] Test DKG scalar share decryption from transcript
+- [x] Verify master secret reconstruction matches original
+- [x] Compute G1 DK shares: `dk_share_i = s_i × H(identity)`
+- [x] Verify group homomorphism: `Σ (s_i × H) = (Σ s_i) × H`
+- [x] Test full IBE encrypt/decrypt roundtrip with reconstructed DK
+
+**Test Results:**
+
+```
+test result: ok. 27 passed; 0 failed
+```
+
+### Phase 5: Move Language Tests (with Golden Vectors) ⏳ PENDING
 
 **Location:** `aptos-move/framework/aptos-framework/sources/ibe_config.move`
 
@@ -654,14 +675,50 @@ public(friend) fun submit_dk_share(
 
 ---
 
-## Files Modified (v3.1 Update)
+## Files Modified (v3.2 Update)
 
-| File                                                              | Change                               |
-| ----------------------------------------------------------------- | ------------------------------------ |
-| `aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`    | Fixed native function implementation |
-| `aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move` | Created new Move wrapper module      |
-| `aptos-move/framework/aptos-framework/sources/ibe_config.move`    | Added golden vector tests            |
-| `crates/aptos-dkg/src/ibe/mod.rs`                                 | Removed broken test module reference |
+| File                                       | Change                                                                                           |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `crates/aptos-dkg/src/ibe/tests.rs`        | Added `test_dk_share_aggregation_roundtrip()`                                                    |
+| `crates/aptos-dkg/src/ibe/mod.rs`          | Updated module exports                                                                           |
+| `testsuite/smoke-test/src/ibe/mod.rs`      | IBE E2E tests exist (elgamal_encrypt_decrypt, elgamal_encrypt_decrypt_with_different_identities) |
+| `testsuite/smoke-test/src/timelock/mod.rs` | Timelock smoke tests (register_and_query, deadline_reveal)                                       |
+
+---
+
+## Existing Smoke Tests
+
+### IBE Tests (`testsuite/smoke-test/src/ibe/mod.rs`)
+
+| Test                                                | Description                                   | Status |
+| --------------------------------------------------- | --------------------------------------------- | ------ |
+| `elgamal_encrypt_decrypt`                           | IBE encrypt/decrypt with reconstructed secret | ✅     |
+| `elgamal_encrypt_decrypt_with_different_identities` | Multiple identities with same secret          | ✅     |
+
+### Timelock Tests (`testsuite/smoke-test/src/timelock/`)
+
+| Test                 | Description                              | Status |
+| -------------------- | ---------------------------------------- | ------ |
+| `register_and_query` | Timelock registration and view functions | ✅     |
+| `deadline_reveal`    | DK share submission infrastructure       | ✅     |
+
+### Next Steps
+
+1. Build `aptos` CLI: `cargo build --release -p aptos`
+2. Run Move tests: `aptos move test --package-dir aptos-move/framework/aptos-framework`
+3. Run smoke tests: `cargo test -p smoke-test --lib timelock`
+4. Implement on-chain DK reconstruction test
+
+---
+
+## Changelog
+
+- **v3.2** (Jan 21, 2026): Added DK share aggregation test
+  - Implemented `test_dk_share_aggregation_roundtrip()` in `aptos-dkg`
+  - Validates DKG share decryption, scalar reconstruction, IBE roundtrip
+  - All 27 IBE tests passing
+- **v3.1** (Jan 20, 2026): Completed IBE native function implementation and Move tests
+- **v3.0** (Jan 20, 2026): Clarified single IBE protocol, DKG uses dual-output
 
 ---
 
