@@ -458,8 +458,8 @@ pub fn verify_decryption_key(dk: &G1Affine, identity: &[u8], mpk: &G2Affine) -> 
 pub fn reconstruct_ibe_dk(
     validator_indices: &[u64],
     dk_shares: &[G1Affine],
-    weights: &[u64],
-    total_weight: u64,
+    _weights: &[u64],
+    _total_weight: u64,
 ) -> G1Affine {
     assert_eq!(
         validator_indices.len(),
@@ -469,27 +469,17 @@ pub fn reconstruct_ibe_dk(
     assert!(!validator_indices.is_empty(), "dk_shares must not be empty");
 
     use crate::algebra::evaluation_domain::BatchEvaluationDomain;
-    use crate::algebra::lagrange::all_n_lagrange_coefficients;
+    use crate::algebra::lagrange::lagrange_coefficients;
 
-    let n = weights.len();
-    let domain_size = n;
+    let domain_size = validator_indices.len();
     let batch_dom = BatchEvaluationDomain::new(domain_size);
+    let player_ids: Vec<usize> = validator_indices.iter().map(|&i| i as usize).collect();
 
-    let mut virtual_player_ids: Vec<usize> = Vec::new();
-    let mut current_index = 0usize;
-    for vi in validator_indices.iter() {
-        virtual_player_ids.push(current_index);
-        current_index += weights[*vi as usize] as usize;
-    }
-
-    let all_lagr_coeffs = all_n_lagrange_coefficients(&batch_dom, &Scalar::ZERO);
+    let lagr_coeffs = lagrange_coefficients(&batch_dom, &player_ids, &Scalar::ZERO);
 
     let mut result = G1Projective::identity();
     for (i, share) in dk_shares.iter().enumerate() {
-        let vp_id = virtual_player_ids[i];
-        let lagr_coeff = all_lagr_coeffs[vp_id];
-        let weight_factor = Scalar::from(weights[validator_indices[i] as usize]);
-        result += share.mul(lagr_coeff * weight_factor);
+        result += share.mul(lagr_coeffs[i]);
     }
 
     result.to_affine()

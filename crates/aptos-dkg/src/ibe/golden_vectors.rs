@@ -232,26 +232,22 @@ fn generate_golden_vectors() {
 
         assert_eq!(reconstructed_secret.s, secret);
 
+        use super::reconstruct_ibe_dk;
+
         // Generate expected DK using high-level API
         let expected_dk = derive_decryption_key(&secret, &identity);
         let mpk = G2Projective::generator().mul(&secret).into();
 
-        // Verify DK reconstruction from shares using Lagrange interpolation
-        // NOTE: This manual reconstruction is for verification purposes only.
-        // The fixture validation test (test_golden_vectors_file_validity) uses
-        // high-level APIs to validate fixtures are consumable by actual users.
-        let player_ids: Vec<usize> = vec![0, 1, 2];
-        let lagr = lagrange_coefficients(
-            wconfig.get_batch_evaluation_domain(),
-            &player_ids,
-            &Scalar::ZERO,
-        );
-
-        let mut reconstructed_dk_g1 = G1Projective::identity();
-        for (i, &player_id) in player_ids.iter().enumerate() {
-            reconstructed_dk_g1 += dk_shares_g1[player_id].mul(&lagr[i]);
-        }
-        let reconstructed_dk = reconstructed_dk_g1.to_affine();
+        // Reconstruct DK using the same function that will be used in production
+        let dk_shares_for_recon: Vec<G1Affine> = vec![
+            dk_shares_g1[0].to_affine(),
+            dk_shares_g1[1].to_affine(),
+            dk_shares_g1[2].to_affine(),
+        ];
+        let recon_indices: Vec<u64> = vec![0, 1, 2];
+        let recon_weights: Vec<u64> = vec![1, 1, 1];
+        let reconstructed_dk =
+            reconstruct_ibe_dk(&recon_indices, &dk_shares_for_recon, &recon_weights, 5);
 
         // Verify reconstructed DK matches expected DK from high-level API
         assert_eq!(reconstructed_dk, expected_dk);
