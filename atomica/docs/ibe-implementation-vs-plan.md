@@ -3,6 +3,8 @@
 **Date:** January 22, 2026
 **Status:** Phase 5.2 COMPLETE
 
+**See also:** [IBE Implementation Summary](ibe-summary.md) for consolidated documentation.
+
 ---
 
 ## Original Plan (What We Thought We'd Do)
@@ -237,3 +239,12 @@ use super::reconstruct_ibe_dk_from_g1_shares;
 | Is native function implementing crypto? | NO - only parsing and delegation |
 
 **Bottom line:** The implementation diverged from the original G1-focused plan to use the simpler, more secure, and more maintainable scalar share approach with framework delegation.
+
+---
+
+## Document Consolidation
+
+This document provides historical context on what we planned vs what we implemented. For current documentation, see:
+
+- [IBE Implementation Summary](ibe-summary.md) - Consolidated reference
+- [Implementation Plan](plan/implementation-plan-unified-dkg-ibe.md) - Master plan

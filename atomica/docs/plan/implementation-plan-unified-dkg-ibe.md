@@ -10,6 +10,7 @@
 - [Technical: Chunked ElGamal](technical/chunked-elgamal-scalar-generation.md)
 - [Definitions](definitions.md)
 - [Timelock IBE ElGamal Plan](timelock-ibe-elgamal-plan.md)
+- [IBE Implementation Summary](../ibe-summary.md)
 
 ---
 
