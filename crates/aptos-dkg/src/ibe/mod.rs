@@ -473,7 +473,7 @@ pub fn reconstruct_ibe_dk(
         "scalar_shares must not be empty"
     );
 
-    let computed_total: u64 = weights.iter().map(|w| *w).sum();
+    let computed_total: u64 = weights.iter().copied().sum();
     assert_eq!(
         total_weight, computed_total,
         "total_weight must match sum of weights"
