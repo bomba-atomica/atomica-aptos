@@ -1,45 +1,155 @@
-# Task: Fix Weighted G1 Reconstruction for Aptos IBE
+# Task: IBE DK Reconstruction - IMPLEMENTED
 
-### 1. Architecture Overview
+**Branch:** `timelock-elgamal-pvss`
+**Status:** Phase 5.2 COMPLETE ✅
+**Date:** January 22, 2026
 
-The system is structured across three layers to balance security and transparency:
+---
 
-- **Core Cryptography (`aptos-dkg` crate)**: Contains the heavy-lifting logic for key generation, PVSS transcripts, and DK reconstruction. The `reconstruct_ibe_dk_from_g1_shares` function in Rust is where the actual math resides.
-- **Native Bridge (`aptos-move`)**: Acts as a passthrough. It provides the Rust native function implementation that exposes `aptos-dkg` APIs to the Move VM, handling type conversion and gas charging.
-- **Move Contracts (`aptos-framework`)**: Manages public state. It stores the Master Public Key (MPK), validator public key shares, and DKG transcripts. These are safe to provide publicly and are used to verify/reconstruct DKs.
-- **Golden Vectors (Fixtures)**: We maintain a set of "ground truth" fixtures in both `ibe_golden_vector_fixtures.move` and Rust tests. These ensure that any changes to the math or API are verified against known-good keys and transcripts across all layers.
+## 1. What We Actually Implemented
 
-### 2. Context & Problem Statement
+We did **NOT** implement G1-based DK reconstruction. Instead, we implemented **scalar share reconstruction** with framework delegation.
 
-We are implementing Identity-Based Encryption (IBE) Decryption Key (DK) reconstruction. Following an audit, we moved from reconstructing the Master Secret Key (MSK) as a scalar (insecure) to reconstructing the DK directly as a G1 point: $DK = \sum (\text{Coeff}_i \times DK\_share_i)$.
+### Architecture
 
-The equal-weight cases work perfectly. However, **unequal-weight reconstruction is failing** in Move unit tests (Fixtures 215 and 2321).
+```
+Input: (validator_indices, scalar_shares, weights, total_weight, identity)
+       │
+       ▼
+Step 1: Wrap scalar_shares in DealtSecretKeyShare format
+       │
+       ▼
+Step 2: Delegate to framework's WeightedConfig::new() + DealtSecretKey::reconstruct()
+       │
+       ▼
+Step 3: Derive DK = H(identity)^secret
+       │
+       ▼
+Output: G1Affine (reconstructed decryption key)
+```
 
-### 2. The Technical Mismatch
+### Key Files
 
-The Aptos DKG framework handles weighted PVSS via a **"Virtual Player"** model (see `GenericWeighting` in `crates/aptos-dkg/src/pvss/weighted/generic_weighting.rs`). A validator with weight $w_i$ is treated as $w_i$ virtual players, each with its own scalar share $s_{i,j}$ and its own Lagrange coefficient $\lambda_{i,j}(0)$.
+| File                                                              | Purpose                                      |
+| ----------------------------------------------------------------- | -------------------------------------------- |
+| `crates/aptos-dkg/src/ibe/mod.rs`                                 | `reconstruct_ibe_dk()` - main implementation |
+| `aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`    | Native function bridge                       |
+| `aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move` | Move API                                     |
+| `crates/aptos-dkg/src/ibe/golden_vectors.rs`                      | Golden vector generation                     |
 
-In the IBE implementation, a validator $i$ computes a **single aggregated DK share**:
-$$DK\_share_i = \left(\sum_{j=1}^{w_i} s_{i,j}\right) \times H(\text{identity})$$
+### Why This Approach
 
-My current implementation in `reconstruct_ibe_dk_from_g1_shares` attempts to use a simplified weighting:
-$$\lambda_{weighted} = \lambda_i \times \frac{weight_i}{\sum weight_{participating}}$$
-This is mathematically incorrect for the Virtual Player model. Because the Lagrange coefficients $\lambda_{i,j}(0)$ are different for each virtual player (as they are evaluated at different roots of unity), we cannot simply multiply the aggregated G1 point by a single scalar.
+**Decision made January 22, 2026:**
 
-### 3. Affected Files
+1. **Security** - Native functions should not implement crypto. Delegation to apt-dkg reduces attack surface.
 
-- **Logic:** `crates/aptos-dkg/src/ibe/mod.rs` -> `reconstruct_ibe_dk_from_g1_shares`
-- **Tests (Debugging):** `crates/aptos-dkg/src/ibe/tests.rs` -> `test_compare_scalar_and_g1_reconstruction` (Currently failing to compile due to import/type mismatches).
-- **Native Wrapper:** `aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`
-- **Move Fixtures:** `aptos-move/framework/aptos-framework/tests/ibe_native_test.move`
+2. **Consistency** - Move VM uses the exact same crypto as Rust SDK. No implementation divergence.
 
-### 4. Required Solution
+3. **Simplicity** - Framework handles virtual player expansion, threshold configuration, Lagrange coefficients automatically.
 
-1.  **Reconcile the Math:** You need to derive the correct way to reconstruct on G1 when the input is an aggregated share per validator, but the underlying secret sharing uses virtual players.
-    - _Hint:_ If the validator only provides $\sum s_{i,j}$, the reconstruction might only be possible if the DKG was initialized in a way where virtual player shares are compatible, or if the reconstruction sum uses the correct summation of virtual Lagrange coefficients: $C_i = \dots$
-2.  **Fix the Comparison Test:** Finish the implementation of `test_compare_scalar_and_g1_reconstruction` in `ibe/tests.rs`. This test compares the framework's (working) scalar reconstruction against our (broken) G1 reconstruction. This is the "ground truth" for debugging.
-3.  **Validate via Move:** Ensure all 14 tests in `ibe_native_test.move` pass, especially the unequal weight cases.
+### API Signatures
 
-### 5. Constraint
+**Rust SDK:**
 
-Do **not** revert to scalar reconstruction. The reconstruction **must** happen on G1 points to prevent the Master Secret Key from ever being exposed in memory.
+```rust
+pub fn reconstruct_ibe_dk(
+    validator_indices: &[u64],
+    scalar_shares: &[Vec<Scalar>],  // Per-validator, per-virtual-player
+    weights: &[u64],
+    total_weight: u64,
+    identity: &[u8; 32],
+) -> G1Affine
+```
+
+**Move VM:**
+
+```move
+public fun reconstruct_ibe_dk<G1>(
+    validator_indices: vector<u64>,
+    scalar_shares: vector<vector<u8>>,  // Nested: validator -> virtual_player
+    weights: vector<u64>,
+    threshold: u64,
+    total_weight: u64,
+    identity: vector<u8>,
+): crypto_algebra::Element<G1>
+```
+
+---
+
+## 2. Golden Vectors (For Testing)
+
+Golden vectors use **per-virtual-player G1 shares** for testing verification:
+
+```json
+{
+  "dk_shares_g1_hex": [
+    ["<validator_0_virtual_0>", "<validator_0_virtual_1>"], // weight 2
+    ["<validator_1_virtual_0>"], // weight 1
+    ["<validator_2_virtual_0>", "<validator_2_virtual_1>"] // weight 2
+  ]
+}
+```
+
+**Format:** `Vec<Vec<String>>` = `validator_shares[validator_idx][virtual_player_idx]`
+
+This is for testing only - not for production reconstruction.
+
+---
+
+## 3. Test Results
+
+### Rust SDK
+
+```
+28 IBE tests pass ✅
+- test_reconstruct_ibe_dk_equal_weights
+- test_reconstruct_ibe_dk_unequal_weights
+- test_reconstruct_ibe_dk_sparse_indices
+- test_golden_vectors_file_validity
+- ... and 24 more
+```
+
+### Move Native Function
+
+```
+11 native function tests pass ✅
+- test_native_reconstruction_5_validators_equal_weights
+- test_native_reconstruction_4_validators_threshold_2
+- test_native_reconstruction_unequal_weights_215
+- test_native_reconstruction_unequal_weights_2321
+- test_sparse_validator_participation
+- test_empty_shares_should_abort
+- test_mismatched_indices_and_shares_should_abort
+- ... and 4 more
+```
+
+---
+
+## 4. What Changed From Original Plan
+
+| Original Plan (Outdated)    | Actual Implementation            |
+| --------------------------- | -------------------------------- |
+| G1-based reconstruction     | Scalar share reconstruction      |
+| Pre-aggregated G1 shares    | Per-virtual-player scalar shares |
+| Custom Lagrange computation | Framework delegation             |
+| Manual threshold config     | Automatic via `WeightedConfig`   |
+
+See also: `atomica/docs/ibe-implementation-vs-plan.md`
+
+---
+
+## 5. Remaining Items
+
+| Item                             | Status            |
+| -------------------------------- | ----------------- |
+| `mpk_encrypt_decrypt` smoke test | Not yet run       |
+| `timelock_e2e` smoke test        | Not yet run       |
+| Security review                  | Not yet completed |
+
+---
+
+## 6. Documentation
+
+- `atomica/docs/plan/implementation-plan-unified-dkg-ibe.md` - Master plan
+- `atomica/docs/ibe-implementation-vs-plan.md` - What we planned vs what we did
+- `atomica/docs/ibe-weighted-g1-reconstruction-summary.md` - Original analysis (outdated)
