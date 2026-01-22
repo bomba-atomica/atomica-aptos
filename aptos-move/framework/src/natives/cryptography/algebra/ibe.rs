@@ -65,16 +65,11 @@ pub fn reconstruct_ibe_dk_internal(
                 dk_shares_handles.len(),
                 "validator_indices and dk_shares must have same length"
             );
-            assert_eq!(
-                validator_indices.len(),
-                weights.len(),
-                "validator_indices and weights must have same length"
-            );
-            assert!(validator_indices.len() >= 1, "Must have at least one share");
+            assert!(validator_indices.len() >= 1, "Must have at least one validator");
 
             context.charge(ALGEBRA_ARK_BLS12_381_G1_PROJ_SCALAR_MUL)?;
 
-            // Convert input ark elements to blstrs format
+            // Convert input handles to blstrs format
             let mut dk_shares: Vec<G1Affine> = Vec::with_capacity(dk_shares_handles.len());
             for &handle in dk_shares_handles.iter() {
                 safe_borrow_element!(
@@ -94,6 +89,25 @@ pub fn reconstruct_ibe_dk_internal(
                     return Err(abort_invariant_violated().into());
                 }
                 dk_shares.push(ct_option.unwrap());
+            }
+
+            // Call apt-dkg's canonical implementation
+            let reconstructed_dk =
+                reconstruct_ibe_dk(&validator_indices, &dk_shares, &weights, total_weight);
+
+            // Store result directly (no conversion needed)
+            let new_handle = store_element!(context, reconstructed_dk)?;
+
+            Ok(smallvec![Value::u64(new_handle as u64)])
+        },
+        _ => Err(SafeNativeError::Abort {
+            abort_code: MOVE_ABORT_CODE_NOT_IMPLEMENTED,
+        }),
+    }
+}
+                    shares_for_validator.push(ct_option.unwrap());
+                }
+                dk_shares.push(shares_for_validator);
             }
 
             // Call apt-dkg's canonical implementation

@@ -231,23 +231,22 @@ fn generate_golden_vectors() {
             );
 
         assert_eq!(reconstructed_secret.s, secret);
-
         use super::reconstruct_ibe_dk;
 
         // Generate expected DK using high-level API
         let expected_dk = derive_decryption_key(&secret, &identity);
         let mpk = G2Projective::generator().mul(&secret).into();
 
-        // Reconstruct DK using the same function that will be used in production
-        let dk_shares_for_recon: Vec<G1Affine> = vec![
-            dk_shares_g1[0].to_affine(),
-            dk_shares_g1[1].to_affine(),
-            dk_shares_g1[2].to_affine(),
-        ];
+        // Extract scalar shares for reconstruction
+        let scalar_shares: Vec<Vec<Scalar>> = shares
+            .iter()
+            .take(3)
+            .map(|(_, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
+            .collect();
         let recon_indices: Vec<u64> = vec![0, 1, 2];
-        let recon_weights: Vec<u64> = vec![1, 1, 1];
+        let recon_weights: Vec<u64> = vec![1, 1, 1, 1, 1]; // Full weights for all 5 validators
         let reconstructed_dk =
-            reconstruct_ibe_dk(&recon_indices, &dk_shares_for_recon, &recon_weights, 5);
+            reconstruct_ibe_dk(&recon_indices, &scalar_shares, &recon_weights, 5, &identity);
 
         // Verify reconstructed DK matches expected DK from high-level API
         assert_eq!(reconstructed_dk, expected_dk);

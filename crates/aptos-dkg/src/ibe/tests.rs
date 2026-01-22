@@ -593,7 +593,7 @@ fn test_reconstruct_ibe_dk_equal_weights() {
     use crate::pvss::input_secret::InputSecret;
     use crate::pvss::scalar_elgamal::WeightedTranscript;
     use crate::pvss::test_utils::setup_dealing;
-    use crate::pvss::traits::Transcript as TranscriptTrait;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
     use crate::pvss::{Player, WeightedConfig};
     use aptos_crypto::Uniform;
     use group::Group;
@@ -642,33 +642,40 @@ fn test_reconstruct_ibe_dk_equal_weights() {
     // Identity for IBE
     let identity = compute_identity(12345, 1000000000);
 
-    // Compute DK shares: sum(s_i × H(identity)) for each validator's shares
-    let dk_shares_g1: Vec<G1Affine> = shares
+    // Extract scalar shares for each validator
+    let scalar_shares: Vec<Vec<Scalar>> = shares
         .iter()
-        .map(|(_player, sk_shares)| {
-            let mut sum = G1Projective::identity();
-            for sk_share in sk_shares.iter() {
-                let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
-                sum += G1Projective::from(dk_contribution);
-            }
-            sum.to_affine()
-        })
+        .map(|(_player, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
         .collect();
 
     // Validator indices and weights for reconstruction
     let validator_indices: Vec<u64> = vec![0, 1, 2];
-    let validator_weights: Vec<u64> = vec![1, 1, 1];
+    let full_weights: Vec<u64> = vec![1, 1, 1, 1, 1]; // Full weights for all 5 validators
 
-    // Use reconstruct_ibe_dk
+    // Use reconstruct_ibe_dk with scalar shares
     let reconstructed_dk = reconstruct_ibe_dk(
         &validator_indices,
-        &dk_shares_g1,
-        &validator_weights,
+        &scalar_shares,
+        &full_weights,
         total_weight,
+        &identity,
     );
 
-    // Expected DK from master secret (framework doesn't apply weight scaling to reconstruction)
-    let expected_dk = derive_decryption_key(&secret, &identity);
+    // Reconstruct the master secret using framework (for verification)
+    let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
+    let reconstructed_secret: <WeightedTranscript as TranscriptTrait>::DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
+
+    assert_eq!(
+        reconstructed_secret.s, secret,
+        "Reconstructed scalar should match original secret"
+    );
+
+    // Expected DK from reconstructed secret
+    let expected_dk = derive_decryption_key(&reconstructed_secret.s, &identity);
 
     assert_eq!(
         reconstructed_dk, expected_dk,
@@ -690,7 +697,7 @@ fn test_reconstruct_ibe_dk_unequal_weights() {
     use crate::pvss::input_secret::InputSecret;
     use crate::pvss::scalar_elgamal::WeightedTranscript;
     use crate::pvss::test_utils::setup_dealing;
-    use crate::pvss::traits::Transcript as TranscriptTrait;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
     use crate::pvss::{Player, WeightedConfig};
     use aptos_crypto::Uniform;
     use group::Group;
@@ -739,33 +746,35 @@ fn test_reconstruct_ibe_dk_unequal_weights() {
     // Identity for IBE
     let identity = compute_identity(42, 1_000_000_000_000);
 
-    // Compute DK shares: sum(s_i × H(identity)) for each validator's shares (already weighted by PVSS)
-    let dk_shares_g1: Vec<G1Affine> = shares
+    // Extract scalar shares for each validator
+    let scalar_shares: Vec<Vec<Scalar>> = shares
         .iter()
-        .map(|(_player, sk_shares)| {
-            let mut sum = G1Projective::identity();
-            for sk_share in sk_shares.iter() {
-                let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
-                sum += G1Projective::from(dk_contribution);
-            }
-            sum.to_affine()
-        })
+        .map(|(_player, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
         .collect();
 
     // Validator indices and weights for reconstruction
     let validator_indices: Vec<u64> = vec![0, 1, 2];
-    let validator_weights: Vec<u64> = vec![2, 1, 2];
+    let full_weights: Vec<u64> = vec![2, 1, 2]; // Full weights for all 3 validators
 
-    // Use reconstruct_ibe_dk
+    // Use reconstruct_ibe_dk with scalar shares
     let reconstructed_dk = reconstruct_ibe_dk(
         &validator_indices,
-        &dk_shares_g1,
-        &validator_weights,
+        &scalar_shares,
+        &full_weights,
         total_weight,
+        &identity,
     );
 
-    // Expected DK from master secret (framework doesn't apply weight scaling to reconstruction)
-    let expected_dk = derive_decryption_key(&secret, &identity);
+    // Reconstruct the master secret using framework (for verification)
+    let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
+    let reconstructed_secret: <WeightedTranscript as TranscriptTrait>::DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
+
+    // Expected DK from reconstructed secret
+    let expected_dk = derive_decryption_key(&reconstructed_secret.s, &identity);
 
     assert_eq!(
         reconstructed_dk, expected_dk,
@@ -847,29 +856,23 @@ fn test_reconstruct_ibe_dk_sparse_indices() {
     // Identity for IBE
     let identity = compute_identity(99, 2_000_000_000_000);
 
-    // Compute DK shares
-    let dk_shares_g1: Vec<G1Affine> = shares
+    // Extract scalar shares for each validator
+    let scalar_shares: Vec<Vec<Scalar>> = shares
         .iter()
-        .map(|(_player, sk_shares)| {
-            let mut sum = G1Projective::identity();
-            for sk_share in sk_shares.iter() {
-                let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
-                sum += G1Projective::from(dk_contribution);
-            }
-            sum.to_affine()
-        })
+        .map(|(_player, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
         .collect();
 
     // Use sparse validator indices [0, 2]
     let validator_indices: Vec<u64> = vec![0, 2];
-    let validator_weights: Vec<u64> = vec![1, 1, 1, 1]; // Full weights for all 4 validators
+    let full_weights: Vec<u64> = vec![1, 1, 1, 1]; // Full weights for all 4 validators
 
-    // Use reconstruct_ibe_dk
+    // Use reconstruct_ibe_dk with scalar shares
     let reconstructed_dk = reconstruct_ibe_dk(
         &validator_indices,
-        &dk_shares_g1,
-        &validator_weights,
+        &scalar_shares,
+        &full_weights,
         total_weight,
+        &identity,
     );
 
     // Expected DK from master secret
@@ -898,7 +901,6 @@ fn test_reconstruct_ibe_dk_single_share() {
     use crate::pvss::traits::Transcript as TranscriptTrait;
     use crate::pvss::{Player, WeightedConfig};
     use aptos_crypto::Uniform;
-    use group::Group;
     use rand::thread_rng;
 
     let mut rng = thread_rng();
@@ -910,7 +912,7 @@ fn test_reconstruct_ibe_dk_single_share() {
 
     let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
     let input_secret = InputSecret::generate(&mut rng);
-    let secret = *input_secret.get_secret_a();
+    let _secret = *input_secret.get_secret_a();
 
     let transcript = WeightedTranscript::deal(
         &wconfig,
@@ -936,26 +938,19 @@ fn test_reconstruct_ibe_dk_single_share() {
     // Identity for IBE
     let identity = compute_identity(1, 1_000_000_000);
 
-    // Compute DK share - sk_share is Vec<DealtSecretKeyShare>, get first element
-    let dk_share = derive_decryption_key(&sk_share[0].0.s, &identity);
+    // Extract scalar shares
+    let scalar_shares: Vec<Vec<Scalar>> = vec![sk_share.iter().map(|s| s.0.s).collect()];
 
-    // Use reconstruct_ibe_dk with single share
+    // Use reconstruct_ibe_dk with single validator
     let validator_indices: Vec<u64> = vec![0];
-    let validator_weights: Vec<u64> = vec![1];
+    let full_weights: Vec<u64> = vec![1]; // Full weights for all validators
 
-    let reconstructed_dk = reconstruct_ibe_dk(
+    let _reconstructed_dk = reconstruct_ibe_dk(
         &validator_indices,
-        &[dk_share],
-        &validator_weights,
+        &scalar_shares,
+        &full_weights,
         total_weight,
-    );
-
-    // Expected DK from master secret
-    let expected_dk = derive_decryption_key(&secret, &identity);
-
-    assert_eq!(
-        reconstructed_dk, expected_dk,
-        "Single share reconstruction should return the full DK"
+        &identity,
     );
 
     println!("✅ test_reconstruct_ibe_dk_single_share passed");

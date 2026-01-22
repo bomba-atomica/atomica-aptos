@@ -96,10 +96,10 @@ mod identity_tests;
 
 pub use ciphertext::Ciphertext;
 
+use crate::pvss::dealt_secret_key::scalar::DealtSecretKey;
 use crate::utils::random::random_scalar_from_uniform_bytes;
 use aptos_crypto::blstrs::SCALAR_NUM_BYTES;
 use blstrs::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
-use ff::Field;
 use group::{Curve, Group};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
@@ -409,105 +409,117 @@ pub fn verify_decryption_key(dk: &G1Affine, identity: &[u8], mpk: &G2Affine) -> 
     lhs == rhs
 }
 
-/// Reconstructs a decryption key from threshold shares using Lagrange interpolation.
+/// Reconstructs a decryption key from scalar shares.
 ///
-/// This function combines DK shares from multiple validators to reconstruct the full
-/// decryption key using Lagrange interpolation over a batch evaluation domain.
+/// This function provides a unified path for DK reconstruction that mirrors
+/// the framework's `DealtSecretKey::reconstruct()` method.
 ///
-/// # Important: Weight Handling
-/// The weights parameter is kept for API compatibility but is NOT used in the reconstruction.
-/// It is expected that the caller has already applied weights by summing all shares from
-/// each validator before passing dk_shares to this function. For example:
-/// - For a validator with weight 2 that received 2 shares, sum both shares before passing
-/// - For a validator with weight 1, pass their single share directly
-///
-/// # Lagrange Formula
-/// ```
-/// DK = Σ λ_i * dk_share_i
-/// ```
-/// where `λ_i` is the Lagrange coefficient for validator i at X = 0:
-///
-/// ```
-/// λ_i = Π_{j≠i} (0 - ω^j) / (ω^i - ω^j)
-/// ```
-/// where ω is a primitive root of unity in the batch evaluation domain.
+/// # Architecture
+/// The function follows the same pattern as the PVSS framework:
+/// 1. Each validator has `weight` scalar shares (virtual players)
+/// 2. The framework's reconstruction handles all virtual player expansion and Lagrange interpolation
+/// 3. DK is derived from the reconstructed master secret: DK = H(identity)^s
 ///
 /// # Arguments
 /// * `validator_indices` - Vector of validator indices (0-based, matching DKG player IDs)
-/// * `dk_shares` - Vector of G1 decryption key shares (already weighted by summing validator's shares)
-/// * `weights` - Vector of validator weights (kept for API compatibility, not used)
+/// * `scalar_shares` - Scalar shares organized by validator: scalar_shares[i] contains ALL scalar
+///   shares for validator_indices[i]. Each inner vector is the validator's shares (one per virtual player).
+/// * `weights` - Full weights array for ALL validators in the network
 /// * `total_weight` - Sum of all validator weights (determines the batch evaluation domain size)
+/// * `identity` - The IBE identity (typically computed via `compute_identity(timelock_id, deadline_us)`)
 ///
 /// # Returns
 /// The reconstructed decryption key as a G1 affine point
 ///
 /// # Panics
-/// - If `validator_indices`, `dk_shares`, and `weights` have different lengths
-/// - If `dk_shares` is empty
+/// - If `validator_indices` and `scalar_shares` have different lengths
+/// - If any `validator_indices` value is >= `weights.len()`
+/// - If `scalar_shares` is empty or any inner share vector is empty
+/// - If total_weight doesn't match the sum of weights
 ///
 /// # Example
 ///
 /// ```
-/// // Each validator's DK share is the sum of their weighted shares
+/// // Network has 3 validators with weights [2, 1, 2], total = 5
+/// // Participating validators: 0, 1, 2 (all)
+/// // scalar_shares[0] = [s_0_0, s_0_1]  // validator 0's 2 scalar shares
+/// // scalar_shares[1] = [s_1_0]         // validator 1's 1 scalar share
+/// // scalar_shares[2] = [s_2_0, s_2_1]  // validator 2's 2 scalar shares
 /// let validator_indices = vec![0, 1, 2];
-/// let shares: Vec<G1Affine> = vec![share_0, share_1, share_2];  // Already summed per validator
-/// let weights = vec![1, 1, 1];  // Not used, kept for API compatibility
-/// let total_weight = 5;  // Sum of all validator weights
-/// let reconstructed_dk = reconstruct_ibe_dk(&validator_indices, &shares, &weights, total_weight);
+/// let scalar_shares = vec![
+///     vec![scalar_share_0_0, scalar_share_0_1],
+///     vec![scalar_share_1_0],
+///     vec![scalar_share_2_0, scalar_share_2_1],
+/// ];
+/// let weights = vec![2, 1, 2];  // Full weights for all validators
+/// let total_weight = 5;
+/// let identity = compute_identity(1, 1704067200000000);
+/// let reconstructed_dk = reconstruct_ibe_dk(&validator_indices, &scalar_shares, &weights, total_weight, &identity);
 /// ```
 pub fn reconstruct_ibe_dk(
     validator_indices: &[u64],
-    dk_shares: &[G1Affine],
+    scalar_shares: &[Vec<Scalar>],
     weights: &[u64],
     total_weight: u64,
+    identity: &[u8; 32],
 ) -> G1Affine {
     assert_eq!(
         validator_indices.len(),
-        dk_shares.len(),
-        "validator_indices and dk_shares must have same length"
+        scalar_shares.len(),
+        "validator_indices and scalar_shares must have same length"
     );
-    assert!(!validator_indices.is_empty(), "dk_shares must not be empty");
+    assert!(
+        !validator_indices.is_empty(),
+        "scalar_shares must not be empty"
+    );
 
-    use crate::algebra::evaluation_domain::BatchEvaluationDomain;
-    use crate::algebra::lagrange::lagrange_coefficients;
+    let computed_total: u64 = weights.iter().map(|w| *w as u64).sum();
+    assert_eq!(
+        total_weight, computed_total,
+        "total_weight must match sum of weights"
+    );
 
-    let domain_size = total_weight as usize;
-    let batch_dom = BatchEvaluationDomain::new(domain_size);
+    use crate::pvss::dealt_secret_key_share::scalar::DealtSecretKeyShare;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
 
-    // Compute starting indices for each validator (cumulative sum of weights)
-    let mut starting_indices = Vec::with_capacity(weights.len());
-    starting_indices.push(0);
-    for i in 0..weights.len() - 1 {
-        starting_indices.push(starting_indices[i] + weights[i] as usize);
-    }
+    let weights_usize: Vec<usize> = weights.iter().map(|w| *w as usize).collect();
+    let wconfig = WeightedConfig::new(validator_indices.len(), weights_usize)
+        .expect("Failed to create WeightedConfig");
 
-    // Build virtual player IDs for each validator's shares
-    let mut all_virtual_player_ids: Vec<usize> = Vec::new();
-    for &vi in validator_indices.iter() {
-        let start = starting_indices[vi as usize];
-        let weight = weights[vi as usize];
-        for vp in 0..weight as usize {
-            all_virtual_player_ids.push(start + vp);
+    let mut shares_for_recon = Vec::with_capacity(validator_indices.len());
+
+    for (vi, &validator_idx) in validator_indices.iter().enumerate() {
+        let weight = weights[validator_idx as usize];
+        let shares = &scalar_shares[vi];
+
+        assert_eq!(
+            shares.len(),
+            weight as usize,
+            "Validator {} has {} shares but weight is {}",
+            validator_idx,
+            shares.len(),
+            weight
+        );
+
+        let mut dealt_shares = Vec::with_capacity(shares.len());
+        for scalar_share in shares.iter() {
+            dealt_shares.push(DealtSecretKeyShare::new(DealtSecretKey::new(*scalar_share)));
         }
+
+        shares_for_recon.push((
+            Player {
+                id: validator_idx as usize,
+            },
+            dealt_shares,
+        ));
     }
 
-    // Get Lagrange coefficients for all virtual players at alpha=0
-    let lagr_coeffs = lagrange_coefficients(&batch_dom, &all_virtual_player_ids, &Scalar::ZERO);
+    let reconstructed_secret = <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+        &wconfig,
+        &shares_for_recon,
+    );
 
-    // Now reconstruct: for each validator, use the sum of their DK share divided by weight
-    // times the corresponding Lagrange coefficient
-    let mut result = G1Projective::identity();
-    let mut coeff_idx = 0;
-    for (vi_idx, &vi) in validator_indices.iter().enumerate() {
-        let weight = weights[vi as usize];
-        // Each virtual player contributes (DK_share / weight) * λ_vp
-        let share_contribution = dk_shares[vi_idx].mul(Scalar::from(weight).invert().unwrap());
-        for _ in 0..weight as usize {
-            let lagr_coeff = lagr_coeffs[coeff_idx];
-            result += share_contribution.mul(lagr_coeff);
-            coeff_idx += 1;
-        }
-    }
-
-    result.to_affine()
+    derive_decryption_key(&reconstructed_secret.s, identity)
 }
