@@ -411,51 +411,88 @@ pub fn verify_decryption_key(dk: &G1Affine, identity: &[u8], mpk: &G2Affine) -> 
 
 /// Reconstructs a decryption key from scalar shares.
 ///
-/// This function provides a unified path for DK reconstruction that mirrors
-/// the framework's `DealtSecretKey::reconstruct()` method.
+/// This function provides a unified, canonical path for IBE DK reconstruction
+/// that mirrors the PVSS framework's `DealtSecretKey::reconstruct()` method.
+/// Both the Rust SDK and Move VM native function delegate to this implementation,
+/// ensuring cryptographic consistency across all layers.
 ///
 /// # Architecture
-/// The function follows the same pattern as the PVSS framework:
-/// 1. Each validator has `weight` scalar shares (virtual players)
-/// 2. The framework's reconstruction handles all virtual player expansion and Lagrange interpolation
-/// 3. DK is derived from the reconstructed master secret: DK = H(identity)^s
+///
+/// The function follows these steps:
+/// 1. Validate inputs (indices, weights, shares alignment)
+/// 2. Convert scalar shares to DealtSecretKeyShare format
+/// 3. Delegate to framework's weighted reconstruction
+/// 4. Derive decryption key: DK = H(identity)^secret
+///
+/// # Weighted Reconstruction Details
+///
+/// For weighted threshold schemes, each validator with weight `w` receives `w`
+/// shares (one per "virtual player"). The framework handles this through
+/// virtual player expansion:
+///
+/// - Validator 0 with weight 2: receives shares at indices [0, 1]
+/// - Validator 1 with weight 1: receives share at index [2]
+/// - Validator 2 with weight 2: receives shares at indices [3, 4]
+///
+/// The Lagrange interpolation is then performed over the expanded set of
+/// virtual players, weighted appropriately by the validator's stake.
 ///
 /// # Arguments
+///
 /// * `validator_indices` - Vector of validator indices (0-based, matching DKG player IDs)
-/// * `scalar_shares` - Scalar shares organized by validator: scalar_shares[i] contains ALL scalar
-///   shares for validator_indices[i]. Each inner vector is the validator's shares (one per virtual player).
-/// * `weights` - Full weights array for ALL validators in the network
-/// * `total_weight` - Sum of all validator weights (determines the batch evaluation domain size)
-/// * `identity` - The IBE identity (typically computed via `compute_identity(timelock_id, deadline_us)`)
+///   Only validators in this list participate in the reconstruction.
+/// * `scalar_shares` - Scalar shares organized by validator. `scalar_shares[i]` contains
+///   ALL scalar shares for `validator_indices[i]`. Each inner vector contains one share
+///   per virtual player (i.e., its weight).
+/// * `weights` - Full weights array for ALL validators in the network (not just participating)
+/// * `total_weight` - Sum of all validator weights (determines batch evaluation domain size)
+/// * `identity` - The IBE identity as a 32-byte array (typically from `compute_identity()`)
 ///
 /// # Returns
-/// The reconstructed decryption key as a G1 affine point
+///
+/// The reconstructed decryption key as a G1 affine point.
 ///
 /// # Panics
+///
 /// - If `validator_indices` and `scalar_shares` have different lengths
 /// - If any `validator_indices` value is >= `weights.len()`
 /// - If `scalar_shares` is empty or any inner share vector is empty
 /// - If total_weight doesn't match the sum of weights
+/// - If any inner share vector length doesn't match the validator's weight
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// // Network has 3 validators with weights [2, 1, 2], total = 5
 /// // Participating validators: 0, 1, 2 (all)
-/// // scalar_shares[0] = [s_0_0, s_0_1]  // validator 0's 2 scalar shares
-/// // scalar_shares[1] = [s_1_0]         // validator 1's 1 scalar share
-/// // scalar_shares[2] = [s_2_0, s_2_1]  // validator 2's 2 scalar shares
+/// // Validator 0 (weight 2): scalar_shares[0] = [s_0_0, s_0_1]
+/// // Validator 1 (weight 1): scalar_shares[1] = [s_1_0]
+/// // Validator 2 (weight 2): scalar_shares[2] = [s_2_0, s_2_1]
 /// let validator_indices = vec![0, 1, 2];
 /// let scalar_shares = vec![
 ///     vec![scalar_share_0_0, scalar_share_0_1],
 ///     vec![scalar_share_1_0],
 ///     vec![scalar_share_2_0, scalar_share_2_1],
 /// ];
-/// let weights = vec![2, 1, 2];  // Full weights for all validators
+/// let weights = vec![2, 1, 2];  // Full weights for ALL validators
 /// let total_weight = 5;
 /// let identity = compute_identity(1, 1704067200000000);
-/// let reconstructed_dk = reconstruct_ibe_dk(&validator_indices, &scalar_shares, &weights, total_weight, &identity);
+/// let reconstructed_dk = reconstruct_ibe_dk(
+///     &validator_indices,
+///     &scalar_shares,
+///     &weights,
+///     total_weight,
+///     &identity,
+/// );
 /// ```
+///
+/// # See Also
+///
+/// - [`compute_identity()`] - Creates IBE identity from timelock parameters
+/// - [`hash_to_g1()`] - Maps identity to G1 curve point
+/// - [`derive_decryption_key()`] - Derives DK from secret and identity
+/// - [`DealtSecretKey::reconstruct()`] - Framework's weighted reconstruction
+/// - [DKG Integration](atomica/docs/implementation-plan-unified-dkg-ibe.md)
 pub fn reconstruct_ibe_dk(
     validator_indices: &[u64],
     scalar_shares: &[Vec<Scalar>],
@@ -463,37 +500,67 @@ pub fn reconstruct_ibe_dk(
     total_weight: u64,
     identity: &[u8; 32],
 ) -> G1Affine {
+    // ==========================================================================
+    // Input Validation
+    // ==========================================================================
+
+    // Ensure participating validators match share vectors
     assert_eq!(
         validator_indices.len(),
         scalar_shares.len(),
-        "validator_indices and scalar_shares must have same length"
-    );
-    assert!(
-        !validator_indices.is_empty(),
-        "scalar_shares must not be empty"
+        "validator_indices and scalar_shares must have same length: \
+         {} validators but {} share vectors",
+        validator_indices.len(),
+        scalar_shares.len()
     );
 
+    // At least one validator must participate
+    assert!(
+        !validator_indices.is_empty(),
+        "Cannot reconstruct DK from empty shares"
+    );
+
+    // Verify total_weight consistency
     let computed_total: u64 = weights.iter().copied().sum();
     assert_eq!(
         total_weight, computed_total,
-        "total_weight must match sum of weights"
+        "total_weight ({}) must equal sum of weights ({})",
+        total_weight, computed_total
     );
 
+    // ==========================================================================
+    // Convert to Framework Types
+    // ==========================================================================
+    // Import framework types for reconstruction
     use crate::pvss::dealt_secret_key_share::scalar::DealtSecretKeyShare;
     use crate::pvss::scalar_elgamal::WeightedTranscript;
     use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
     use crate::pvss::{Player, WeightedConfig};
 
+    // Convert weights to usize for framework API
     let weights_usize: Vec<usize> = weights.iter().map(|w| *w as usize).collect();
-    let wconfig = WeightedConfig::new(validator_indices.len(), weights_usize)
-        .expect("Failed to create WeightedConfig");
 
-    let mut shares_for_recon = Vec::with_capacity(validator_indices.len());
+    // Create weighted configuration for the reconstruction
+    // This determines the batch evaluation domain size based on total_weight
+    let wconfig = WeightedConfig::new(validator_indices.len(), weights_usize)
+        .expect("Failed to create WeightedConfig - weights may be invalid");
+
+    // ==========================================================================
+    // Build Share Vector for Reconstruction
+    // ==========================================================================
+    // Convert scalar_shares into the framework's format:
+    // Vec<(Player, Vec<DealtSecretKeyShare>)>
+    //
+    // Each validator's shares are wrapped in DealtSecretKeyShare, which
+    // provides the correct serialization and API for reconstruction.
+    let mut shares_for_recon: Vec<(Player, Vec<DealtSecretKeyShare>)> =
+        Vec::with_capacity(validator_indices.len());
 
     for (vi, &validator_idx) in validator_indices.iter().enumerate() {
-        let weight = weights[validator_idx as usize];
-        let shares = &scalar_shares[vi];
+        let weight: u64 = weights[validator_idx as usize];
+        let shares: &[Scalar] = &scalar_shares[vi];
 
+        // Validate that the number of shares matches the validator's weight
         assert_eq!(
             shares.len(),
             weight as usize,
@@ -503,11 +570,13 @@ pub fn reconstruct_ibe_dk(
             weight
         );
 
-        let mut dealt_shares = Vec::with_capacity(shares.len());
+        // Wrap each scalar in DealtSecretKeyShare
+        let mut dealt_shares: Vec<DealtSecretKeyShare> = Vec::with_capacity(shares.len());
         for scalar_share in shares.iter() {
             dealt_shares.push(DealtSecretKeyShare::new(DealtSecretKey::new(*scalar_share)));
         }
 
+        // Add to reconstruction vector with player ID
         shares_for_recon.push((
             Player {
                 id: validator_idx as usize,
@@ -516,10 +585,25 @@ pub fn reconstruct_ibe_dk(
         ));
     }
 
-    let reconstructed_secret = <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
-        &wconfig,
-        &shares_for_recon,
-    );
+    // ==========================================================================
+    // Framework Reconstruction
+    // ==========================================================================
+    // Delegate to the framework's weighted reconstruction algorithm.
+    // This handles:
+    // - Virtual player expansion (mapping weights to consecutive indices)
+    // - Weighted Lagrange interpolation at alpha=0
+    // - Proper handling of unequal weights
+    let reconstructed_secret: DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
 
+    // ==========================================================================
+    // Derive Decryption Key
+    // ==========================================================================
+    // The reconstructed secret is the master secret 's'.
+    // Compute DK = H(identity)^s using the same derive_decryption_key() function
+    // used for single-share DK derivation, ensuring consistency.
     derive_decryption_key(&reconstructed_secret.s, identity)
 }
