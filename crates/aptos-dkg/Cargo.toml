@@ -38,13 +38,13 @@ rand_core = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
+serde_json = { workspace = true }
 sha3 = { workspace = true }
 static_assertions = { workspace = true }
 
 [dev-dependencies]
 num_cpus = { workspace = true }
 chrono = { workspace = true }
-serde_json = { workspace = true }
 
 [features]
 assert-private-keys-not-cloneable = []

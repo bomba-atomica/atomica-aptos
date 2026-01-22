@@ -38,6 +38,8 @@ pub mod constants;
 pub mod eq;
 pub mod hash_to_structure;
 pub mod ibe;
+#[cfg(test)]
+mod ibe_tests;
 pub mod new;
 pub mod pairing;
 #[cfg(feature = "testing")]

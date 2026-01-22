@@ -147,7 +147,7 @@ fn generate_golden_vectors() {
             description: description.to_string(),
             timelock_id: *timelock_id,
             deadline_us: *deadline_us,
-            identity_hash_hex: hex::encode(&identity),
+            identity_hash_hex: hex::encode(identity),
             h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
         };
 
@@ -207,12 +207,16 @@ fn generate_golden_vectors() {
         let identity = compute_identity(timelock_id, deadline_us);
         let h_identity = hash_to_g1(&identity);
 
+        // Generate DK shares using high-level API derive_decryption_key()
+        // Each validator's DK share is the sum of DK derivations from their scalar shares
         let dk_shares_g1: Vec<G1Projective> = shares
             .iter()
             .map(|(_player, sk_shares)| {
                 let mut sum = G1Projective::identity();
                 for sk_share in sk_shares.iter() {
-                    sum += h_identity.mul(&sk_share.0.s);
+                    // Use high-level API to derive DK contribution from each scalar share
+                    let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
+                    sum += G1Projective::from(dk_contribution);
                 }
                 sum
             })
@@ -228,10 +232,14 @@ fn generate_golden_vectors() {
 
         assert_eq!(reconstructed_secret.s, secret);
 
+        // Generate expected DK using high-level API
         let expected_dk = derive_decryption_key(&secret, &identity);
         let mpk = G2Projective::generator().mul(&secret).into();
 
-        // Reconstruct DK from G1 shares
+        // Verify DK reconstruction from shares using Lagrange interpolation
+        // NOTE: This manual reconstruction is for verification purposes only.
+        // The fixture validation test (test_golden_vectors_file_validity) uses
+        // high-level APIs to validate fixtures are consumable by actual users.
         let player_ids: Vec<usize> = vec![0, 1, 2];
         let lagr = lagrange_coefficients(
             wconfig.get_batch_evaluation_domain(),
@@ -245,6 +253,7 @@ fn generate_golden_vectors() {
         }
         let reconstructed_dk = reconstructed_dk_g1.to_affine();
 
+        // Verify reconstructed DK matches expected DK from high-level API
         assert_eq!(reconstructed_dk, expected_dk);
 
         let plaintext = b"Hello IBE golden vector test with PVSS!";
@@ -257,7 +266,7 @@ fn generate_golden_vectors() {
             rng_seed: seed,
             msk_hex: scalar_to_hex(&secret),
             mpk_g2_hex: g2_to_hex(&mpk),
-            identity_hash_hex: hex::encode(&identity),
+            identity_hash_hex: hex::encode(identity),
             h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
             threshold: threshold as u64,
             total_weight: weights.iter().map(|w| *w as u64).sum(),
@@ -322,12 +331,16 @@ fn generate_golden_vectors() {
         let identity = compute_identity(timelock_id, deadline_us);
         let h_identity = hash_to_g1(&identity);
 
+        // Generate DK shares using high-level API derive_decryption_key()
+        // Each validator's DK share is the sum of DK derivations from their scalar shares
         let dk_shares_g1: Vec<G1Projective> = shares
             .iter()
             .map(|(_player, sk_shares)| {
                 let mut sum = G1Projective::identity();
                 for sk_share in sk_shares.iter() {
-                    sum += h_identity.mul(&sk_share.0.s);
+                    // Use high-level API to derive DK contribution from each scalar share
+                    let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
+                    sum += G1Projective::from(dk_contribution);
                 }
                 sum
             })
@@ -370,7 +383,7 @@ fn generate_golden_vectors() {
             rng_seed: seed,
             msk_hex: scalar_to_hex(&secret),
             mpk_g2_hex: g2_to_hex(&mpk),
-            identity_hash_hex: hex::encode(&identity),
+            identity_hash_hex: hex::encode(identity),
             h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
             threshold: threshold as u64,
             total_weight: weights.iter().map(|w| *w as u64).sum(),
@@ -435,12 +448,16 @@ fn generate_golden_vectors() {
         let identity = compute_identity(timelock_id, deadline_us);
         let h_identity = hash_to_g1(&identity);
 
+        // Generate DK shares using high-level API derive_decryption_key()
+        // Each validator's DK share is the sum of DK derivations from their scalar shares
         let dk_shares_g1: Vec<G1Projective> = shares
             .iter()
             .map(|(_player, sk_shares)| {
                 let mut sum = G1Projective::identity();
                 for sk_share in sk_shares.iter() {
-                    sum += h_identity.mul(&sk_share.0.s);
+                    // Use high-level API to derive DK contribution from each scalar share
+                    let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
+                    sum += G1Projective::from(dk_contribution);
                 }
                 sum
             })
@@ -468,7 +485,7 @@ fn generate_golden_vectors() {
             rng_seed: seed,
             msk_hex: scalar_to_hex(&secret),
             mpk_g2_hex: g2_to_hex(&mpk),
-            identity_hash_hex: hex::encode(&identity),
+            identity_hash_hex: hex::encode(identity),
             h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
             threshold: threshold as u64,
             total_weight: weights.iter().map(|w| *w as u64).sum(),
@@ -533,12 +550,16 @@ fn generate_golden_vectors() {
         let identity = compute_identity(timelock_id, deadline_us);
         let h_identity = hash_to_g1(&identity);
 
+        // Generate DK shares using high-level API derive_decryption_key()
+        // Each validator's DK share is the sum of DK derivations from their scalar shares
         let dk_shares_g1: Vec<G1Projective> = shares
             .iter()
             .map(|(_player, sk_shares)| {
                 let mut sum = G1Projective::identity();
                 for sk_share in sk_shares.iter() {
-                    sum += h_identity.mul(&sk_share.0.s);
+                    // Use high-level API to derive DK contribution from each scalar share
+                    let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
+                    sum += G1Projective::from(dk_contribution);
                 }
                 sum
             })
@@ -566,7 +587,7 @@ fn generate_golden_vectors() {
             rng_seed: seed,
             msk_hex: scalar_to_hex(&secret),
             mpk_g2_hex: g2_to_hex(&mpk),
-            identity_hash_hex: hex::encode(&identity),
+            identity_hash_hex: hex::encode(identity),
             h_identity_g1_hex: g1_to_hex(&h_identity.to_affine()),
             threshold: threshold as u64,
             total_weight: weights.iter().map(|w| *w as u64).sum(),
@@ -772,6 +793,7 @@ fn test_unequal_weights_ibe_roundtrip() {
 #[test]
 fn test_golden_vectors_file_validity() {
     #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
     struct GoldenVectorsJson {
         version: String,
         identity_vectors: Vec<serde_json::Value>,
@@ -779,6 +801,7 @@ fn test_golden_vectors_file_validity() {
     }
 
     #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
     struct IbeRoundtripVectorJson {
         description: String,
         msk_hex: String,
@@ -794,8 +817,8 @@ fn test_golden_vectors_file_validity() {
     }
 
     let json_path = "atomica/golden_vectors/ibe_golden_vectors.json";
-    let content =
-        std::fs::read_to_string(json_path).expect(&format!("Failed to read {}", json_path));
+    let content = std::fs::read_to_string(json_path)
+        .unwrap_or_else(|_| panic!("Failed to read {}", json_path));
 
     let vectors: GoldenVectorsJson =
         serde_json::from_str(&content).expect("Failed to parse golden vectors JSON");
@@ -815,7 +838,7 @@ fn test_golden_vectors_file_validity() {
 
         // Load the golden vector data
         let msk_bytes: [u8; 32] = hex::decode(&v.msk_hex)
-            .expect(&format!("Vector {}: Invalid MSK hex", i + 1))
+            .unwrap_or_else(|_| panic!("Vector {}: Invalid MSK hex", i + 1))
             .try_into()
             .expect("MSK should be 32 bytes");
         let msk = blstrs::Scalar::from_bytes_le(&msk_bytes).expect("Invalid MSK scalar bytes");
@@ -825,27 +848,27 @@ fn test_golden_vectors_file_validity() {
 
         // Load identity from golden vector
         let identity: [u8; 32] = hex::decode(&v.identity_hash_hex)
-            .expect(&format!("Vector {}: Invalid identity hex", i + 1))
+            .unwrap_or_else(|_| panic!("Vector {}: Invalid identity hex", i + 1))
             .try_into()
             .expect("Identity should be 32 bytes");
 
         // Load plaintext
         let plaintext = hex::decode(&v.plaintext_hex)
-            .expect(&format!("Vector {}: Invalid plaintext hex", i + 1));
+            .unwrap_or_else(|_| panic!("Vector {}: Invalid plaintext hex", i + 1));
 
         // Load ciphertext components
         let ciphertext_u_bytes: [u8; 96] = hex::decode(&v.ciphertext_u_g2_hex)
-            .expect(&format!("Vector {}: Invalid ciphertext U hex", i + 1))
+            .unwrap_or_else(|_| panic!("Vector {}: Invalid ciphertext U hex", i + 1))
             .try_into()
             .expect("Ciphertext U should be 96 bytes");
         let ciphertext_u = blstrs::G2Affine::from_compressed(&ciphertext_u_bytes)
             .expect(&format!("Vector {}: Invalid ciphertext U point", i + 1));
         let ciphertext_v = hex::decode(&v.ciphertext_v_hex)
-            .expect(&format!("Vector {}: Invalid ciphertext V hex", i + 1));
+            .unwrap_or_else(|_| panic!("Vector {}: Invalid ciphertext V hex", i + 1));
 
         // Load reconstructed DK and verify decryption works
         let dk_bytes: [u8; 48] = hex::decode(&v.reconstructed_dk_g1_hex)
-            .expect(&format!("Vector {}: Invalid DK hex", i + 1))
+            .unwrap_or_else(|_| panic!("Vector {}: Invalid DK hex", i + 1))
             .try_into()
             .expect("DK should be 48 bytes");
         let dk = blstrs::G1Affine::from_compressed(&dk_bytes)

@@ -569,6 +569,12 @@ module aptos_framework::ibe_config {
         params.epoch = epoch;
     }
 
+    #[test_only]
+    /// Wrapper for on_new_block for testing purposes
+    public fun on_new_block_for_testing(vm: &signer) acquires TimelockRegistry {
+        on_new_block(vm);
+    }
+
     // ================================
     // Unit tests
     // ================================

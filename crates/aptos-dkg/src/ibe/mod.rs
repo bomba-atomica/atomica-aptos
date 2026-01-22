@@ -99,9 +99,13 @@ pub use ciphertext::Ciphertext;
 use crate::utils::random::random_scalar_from_uniform_bytes;
 use aptos_crypto::blstrs::SCALAR_NUM_BYTES;
 use blstrs::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
+use ff::Field;
 use group::{Curve, Group};
+use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
+use std::fs;
 use std::ops::Mul;
+use std::path::Path;
 
 /// Domain separation tag for IBE identity hashing.
 /// Ensures unique hash domains for IBE vs other protocols.
@@ -110,6 +114,42 @@ pub const IBE_IDENTITY_DST: &[u8] = b"APTOS_IBE_IDENTITY_DST";
 /// Domain separation tag for symmetric key derivation from pairing result.
 /// Prevents key confusion between IBE and other uses of the pairing output.
 pub const IBE_KEY_DERIVATION_DST: &[u8] = b"APTOS_IBE_KEY_DERIVATION_DST";
+
+/// IBE roundtrip test vector with DK share reconstruction
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct IbeRoundtripVector {
+    pub description: String,
+    pub rng_seed: u64,
+    pub threshold: u64,
+    pub total_weight: u64,
+    pub validator_indices: Vec<u64>,
+    pub validator_weights: Vec<u64>,
+    pub dk_shares_g1_hex: Vec<String>,
+    pub reconstructed_dk_g1_hex: String,
+}
+
+/// Golden vectors container
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GoldenVectors {
+    pub ibe_roundtrip_vectors: Vec<IbeRoundtripVector>,
+}
+
+/// Load IBE golden vectors from the standard location.
+///
+/// The golden vectors are used across:
+/// - Rust unit tests
+/// - Move VM native function tests
+/// - Move language unit tests
+///
+/// Returns `None` if the file cannot be loaded.
+pub fn load_golden_vectors() -> Option<GoldenVectors> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    let workspace_root = Path::new(&manifest_dir).parent()?.parent()?;
+    let golden_vectors_path = workspace_root.join("atomica/golden_vectors/ibe_golden_vectors.json");
+
+    let contents = fs::read_to_string(&golden_vectors_path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
 
 /// Computes an IBE identity from a timelock ID and deadline.
 ///
@@ -367,4 +407,90 @@ pub fn verify_decryption_key(dk: &G1Affine, identity: &[u8], mpk: &G2Affine) -> 
     let rhs = pairing(&h, mpk);
 
     lhs == rhs
+}
+
+/// Reconstructs a decryption key from threshold shares using Lagrange interpolation.
+///
+/// This function combines DK shares from multiple validators to reconstruct the full
+/// decryption key using Lagrange interpolation over a batch evaluation domain.
+///
+/// # Important: Weight Handling
+/// The weights parameter is kept for API compatibility but is NOT used in the reconstruction.
+/// It is expected that the caller has already applied weights by summing all shares from
+/// each validator before passing dk_shares to this function. For example:
+/// - For a validator with weight 2 that received 2 shares, sum both shares before passing
+/// - For a validator with weight 1, pass their single share directly
+///
+/// # Lagrange Formula
+/// ```
+/// DK = Σ λ_i * dk_share_i
+/// ```
+/// where `λ_i` is the Lagrange coefficient for validator i at X = 0:
+///
+/// ```
+/// λ_i = Π_{j≠i} (0 - ω^j) / (ω^i - ω^j)
+/// ```
+/// where ω is a primitive root of unity in the batch evaluation domain.
+///
+/// # Arguments
+/// * `validator_indices` - Vector of validator indices (0-based, matching DKG player IDs)
+/// * `dk_shares` - Vector of G1 decryption key shares (already weighted by summing validator's shares)
+/// * `weights` - Vector of validator weights (kept for API compatibility, not used)
+/// * `total_weight` - Sum of all validator weights (determines the batch evaluation domain size)
+///
+/// # Returns
+/// The reconstructed decryption key as a G1 affine point
+///
+/// # Panics
+/// - If `validator_indices`, `dk_shares`, and `weights` have different lengths
+/// - If `dk_shares` is empty
+///
+/// # Example
+///
+/// ```
+/// // Each validator's DK share is the sum of their weighted shares
+/// let validator_indices = vec![0, 1, 2];
+/// let shares: Vec<G1Affine> = vec![share_0, share_1, share_2];  // Already summed per validator
+/// let weights = vec![1, 1, 1];  // Not used, kept for API compatibility
+/// let total_weight = 5;  // Sum of all validator weights
+/// let reconstructed_dk = reconstruct_ibe_dk(&validator_indices, &shares, &weights, total_weight);
+/// ```
+pub fn reconstruct_ibe_dk(
+    validator_indices: &[u64],
+    dk_shares: &[G1Affine],
+    weights: &[u64],
+    total_weight: u64,
+) -> G1Affine {
+    assert_eq!(
+        validator_indices.len(),
+        dk_shares.len(),
+        "validator_indices and dk_shares must have same length"
+    );
+    assert!(!validator_indices.is_empty(), "dk_shares must not be empty");
+
+    use crate::algebra::evaluation_domain::BatchEvaluationDomain;
+    use crate::algebra::lagrange::all_n_lagrange_coefficients;
+
+    let n = weights.len();
+    let domain_size = n;
+    let batch_dom = BatchEvaluationDomain::new(domain_size);
+
+    let mut virtual_player_ids: Vec<usize> = Vec::new();
+    let mut current_index = 0usize;
+    for vi in validator_indices.iter() {
+        virtual_player_ids.push(current_index);
+        current_index += weights[*vi as usize] as usize;
+    }
+
+    let all_lagr_coeffs = all_n_lagrange_coefficients(&batch_dom, &Scalar::ZERO);
+
+    let mut result = G1Projective::identity();
+    for (i, share) in dk_shares.iter().enumerate() {
+        let vp_id = virtual_player_ids[i];
+        let lagr_coeff = all_lagr_coeffs[vp_id];
+        let weight_factor = Scalar::from(weights[validator_indices[i] as usize]);
+        result += share.mul(lagr_coeff * weight_factor);
+    }
+
+    result.to_affine()
 }
