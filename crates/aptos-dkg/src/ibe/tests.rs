@@ -659,7 +659,8 @@ fn test_reconstruct_ibe_dk_equal_weights() {
         &full_weights,
         total_weight,
         &identity,
-    );
+    )
+    .expect("reconstruct_ibe_dk should succeed with valid shares");
 
     // Reconstruct the master secret using framework (for verification)
     let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
@@ -763,7 +764,8 @@ fn test_reconstruct_ibe_dk_unequal_weights() {
         &full_weights,
         total_weight,
         &identity,
-    );
+    )
+    .expect("reconstruct_ibe_dk should succeed with valid shares");
 
     // Reconstruct the master secret using framework (for verification)
     let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
@@ -873,7 +875,8 @@ fn test_reconstruct_ibe_dk_sparse_indices() {
         &full_weights,
         total_weight,
         &identity,
-    );
+    )
+    .expect("reconstruct_ibe_dk should succeed with valid shares");
 
     // Expected DK from master secret
     let expected_dk = derive_decryption_key(&secret, &identity);
@@ -951,7 +954,8 @@ fn test_reconstruct_ibe_dk_single_share() {
         &full_weights,
         total_weight,
         &identity,
-    );
+    )
+    .expect("reconstruct_ibe_dk should succeed with valid shares");
 
     println!("✅ test_reconstruct_ibe_dk_single_share passed");
 }

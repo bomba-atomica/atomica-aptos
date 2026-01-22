@@ -92,6 +92,11 @@ pub mod scalar {
         pub fn into_inner(self) -> Scalar {
             self.0.s
         }
+
+        /// Returns a reference to the scalar value (for use in iterators).
+        pub fn scalar(&self) -> &Scalar {
+            &self.0.s
+        }
     }
 
     impl ValidCryptoMaterial for DealtSecretKeyShare {

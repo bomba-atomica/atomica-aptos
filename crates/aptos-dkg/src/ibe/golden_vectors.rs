@@ -246,7 +246,8 @@ fn generate_golden_vectors() {
         let recon_indices: Vec<u64> = vec![0, 1, 2];
         let recon_weights: Vec<u64> = vec![1, 1, 1, 1, 1]; // Full weights for all 5 validators
         let reconstructed_dk =
-            reconstruct_ibe_dk(&recon_indices, &scalar_shares, &recon_weights, 5, &identity);
+            reconstruct_ibe_dk(&recon_indices, &scalar_shares, &recon_weights, 5, &identity)
+                .expect("reconstruct_ibe_dk should succeed with valid shares");
 
         // Verify reconstructed DK matches expected DK from high-level API
         assert_eq!(reconstructed_dk, expected_dk);

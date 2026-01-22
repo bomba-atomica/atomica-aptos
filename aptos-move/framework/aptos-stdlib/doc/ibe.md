@@ -31,19 +31,21 @@ and registered via the <code>natives::cryptography::algebra::ibe</code> module.
 
 Reconstruct an IBE decryption key from threshold shares using Lagrange interpolation.
 
-This function implements: DK = Σ λ_i * dk_share_i
-where λ_i are weighted Lagrange coefficients based on validator indices and weights.
+This function implements weighted reconstruction matching the PVSS framework:
+For each validator's scalar shares s_i, compute DK contribution: s_i * H(identity)
+Then interpolate using weighted Lagrange coefficients.
 
 
 <a id="@Arguments_0"></a>
 
 ### Arguments
 
-* <code>validator_indices</code> - Vector of validator indices (1-indexed, typically from DKG)
-* <code>dk_shares</code> - Vector of G1 decryption key shares (crypto_algebra::Element<G1>)
-* <code>weights</code> - Vector of validator weights corresponding to each share
+* <code>validator_indices</code> - Vector of validator indices (0-indexed, from DKG)
+* <code>scalar_shares</code> - Nested vector of scalar shares (one inner vector per validator)
+* <code>weights</code> - Full vector of validator weights (for ALL validators, not just participating)
 * <code>threshold</code> - Minimum number of shares required for reconstruction
 * <code>total_weight</code> - Sum of all validator weights
+* <code>identity</code> - 32-byte identity hash (from compute_identity)
 
 
 <a id="@Returns_1"></a>
@@ -57,8 +59,9 @@ The reconstructed decryption key as a crypto_algebra::Element<G1>
 
 ### Aborts
 
-- If <code>validator_indices</code>, <code>dk_shares</code>, and <code>weights</code> have different lengths
-- If fewer than <code>threshold</code> shares are provided
+- If <code>validator_indices</code> and <code>scalar_shares</code> have different lengths
+- If scalar_shares inner vectors don't match weights
+- If fewer than <code>threshold</code> weight units are provided
 
 
 <a id="@Example_3"></a>
@@ -66,18 +69,20 @@ The reconstructed decryption key as a crypto_algebra::Element<G1>
 ### Example
 
 ```
-// 3 validators with equal weights, threshold 2
-let dk = reconstruct_ibe_dk_internal<G1>(
-vector[1, 2, 3],           // validator indices
-vector[share1, share2, share3],  // DK shares
-vector[1, 1, 1],           // weights
-2,                         // threshold
-3                          // total_weight
+// 3 validators with weights [1, 1, 1], validators 0, 1, 2 participating
+// Each validator has 1 share (weight=1)
+let dk = reconstruct_ibe_dk<G1>(
+vector[0, 1, 2],                    // validator indices
+vector[vector[s0], vector[s1], vector[s2]],  // scalar shares
+vector[1, 1, 1],                    // full weights
+3,                                  // threshold
+3,                                  // total_weight
+identity                            // 32-byte identity hash
 );
 ```
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk">reconstruct_ibe_dk</a>&lt;G1&gt;(validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, dk_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;&gt;, weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, threshold: u64, total_weight: u64): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;
+<pre><code><b>public</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk">reconstruct_ibe_dk</a>&lt;G1&gt;(validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, scalar_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;, weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, threshold: u64, total_weight: u64, identity: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;
 </code></pre>
 
 
@@ -88,27 +93,20 @@ vector[1, 1, 1],           // weights
 
 <pre><code><b>public</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk">reconstruct_ibe_dk</a>&lt;G1&gt;(
     validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
-    dk_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt;&gt;,
+    scalar_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;,
     weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
     threshold: u64,
     total_weight: u64,
+    identity: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
 ): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;G1&gt; {
-    <b>let</b> dk_shares_handles = <a href="../../move-stdlib/doc/vector.md#0x1_vector_empty">vector::empty</a>&lt;u64&gt;();
-    <b>let</b> i = 0;
-    <b>let</b> n = <a href="../../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&dk_shares);
-    <b>while</b> (i &lt; n) {
-        <b>let</b> element = <a href="../../move-stdlib/doc/vector.md#0x1_vector_borrow">vector::borrow</a>(&dk_shares, i);
-        <a href="../../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> dk_shares_handles, <a href="crypto_algebra.md#0x1_crypto_algebra_get_handle">crypto_algebra::get_handle</a>(element));
-        i = i + 1;
-    };
-
     <a href="crypto_algebra.md#0x1_crypto_algebra_new_element">crypto_algebra::new_element</a>&lt;G1&gt;(
         <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal">reconstruct_ibe_dk_internal</a>&lt;G1&gt;(
             validator_indices,
-            dk_shares_handles,
+            scalar_shares,
             weights,
             threshold,
-            total_weight
+            total_weight,
+            identity
         )
     )
 }
@@ -123,10 +121,10 @@ vector[1, 1, 1],           // weights
 ## Function `reconstruct_ibe_dk_internal`
 
 Internal native function wrapper.
-This is called via the algebra natives infrastructure.
+Accepts scalar shares as byte vectors (little-endian 32-byte scalars).
 
 
-<pre><code><b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal">reconstruct_ibe_dk_internal</a>&lt;G1&gt;(validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, dk_shares_handles: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, threshold: u64, total_weight: u64): u64
+<pre><code><b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal">reconstruct_ibe_dk_internal</a>&lt;G1&gt;(validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, scalar_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;, weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;, threshold: u64, total_weight: u64, identity: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;): u64
 </code></pre>
 
 
@@ -137,10 +135,11 @@ This is called via the algebra natives infrastructure.
 
 <pre><code><b>native</b> <b>fun</b> <a href="ibe.md#0x1_ibe_reconstruct_ibe_dk_internal">reconstruct_ibe_dk_internal</a>&lt;G1&gt;(
     validator_indices: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
-    dk_shares_handles: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
+    scalar_shares: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;<a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;&gt;,
     weights: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u64&gt;,
     threshold: u64,
     total_weight: u64,
+    identity: <a href="../../move-stdlib/doc/vector.md#0x1_vector">vector</a>&lt;u8&gt;,
 ): u64;
 </code></pre>
 

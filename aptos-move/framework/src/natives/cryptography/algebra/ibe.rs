@@ -47,6 +47,10 @@
 //! - This native function only handles data parsing and result storage.
 //! - Input validation ensures shares match the expected weights.
 //!
+//! # Testing
+//!
+//! See [ibe-test-plan.md](ibe-test-plan.md) for detailed test strategy and coverage.
+//!
 //! # Dependencies
 //!
 //! - `aptos-dkg`: Provides the canonical cryptographic implementation
@@ -139,30 +143,11 @@ pub fn reconstruct_ibe_dk_internal(
     // Step 3: Validate argument consistency
     // ==========================================================================
     // These checks ensure the input data is well-formed before expensive crypto ops
+    // Note: We don't check validator_indices vs scalar_shares here since we do
+    // the validation in the apt-dkg layer which returns proper errors
 
-    // Each participating validator must have corresponding scalar shares
-    assert_eq!(
-        validator_indices.len(),
-        scalar_shares.len(),
-        "validator_indices and scalar_shares must have same length: \
-         {} validators vs {} share vectors",
-        validator_indices.len(),
-        scalar_shares.len()
-    );
-
-    // At least one validator must participate
-    assert!(
-        !validator_indices.is_empty(),
-        "At least one validator must participate in DK reconstruction"
-    );
-
-    // total_weight must match the sum of individual weights
-    let computed_total: u64 = weights.iter().copied().sum();
-    assert_eq!(
-        total_weight, computed_total,
-        "total_weight ({}) must match sum of weights ({})",
-        total_weight, computed_total
-    );
+    // At least one validator must participate (checked in apt-dkg layer)
+    // total_weight must match the sum of individual weights (checked in apt-dkg layer)
 
     // ==========================================================================
     // Step 4: Gas charging
@@ -220,13 +205,22 @@ pub fn reconstruct_ibe_dk_internal(
     //
     // Using apt-dkg ensures the Move VM uses the exact same crypto as the Rust SDK,
     // eliminating any risk of divergence or implementation errors.
-    let reconstructed_dk: blstrs::G1Affine = reconstruct_ibe_dk(
+    let reconstructed_dk: blstrs::G1Affine = match reconstruct_ibe_dk(
         &validator_indices,
         &parsed_shares,
         &weights,
         total_weight,
         &identity_array,
-    );
+    ) {
+        Ok(dk) => dk,
+        Err(e) => {
+            // Convert IbeError to SafeNativeError - use invariant violation for crypto errors
+            return Err(SafeNativeError::InvariantViolation(
+                abort_invariant_violated()
+                    .with_message(format!("IBE DK reconstruction failed: {}", e)),
+            ));
+        },
+    };
 
     // ==========================================================================
     // Step 8: Store result and return handle

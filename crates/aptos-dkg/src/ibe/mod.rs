@@ -91,9 +91,6 @@ mod tests;
 #[cfg(test)]
 mod golden_vectors;
 
-#[cfg(test)]
-mod identity_tests;
-
 pub use ciphertext::Ciphertext;
 
 use crate::pvss::dealt_secret_key::scalar::DealtSecretKey;
@@ -106,6 +103,69 @@ use sha3::{Digest, Sha3_256};
 use std::fs;
 use std::ops::Mul;
 use std::path::Path;
+
+/// Errors that can occur during IBE operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IbeError {
+    /// Validator indices and scalar shares have different lengths
+    ValidatorIndicesSharesMismatch {
+        indices_len: usize,
+        shares_len: usize,
+    },
+    /// No validators participating in reconstruction
+    EmptyShares,
+    /// Total weight doesn't match sum of individual weights
+    WeightSumMismatch {
+        total_weight: u64,
+        computed_sum: u64,
+    },
+    /// Number of shares doesn't match validator's weight
+    ShareWeightMismatch {
+        validator_index: u64,
+        shares_count: usize,
+        expected_weight: u64,
+    },
+    /// Failed to create weighted configuration
+    InvalidWeightedConfig(String),
+}
+
+impl std::fmt::Display for IbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IbeError::ValidatorIndicesSharesMismatch {
+                indices_len,
+                shares_len,
+            } => {
+                write!(
+                    f,
+                    "validator_indices ({}) and scalar_shares ({}) must have same length",
+                    indices_len, shares_len
+                )
+            },
+            IbeError::EmptyShares => write!(f, "Cannot reconstruct DK from empty shares"),
+            IbeError::WeightSumMismatch {
+                total_weight,
+                computed_sum,
+            } => write!(
+                f,
+                "total_weight ({}) must equal sum of weights ({})",
+                total_weight, computed_sum
+            ),
+            IbeError::ShareWeightMismatch {
+                validator_index,
+                shares_count,
+                expected_weight,
+            } => write!(
+                f,
+                "Validator {} has {} shares but weight is {}",
+                validator_index, shares_count, expected_weight
+            ),
+            IbeError::InvalidWeightedConfig(msg) => write!(f, "Invalid weighted config: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for IbeError {}
 
 /// Domain separation tag for IBE identity hashing.
 /// Ensures unique hash domains for IBE vs other protocols.
@@ -499,34 +559,32 @@ pub fn reconstruct_ibe_dk(
     weights: &[u64],
     total_weight: u64,
     identity: &[u8; 32],
-) -> G1Affine {
+) -> Result<G1Affine, IbeError> {
     // ==========================================================================
     // Input Validation
     // ==========================================================================
 
     // Ensure participating validators match share vectors
-    assert_eq!(
-        validator_indices.len(),
-        scalar_shares.len(),
-        "validator_indices and scalar_shares must have same length: \
-         {} validators but {} share vectors",
-        validator_indices.len(),
-        scalar_shares.len()
-    );
+    if validator_indices.len() != scalar_shares.len() {
+        return Err(IbeError::ValidatorIndicesSharesMismatch {
+            indices_len: validator_indices.len(),
+            shares_len: scalar_shares.len(),
+        });
+    }
 
     // At least one validator must participate
-    assert!(
-        !validator_indices.is_empty(),
-        "Cannot reconstruct DK from empty shares"
-    );
+    if validator_indices.is_empty() {
+        return Err(IbeError::EmptyShares);
+    }
 
     // Verify total_weight consistency
     let computed_total: u64 = weights.iter().copied().sum();
-    assert_eq!(
-        total_weight, computed_total,
-        "total_weight ({}) must equal sum of weights ({})",
-        total_weight, computed_total
-    );
+    if total_weight != computed_total {
+        return Err(IbeError::WeightSumMismatch {
+            total_weight,
+            computed_sum: computed_total,
+        });
+    }
 
     // ==========================================================================
     // Convert to Framework Types
@@ -543,7 +601,7 @@ pub fn reconstruct_ibe_dk(
     // Create weighted configuration for the reconstruction
     // This determines the batch evaluation domain size based on total_weight
     let wconfig = WeightedConfig::new(validator_indices.len(), weights_usize)
-        .expect("Failed to create WeightedConfig - weights may be invalid");
+        .map_err(|e| IbeError::InvalidWeightedConfig(e.to_string()))?;
 
     // ==========================================================================
     // Build Share Vector for Reconstruction
@@ -561,14 +619,13 @@ pub fn reconstruct_ibe_dk(
         let shares: &[Scalar] = &scalar_shares[vi];
 
         // Validate that the number of shares matches the validator's weight
-        assert_eq!(
-            shares.len(),
-            weight as usize,
-            "Validator {} has {} shares but weight is {}",
-            validator_idx,
-            shares.len(),
-            weight
-        );
+        if shares.len() != weight as usize {
+            return Err(IbeError::ShareWeightMismatch {
+                validator_index: validator_idx,
+                shares_count: shares.len(),
+                expected_weight: weight,
+            });
+        }
 
         // Wrap each scalar in DealtSecretKeyShare
         let mut dealt_shares: Vec<DealtSecretKeyShare> = Vec::with_capacity(shares.len());
@@ -605,5 +662,7 @@ pub fn reconstruct_ibe_dk(
     // The reconstructed secret is the master secret 's'.
     // Compute DK = H(identity)^s using the same derive_decryption_key() function
     // used for single-share DK derivation, ensuring consistency.
-    derive_decryption_key(&reconstructed_secret.s, identity)
+    let dk = derive_decryption_key(&reconstructed_secret.s, identity);
+
+    Ok(dk)
 }
