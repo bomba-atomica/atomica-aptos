@@ -1,16 +1,16 @@
 # Implementation Plan: Unified DKG for Randomness + IBE
 
-**Version:** 2.14
+**Version:** 2.15
 **Date:** January 22, 2026
-**Branch:** feature/scalar-chunked-elgamal
+**Branch:** `timelock-elgamal-pvss`
 **Status:** Phase 5.2 (IBE DK Reconstruction) COMPLETE
 **Reference:** [ADR-001: Dual Output DKG](adr-001-dual-output-dkg.md)
 **Related Docs:**
 
+- [IBE Implementation Summary](../ibe-summary.md)
 - [Technical: Chunked ElGamal](technical/chunked-elgamal-scalar-generation.md)
 - [Definitions](definitions.md)
 - [Timelock IBE ElGamal Plan](timelock-ibe-elgamal-plan.md)
-- [IBE Implementation Summary](../ibe-summary.md)
 
 ---
 
@@ -25,13 +25,102 @@ This plan implements a **dual-output DKG** that produces two types of key materi
 
 ### Key Design Decisions
 
-1. **Chunked Lifted ElGamal for IBE scalars** - We use Chunked Lifted ElGamal PVSS (not plain ElGamal, not DAS) to produce scalar shares. Each 256-bit scalar is split into 16 chunks of 16 bits, encrypted with lifted ElGamal, and decrypted using BSGS discrete log.
+1. **Chunked Lifted ElGamal for IBE scalars** - We use Chunked Lifted ElGamal PVSS to produce scalar shares. Each 256-bit scalar is split into 16 chunks of 16 bits, encrypted with lifted ElGamal, and decrypted using BSGS discrete log.
 
 2. **DAS PVSS for randomness only** - The existing DAS PVSS continues unchanged for WVUF/randomness. We do NOT use DAS output for IBE.
 
-3. **DKG produces ephemeral IBE keys** - The IBE master secret comes from the DKG, NOT from validator BLS keys directly. This provides forward secrecy and key separation.
+3. **DKG produces ephemeral IBE keys** - The IBE master secret comes from the DKG, NOT from validator BLS keys directly.
 
 4. **Same secret, two representations** - Both PVSS schemes share the same `InputSecret`. The scalar `a` is dealt twice: once as G1 shares (DAS) and once as scalar shares (Chunked ElGamal).
+
+---
+
+## Cryptographic Objects: Precise Definitions
+
+### Key Material Taxonomy
+
+#### Layer 1: Master Key Pair (DKG Output)
+
+| Name                  | Symbol | Type        | Size     | Created By        | Visibility              | On-Chain? |
+| --------------------- | ------ | ----------- | -------- | ----------------- | ----------------------- | --------- |
+| **Master Secret Key** | MSK    | Scalar (Fr) | 32 bytes | DKG (distributed) | SECRET - never revealed | ❌ NO     |
+| **Master Public Key** | MPK    | G2 point    | 96 bytes | DKG               | PUBLIC                  | ✅ YES    |
+
+**Relationship:** `MPK = MSK × g₂`
+
+**Lifecycle:**
+
+- MSK is created via distributed key generation (DKG)
+- MSK never exists as a single value on any machine
+- MSK is distributed as PVSS shares to validators
+- MPK is published on-chain after DKG completes
+
+---
+
+#### Layer 2: PVSS Secret Shares (Validator Private State)
+
+| Name                      | Symbol | Type          | Size              | Held By                  | Visibility              | On-Chain? |
+| ------------------------- | ------ | ------------- | ----------------- | ------------------------ | ----------------------- | --------- |
+| **PVSS Secret Share**     | s_i    | Vec\<Scalar\> | 32 bytes × weight | Validator i              | SECRET - off-chain only | ❌ NO     |
+| **PVSS Public Key Share** | pk_i   | Vec\<G2\>     | 96 bytes × weight | Public (from transcript) | PUBLIC                  | ❌ NO     |
+
+**Relationship:**
+
+```
+pk_i[j] = s_i[j] × g₂                    (for each virtual player j)
+sum_i(Lagrange_i × s_i[0]) = MSK         (reconstruction)
+sum_i(Lagrange_i × pk_i[0]) = MPK        (verification)
+```
+
+**Lifecycle:**
+
+1. DKG creates PVSS transcript with encrypted shares
+2. Each validator decrypts their `s_i` shares using their private key
+3. PVSS transcript contains public key shares `pk_i` for verification
+
+**Security properties:**
+
+- `s_i` values MUST remain secret
+- Knowledge of threshold `t` shares allows MSK reconstruction
+- `pk_i` provides verifiability without revealing `s_i`
+
+---
+
+#### Layer 3: IBE Decryption Key Shares (On-Chain Submissions)
+
+| Name         | Symbol     | Type     | Size     | Submitted By | Visibility | On-Chain? |
+| ------------ | ---------- | -------- | -------- | ------------ | ---------- | --------- |
+| **DK Share** | dk_share_i | G1 point | 48 bytes | Validator i  | PUBLIC     | ✅ YES    |
+
+**Computation (off-chain by validator):**
+
+```
+H = hash_to_G1(identity)
+dk_share_i = sum_j(s_i[j] × H) = (sum_j s_i[j]) × H
+```
+
+---
+
+#### Layer 4: Reconstructed Decryption Key (Final Output)
+
+| Name               | Symbol | Type     | Size     | Created By      | Visibility             | On-Chain? |
+| ------------------ | ------ | -------- | -------- | --------------- | ---------------------- | --------- |
+| **Decryption Key** | DK     | G1 point | 48 bytes | Native function | PUBLIC after threshold | ✅ YES    |
+
+**Reconstruction:**
+
+```
+DK = sum_i(Lagrange_i(validators) × dk_share_i)
+   = MSK × H
+```
+
+**Verification:**
+
+```
+e(DK, g₂) =? e(H, MPK)
+```
+
+---
 
 ### Architecture Diagram
 
@@ -48,55 +137,49 @@ InputSecret (scalar a)
         │                      │
         ▼                      ▼
    G1 shares              Scalar shares
-   (main transcript)      (scalar transcript)
+   (WVUF/randomness)      (IBE DK reconstruction)
         │                      │
         ▼                      ▼
    WVUF/Randomness        IBE Decryption Key
-                          dk = H(identity)^scalar
+                           dk = H(identity)^scalar
 ```
 
 ---
 
 ## Changelog
 
+- **v2.15** (Jan 22, 2026): **Documentation consolidation**
+  - Merged key material definitions into master plan
+  - Created consolidated `ibe-summary.md` reference
+  - Deleted outdated analysis docs
 - **v2.14** (Jan 22, 2026): **Phase 5.2 (IBE DK Reconstruction) COMPLETE**
-  - Implemented unified `reconstruct_ibe_dk()` in Rust SDK (`crates/aptos-dkg/src/ibe/mod.rs`)
+  - Implemented unified `reconstruct_ibe_dk()` in Rust SDK
   - Implemented native function `reconstruct_ibe_dk_internal()` in Move VM
-  - Updated Move API `ibe.move` with new signature accepting scalar shares
-  - All 65 IBE/DKG tests pass
-  - Native function delegates to apt-dkg for crypto (no custom crypto)
-- **v2.13** (Jan 19, 2026): **Phase 4 confirmed complete.** Moved Phase 4 details to "Implemented" section.
-- **v2.12** (Jan 19, 2026): **Phase 4 (DK Share Submission) in progress.**
-- **v2.11** (Jan 19, 2026): **DLEQ Proofs prioritized.** Elevated DLEQ proof implementation to immediate priority.
+  - Updated Move API `ibe.move` with new signature
+  - All 39 IBE/DKG tests pass
 
 ---
 
 ## Current Status Summary
 
-| Phase | Description                         | Status      | Priority |
-| ----- | ----------------------------------- | ----------- | -------- |
-| 0     | Feasibility Test                    | ✅ COMPLETE | -        |
-| 1A-1D | IBE Primitives + MPK Storage        | ✅ COMPLETE | -        |
-| 2     | Scalar ElGamal PVSS                 | ✅ COMPLETE | -        |
-| 2.0.5 | Unit Tests for Scalar Elgamal       | ✅ COMPLETE | -        |
-| 2.1   | Integration into RealDKG + DKGTrait | ✅ COMPLETE | -        |
-| 2.2   | Aggregation Bug Fix                 | ✅ COMPLETE | -        |
-| 1E    | IBE Integration Tests               | ✅ COMPLETE | -        |
-| 2.3   | Transcript Verification             | ✅ COMPLETE | -        |
-| 2.4   | Serialization Implementation        | ✅ COMPLETE | -        |
-| 2.5   | Error Handling Hardening            | ✅ COMPLETE | -        |
-| 2.6   | DLEQ Proof Verification             | ✅ COMPLETE | -        |
-| 3     | Timelock Registry                   | ✅ COMPLETE | -        |
-| 4     | DK Share Submission                 | ✅ COMPLETE | -        |
-| 5     | E2E Integration                     | ✅ COMPLETE | -        |
-| 5.1   | Linear Pairing Check                | ✅ COMPLETE | -        |
-| 5.2   | IBE DK Reconstruction               | ✅ COMPLETE | -        |
+| Phase     | Description                  | Status      | Priority |
+| --------- | ---------------------------- | ----------- | -------- |
+| 0         | Feasibility Test             | ✅ COMPLETE | -        |
+| 1A-1D     | IBE Primitives + MPK Storage | ✅ COMPLETE | -        |
+| 2         | Scalar ElGamal PVSS          | ✅ COMPLETE | -        |
+| 2.0.5-2.6 | Testing, verification, DLEQ  | ✅ COMPLETE | -        |
+| 3         | Timelock Registry            | ✅ COMPLETE | -        |
+| 4         | DK Share Submission          | ✅ COMPLETE | -        |
+| 5         | E2E Integration              | ✅ COMPLETE | -        |
+| 5.2       | IBE DK Reconstruction        | ✅ COMPLETE | -        |
 
 ### Current Blockers for Production
 
-| Issue                      | Location | Impact | Status      |
-| -------------------------- | -------- | ------ | ----------- |
-| None - Phase 5.2 complete! | -        | -      | ✅ RESOLVED |
+| Issue                            | Impact            | Status     |
+| -------------------------------- | ----------------- | ---------- |
+| `mpk_encrypt_decrypt` smoke test | Not yet run       | 🔲 Pending |
+| `timelock_e2e` smoke test        | Not yet run       | 🔲 Pending |
+| Security review                  | Not yet completed | 🔲 Pending |
 
 ---
 
@@ -104,96 +187,44 @@ InputSecret (scalar a)
 
 ### Phase 5.2: IBE DK Reconstruction ✅ COMPLETE
 
-This phase implements the unified IBE decryption key reconstruction path that works for both:
-
-1. **Threshold shares from DKG** - Reconstruct master secret from validator shares
-2. **Single validator (testing)** - Direct DK derivation for simple cases
-
-#### Architecture
+This phase implements the unified IBE decryption key reconstruction path:
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    IBE DK Reconstruction Architecture                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Input: (validator_indices, scalar_shares, weights, total_weight, identity) │
-│         │                                                                     │
-│         ▼                                                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  Step 1: Validate inputs                                              │     │
-│  │  - Check indices/shares alignment                                    │     │
-│  │  - Verify weights match total_weight                                 │     │
-│  │  - Validate each validator has correct number of shares              │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                    │                                          │
-│                                    ▼                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  Step 2: Convert scalar shares to DealtSecretKeyShare format        │     │
-│  │  - Wrap each scalar in DealtSecretKeyShare                          │     │
-│  │  - Group by validator ID                                             │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                    │                                          │
-│                                    ▼                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  Step 3: Delegate to framework's weighted reconstruction            │     │
-│  │  - WeightedConfig::new() for configuration                          │     │
-│  │  - DealtSecretKey::reconstruct() for interpolation                  │     │
-│  │  - Handles virtual player expansion automatically                   │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                    │                                          │
-│                                    ▼                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  Step 4: Derive decryption key                                      │     │
-│  │  - Compute H(identity) via hash_to_g1()                             │     │
-│  │  - Compute DK = H(identity)^secret                                  │     │
-│  └─────────────────────────────────────────────────────────────────────┘     │
-│                                    │                                          │
-│                                    ▼                                          │
-│  Output: G1Affine (the reconstructed decryption key)                        │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+Input: (validator_indices, scalar_shares, weights, total_weight, identity)
+       │
+       ▼
+1. Wrap scalar_shares in DealtSecretKeyShare format
+       │
+       ▼
+2. Delegate to WeightedConfig::new() + DealtSecretKey::reconstruct()
+       │
+       ▼
+3. Derive DK = H(identity)^secret
+       │
+       ▼
+Output: G1Affine (the reconstructed decryption key)
 ```
 
-#### Files Modified
-
-| File                                                                 | Change                                               |
-| -------------------------------------------------------------------- | ---------------------------------------------------- |
-| `crates/aptos-dkg/src/ibe/mod.rs`                                    | Added `reconstruct_ibe_dk()` with full documentation |
-| `aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`       | Native function with delegation to apt-dkg           |
-| `aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move`    | Move API with new signature                          |
-| `aptos-move/framework/src/natives/cryptography/algebra/ibe_tests.rs` | Native function tests                                |
-| `aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move`    | Move unit tests                                      |
-
-#### API Signature
+### API Signature
 
 **Rust SDK** (`crates/aptos-dkg/src/ibe/mod.rs`):
 
 ```rust
 pub fn reconstruct_ibe_dk(
     validator_indices: &[u64],
-    scalar_shares: &[Vec<Scalar>],
+    scalar_shares: &[Vec<Scalar>],  // Per-validator, per-virtual-player
     weights: &[u64],
     total_weight: u64,
     identity: &[u8; 32],
 ) -> G1Affine
 ```
 
-**Move VM Native Function** (`ibe.rs`):
-
-```rust
-pub fn reconstruct_ibe_dk_internal(
-    context: &mut SafeNativeContext,
-    ty_args: Vec<Type>,
-    mut args: VecDeque<Value>,
-) -> SafeNativeResult<SmallVec<[Value; 1]>>
-```
-
-**Move API** (`ibe.move`):
+**Move VM** (`ibe.move`):
 
 ```move
 public fun reconstruct_ibe_dk<G1>(
     validator_indices: vector<u64>,
-    scalar_shares: vector<vector<u8>>,
+    scalar_shares: vector<vector<u8>>,  // Nested: validator -> virtual_player
     weights: vector<u64>,
     threshold: u64,
     total_weight: u64,
@@ -201,119 +232,36 @@ public fun reconstruct_ibe_dk<G1>(
 ): crypto_algebra::Element<G1>
 ```
 
-#### Key Implementation Details
+### Files Modified
 
-1. **Virtual Player Expansion**: The framework handles mapping validator weights to consecutive virtual player indices automatically.
+| File                                                              | Purpose                               |
+| ----------------------------------------------------------------- | ------------------------------------- |
+| `crates/aptos-dkg/src/ibe/mod.rs`                                 | `reconstruct_ibe_dk()` implementation |
+| `aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`    | Native function                       |
+| `aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move` | Move API                              |
+| `aptos-move/framework/aptos-framework/sources/ibe_config.move`    | Timelock registry                     |
+| `crates/aptos-dkg/src/ibe/golden_vectors.rs`                      | Golden vector generation              |
 
-2. **Weighted Lagrange Interpolation**: Uses the same `DealtSecretKey::reconstruct()` as the PVSS framework, ensuring consistency.
+### Tests
 
-3. **Native Function Design**: The native function ONLY handles:
-   - Argument parsing from Move VM
-   - Scalar deserialization from byte vectors
-   - Delegation to apt-dkg
-   - Result storage
-
-   **No custom crypto** - all crypto delegated to `aptos_dkg::ibe::reconstruct_ibe_dk()`.
-
-4. **Identity Handling**: Identity is passed as a 32-byte vector and converted to `[u8; 32]` for the SDK function.
-
-#### Test Results
-
-```
-Rust SDK (aptos-dkg): 65 tests pass
-- 4 IBE DK reconstruction tests ✅
-- 1 golden vector verification test ✅
-- 23 IBE-related tests ✅
-
-Framework (Move VM): 3 IBE tests pass ✅
-```
+| File                                                              | Tests | Status  |
+| ----------------------------------------------------------------- | ----- | ------- |
+| `crates/aptos-dkg/src/ibe/tests.rs`                               | 28    | ✅ PASS |
+| `aptos-move/framework/aptos-framework/tests/ibe_native_test.move` | 11    | ✅ PASS |
 
 ---
 
-## Development Decisions Log
+## Design Decisions
 
-### Decision 1: Dual-Output DKG Architecture (ADR-001)
+### Decision: Scalar Share Reconstruction (Jan 22, 2026)
 
-**Date:** January 17, 2026
-**Context:** IBE requires scalar secrets, but existing DKG produces G1 elements for WVUF.
-
-**Options Considered:**
-
-1. Modify DKG to output scalar only → Rejected (breaks WVUF)
-2. Modify IBE to accept G1 → Rejected (novel crypto)
-3. Hash G1 to scalar → Rejected (breaks MPK relationship)
-4. Switch to Chunky PVSS → Rejected (lacks weighted support)
-5. **Dual-Output DKG** → Selected
-
-**Decision:** Extend RealDKG to produce both G1 (DAS PVSS) and Scalar (ElGamal PVSS) shares in a single round using the same InputSecret.
-
-**Rationale:** Meets all constraints (no WVUF changes, no novel crypto, single DKG round).
-
-### Decision 2: Unified DK Reconstruction Path
-
-**Date:** January 22, 2026
-**Context:** Need a single, canonical path for IBE DK reconstruction that works consistently across Rust SDK and Move VM.
-
-**Decision:** Create `reconstruct_ibe_dk()` in apt-dkg that:
-
-1. Wraps scalar shares in `DealtSecretKeyShare`
-2. Delegates to framework's `DealtSecretKey::reconstruct()`
-3. Derives DK via `derive_decryption_key()`
+We implemented scalar share reconstruction with framework delegation, NOT G1-based reconstruction.
 
 **Rationale:**
 
-- Ensures Move VM uses the exact same crypto as Rust SDK
-- Eliminates risk of implementation divergence
-- Single source of truth for the cryptographic algorithm
-
-### Decision 3: Native Function Minimal Design
-
-**Date:** January 22, 2026
-**Context:** Native functions should not implement crypto directly.
-
-**Decision:** Native function:
-
-1. Parses Move arguments (byte vectors → scalars)
-2. Calls `aptos_dkg::ibe::reconstruct_ibe_dk()`
-3. Stores result and returns handle
-
-**Rationale:**
-
-- Security: Reduces attack surface in native code
-- Maintainability: Crypto updates only in Rust SDK
-- Consistency: Same code path for all environments
-
----
-
-## Success Criteria
-
-### Phase 5.2 Complete When:
-
-- [x] `reconstruct_ibe_dk()` implemented in Rust SDK
-- [x] `reconstruct_ibe_dk_internal()` native function implemented
-- [x] Move API `ibe::reconstruct_ibe_dk()` implemented
-- [x] All 65 IBE/DKG tests pass
-- [x] Native function delegates to apt-dkg (no custom crypto)
-- [x] Weighted reconstruction works for unequal weights
-- [x] Sparse validator indices supported
-
-### Production Ready When:
-
-- [x] All Phase 2.3 tasks complete (verification)
-- [x] All Phase 2.4 tasks complete (serialization)
-- [x] All Phase 2.5 tasks complete (error handling)
-- [x] All Phase 5.2 tasks complete (DK reconstruction)
-- [ ] No `TODO` comments in security-critical paths
-- [ ] Security review completed
-
-### Full Project Complete When:
-
-- [x] Phases 2.3-2.5 complete (security hardening)
-- [x] Phases 5.1-5.2 complete (DK reconstruction)
-- [ ] `mpk_encrypt_decrypt` smoke test passes
-- [ ] `timelock_e2e` smoke test passes
-- [ ] All Phase 3-5 tasks complete
-- [x] No regressions in randomness tests
+1. **Security** - Native functions should not implement crypto
+2. **Consistency** - Move VM uses same crypto as Rust SDK
+3. **Simplicity** - Framework handles virtual player expansion
 
 ---
 
@@ -321,24 +269,24 @@ Framework (Move VM): 3 IBE tests pass ✅
 
 ### Core Implementation
 
-| File                                                              | Purpose                                          |
-| ----------------------------------------------------------------- | ------------------------------------------------ |
-| `crates/aptos-dkg/src/ibe/mod.rs`                                 | Rust SDK IBE primitives + `reconstruct_ibe_dk()` |
-| `aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`    | Native function                                  |
-| `aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move` | Move API                                         |
+| File                                                              | Purpose                 |
+| ----------------------------------------------------------------- | ----------------------- |
+| `crates/aptos-dkg/src/ibe/mod.rs`                                 | Rust SDK IBE primitives |
+| `aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`    | Native function         |
+| `aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move` | Move API                |
+| `aptos-move/framework/aptos-framework/sources/ibe_config.move`    | Timelock registry       |
 
 ### Tests
 
-| File                                                                 | Purpose               |
-| -------------------------------------------------------------------- | --------------------- |
-| `crates/aptos-dkg/src/ibe/tests.rs`                                  | Rust SDK tests        |
-| `aptos-move/framework/src/natives/cryptography/algebra/ibe_tests.rs` | Native function tests |
-| `aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move`    | Move unit tests       |
+| File                                                              | Purpose                  |
+| ----------------------------------------------------------------- | ------------------------ |
+| `crates/aptos-dkg/src/ibe/tests.rs`                               | Rust SDK tests           |
+| `aptos-move/framework/aptos-framework/tests/ibe_native_test.move` | Move tests               |
+| `crates/aptos-dkg/src/ibe/golden_vectors.rs`                      | Golden vector generation |
 
-### Documentation
+### Fixtures
 
-| File                                                       | Purpose                         |
-| ---------------------------------------------------------- | ------------------------------- |
-| `atomica/docs/plan/implementation-plan-unified-dkg-ibe.md` | This file                       |
-| `atomica/docs/plan/timelock-ibe-elgamal-plan.md`           | Timelock implementation details |
-| `atomica/docs/adr-001-dual-output-dkg.md`                  | Architecture decision record    |
+| File                                                                           | Format |
+| ------------------------------------------------------------------------------ | ------ |
+| `atomica/golden_vectors/ibe_golden_vectors.json`                               | JSON   |
+| `aptos-move/framework/aptos-framework/sources/ibe_golden_vector_fixtures.move` | Move   |
