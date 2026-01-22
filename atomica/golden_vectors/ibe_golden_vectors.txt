@@ -1,6 +1,6 @@
 IBE Golden Test Vectors
 =======================
-Generated: 2026-01-21T20:38:14.384817507+00:00
+Generated: 2026-01-22T22:18:19.282890022+00:00
 Version: 2.0.0
 
 Golden test vectors for IBE identity computation and DK reconstruction
@@ -21,8 +21,16 @@ IBE Roundtrip Vectors:
   1. 5 validators, threshold 3, equal weights (PVSS-based)
      threshold: 3/5
      validators: [0, 1, 2, 3, 4]
-     dk_shares: 5 shares
+     dk_shares: 5 validator entries
   2. 4 validators, threshold 2, equal weights
      threshold: 2/4
      validators: [0, 1, 2, 3]
-     dk_shares: 4 shares
+     dk_shares: 4 validator entries
+  3. 3 validators, threshold 3, unequal weights [2,1,2]
+     threshold: 3/5
+     validators: [0, 1, 2]
+     dk_shares: 3 validator entries
+  4. 4 validators, threshold 3, unequal weights [2,3,2,1]
+     threshold: 3/8
+     validators: [0, 1, 2, 3]
+     dk_shares: 4 validator entries

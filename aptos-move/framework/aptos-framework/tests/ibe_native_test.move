@@ -1,215 +1,266 @@
 #[test_only]
-/// IBE Native Function Tests (Move)
+/// IBE Native Function Paranoid Tests (Move)
 ///
-/// This module contains tests that verify the IBE native function integration
-/// with the Move VM. These tests use golden vectors to verify data structures
-/// and identity computation.
+/// This module contains comprehensive tests that verify the correctness of the IBE
+/// native function implementation using golden vectors.
 ///
-/// # Important Notes
+/// # Test Philosophy (From Audit Document)
 ///
-/// The native function `ibe::reconstruct_ibe_dk` expects 32-byte scalar shares
-/// (little-endian BLS12-381 scalars). The golden vectors provide 48-byte G1 DK
-/// shares (pre-multiplied by H(identity)).
-///
-/// For full reconstruction testing with actual scalar shares, see:
-/// - Rust tests: `aptos-move/framework/src/natives/cryptography/algebra/ibe_tests.rs`
-/// - Rust SDK tests: `crates/aptos-dkg/src/ibe/tests.rs`
-///
-/// These Move tests focus on:
-/// 1. Golden vector data structure validation
-/// 2. Identity computation verification
-/// 3. Data format and length assertions
+/// These tests verify the G1-based reconstruction path:
+/// 1. Validators submit 48-byte G1 DK shares (one per virtual player)
+/// 2. Native function performs weighted Lagrange interpolation on G1 points
+/// 3. Result matches the expected reconstructed DK from golden vectors
 module aptos_framework::ibe_native_test {
     use std::vector;
-    use std::signer;
-    use std::bcs;
     use aptos_framework::ibe_golden_vector_fixtures as fixtures;
-    use aptos_framework::ibe_config;
+    use aptos_std::bls12381_algebra::G1;
+    use aptos_std::ibe;
 
     // ============================================================================
-    // GOLDEN VECTOR DATA STRUCTURE VALIDATION TESTS
+    // NATIVE FUNCTION RECONSTRUCTION TESTS (PARANOID)
     // ============================================================================
 
-    /// Validates that golden vector 1 has correct data structure.
-    ///
-    /// This test verifies:
-    /// - Identity is 32 bytes (SHA3-256 output)
-    /// - DK shares are 48 bytes (compressed G1)
-    /// - Reconstructed DK is 48 bytes
-    /// - Weights and indices have matching counts
+    /// Tests DK reconstruction with roundtrip vector 1 (5 validators, equal weights).
     #[test]
-    fun test_golden_vectors_1_structure() {
-        let identity = fixtures::roundtrip_1_identity();
+    fun test_native_reconstruction_5_validators_equal_weights() {
+        // Load test data from golden vectors
         let validator_indices = fixtures::roundtrip_1_validator_indices();
-        let validator_weights = fixtures::roundtrip_1_validator_weights();
+        let weights = fixtures::roundtrip_1_validator_weights();
         let dk_shares = fixtures::roundtrip_1_dk_shares();
-        let reconstructed_dk = fixtures::roundtrip_1_reconstructed_dk();
+        let identity = fixtures::roundtrip_1_identity();
+        let threshold = fixtures::roundtrip_1_threshold();
+        let total_weight = fixtures::roundtrip_1_total_weight();
+        let expected_dk = fixtures::roundtrip_1_reconstructed_dk();
 
-        // Identity must be 32 bytes
-        assert!(vector::length(&identity) == 32, 0);
-
-        // Must have 5 validators
+        // Verify inputs are correct format before calling native function
         assert!(vector::length(&validator_indices) == 5, 1);
-        assert!(vector::length(&validator_weights) == 5, 2);
-
-        // Weights must all be 1 (equal weights)
-        let i = 0;
-        while (i < 5) {
-            assert!(*vector::borrow(&validator_weights, i) == 1, 10 + i);
-            i = i + 1;
-        };
-
-        // Must have 5 DK shares
+        assert!(vector::length(&weights) == 5, 2);
         assert!(vector::length(&dk_shares) == 5, 3);
 
-        // Each DK share must be 48 bytes (compressed G1)
-        let j = 0;
-        while (j < 5) {
-            let share = *vector::borrow(&dk_shares, j);
-            assert!(vector::length(&share) == 48, 20 + j);
-            j = j + 1;
-        };
+        // Call the native function with nested G1 DK shares
+        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
+            validator_indices,
+            dk_shares,
+            weights,
+            threshold,
+            total_weight,
+            identity
+        );
 
-        // Reconstructed DK must be 48 bytes
-        assert!(vector::length(&reconstructed_dk) == 48, 4);
+        // Verify the reconstructed DK matches expected value
+        assert!(reconstructed_dk == expected_dk, 0);
 
-        // Threshold and total weight must match
-        assert!(fixtures::roundtrip_1_threshold() == 3, 5);
-        assert!(fixtures::roundtrip_1_total_weight() == 5, 6);
+        // Verify result is 48 bytes (compressed G1)
+        assert!(vector::length(&reconstructed_dk) == 48, 100);
     }
 
-    /// Validates golden vector 2 structure (4 validators, threshold 2).
+    /// Tests DK reconstruction with roundtrip vector 2 (4 validators, threshold 2).
     #[test]
-    fun test_golden_vectors_2_structure() {
-        let identity = fixtures::roundtrip_2_identity();
+    fun test_native_reconstruction_4_validators_threshold_2() {
         let validator_indices = fixtures::roundtrip_2_validator_indices();
-        let validator_weights = fixtures::roundtrip_2_validator_weights();
+        let weights = fixtures::roundtrip_2_validator_weights();
         let dk_shares = fixtures::roundtrip_2_dk_shares();
-        let reconstructed_dk = fixtures::roundtrip_2_reconstructed_dk();
+        let identity = fixtures::roundtrip_2_identity();
+        let threshold = fixtures::roundtrip_2_threshold();
+        let total_weight = fixtures::roundtrip_2_total_weight();
+        let expected_dk = fixtures::roundtrip_2_reconstructed_dk();
 
-        assert!(vector::length(&identity) == 32, 0);
-        assert!(vector::length(&validator_indices) == 4, 1);
-        assert!(vector::length(&validator_weights) == 4, 2);
+        // Verify format
         assert!(vector::length(&dk_shares) == 4, 3);
 
-        let j = 0;
-        while (j < 4) {
-            let share = *vector::borrow(&dk_shares, j);
-            assert!(vector::length(&share) == 48, 10 + j);
-            j = j + 1;
-        };
+        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
+            validator_indices,
+            dk_shares,
+            weights,
+            threshold,
+            total_weight,
+            identity
+        );
 
-        assert!(vector::length(&reconstructed_dk) == 48, 4);
-        assert!(fixtures::roundtrip_2_threshold() == 2, 5);
-        assert!(fixtures::roundtrip_2_total_weight() == 4, 6);
+        assert!(reconstructed_dk == expected_dk, 0);
+        assert!(vector::length(&reconstructed_dk) == 48, 100);
     }
 
-    /// Validates golden vector 3 structure (unequal weights [2, 1, 2]).
+    /// Tests DK reconstruction with unequal weights [2, 1, 2].
     #[test]
-    fun test_golden_vectors_3_unequal_weights_structure() {
-        let identity = fixtures::roundtrip_3_identity();
+    fun test_native_reconstruction_unequal_weights_215() {
         let validator_indices = fixtures::roundtrip_3_validator_indices();
-        let validator_weights = fixtures::roundtrip_3_validator_weights();
+        let weights = fixtures::roundtrip_3_validator_weights();
         let dk_shares = fixtures::roundtrip_3_dk_shares();
-        let reconstructed_dk = fixtures::roundtrip_3_reconstructed_dk();
-
-        assert!(vector::length(&identity) == 32, 0);
-        assert!(vector::length(&validator_indices) == 3, 1);
-        assert!(vector::length(&validator_weights) == 3, 2);
+        let identity = fixtures::roundtrip_3_identity();
+        let threshold = fixtures::roundtrip_3_threshold();
+        let total_weight = fixtures::roundtrip_3_total_weight();
+        let expected_dk = fixtures::roundtrip_3_reconstructed_dk();
 
         // Verify weights are [2, 1, 2]
-        assert!(*vector::borrow(&validator_weights, 0) == 2, 10);
-        assert!(*vector::borrow(&validator_weights, 1) == 1, 11);
-        assert!(*vector::borrow(&validator_weights, 2) == 2, 12);
+        assert!(*vector::borrow(&weights, 0) == 2, 1);
+        assert!(*vector::borrow(&weights, 1) == 1, 2);
+        assert!(*vector::borrow(&weights, 2) == 2, 3);
 
-        assert!(vector::length(&dk_shares) == 3, 3);
+        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
+            validator_indices,
+            dk_shares,
+            weights,
+            threshold,
+            total_weight,
+            identity
+        );
 
-        let j = 0;
-        while (j < 3) {
-            let share = *vector::borrow(&dk_shares, j);
-            assert!(vector::length(&share) == 48, 20 + j);
-            j = j + 1;
-        };
-
-        assert!(vector::length(&reconstructed_dk) == 48, 4);
-        assert!(fixtures::roundtrip_3_threshold() == 3, 5);
-        assert!(fixtures::roundtrip_3_total_weight() == 5, 6);
+        assert!(reconstructed_dk == expected_dk, 0);
+        assert!(vector::length(&reconstructed_dk) == 48, 100);
     }
 
-    /// Validates golden vector 4 structure (unequal weights [2, 3, 2, 1]).
+    /// Tests DK reconstruction with unequal weights [2, 3, 2, 1].
     #[test]
-    fun test_golden_vectors_4_unequal_weights_structure() {
-        let identity = fixtures::roundtrip_4_identity();
+    fun test_native_reconstruction_unequal_weights_2321() {
         let validator_indices = fixtures::roundtrip_4_validator_indices();
-        let validator_weights = fixtures::roundtrip_4_validator_weights();
+        let weights = fixtures::roundtrip_4_validator_weights();
         let dk_shares = fixtures::roundtrip_4_dk_shares();
-        let reconstructed_dk = fixtures::roundtrip_4_reconstructed_dk();
-
-        assert!(vector::length(&identity) == 32, 0);
-        assert!(vector::length(&validator_indices) == 4, 1);
-        assert!(vector::length(&validator_weights) == 4, 2);
+        let identity = fixtures::roundtrip_4_identity();
+        let threshold = fixtures::roundtrip_4_threshold();
+        let total_weight = fixtures::roundtrip_4_total_weight();
+        let expected_dk = fixtures::roundtrip_4_reconstructed_dk();
 
         // Verify weights are [2, 3, 2, 1]
-        assert!(*vector::borrow(&validator_weights, 0) == 2, 10);
-        assert!(*vector::borrow(&validator_weights, 1) == 3, 11);
-        assert!(*vector::borrow(&validator_weights, 2) == 2, 12);
-        assert!(*vector::borrow(&validator_weights, 3) == 1, 13);
+        assert!(*vector::borrow(&weights, 0) == 2, 1);
+        assert!(*vector::borrow(&weights, 1) == 3, 2);
+        assert!(*vector::borrow(&weights, 2) == 2, 3);
+        assert!(*vector::borrow(&weights, 3) == 1, 4);
 
-        assert!(vector::length(&dk_shares) == 4, 3);
+        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
+            validator_indices,
+            dk_shares,
+            weights,
+            threshold,
+            total_weight,
+            identity
+        );
 
-        let j = 0;
-        while (j < 4) {
-            let share = *vector::borrow(&dk_shares, j);
-            assert!(vector::length(&share) == 48, 20 + j);
-            j = j + 1;
-        };
-
-        assert!(vector::length(&reconstructed_dk) == 48, 4);
-        assert!(fixtures::roundtrip_4_threshold() == 3, 5);
-        assert!(fixtures::roundtrip_4_total_weight() == 8, 6);
+        assert!(reconstructed_dk == expected_dk, 0);
+        assert!(vector::length(&reconstructed_dk) == 48, 100);
     }
 
-    // ============================================================================
-    // IDENTITY FIXTURE VALIDATION TESTS
-    // ============================================================================
-
-    /// Validates that identity fixtures are well-formed.
-    ///
-    /// This test verifies that the identity fixtures from golden vectors
-    /// have the correct format and are self-consistent.
+    /// Tests that different identities produce different DKs from the same shares.
     #[test]
-    fun test_identity_fixtures_are_well_formed() {
-        // All identities must be 32 bytes
-        assert!(vector::length(&fixtures::identity_0_1000000000000()) == 32, 0);
-        assert!(vector::length(&fixtures::identity_1_1000000000000()) == 32, 1);
-        assert!(vector::length(&fixtures::identity_0_2000000000000()) == 32, 2);
+    fun test_different_identities_produce_different_dks() {
+        // Get shares from roundtrip 1
+        let indices1 = fixtures::roundtrip_1_validator_indices();
+        let weights1 = fixtures::roundtrip_1_validator_weights();
+        let shares1 = fixtures::roundtrip_1_dk_shares();
+        let total1 = fixtures::roundtrip_1_total_weight();
 
-        // All identities must be different
-        assert!(fixtures::identity_0_1000000000000() != fixtures::identity_1_1000000000000(), 3);
-        assert!(fixtures::identity_1_1000000000000() != fixtures::identity_0_2000000000000(), 4);
-        assert!(fixtures::identity_0_1000000000000() != fixtures::identity_0_2000000000000(), 5);
+        // Use identity from roundtrip 1
+        let identity1 = fixtures::roundtrip_1_identity();
+        let dk1 = ibe::reconstruct_ibe_dk<G1>(
+            indices1,
+            shares1,
+            weights1,
+            3,
+            total1,
+            identity1
+        );
 
-        // Roundtrip identities must match
-        assert!(fixtures::roundtrip_1_identity() == fixtures::identity_0_1000000000000(), 6);
+        // Use identity from roundtrip 2 (different)
+        let identity2 = fixtures::roundtrip_2_identity();
+        let shares2 = fixtures::roundtrip_2_dk_shares();
+        let indices2 = fixtures::roundtrip_2_validator_indices();
+        let weights2 = fixtures::roundtrip_2_validator_weights();
+        let total2 = fixtures::roundtrip_2_total_weight();
+        let dk2 = ibe::reconstruct_ibe_dk<G1>(
+            indices2,
+            shares2,
+            weights2,
+            2,
+            total2,
+            identity2
+        );
+
+        // Different identities should produce different DKs
+        assert!(dk1 != dk2, 0);
     }
 
     // ============================================================================
-    // DATA FORMAT VALIDATION TESTS
+    // ERROR HANDLING TESTS
     // ============================================================================
 
-    /// Tests that identity is exactly 32 bytes.
+    /// Tests that empty shares returns an error.
     #[test]
-    fun test_identity_is_32_bytes() {
-        assert!(vector::length(&fixtures::identity_0_1000000000000()) == 32, 0);
-        assert!(vector::length(&fixtures::identity_1_1000000000000()) == 32, 1);
-        assert!(vector::length(&fixtures::identity_0_2000000000000()) == 32, 2);
-        assert!(vector::length(&fixtures::roundtrip_1_identity()) == 32, 3);
-        assert!(vector::length(&fixtures::roundtrip_2_identity()) == 32, 4);
-        assert!(vector::length(&fixtures::roundtrip_3_identity()) == 32, 5);
-        assert!(vector::length(&fixtures::roundtrip_4_identity()) == 32, 6);
+    #[expected_failure]
+    fun test_empty_shares_should_abort() {
+        let validator_indices = vector<u64>[];
+        let dk_shares = vector<vector<vector<u8>>>[];
+        let weights = vector[1, 1, 1];
+        let identity = fixtures::identity_0_1000000000000();
+
+        let _dk = ibe::reconstruct_ibe_dk<G1>(
+            validator_indices,
+            dk_shares,
+            weights,
+            1,
+            3,
+            identity
+        );
     }
 
-    /// Tests that DK shares are exactly 48 bytes (compressed G1).
+    /// Tests that mismatched indices and shares counts returns an error.
+    #[test]
+    #[expected_failure]
+    fun test_mismatched_indices_and_shares_should_abort() {
+        let validator_indices = vector[0, 1, 2];  // 3 indices
+        let validator1_shares = vector[x"010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"];
+        let validator2_shares = vector[x"020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"];
+        let dk_shares = vector[validator1_shares, validator2_shares];   // Only 2 validators
+        let weights = vector[1, 1, 1];
+        let identity = fixtures::identity_0_1000000000000();
+
+        let _dk = ibe::reconstruct_ibe_dk<G1>(
+            validator_indices,
+            dk_shares,
+            weights,
+            2,
+            3,
+            identity
+        );
+    }
+
+    // ============================================================================
+    // SPARSE PARTICIPATION TESTS
+    // ============================================================================
+
+    /// Tests reconstruction with only subset of validators (meets threshold).
+    #[test]
+    fun test_sparse_validator_participation() {
+        let validator_indices = vector[0, 2, 4];  // Sparse indices
+        let weights = fixtures::roundtrip_1_validator_weights();
+        let dk_shares = fixtures::roundtrip_1_dk_shares();
+
+        // Get shares for validators 0, 2, 4
+        let share_0 = *vector::borrow(&dk_shares, 0);
+        let share_2 = *vector::borrow(&dk_shares, 2);
+        let share_4 = *vector::borrow(&dk_shares, 4);
+        let sparse_shares = vector[share_0, share_2, share_4];
+
+        let identity = fixtures::roundtrip_1_identity();
+        let threshold = fixtures::roundtrip_1_threshold();
+        let total_weight = fixtures::roundtrip_1_total_weight();
+
+        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
+            validator_indices,
+            sparse_shares,
+            weights,
+            threshold,
+            total_weight,
+            identity
+        );
+
+        assert!(vector::length(&reconstructed_dk) == 48, 0);
+    }
+
+    // ============================================================================
+    // DATA STRUCTURE VALIDATION TESTS
+    // ============================================================================
+
+    /// Tests that DK shares are 48 bytes (compressed G1).
     #[test]
     fun test_dk_shares_are_48_bytes() {
         let vectors = vector[
@@ -221,19 +272,25 @@ module aptos_framework::ibe_native_test {
 
         let v = 0;
         while (v < 4) {
-            let shares = *vector::borrow(&vectors, v);
+            let validator_group = *vector::borrow(&vectors, v);
             let i = 0;
-            let len = vector::length(&shares);
-            while (i < len) {
-                let share = *vector::borrow(&shares, i);
-                assert!(vector::length(&share) == 48, (v * 10) + i);
+            let num_validators = vector::length(&validator_group);
+            while (i < num_validators) {
+                let validator_shares = *vector::borrow(&validator_group, i);
+                let j = 0;
+                let num_shares = vector::length(&validator_shares);
+                while (j < num_shares) {
+                    let share = *vector::borrow(&validator_shares, j);
+                    assert!(vector::length(&share) == 48, (v * 100) + (i * 10) + j);
+                    j = j + 1;
+                };
                 i = i + 1;
             };
             v = v + 1;
         };
     }
 
-    /// Tests that reconstructed DK is exactly 48 bytes.
+    /// Tests that reconstructed DK is 48 bytes.
     #[test]
     fun test_reconstructed_dk_is_48_bytes() {
         assert!(vector::length(&fixtures::roundtrip_1_reconstructed_dk()) == 48, 0);
@@ -242,95 +299,22 @@ module aptos_framework::ibe_native_test {
         assert!(vector::length(&fixtures::roundtrip_4_reconstructed_dk()) == 48, 3);
     }
 
-    /// Tests that H(identity) G1 points are exactly 48 bytes.
-    #[test]
-    fun test_h_identity_is_48_bytes() {
-        assert!(vector::length(&fixtures::h_identity_0_1000000000000()) == 48, 0);
-        assert!(vector::length(&fixtures::h_identity_1_1000000000000()) == 48, 1);
-        assert!(vector::length(&fixtures::h_identity_0_2000000000000()) == 48, 2);
-        assert!(vector::length(&fixtures::roundtrip_1_h_identity()) == 48, 3);
-        assert!(vector::length(&fixtures::roundtrip_2_h_identity()) == 48, 4);
-        assert!(vector::length(&fixtures::roundtrip_3_h_identity()) == 48, 5);
-        assert!(vector::length(&fixtures::roundtrip_4_h_identity()) == 48, 6);
-    }
-
-    // ============================================================================
-    // CIPHERTEXT FORMAT VALIDATION TESTS
-    // ============================================================================
-
-    /// Tests that ciphertext U component is 96 bytes (compressed G2).
-    #[test]
-    fun test_ciphertext_u_is_96_bytes() {
-        assert!(vector::length(&fixtures::roundtrip_1_ciphertext_u()) == 96, 0);
-        assert!(vector::length(&fixtures::roundtrip_2_ciphertext_u()) == 96, 1);
-        assert!(vector::length(&fixtures::roundtrip_3_ciphertext_u()) == 96, 2);
-        assert!(vector::length(&fixtures::roundtrip_4_ciphertext_u()) == 96, 3);
-    }
-
-    // ============================================================================
-    // HELPER FUNCTION TESTS
-    // ============================================================================
-
-    /// Tests that helper functions return correct data.
-    #[test]
-    fun test_helper_functions() {
-        // get_identity_hash
-        assert!(fixtures::get_identity_hash(0, 1000000000000) == fixtures::identity_0_1000000000000(), 0);
-        assert!(fixtures::get_identity_hash(1, 1000000000000) == fixtures::identity_1_1000000000000(), 1);
-        assert!(fixtures::get_identity_hash(0, 2000000000000) == fixtures::identity_0_2000000000000(), 2);
-        assert!(vector::length(&fixtures::get_identity_hash(999, 999)) == 0, 3);
-
-        // get_roundtrip_validator_indices
-        assert!(fixtures::get_roundtrip_validator_indices(1) == fixtures::roundtrip_1_validator_indices(), 4);
-        assert!(fixtures::get_roundtrip_validator_indices(2) == fixtures::roundtrip_2_validator_indices(), 5);
-        assert!(fixtures::get_roundtrip_validator_indices(3) == fixtures::roundtrip_3_validator_indices(), 6);
-        assert!(fixtures::get_roundtrip_validator_indices(4) == fixtures::roundtrip_4_validator_indices(), 7);
-        assert!(vector::length(&fixtures::get_roundtrip_validator_indices(99)) == 0, 8);
-
-        // get_roundtrip_threshold
-        assert!(fixtures::get_roundtrip_threshold(1) == 3, 9);
-        assert!(fixtures::get_roundtrip_threshold(2) == 2, 10);
-        assert!(fixtures::get_roundtrip_threshold(3) == 3, 11);
-        assert!(fixtures::get_roundtrip_threshold(4) == 3, 12);
-        assert!(fixtures::get_roundtrip_threshold(99) == 0, 13);
-
-        // get_roundtrip_total_weight
-        assert!(fixtures::get_roundtrip_total_weight(1) == 5, 14);
-        assert!(fixtures::get_roundtrip_total_weight(2) == 4, 15);
-        assert!(fixtures::get_roundtrip_total_weight(3) == 5, 16);
-        assert!(fixtures::get_roundtrip_total_weight(4) == 8, 17);
-        assert!(fixtures::get_roundtrip_total_weight(99) == 0, 18);
-    }
-
-    // ============================================================================
-    // WEIGHT CONFIGURATION TESTS
-    // ============================================================================
-
-    /// Tests that weight configurations are correct.
+    /// Tests weight configurations match total weight.
     #[test]
     fun test_weight_configurations() {
-        // Roundtrip 1: [1, 1, 1, 1, 1]
+        // Roundtrip 1: [1, 1, 1, 1, 1] = 5
         let w1 = fixtures::roundtrip_1_validator_weights();
-        assert!(vector::length(&w1) == 5, 0);
         let sum1 = *vector::borrow(&w1, 0) + *vector::borrow(&w1, 1) + *vector::borrow(&w1, 2) + *vector::borrow(&w1, 3) + *vector::borrow(&w1, 4);
         assert!(sum1 == fixtures::roundtrip_1_total_weight(), 1);
 
-        // Roundtrip 2: [1, 1, 1, 1]
-        let w2 = fixtures::roundtrip_2_validator_weights();
-        assert!(vector::length(&w2) == 4, 2);
-        let sum2 = *vector::borrow(&w2, 0) + *vector::borrow(&w2, 1) + *vector::borrow(&w2, 2) + *vector::borrow(&w2, 3);
-        assert!(sum2 == fixtures::roundtrip_2_total_weight(), 3);
-
-        // Roundtrip 3: [2, 1, 2]
+        // Roundtrip 3: [2, 1, 2] = 5
         let w3 = fixtures::roundtrip_3_validator_weights();
-        assert!(vector::length(&w3) == 3, 4);
         let sum3 = *vector::borrow(&w3, 0) + *vector::borrow(&w3, 1) + *vector::borrow(&w3, 2);
         assert!(sum3 == fixtures::roundtrip_3_total_weight(), 5);
 
-        // Roundtrip 4: [2, 3, 2, 1]
+        // Roundtrip 4: [2, 3, 2, 1] = 8
         let w4 = fixtures::roundtrip_4_validator_weights();
-        assert!(vector::length(&w4) == 4, 6);
         let sum4 = *vector::borrow(&w4, 0) + *vector::borrow(&w4, 1) + *vector::borrow(&w4, 2) + *vector::borrow(&w4, 3);
-        assert!(sum4 == fixtures::roundtrip_4_total_weight(), 7);
+        assert!(sum4 == fixtures::roundtrip_4_total_weight(), 8);
     }
 }

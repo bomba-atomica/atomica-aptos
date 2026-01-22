@@ -19,15 +19,13 @@ use super::{
     compute_identity, derive_decryption_key, hash_to_g1, ibe_decrypt, ibe_encrypt,
     verify_decryption_key,
 };
-use crate::algebra::lagrange::lagrange_coefficients;
 use crate::pvss::input_secret::InputSecret;
 use crate::pvss::scalar_elgamal::WeightedTranscript;
 use crate::pvss::test_utils::setup_dealing;
 use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
 use crate::pvss::{Player, WeightedConfig};
 use aptos_crypto::Uniform;
-use blstrs::{G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
-use ff::Field;
+use blstrs::{G1Affine, G2Affine, G2Projective, Scalar};
 use group::{Curve, Group};
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
@@ -67,9 +65,9 @@ struct IbeRoundtripVector {
     /// Indices are 0-based player IDs matching the PVSS framework
     validator_indices: Vec<u64>,
     validator_weights: Vec<u64>,
-    /// DK shares: dk_i = s_i * H(identity) as G1 (48 bytes compressed hex each)
+    /// DK shares: Nested vector. dk_shares_g1_hex[validator_idx][virtual_player_idx]
     /// Each validator may have multiple sub-shares based on weight
-    dk_shares_g1_hex: Vec<String>,
+    dk_shares_g1_hex: Vec<Vec<String>>,
     /// Reconstructed DK = sum(lambda_i * dk_i) as G1 (48 bytes compressed hex)
     reconstructed_dk_g1_hex: String,
     /// Plaintext for encryption test (hex)
@@ -207,18 +205,18 @@ fn generate_golden_vectors() {
         let identity = compute_identity(timelock_id, deadline_us);
         let h_identity = hash_to_g1(&identity);
 
-        // Generate DK shares using high-level API derive_decryption_key()
-        // Each validator's DK share is the sum of DK derivations from their scalar shares
-        let dk_shares_g1: Vec<G1Projective> = shares
+        // Generate DK shares - one per virtual player, not aggregated
+        // Each validator's weight determines how many shares they contribute
+        let dk_shares_g1: Vec<Vec<G1Affine>> = shares
             .iter()
             .map(|(_player, sk_shares)| {
-                let mut sum = G1Projective::identity();
-                for sk_share in sk_shares.iter() {
-                    // Use high-level API to derive DK contribution from each scalar share
-                    let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
-                    sum += G1Projective::from(dk_contribution);
-                }
-                sum
+                sk_shares
+                    .iter()
+                    .map(|sk_share| {
+                        // Each scalar share produces a separate DK contribution
+                        derive_decryption_key(&sk_share.0.s, &identity)
+                    })
+                    .collect()
             })
             .collect();
 
@@ -270,7 +268,12 @@ fn generate_golden_vectors() {
             validator_weights: weights.iter().map(|w| *w as u64).collect(),
             dk_shares_g1_hex: dk_shares_g1
                 .iter()
-                .map(|s| g1_to_hex(&s.to_affine()))
+                .map(|validator_shares| {
+                    validator_shares
+                        .iter()
+                        .map(|share| g1_to_hex(share))
+                        .collect()
+                })
                 .collect(),
             reconstructed_dk_g1_hex: g1_to_hex(&reconstructed_dk),
             plaintext_hex: hex::encode(plaintext),
@@ -327,18 +330,15 @@ fn generate_golden_vectors() {
         let identity = compute_identity(timelock_id, deadline_us);
         let h_identity = hash_to_g1(&identity);
 
-        // Generate DK shares using high-level API derive_decryption_key()
-        // Each validator's DK share is the sum of DK derivations from their scalar shares
-        let dk_shares_g1: Vec<G1Projective> = shares
+        // Generate DK shares - one per virtual player, not aggregated
+        // Each validator's weight determines how many shares they contribute
+        let dk_shares_g1: Vec<Vec<G1Affine>> = shares
             .iter()
             .map(|(_player, sk_shares)| {
-                let mut sum = G1Projective::identity();
-                for sk_share in sk_shares.iter() {
-                    // Use high-level API to derive DK contribution from each scalar share
-                    let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
-                    sum += G1Projective::from(dk_contribution);
-                }
-                sum
+                sk_shares
+                    .iter()
+                    .map(|sk_share| derive_decryption_key(&sk_share.0.s, &identity))
+                    .collect()
             })
             .collect();
 
@@ -354,18 +354,17 @@ fn generate_golden_vectors() {
         let expected_dk = derive_decryption_key(&secret, &identity);
         let mpk = G2Projective::generator().mul(&secret).into();
 
-        let player_ids: Vec<usize> = vec![0, 2];
-        let lagr = lagrange_coefficients(
-            wconfig.get_batch_evaluation_domain(),
-            &player_ids,
-            &Scalar::ZERO,
-        );
-
-        let mut reconstructed_dk_g1 = G1Projective::identity();
-        for (i, &player_id) in player_ids.iter().enumerate() {
-            reconstructed_dk_g1 += dk_shares_g1[player_id].mul(&lagr[i]);
-        }
-        let reconstructed_dk = reconstructed_dk_g1.to_affine();
+        // Reconstruct DK using the nested DK shares with Lagrange interpolation
+        use super::reconstruct_ibe_dk;
+        let scalar_shares: Vec<Vec<Scalar>> = shares_for_recon
+            .iter()
+            .map(|(_, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
+            .collect();
+        let recon_indices: Vec<u64> = vec![0, 2];
+        let recon_weights: Vec<u64> = vec![1, 1, 1, 1];
+        let reconstructed_dk =
+            reconstruct_ibe_dk(&recon_indices, &scalar_shares, &recon_weights, 4, &identity)
+                .expect("reconstruct_ibe_dk should succeed with valid shares");
 
         assert_eq!(reconstructed_dk, expected_dk);
 
@@ -387,7 +386,12 @@ fn generate_golden_vectors() {
             validator_weights: weights.iter().map(|w| *w as u64).collect(),
             dk_shares_g1_hex: dk_shares_g1
                 .iter()
-                .map(|s| g1_to_hex(&s.to_affine()))
+                .map(|validator_shares| {
+                    validator_shares
+                        .iter()
+                        .map(|share| g1_to_hex(share))
+                        .collect()
+                })
                 .collect(),
             reconstructed_dk_g1_hex: g1_to_hex(&reconstructed_dk),
             plaintext_hex: hex::encode(plaintext),
@@ -444,18 +448,15 @@ fn generate_golden_vectors() {
         let identity = compute_identity(timelock_id, deadline_us);
         let h_identity = hash_to_g1(&identity);
 
-        // Generate DK shares using high-level API derive_decryption_key()
-        // Each validator's DK share is the sum of DK derivations from their scalar shares
-        let dk_shares_g1: Vec<G1Projective> = shares
+        // Generate DK shares - one per virtual player, not aggregated
+        // Each validator's weight determines how many shares they contribute
+        let dk_shares_g1: Vec<Vec<G1Affine>> = shares
             .iter()
             .map(|(_player, sk_shares)| {
-                let mut sum = G1Projective::identity();
-                for sk_share in sk_shares.iter() {
-                    // Use high-level API to derive DK contribution from each scalar share
-                    let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
-                    sum += G1Projective::from(dk_contribution);
-                }
-                sum
+                sk_shares
+                    .iter()
+                    .map(|sk_share| derive_decryption_key(&sk_share.0.s, &identity))
+                    .collect()
             })
             .collect();
 
@@ -489,7 +490,12 @@ fn generate_golden_vectors() {
             validator_weights: weights.iter().map(|w| *w as u64).collect(),
             dk_shares_g1_hex: dk_shares_g1
                 .iter()
-                .map(|s| g1_to_hex(&s.to_affine()))
+                .map(|validator_shares| {
+                    validator_shares
+                        .iter()
+                        .map(|share| g1_to_hex(share))
+                        .collect()
+                })
                 .collect(),
             reconstructed_dk_g1_hex: g1_to_hex(&expected_dk),
             plaintext_hex: hex::encode(plaintext),
@@ -546,18 +552,15 @@ fn generate_golden_vectors() {
         let identity = compute_identity(timelock_id, deadline_us);
         let h_identity = hash_to_g1(&identity);
 
-        // Generate DK shares using high-level API derive_decryption_key()
-        // Each validator's DK share is the sum of DK derivations from their scalar shares
-        let dk_shares_g1: Vec<G1Projective> = shares
+        // Generate DK shares - one per virtual player, not aggregated
+        // Each validator's weight determines how many shares they contribute
+        let dk_shares_g1: Vec<Vec<G1Affine>> = shares
             .iter()
             .map(|(_player, sk_shares)| {
-                let mut sum = G1Projective::identity();
-                for sk_share in sk_shares.iter() {
-                    // Use high-level API to derive DK contribution from each scalar share
-                    let dk_contribution = derive_decryption_key(&sk_share.0.s, &identity);
-                    sum += G1Projective::from(dk_contribution);
-                }
-                sum
+                sk_shares
+                    .iter()
+                    .map(|sk_share| derive_decryption_key(&sk_share.0.s, &identity))
+                    .collect()
             })
             .collect();
 
@@ -591,7 +594,12 @@ fn generate_golden_vectors() {
             validator_weights: weights.iter().map(|w| *w as u64).collect(),
             dk_shares_g1_hex: dk_shares_g1
                 .iter()
-                .map(|s| g1_to_hex(&s.to_affine()))
+                .map(|validator_shares| {
+                    validator_shares
+                        .iter()
+                        .map(|share| g1_to_hex(share))
+                        .collect()
+                })
                 .collect(),
             reconstructed_dk_g1_hex: g1_to_hex(&expected_dk),
             plaintext_hex: hex::encode(plaintext),
@@ -662,6 +670,165 @@ fn generate_golden_vectors() {
         )
         .unwrap();
     }
+
+    // Write Move fixtures (nested format matching struct)
+    let move_path = "aptos-move/framework/aptos-framework/sources/ibe_golden_vector_fixtures.move";
+    std::fs::create_dir_all("aptos-move/framework/aptos-framework/sources").ok();
+    let mut move_file = File::create(move_path).unwrap();
+    writeln!(
+        move_file,
+        "//! IBE Golden Vector Fixtures (Auto-generated by Rust test generator)"
+    )
+    .unwrap();
+    writeln!(
+        move_file,
+        "//! Run: cargo test --package aptos-dkg generate_golden_vectors -- --ignored --nocapture"
+    )
+    .unwrap();
+    writeln!(move_file).unwrap();
+    writeln!(move_file, "module ibe_golden_vector_fixtures {{").unwrap();
+    writeln!(move_file, "    use std::vector;").unwrap();
+    writeln!(move_file).unwrap();
+
+    // Identity fixtures
+    writeln!(move_file, "    // ====================================").unwrap();
+    writeln!(move_file, "    // Identity Fixtures").unwrap();
+    writeln!(move_file, "    // ====================================").unwrap();
+    writeln!(move_file).unwrap();
+    writeln!(
+        move_file,
+        "    public fun identity_0_1000000000000(): vector<u8> {{"
+    )
+    .unwrap();
+    writeln!(
+        move_file,
+        "        x\"{}\"",
+        vectors.identity_vectors[0].identity_hash_hex
+    )
+    .unwrap();
+    writeln!(move_file, "    }}").unwrap();
+    writeln!(move_file).unwrap();
+
+    // Roundtrip fixtures
+    for (i, v) in vectors.ibe_roundtrip_vectors.iter().enumerate() {
+        let roundtrip_num = i + 1;
+        writeln!(move_file, "    // ====================================").unwrap();
+        writeln!(
+            move_file,
+            "    // Roundtrip {}: {}",
+            roundtrip_num, v.description
+        )
+        .unwrap();
+        writeln!(move_file, "    // ====================================").unwrap();
+        writeln!(move_file).unwrap();
+        writeln!(
+            move_file,
+            "    public fun roundtrip_{}_identity(): vector<u8> {{ x\"{}\" }}",
+            roundtrip_num, v.identity_hash_hex
+        )
+        .unwrap();
+        writeln!(
+            move_file,
+            "    public fun roundtrip_{}_threshold(): u64 {{ {} }}",
+            roundtrip_num, v.threshold
+        )
+        .unwrap();
+        writeln!(
+            move_file,
+            "    public fun roundtrip_{}_total_weight(): u64 {{ {} }}",
+            roundtrip_num, v.total_weight
+        )
+        .unwrap();
+        writeln!(
+            move_file,
+            "    public fun roundtrip_{}_validator_indices(): vector<u64> {{ vector[{}] }}",
+            roundtrip_num,
+            v.validator_indices
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+        .unwrap();
+        writeln!(
+            move_file,
+            "    public fun roundtrip_{}_validator_weights(): vector<u64> {{ vector[{}] }}",
+            roundtrip_num,
+            v.validator_weights
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+        .unwrap();
+        writeln!(move_file).unwrap();
+        writeln!(
+            move_file,
+            "    public fun roundtrip_{}_dk_shares(): vector<vector<vector<u8>>> {{",
+            roundtrip_num
+        )
+        .unwrap();
+        writeln!(move_file, "        vector[").unwrap();
+        for (vi, validator_shares) in v.dk_shares_g1_hex.iter().enumerate() {
+            write!(move_file, "            vector[").unwrap();
+            for (si, share) in validator_shares.iter().enumerate() {
+                if si + 1 < validator_shares.len() {
+                    write!(move_file, "x\"{}\", ", share).unwrap();
+                } else {
+                    write!(move_file, "x\"{}\"", share).unwrap();
+                }
+            }
+            if vi + 1 < v.dk_shares_g1_hex.len() {
+                writeln!(move_file, "],").unwrap();
+            } else {
+                writeln!(move_file, "]").unwrap();
+            }
+        }
+        writeln!(move_file, "        }}").unwrap();
+        writeln!(move_file, "    }}").unwrap();
+        writeln!(move_file).unwrap();
+        writeln!(
+            move_file,
+            "    public fun roundtrip_{}_reconstructed_dk(): vector<u8> {{ x\"{}\" }}",
+            roundtrip_num, v.reconstructed_dk_g1_hex
+        )
+        .unwrap();
+        writeln!(move_file).unwrap();
+    }
+
+    writeln!(move_file, "    // ================================").unwrap();
+    writeln!(move_file, "    // Helper Functions").unwrap();
+    writeln!(move_file, "    // ================================").unwrap();
+    writeln!(move_file).unwrap();
+    writeln!(
+        move_file,
+        "    public fun get_roundtrip_dk_shares(index: u64): vector<vector<vector<u8>>> {{"
+    )
+    .unwrap();
+    for (i, _) in vectors.ibe_roundtrip_vectors.iter().enumerate() {
+        let roundtrip_num = i + 1;
+        if i == 0 {
+            writeln!(
+                move_file,
+                "        if (index == {}) roundtrip_{}_dk_shares()",
+                roundtrip_num, roundtrip_num
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                move_file,
+                "        else if (index == {}) roundtrip_{}_dk_shares()",
+                roundtrip_num, roundtrip_num
+            )
+            .unwrap();
+        }
+    }
+    writeln!(move_file, "        else vector::empty()").unwrap();
+    writeln!(move_file, "    }}").unwrap();
+    writeln!(move_file).unwrap();
+    writeln!(move_file, "}}").unwrap();
+
+    println!("✅ Saved Move fixtures to {}", move_path);
 
     println!("✅ Saved text summary to {}\n", txt_path);
 }
@@ -805,7 +972,7 @@ fn test_golden_vectors_file_validity() {
         identity_hash_hex: String,
         validator_indices: Vec<u64>,
         validator_weights: Vec<u64>,
-        dk_shares_g1_hex: Vec<String>,
+        dk_shares_g1_hex: Vec<Vec<String>>,
         reconstructed_dk_g1_hex: String,
         plaintext_hex: String,
         ciphertext_u_g2_hex: String,

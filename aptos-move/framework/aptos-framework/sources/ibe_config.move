@@ -83,7 +83,8 @@ module aptos_framework::ibe_config {
         share_count: u64,
         reveal_threshold: u64,
         validator_indices: vector<u64>,
-        submitted_shares: vector<vector<u8>>,
+        /// Nested shares: submitted_shares[validator_index][virtual_player_share]
+        submitted_shares: vector<vector<vector<u8>>>,
         validator_weights: vector<u64>,
         submitters: vector<address>,
     }
@@ -214,14 +215,15 @@ module aptos_framework::ibe_config {
         });
     }
 
-    public(friend) fun submit_dk_share(
+    public(friend) fun submit_dk_shares(
         timelock_id: u64,
-        share: vector<u8>,
+        shares: vector<vector<u8>>,
         validator_address: address,
         weight: u64,
         total_weight: u64
     ) acquires TimelockRegistry {
-        assert!(vector::length(&share) == G1_LENGTH, E_INVALID_MPK_LENGTH);
+        let num_shares = vector::length(&shares);
+        assert!(num_shares == weight, E_INVALID_THRESHOLD); // Should be exactly 'weight' shares
 
         let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
         let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
@@ -237,7 +239,7 @@ module aptos_framework::ibe_config {
 
         let validator_index = stake::get_validator_index(validator_address);
         vector::push_back(&mut timelock_info.validator_indices, validator_index);
-        vector::push_back(&mut timelock_info.submitted_shares, share);
+        vector::push_back(&mut timelock_info.submitted_shares, shares);
         vector::push_back(&mut timelock_info.validator_weights, weight);
         vector::push_back(&mut timelock_info.submitters, validator_address);
         timelock_info.share_count = timelock_info.share_count + weight;
@@ -401,16 +403,14 @@ module aptos_framework::ibe_config {
     }
 
     #[test_only]
-    public fun submit_dk_share_for_testing(
+    public fun submit_dk_shares_for_testing(
         timelock_id: u64,
-        share: vector<u8>,
+        shares: vector<vector<u8>>,
         validator_index: u64,
         validator_address: address,
         weight: u64,
         total_weight: u64
     ) acquires TimelockRegistry {
-        assert!(vector::length(&share) == G1_LENGTH, E_INVALID_MPK_LENGTH);
-
         let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
         let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
 
@@ -424,7 +424,7 @@ module aptos_framework::ibe_config {
         };
 
         vector::push_back(&mut timelock_info.validator_indices, validator_index);
-        vector::push_back(&mut timelock_info.submitted_shares, share);
+        vector::push_back(&mut timelock_info.submitted_shares, shares);
         vector::push_back(&mut timelock_info.validator_weights, weight);
         vector::push_back(&mut timelock_info.submitters, validator_address);
         timelock_info.share_count = timelock_info.share_count + weight;

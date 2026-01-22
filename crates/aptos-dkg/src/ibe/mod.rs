@@ -82,6 +82,7 @@
 //! - [`mod.rs`](mod.rs) - Core IBE primitives (encrypt, decrypt, key derivation)
 //! - [`ciphertext.rs`](ciphertext.rs) - Ciphertext structure and serialization
 //! - [`tests.rs`](tests.rs) - Unit tests with known scalar examples
+//!
 
 pub mod ciphertext;
 
@@ -107,7 +108,7 @@ use std::path::Path;
 /// Errors that can occur during IBE operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IbeError {
-    /// Validator indices and scalar shares have different lengths
+    /// Validator indices and shares have different lengths
     ValidatorIndicesSharesMismatch {
         indices_len: usize,
         shares_len: usize,
@@ -127,6 +128,8 @@ pub enum IbeError {
     },
     /// Failed to create weighted configuration
     InvalidWeightedConfig(String),
+    /// Invalid G1 share format (not 48 bytes or invalid point)
+    InvalidG1Share(String),
 }
 
 impl std::fmt::Display for IbeError {
@@ -161,6 +164,7 @@ impl std::fmt::Display for IbeError {
                 validator_index, shares_count, expected_weight
             ),
             IbeError::InvalidWeightedConfig(msg) => write!(f, "Invalid weighted config: {}", msg),
+            IbeError::InvalidG1Share(msg) => write!(f, "Invalid G1 share: {}", msg),
         }
     }
 }
@@ -182,10 +186,19 @@ pub struct IbeRoundtripVector {
     pub rng_seed: u64,
     pub threshold: u64,
     pub total_weight: u64,
+    pub msk_hex: String,
+    pub mpk_g2_hex: String,
+    pub identity_hash_hex: String,
+    pub h_identity_g1_hex: String,
     pub validator_indices: Vec<u64>,
     pub validator_weights: Vec<u64>,
-    pub dk_shares_g1_hex: Vec<String>,
+    /// Nested vector of DK shares: vector<vector<G1_compressed_hex>>
+    /// Outer index: validator, inner index: virtual player share
+    pub dk_shares_g1_hex: Vec<Vec<String>>,
     pub reconstructed_dk_g1_hex: String,
+    pub plaintext_hex: String,
+    pub ciphertext_u_g2_hex: String,
+    pub ciphertext_v_hex: String,
 }
 
 /// Golden vectors container
@@ -665,4 +678,89 @@ pub fn reconstruct_ibe_dk(
     let dk = derive_decryption_key(&reconstructed_secret.s, identity);
 
     Ok(dk)
+}
+
+/// Reconstructs an IBE decryption key from G1 DK shares.
+///
+/// This function performs weighted reconstruction directly on G1 points.
+/// Each share corresponds to a "virtual player" in the weighted PVSS scheme.
+///
+/// The reconstruction computes:
+/// `DK = Σ (λ_j(0) × dk_share_j)` where `j` are the indices of participating virtual players.
+///
+/// # Arguments
+///
+/// * `virtual_player_ids` - Global indices of the participating virtual players (0 to total_weight-1)
+/// * `dk_shares` - G1 DK shares (48-byte compressed), one per participating virtual player
+/// * `total_weight` - Sum of all validator weights (determines the Lagrange evaluation domain)
+///
+/// # Returns
+///
+/// The reconstructed decryption key as a G1 affine point.
+///
+/// # Errors
+///
+/// * `ValidatorIndicesSharesMismatch` - If IDs and shares have different lengths
+/// * `EmptyShares` - If no shares provided
+/// * `InvalidG1Share` - If any share is not 48 bytes or is invalid G1
+pub fn reconstruct_ibe_dk_from_g1_shares(
+    virtual_player_ids: &[u64],
+    dk_shares: &[Vec<u8>],
+    total_weight: u64,
+) -> Result<G1Affine, IbeError> {
+    use crate::algebra::lagrange::lagrange_coefficients;
+
+    // ==========================================================================
+    // Input Validation
+    // ==========================================================================
+
+    if virtual_player_ids.len() != dk_shares.len() {
+        return Err(IbeError::ValidatorIndicesSharesMismatch {
+            indices_len: virtual_player_ids.len(),
+            shares_len: dk_shares.len(),
+        });
+    }
+
+    if virtual_player_ids.is_empty() {
+        return Err(IbeError::EmptyShares);
+    }
+
+    // ==========================================================================
+    // Lagrange Coefficients
+    // ==========================================================================
+    // The evaluation domain is based on total_weight.
+    let batch_dom =
+        crate::algebra::evaluation_domain::BatchEvaluationDomain::new(total_weight as usize);
+
+    let player_ids: Vec<usize> = virtual_player_ids.iter().map(|&idx| idx as usize).collect();
+    let lagrange_coeffs = lagrange_coefficients(&batch_dom, &player_ids, &Scalar::from(0u64));
+
+    // ==========================================================================
+    // G1 Reconstruction
+    // ==========================================================================
+    let mut reconstructed = G1Projective::identity();
+
+    for (i, dk_share_bytes) in dk_shares.iter().enumerate() {
+        // Validate share format
+        if dk_share_bytes.len() != 48 {
+            return Err(IbeError::InvalidG1Share(format!(
+                "DK share {} has {} bytes, expected 48",
+                i,
+                dk_share_bytes.len()
+            )));
+        }
+
+        // Deserialize compressed G1
+        let g1_bytes: &[u8; 48] = dk_share_bytes
+            .as_slice()
+            .try_into()
+            .expect("DK share should be exactly 48 bytes");
+        let g1_affine = G1Affine::from_compressed(g1_bytes)
+            .expect(&format!("DK share {} is not a valid G1 point", i));
+
+        // Accumulate: reconstructed += λ_i(0) × dk_share_i
+        reconstructed += G1Projective::from(g1_affine) * lagrange_coeffs[i];
+    }
+
+    Ok(reconstructed.to_affine())
 }
