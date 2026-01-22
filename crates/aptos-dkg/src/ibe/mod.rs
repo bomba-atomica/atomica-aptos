@@ -458,8 +458,8 @@ pub fn verify_decryption_key(dk: &G1Affine, identity: &[u8], mpk: &G2Affine) -> 
 pub fn reconstruct_ibe_dk(
     validator_indices: &[u64],
     dk_shares: &[G1Affine],
-    _weights: &[u64],
-    _total_weight: u64,
+    weights: &[u64],
+    total_weight: u64,
 ) -> G1Affine {
     assert_eq!(
         validator_indices.len(),
@@ -471,15 +471,42 @@ pub fn reconstruct_ibe_dk(
     use crate::algebra::evaluation_domain::BatchEvaluationDomain;
     use crate::algebra::lagrange::lagrange_coefficients;
 
-    let domain_size = validator_indices.len();
+    let domain_size = total_weight as usize;
     let batch_dom = BatchEvaluationDomain::new(domain_size);
-    let player_ids: Vec<usize> = validator_indices.iter().map(|&i| i as usize).collect();
 
-    let lagr_coeffs = lagrange_coefficients(&batch_dom, &player_ids, &Scalar::ZERO);
+    // Compute starting indices for each validator (cumulative sum of weights)
+    let mut starting_indices = Vec::with_capacity(weights.len());
+    starting_indices.push(0);
+    for i in 0..weights.len() - 1 {
+        starting_indices.push(starting_indices[i] + weights[i] as usize);
+    }
 
+    // Build virtual player IDs for each validator's shares
+    let mut all_virtual_player_ids: Vec<usize> = Vec::new();
+    for &vi in validator_indices.iter() {
+        let start = starting_indices[vi as usize];
+        let weight = weights[vi as usize];
+        for vp in 0..weight as usize {
+            all_virtual_player_ids.push(start + vp);
+        }
+    }
+
+    // Get Lagrange coefficients for all virtual players at alpha=0
+    let lagr_coeffs = lagrange_coefficients(&batch_dom, &all_virtual_player_ids, &Scalar::ZERO);
+
+    // Now reconstruct: for each validator, use the sum of their DK share divided by weight
+    // times the corresponding Lagrange coefficient
     let mut result = G1Projective::identity();
-    for (i, share) in dk_shares.iter().enumerate() {
-        result += share.mul(lagr_coeffs[i]);
+    let mut coeff_idx = 0;
+    for (vi_idx, &vi) in validator_indices.iter().enumerate() {
+        let weight = weights[vi as usize];
+        // Each virtual player contributes (DK_share / weight) * λ_vp
+        let share_contribution = dk_shares[vi_idx].mul(Scalar::from(weight).invert().unwrap());
+        for _ in 0..weight as usize {
+            let lagr_coeff = lagr_coeffs[coeff_idx];
+            result += share_contribution.mul(lagr_coeff);
+            coeff_idx += 1;
+        }
     }
 
     result.to_affine()
