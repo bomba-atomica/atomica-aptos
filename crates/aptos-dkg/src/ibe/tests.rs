@@ -1,9 +1,12 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(deprecated)]
+
 //! Tests for the IBE module.
 
 use super::*;
+use aptos_crypto::Uniform;
 use blstrs::G2Projective;
 use group::Group;
 use rand::SeedableRng;
@@ -589,13 +592,12 @@ fn test_scalar_elgamal_pvss_ibe_roundtrip_unequal_weights() {
 }
 
 #[test]
-fn test_reconstruct_ibe_dk_equal_weights() {
+fn test_reconstruct_ibe_dk_reference_equal_weights() {
     use crate::pvss::input_secret::InputSecret;
     use crate::pvss::scalar_elgamal::WeightedTranscript;
     use crate::pvss::test_utils::setup_dealing;
     use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
     use crate::pvss::{Player, WeightedConfig};
-    use aptos_crypto::Uniform;
     use group::Group;
     use rand::thread_rng;
 
@@ -652,15 +654,15 @@ fn test_reconstruct_ibe_dk_equal_weights() {
     let validator_indices: Vec<u64> = vec![0, 1, 2];
     let full_weights: Vec<u64> = vec![1, 1, 1, 1, 1]; // Full weights for all 5 validators
 
-    // Use reconstruct_ibe_dk with scalar shares
-    let reconstructed_dk = reconstruct_ibe_dk(
+    // Use reference function with scalar shares
+    let reconstructed_dk = _reconstruct_ibe_dk_reference(
         &validator_indices,
         &scalar_shares,
         &full_weights,
         total_weight,
         &identity,
     )
-    .expect("reconstruct_ibe_dk should succeed with valid shares");
+    .expect("reference reconstruction should succeed");
 
     // Reconstruct the master secret using framework (for verification)
     let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
@@ -680,27 +682,26 @@ fn test_reconstruct_ibe_dk_equal_weights() {
 
     assert_eq!(
         reconstructed_dk, expected_dk,
-        "reconstruct_ibe_dk should produce same DK as derive_decryption_key for equal weights"
+        "reference reconstruction should produce same DK as derive_decryption_key"
     );
 
     // Encrypt/decrypt verification
     let mpk = G2Projective::generator().mul(&secret).to_affine();
-    let plaintext = b"Test reconstruct_ibe_dk equal weights";
+    let plaintext = b"Test reference reconstruction equal weights";
     let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
     let decrypted = ibe_decrypt(&reconstructed_dk, &ciphertext);
     assert_eq!(decrypted, plaintext);
 
-    println!("✅ test_reconstruct_ibe_dk_equal_weights passed");
+    println!("✅ test_reconstruct_ibe_dk_reference_equal_weights passed");
 }
 
 #[test]
-fn test_reconstruct_ibe_dk_unequal_weights() {
+fn test_reconstruct_ibe_dk_reference_unequal_weights() {
     use crate::pvss::input_secret::InputSecret;
     use crate::pvss::scalar_elgamal::WeightedTranscript;
     use crate::pvss::test_utils::setup_dealing;
     use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
     use crate::pvss::{Player, WeightedConfig};
-    use aptos_crypto::Uniform;
     use group::Group;
     use rand::thread_rng;
 
@@ -757,15 +758,15 @@ fn test_reconstruct_ibe_dk_unequal_weights() {
     let validator_indices: Vec<u64> = vec![0, 1, 2];
     let full_weights: Vec<u64> = vec![2, 1, 2]; // Full weights for all 3 validators
 
-    // Use reconstruct_ibe_dk with scalar shares
-    let reconstructed_dk = reconstruct_ibe_dk(
+    // Use reference function with scalar shares
+    let reconstructed_dk = _reconstruct_ibe_dk_reference(
         &validator_indices,
         &scalar_shares,
         &full_weights,
         total_weight,
         &identity,
     )
-    .expect("reconstruct_ibe_dk should succeed with valid shares");
+    .expect("reference reconstruction should succeed");
 
     // Reconstruct the master secret using framework (for verification)
     let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
@@ -780,17 +781,17 @@ fn test_reconstruct_ibe_dk_unequal_weights() {
 
     assert_eq!(
         reconstructed_dk, expected_dk,
-        "reconstruct_ibe_dk should produce same DK as derive_decryption_key for unequal weights"
+        "reference reconstruction should produce same DK as derive_decryption_key"
     );
 
     // Encrypt/decrypt verification
     let mpk = G2Projective::generator().mul(&secret).to_affine();
-    let plaintext = b"Test reconstruct_ibe_dk unequal weights [2,1,2]";
+    let plaintext = b"Test reference reconstruction unequal weights [2,1,2]";
     let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
     let decrypted = ibe_decrypt(&reconstructed_dk, &ciphertext);
     assert_eq!(decrypted, plaintext);
 
-    println!("✅ test_reconstruct_ibe_dk_unequal_weights passed");
+    println!("✅ test_reconstruct_ibe_dk_reference_unequal_weights passed");
 }
 
 #[test]
@@ -842,21 +843,21 @@ fn test_compare_scalar_and_g1_reconstruction() {
 
     let identity = compute_identity(42, 1_000_000_000_000);
 
-    // Scalar reconstruction
+    // Scalar reconstruction using reference function
     let scalar_shares: Vec<Vec<Scalar>> = shares
         .iter()
         .map(|(_player, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
         .collect();
 
     let validator_indices: Vec<u64> = vec![0, 1, 2];
-    let dk_from_scalar = reconstruct_ibe_dk(
+    let dk_from_scalar = _reconstruct_ibe_dk_reference(
         &validator_indices,
         &scalar_shares,
         &weights_u64,
         total_weight,
         &identity,
     )
-    .expect("scalar reconstruction should succeed");
+    .expect("reference reconstruction should succeed");
 
     // Convert to format for G1 reconstruction
     let mut participating_virtual_player_ids = Vec::new();
@@ -964,32 +965,32 @@ fn test_reconstruct_ibe_dk_sparse_indices() {
     let validator_indices: Vec<u64> = vec![0, 2];
     let full_weights: Vec<u64> = vec![1, 1, 1, 1]; // Full weights for all 4 validators
 
-    // Use reconstruct_ibe_dk with scalar shares
-    let reconstructed_dk = reconstruct_ibe_dk(
+    // Use reference function with scalar shares
+    let reconstructed_dk = _reconstruct_ibe_dk_reference(
         &validator_indices,
         &scalar_shares,
         &full_weights,
         total_weight,
         &identity,
     )
-    .expect("reconstruct_ibe_dk should succeed with valid shares");
+    .expect("reference reconstruction should succeed");
 
     // Expected DK from master secret
     let expected_dk = derive_decryption_key(&secret, &identity);
 
     assert_eq!(
         reconstructed_dk, expected_dk,
-        "reconstruct_ibe_dk should work with sparse validator indices [0, 2]"
+        "reference reconstruction should work with sparse validator indices [0, 2]"
     );
 
     // Encrypt/decrypt verification
     let mpk = G2Projective::generator().mul(&secret).to_affine();
-    let plaintext = b"Test reconstruct_ibe_dk sparse indices [0,2]";
+    let plaintext = b"Test reference reconstruction sparse indices [0,2]";
     let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
     let decrypted = ibe_decrypt(&reconstructed_dk, &ciphertext);
     assert_eq!(decrypted, plaintext);
 
-    println!("✅ test_reconstruct_ibe_dk_sparse_indices passed");
+    println!("✅ test_reconstruct_ibe_dk_reference_sparse_indices passed");
 }
 
 #[test]
@@ -1040,18 +1041,18 @@ fn test_reconstruct_ibe_dk_single_share() {
     // Extract scalar shares
     let scalar_shares: Vec<Vec<Scalar>> = vec![sk_share.iter().map(|s| s.0.s).collect()];
 
-    // Use reconstruct_ibe_dk with single validator
+    // Use reference function with single validator
     let validator_indices: Vec<u64> = vec![0];
     let full_weights: Vec<u64> = vec![1]; // Full weights for all validators
 
-    let _reconstructed_dk = reconstruct_ibe_dk(
+    let _reconstructed_dk = _reconstruct_ibe_dk_reference(
         &validator_indices,
         &scalar_shares,
         &full_weights,
         total_weight,
         &identity,
     )
-    .expect("reconstruct_ibe_dk should succeed with valid shares");
+    .expect("reference reconstruction should succeed");
 
-    println!("✅ test_reconstruct_ibe_dk_single_share passed");
+    println!("✅ test_reconstruct_ibe_dk_reference_single_share passed");
 }

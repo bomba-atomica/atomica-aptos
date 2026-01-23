@@ -107,15 +107,15 @@ fn test_dk_reconstruction_three_validators_equal() {
     let validator_indices: Vec<u64> = vec![0, 1, 2];
     let full_weights: Vec<u64> = weights.iter().map(|w| *w as u64).collect();
 
-    // Use reconstruct_ibe_dk
-    let reconstructed_dk = aptos_dkg::ibe::reconstruct_ibe_dk(
+    // Use test_reconstruct_ibe_from_secret_shares
+    let reconstructed_dk = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares,
         &full_weights,
         total_weight,
         &identity,
     )
-    .expect("reconstruct_ibe_dk should succeed with valid shares");
+    .expect("test_reconstruct_ibe_from_secret_shares should succeed with valid shares");
 
     // Verify encryption/decrypt roundtrip
     let mpk = blstrs::G2Projective::generator().mul(&secret).into();
@@ -192,14 +192,14 @@ fn test_dk_reconstruction_unequal_weights_215() {
     let validator_indices: Vec<u64> = vec![0, 1, 2];
     let full_weights: Vec<u64> = weights.iter().map(|w| *w as u64).collect();
 
-    let reconstructed_dk = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let reconstructed_dk = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares,
         &full_weights,
         total_weight,
         &identity,
     )
-    .expect("reconstruct_ibe_dk should succeed with valid shares");
+    .expect("test_reconstruct_ibe_from_secret_shares should succeed with valid shares");
 
     // Verify roundtrip
     let mpk = blstrs::G2Projective::generator().mul(&secret).into();
@@ -276,14 +276,14 @@ fn test_dk_reconstruction_five_validators() {
     let validator_indices: Vec<u64> = vec![0, 1, 2];
     let full_weights: Vec<u64> = weights.iter().map(|w| *w as u64).collect();
 
-    let reconstructed_dk = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let reconstructed_dk = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares,
         &full_weights,
         total_weight,
         &identity,
     )
-    .expect("reconstruct_ibe_dk should succeed with valid shares");
+    .expect("test_reconstruct_ibe_from_secret_shares should succeed with valid shares");
 
     let mpk = blstrs::G2Projective::generator().mul(&secret).into();
     let plaintext = b"Test 5 validators threshold 3";
@@ -370,14 +370,14 @@ fn test_dk_reconstruction_sparse_indices() {
     let validator_indices: Vec<u64> = vec![0, 2];
     let full_weights: Vec<u64> = weights.iter().map(|w| *w as u64).collect();
 
-    let reconstructed_dk = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let reconstructed_dk = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares,
         &full_weights,
         total_weight,
         &identity,
     )
-    .expect("reconstruct_ibe_dk should succeed with valid shares");
+    .expect("test_reconstruct_ibe_from_secret_shares should succeed with valid shares");
 
     let mpk = blstrs::G2Projective::generator().mul(&secret).into();
     let plaintext = b"Test sparse indices [0,2]";
@@ -454,7 +454,7 @@ fn test_dk_reconstruction_different_identities() {
     let identity2 = [0x02u8; 32];
     let identity3 = [0x03u8; 32];
 
-    let dk1 = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let dk1 = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares.clone(),
         &full_weights,
@@ -462,7 +462,7 @@ fn test_dk_reconstruction_different_identities() {
         &identity1,
     )
     .expect("should succeed");
-    let dk2 = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let dk2 = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares.clone(),
         &full_weights,
@@ -470,7 +470,7 @@ fn test_dk_reconstruction_different_identities() {
         &identity2,
     )
     .expect("should succeed");
-    let dk3 = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let dk3 = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares,
         &full_weights,
@@ -507,7 +507,7 @@ fn test_dk_reconstruction_share_weight_mismatch() {
 
     let identity = aptos_dkg::ibe::compute_identity(1, 1704067200000000);
 
-    let result = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let result = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares,
         &weights,
@@ -542,7 +542,7 @@ fn test_dk_reconstruction_empty_shares() {
 
     let identity = aptos_dkg::ibe::compute_identity(1, 1704067200000000);
 
-    let result = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let result = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares,
         &weights,
@@ -573,7 +573,7 @@ fn test_dk_reconstruction_indices_shares_mismatch() {
 
     let identity = aptos_dkg::ibe::compute_identity(1, 1704067200000000);
 
-    let result = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let result = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares,
         &weights,
@@ -611,7 +611,7 @@ fn test_dk_reconstruction_weight_sum_mismatch() {
 
     let identity = aptos_dkg::ibe::compute_identity(1, 1704067200000000);
 
-    let result = aptos_dkg::ibe::reconstruct_ibe_dk(
+    let result = aptos_dkg::ibe::test_reconstruct_ibe_from_secret_shares(
         &validator_indices,
         &scalar_shares,
         &weights,

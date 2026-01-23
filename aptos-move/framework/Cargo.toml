@@ -86,6 +86,7 @@ group = { workspace = true }
 [dev-dependencies]
  aptos-aggregator = { workspace = true, features = ["testing"] }
  aptos-crypto = { workspace = true, features = ["fuzzing"] }
+ aptos-dkg = { workspace = true, features = ["fuzzing"] }
  aptos-gas-meter = { workspace = true }
  aptos-vm = { workspace = true, features = ["testing"] }
  claims = { workspace = true }

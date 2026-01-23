@@ -107,4 +107,5 @@
 //! ```
 
 pub mod deadline_reveal;
+pub mod e2e_complete_workflow;
 pub mod register_and_query;
