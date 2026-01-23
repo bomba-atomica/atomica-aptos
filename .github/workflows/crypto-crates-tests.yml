@@ -3,11 +3,11 @@ name: Crypto Crates Tests
 on:
   push:
     branches:
-      - timelock-das-vpss
+      - dev-atomica
   pull_request:
+    types: [opened, synchronize, reopened]
     branches:
       - dev-atomica
-      - timelock-das-vpss
 
 env:
   CARGO_TERM_COLOR: always
