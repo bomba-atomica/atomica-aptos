@@ -59,6 +59,8 @@ mod sui_derivable_account;
 #[cfg(test)]
 mod test_smoke_tests;
 #[cfg(test)]
+mod timelock;
+#[cfg(test)]
 mod transaction;
 #[cfg(test)]
 mod transaction_filter;

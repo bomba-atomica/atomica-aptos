@@ -28,6 +28,7 @@ This is the reference documentation of the Aptos standard library.
 -  [`0x1::federated_keyless`](federated_keyless.md#0x1_federated_keyless)
 -  [`0x1::fixed_point64`](fixed_point64.md#0x1_fixed_point64)
 -  [`0x1::from_bcs`](from_bcs.md#0x1_from_bcs)
+-  [`0x1::ibe`](ibe.md#0x1_ibe)
 -  [`0x1::keyless`](keyless.md#0x1_keyless)
 -  [`0x1::math128`](math128.md#0x1_math128)
 -  [`0x1::math64`](math64.md#0x1_math64)

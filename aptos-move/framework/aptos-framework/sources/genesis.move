@@ -310,6 +310,9 @@ module aptos_framework::genesis {
         // validators.
         aptos_coin::destroy_mint_cap(aptos_framework);
 
+        // Initialize timelock registry after account resources are set up
+        ibe_config::initialize_timelock_registry(aptos_framework);
+
         stake::on_new_epoch();
     }
 

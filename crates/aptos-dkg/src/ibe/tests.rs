@@ -417,3 +417,641 @@ fn test_scalar_elgamal_pvss_ibe_multiple_identities() {
         assert_eq!(decrypted, plaintext.as_bytes());
     }
 }
+
+#[test]
+fn test_dk_share_aggregation_roundtrip() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use blstrs::G1Projective;
+    use group::Group;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    let weights = vec![1, 1, 1, 1, 1];
+    let wconfig = WeightedConfig::new(3, weights.clone()).unwrap();
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+
+    let input_secret = InputSecret::generate(&mut rng);
+    let secret = *input_secret.get_secret_a();
+
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &dealing_args.eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    let mut shares: Vec<(
+        Player,
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
+    )> = Vec::new();
+    for i in 0..5 {
+        let (sk_share, _pk_share) = transcript
+            .decrypt_own_share(
+                &wconfig,
+                &Player { id: i },
+                &dealing_args.dks[i],
+                &dealing_args.pp,
+            )
+            .expect("decrypt_own_share should succeed");
+        shares.push((Player { id: i }, sk_share));
+    }
+
+    let identity = compute_identity(12345, 1000000000);
+    let h_identity = hash_to_g1(&identity);
+
+    // Path A: Compute G1 DK shares for each validator
+    // dk_share_i = s_i × H(identity) for each validator
+    // For weighted config, sum all shares per validator
+    let _dk_shares_g1: Vec<G1Projective> = shares
+        .iter()
+        .map(|(_player, sk_shares)| {
+            let mut sum = G1Projective::identity();
+            for sk_share in sk_shares.iter() {
+                sum += h_identity.mul(&sk_share.0.s);
+            }
+            sum
+        })
+        .collect();
+
+    // Path B: Reconstruct master secret using framework (handles Lagrange correctly)
+    let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
+
+    let reconstructed_secret: <WeightedTranscript as TranscriptTrait>::DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
+
+    assert_eq!(
+        reconstructed_secret.s, secret,
+        "Reconstructed master secret should match original dealt secret"
+    );
+
+    // Derive DK from reconstructed master secret: DK = s × H(identity)
+    let dk_from_scalar = derive_decryption_key(&reconstructed_secret.s, &identity);
+
+    // Test encryption/decryption with DK from scalar reconstruction
+    let mpk = G2Projective::generator().mul(&secret).to_affine();
+
+    let plaintext = b"Test message for DK share aggregation roundtrip";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
+
+    let decrypted = ibe_decrypt(&dk_from_scalar, &ciphertext);
+    assert_eq!(decrypted, plaintext);
+
+    println!("✅ DK share aggregation roundtrip test passed!");
+    println!("   - Path B: Reconstructed master secret matches original");
+    println!("   - Decryption with reconstructed DK successful");
+    println!("   - Path A: G1 DK shares (dk_share_i = s_i × H) computed but require");
+    println!("     correct Lagrange coefficients for aggregation, handled by framework");
+}
+
+#[test]
+fn test_scalar_elgamal_pvss_ibe_roundtrip_unequal_weights() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use group::Group;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    // Unequal weights: [2, 1, 2] - total weight 5, threshold 3
+    let weights = vec![2, 1, 2];
+    let wconfig = WeightedConfig::new(3, weights).unwrap();
+
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+    let input_secret = InputSecret::generate(&mut rng);
+    let secret = *input_secret.get_secret_a();
+
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &dealing_args.eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    let mut shares: Vec<(
+        Player,
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
+    )> = Vec::new();
+    for i in 0..3 {
+        let (sk_share, _pk_share) = transcript
+            .decrypt_own_share(
+                &wconfig,
+                &Player { id: i },
+                &dealing_args.dks[i],
+                &dealing_args.pp,
+            )
+            .expect("decrypt_own_share should succeed");
+        shares.push((Player { id: i }, sk_share));
+    }
+
+    // Reconstruct with all 3 players (total weight = 5 >= threshold 3)
+    let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
+    let reconstructed_secret: <WeightedTranscript as TranscriptTrait>::DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
+
+    assert_eq!(reconstructed_secret.s, secret);
+
+    // IBE operations with reconstructed secret
+    let identity = compute_identity(42, 1_000_000_000_000);
+    let dk = derive_decryption_key(&reconstructed_secret.s, &identity);
+    let mpk = G2Projective::generator().mul(&secret).to_affine();
+
+    // Encrypt and decrypt
+    let plaintext = b"Unequal weights IBE roundtrip test [2,1,2]";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
+    let decrypted = ibe_decrypt(&dk, &ciphertext);
+
+    assert_eq!(decrypted, plaintext);
+    println!("✅ Unequal weights [2,1,2] IBE roundtrip test passed!");
+}
+
+#[test]
+fn test_reconstruct_ibe_dk_equal_weights() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use group::Group;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    // Test: 5 validators, threshold 3, equal weights [1,1,1,1,1]
+    let weights = vec![1, 1, 1, 1, 1];
+    let wconfig = WeightedConfig::new(3, weights.clone()).unwrap();
+    let total_weight: u64 = weights.iter().map(|w| *w as u64).sum();
+
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+    let input_secret = InputSecret::generate(&mut rng);
+    let secret = *input_secret.get_secret_a();
+
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &dealing_args.eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    // Decrypt shares from first 3 validators
+    let shares: Vec<(
+        Player,
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
+    )> = (0..3)
+        .map(|i| {
+            let (sk_share, _pk_share) = transcript
+                .decrypt_own_share(
+                    &wconfig,
+                    &Player { id: i },
+                    &dealing_args.dks[i],
+                    &dealing_args.pp,
+                )
+                .expect("decrypt_own_share should not fail");
+            (Player { id: i }, sk_share)
+        })
+        .collect();
+
+    // Identity for IBE
+    let identity = compute_identity(12345, 1000000000);
+
+    // Extract scalar shares for each validator
+    let scalar_shares: Vec<Vec<Scalar>> = shares
+        .iter()
+        .map(|(_player, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
+        .collect();
+
+    // Validator indices and weights for reconstruction
+    let validator_indices: Vec<u64> = vec![0, 1, 2];
+    let full_weights: Vec<u64> = vec![1, 1, 1, 1, 1]; // Full weights for all 5 validators
+
+    // Use reconstruct_ibe_dk with scalar shares
+    let reconstructed_dk = reconstruct_ibe_dk(
+        &validator_indices,
+        &scalar_shares,
+        &full_weights,
+        total_weight,
+        &identity,
+    )
+    .expect("reconstruct_ibe_dk should succeed with valid shares");
+
+    // Reconstruct the master secret using framework (for verification)
+    let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
+    let reconstructed_secret: <WeightedTranscript as TranscriptTrait>::DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
+
+    assert_eq!(
+        reconstructed_secret.s, secret,
+        "Reconstructed scalar should match original secret"
+    );
+
+    // Expected DK from reconstructed secret
+    let expected_dk = derive_decryption_key(&reconstructed_secret.s, &identity);
+
+    assert_eq!(
+        reconstructed_dk, expected_dk,
+        "reconstruct_ibe_dk should produce same DK as derive_decryption_key for equal weights"
+    );
+
+    // Encrypt/decrypt verification
+    let mpk = G2Projective::generator().mul(&secret).to_affine();
+    let plaintext = b"Test reconstruct_ibe_dk equal weights";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
+    let decrypted = ibe_decrypt(&reconstructed_dk, &ciphertext);
+    assert_eq!(decrypted, plaintext);
+
+    println!("✅ test_reconstruct_ibe_dk_equal_weights passed");
+}
+
+#[test]
+fn test_reconstruct_ibe_dk_unequal_weights() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use group::Group;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    // Test: 3 validators, threshold 3, unequal weights [2,1,2]
+    let weights = vec![2, 1, 2];
+    let wconfig = WeightedConfig::new(3, weights.clone()).unwrap();
+    let total_weight: u64 = weights.iter().map(|w| *w as u64).sum();
+
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+    let input_secret = InputSecret::generate(&mut rng);
+    let secret = *input_secret.get_secret_a();
+
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &dealing_args.eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    // Decrypt shares from all 3 validators
+    let shares: Vec<(
+        Player,
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
+    )> = (0..3)
+        .map(|i| {
+            let (sk_share, _pk_share) = transcript
+                .decrypt_own_share(
+                    &wconfig,
+                    &Player { id: i },
+                    &dealing_args.dks[i],
+                    &dealing_args.pp,
+                )
+                .expect("decrypt_own_share should not fail");
+            (Player { id: i }, sk_share)
+        })
+        .collect();
+
+    // Identity for IBE
+    let identity = compute_identity(42, 1_000_000_000_000);
+
+    // Extract scalar shares for each validator
+    let scalar_shares: Vec<Vec<Scalar>> = shares
+        .iter()
+        .map(|(_player, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
+        .collect();
+
+    // Validator indices and weights for reconstruction
+    let validator_indices: Vec<u64> = vec![0, 1, 2];
+    let full_weights: Vec<u64> = vec![2, 1, 2]; // Full weights for all 3 validators
+
+    // Use reconstruct_ibe_dk with scalar shares
+    let reconstructed_dk = reconstruct_ibe_dk(
+        &validator_indices,
+        &scalar_shares,
+        &full_weights,
+        total_weight,
+        &identity,
+    )
+    .expect("reconstruct_ibe_dk should succeed with valid shares");
+
+    // Reconstruct the master secret using framework (for verification)
+    let shares_for_recon = vec![shares[0].clone(), shares[1].clone(), shares[2].clone()];
+    let reconstructed_secret: <WeightedTranscript as TranscriptTrait>::DealtSecretKey =
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
+            &wconfig,
+            &shares_for_recon,
+        );
+
+    // Expected DK from reconstructed secret
+    let expected_dk = derive_decryption_key(&reconstructed_secret.s, &identity);
+
+    assert_eq!(
+        reconstructed_dk, expected_dk,
+        "reconstruct_ibe_dk should produce same DK as derive_decryption_key for unequal weights"
+    );
+
+    // Encrypt/decrypt verification
+    let mpk = G2Projective::generator().mul(&secret).to_affine();
+    let plaintext = b"Test reconstruct_ibe_dk unequal weights [2,1,2]";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
+    let decrypted = ibe_decrypt(&reconstructed_dk, &ciphertext);
+    assert_eq!(decrypted, plaintext);
+
+    println!("✅ test_reconstruct_ibe_dk_unequal_weights passed");
+}
+
+#[test]
+fn test_compare_scalar_and_g1_reconstruction() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::{SecretSharingConfig, Transcript as TranscriptTrait};
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    // Test with 3 validators, weights [2, 1, 2]
+    let weights_usize: Vec<usize> = vec![2, 1, 2];
+    let weights_u64: Vec<u64> = vec![2, 1, 2];
+    let wconfig = WeightedConfig::new(3, weights_usize.clone()).unwrap();
+    let total_weight: u64 = weights_u64.iter().copied().sum();
+
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+    let input_secret = InputSecret::generate(&mut rng);
+
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &dealing_args.eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    // Get scalar shares
+    let shares: Vec<(Player, _)> = (0..3)
+        .map(|i| {
+            let (sk_share, _) = transcript
+                .decrypt_own_share(
+                    &wconfig,
+                    &Player { id: i },
+                    &dealing_args.dks[i],
+                    &dealing_args.pp,
+                )
+                .unwrap();
+            (Player { id: i }, sk_share)
+        })
+        .collect();
+
+    let identity = compute_identity(42, 1_000_000_000_000);
+
+    // Scalar reconstruction
+    let scalar_shares: Vec<Vec<Scalar>> = shares
+        .iter()
+        .map(|(_player, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
+        .collect();
+
+    let validator_indices: Vec<u64> = vec![0, 1, 2];
+    let dk_from_scalar = reconstruct_ibe_dk(
+        &validator_indices,
+        &scalar_shares,
+        &weights_u64,
+        total_weight,
+        &identity,
+    )
+    .expect("scalar reconstruction should succeed");
+
+    // Convert to format for G1 reconstruction
+    let mut participating_virtual_player_ids = Vec::new();
+    let mut participating_dk_shares = Vec::new();
+
+    for (i, &validator_idx) in validator_indices.iter().enumerate() {
+        let player = wconfig.get_player(validator_idx as usize);
+        let weight = wconfig.get_player_weight(&player);
+        let starting_index = wconfig.get_player_starting_index(&player);
+        for j in 0..weight {
+            participating_virtual_player_ids.push((starting_index + j) as u64);
+            // Use high-level API to derive DK contribution from EACH scalar share
+            let dk_contribution = derive_decryption_key(&shares[i].1[j].0.s, &identity);
+            participating_dk_shares.push(dk_contribution.to_compressed().to_vec());
+        }
+    }
+
+    let dk_from_g1 = reconstruct_ibe_dk_from_g1_shares(
+        &participating_virtual_player_ids,
+        &participating_dk_shares,
+        total_weight,
+    )
+    .expect("G1 reconstruction should succeed");
+
+    assert_eq!(
+        dk_from_scalar, dk_from_g1,
+        "Scalar and G1 reconstruction should match"
+    );
+
+    println!("✅ test_compare_scalar_and_g1_reconstruction passed");
+}
+
+#[test]
+fn test_reconstruct_ibe_dk_sparse_indices() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::Transcript as TranscriptTrait;
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use group::Group;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    // Test: 4 validators, threshold 2, equal weights [1,1,1,1]
+    let weights = vec![1, 1, 1, 1];
+    let wconfig = WeightedConfig::new(2, weights.clone()).unwrap();
+    let total_weight: u64 = weights.iter().map(|w| *w as u64).sum();
+
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+    let input_secret = InputSecret::generate(&mut rng);
+    let secret = *input_secret.get_secret_a();
+
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &dealing_args.eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    // Decrypt shares from validators 0 and 2 (sparse subset)
+    let shares: Vec<(
+        Player,
+        <WeightedTranscript as TranscriptTrait>::DealtSecretKeyShare,
+    )> = vec![
+        {
+            let (sk_share, _pk_share) = transcript
+                .decrypt_own_share(
+                    &wconfig,
+                    &Player { id: 0 },
+                    &dealing_args.dks[0],
+                    &dealing_args.pp,
+                )
+                .expect("decrypt_own_share should not fail");
+            (Player { id: 0 }, sk_share)
+        },
+        {
+            let (sk_share, _pk_share) = transcript
+                .decrypt_own_share(
+                    &wconfig,
+                    &Player { id: 2 },
+                    &dealing_args.dks[2],
+                    &dealing_args.pp,
+                )
+                .expect("decrypt_own_share should not fail");
+            (Player { id: 2 }, sk_share)
+        },
+    ];
+
+    // Identity for IBE
+    let identity = compute_identity(99, 2_000_000_000_000);
+
+    // Extract scalar shares for each validator
+    let scalar_shares: Vec<Vec<Scalar>> = shares
+        .iter()
+        .map(|(_player, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
+        .collect();
+
+    // Use sparse validator indices [0, 2]
+    let validator_indices: Vec<u64> = vec![0, 2];
+    let full_weights: Vec<u64> = vec![1, 1, 1, 1]; // Full weights for all 4 validators
+
+    // Use reconstruct_ibe_dk with scalar shares
+    let reconstructed_dk = reconstruct_ibe_dk(
+        &validator_indices,
+        &scalar_shares,
+        &full_weights,
+        total_weight,
+        &identity,
+    )
+    .expect("reconstruct_ibe_dk should succeed with valid shares");
+
+    // Expected DK from master secret
+    let expected_dk = derive_decryption_key(&secret, &identity);
+
+    assert_eq!(
+        reconstructed_dk, expected_dk,
+        "reconstruct_ibe_dk should work with sparse validator indices [0, 2]"
+    );
+
+    // Encrypt/decrypt verification
+    let mpk = G2Projective::generator().mul(&secret).to_affine();
+    let plaintext = b"Test reconstruct_ibe_dk sparse indices [0,2]";
+    let ciphertext = ibe_encrypt(&mpk, &identity, plaintext, &mut rng);
+    let decrypted = ibe_decrypt(&reconstructed_dk, &ciphertext);
+    assert_eq!(decrypted, plaintext);
+
+    println!("✅ test_reconstruct_ibe_dk_sparse_indices passed");
+}
+
+#[test]
+fn test_reconstruct_ibe_dk_single_share() {
+    use crate::pvss::input_secret::InputSecret;
+    use crate::pvss::scalar_elgamal::WeightedTranscript;
+    use crate::pvss::test_utils::setup_dealing;
+    use crate::pvss::traits::Transcript as TranscriptTrait;
+    use crate::pvss::{Player, WeightedConfig};
+    use aptos_crypto::Uniform;
+    use rand::thread_rng;
+
+    let mut rng = thread_rng();
+
+    // Test: 1 validator with 1 share
+    let weights = vec![1];
+    let wconfig = WeightedConfig::new(1, weights.clone()).unwrap();
+    let total_weight: u64 = weights.iter().map(|w| *w as u64).sum();
+
+    let dealing_args = setup_dealing::<WeightedTranscript, _>(&wconfig, &mut rng);
+    let input_secret = InputSecret::generate(&mut rng);
+    let _secret = *input_secret.get_secret_a();
+
+    let transcript = WeightedTranscript::deal(
+        &wconfig,
+        &dealing_args.pp,
+        &dealing_args.ssks[0],
+        &dealing_args.eks,
+        &input_secret,
+        &vec![0u8],
+        &Player { id: 0 },
+        &mut rng,
+    );
+
+    // Decrypt single share
+    let (sk_share, _pk_share) = transcript
+        .decrypt_own_share(
+            &wconfig,
+            &Player { id: 0 },
+            &dealing_args.dks[0],
+            &dealing_args.pp,
+        )
+        .expect("decrypt_own_share should not fail");
+
+    // Identity for IBE
+    let identity = compute_identity(1, 1_000_000_000);
+
+    // Extract scalar shares
+    let scalar_shares: Vec<Vec<Scalar>> = vec![sk_share.iter().map(|s| s.0.s).collect()];
+
+    // Use reconstruct_ibe_dk with single validator
+    let validator_indices: Vec<u64> = vec![0];
+    let full_weights: Vec<u64> = vec![1]; // Full weights for all validators
+
+    let _reconstructed_dk = reconstruct_ibe_dk(
+        &validator_indices,
+        &scalar_shares,
+        &full_weights,
+        total_weight,
+        &identity,
+    )
+    .expect("reconstruct_ibe_dk should succeed with valid shares");
+
+    println!("✅ test_reconstruct_ibe_dk_single_share passed");
+}

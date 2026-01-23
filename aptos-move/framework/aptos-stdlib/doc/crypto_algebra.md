@@ -67,6 +67,8 @@ See <code>*_algebra.<b>move</b></code> for currently implemented algebraic struc
 -  [Function `downcast`](#0x1_crypto_algebra_downcast)
 -  [Function `hash_to`](#0x1_crypto_algebra_hash_to)
 -  [Function `abort_unless_cryptography_algebra_natives_enabled`](#0x1_crypto_algebra_abort_unless_cryptography_algebra_natives_enabled)
+-  [Function `get_handle`](#0x1_crypto_algebra_get_handle)
+-  [Function `new_element`](#0x1_crypto_algebra_new_element)
 -  [Function `handles_from_elements`](#0x1_crypto_algebra_handles_from_elements)
 -  [Function `add_internal`](#0x1_crypto_algebra_add_internal)
 -  [Function `deserialize_internal`](#0x1_crypto_algebra_deserialize_internal)
@@ -851,6 +853,56 @@ NOTE: some hashing methods do not accept a <code>dst</code> and will abort if a 
 <pre><code><b>fun</b> <a href="crypto_algebra.md#0x1_crypto_algebra_abort_unless_cryptography_algebra_natives_enabled">abort_unless_cryptography_algebra_natives_enabled</a>() {
     <b>if</b> (<a href="../../move-stdlib/doc/features.md#0x1_features_cryptography_algebra_enabled">features::cryptography_algebra_enabled</a>()) <b>return</b>;
     <b>abort</b>(std::error::not_implemented(0))
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_crypto_algebra_get_handle"></a>
+
+## Function `get_handle`
+
+Get the internal handle of an element.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="crypto_algebra.md#0x1_crypto_algebra_get_handle">get_handle</a>&lt;S&gt;(element: &<a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;S&gt;): u64
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="crypto_algebra.md#0x1_crypto_algebra_get_handle">get_handle</a>&lt;S&gt;(element: &<a href="crypto_algebra.md#0x1_crypto_algebra_Element">Element</a>&lt;S&gt;): u64 {
+    element.handle
+}
+</code></pre>
+
+
+
+</details>
+
+<a id="0x1_crypto_algebra_new_element"></a>
+
+## Function `new_element`
+
+Create an element from an internal handle.
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="crypto_algebra.md#0x1_crypto_algebra_new_element">new_element</a>&lt;S&gt;(handle: u64): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">crypto_algebra::Element</a>&lt;S&gt;
+</code></pre>
+
+
+
+<details>
+<summary>Implementation</summary>
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="crypto_algebra.md#0x1_crypto_algebra_new_element">new_element</a>&lt;S&gt;(handle: u64): <a href="crypto_algebra.md#0x1_crypto_algebra_Element">Element</a>&lt;S&gt; {
+    <a href="crypto_algebra.md#0x1_crypto_algebra_Element">Element</a>&lt;S&gt; { handle }
 }
 </code></pre>
 

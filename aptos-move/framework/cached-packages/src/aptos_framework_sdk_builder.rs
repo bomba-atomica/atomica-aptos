@@ -557,18 +557,6 @@ pub enum EntryFunctionCall {
         amount: u64,
     },
 
-    /// Register a new timelock with the given deadline.
-    ///
-    /// # Arguments
-    /// - `account`: The registering account (pays gas)
-    /// - `deadline_us`: Deadline timestamp in microseconds (must be in the future)
-    ///
-    /// # Events
-    /// Emits `TimelockRegistrationEvent` with the timelock_id.
-    ///
-    /// # Note
-    /// The timelock_id can be retrieved from the event or by calling `get_next_timelock_id()`
-    /// after the transaction (which returns the ID that will be assigned to the next registration).
     IbeConfigRegisterTimelock {
         deadline_us: u64,
     },
@@ -3459,18 +3447,6 @@ pub fn delegation_pool_withdraw(pool_address: AccountAddress, amount: u64) -> Tr
     ))
 }
 
-/// Register a new timelock with the given deadline.
-///
-/// # Arguments
-/// - `account`: The registering account (pays gas)
-/// - `deadline_us`: Deadline timestamp in microseconds (must be in the future)
-///
-/// # Events
-/// Emits `TimelockRegistrationEvent` with the timelock_id.
-///
-/// # Note
-/// The timelock_id can be retrieved from the event or by calling `get_next_timelock_id()`
-/// after the transaction (which returns the ID that will be assigned to the next registration).
 pub fn ibe_config_register_timelock(deadline_us: u64) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(

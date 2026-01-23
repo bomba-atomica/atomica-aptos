@@ -58,6 +58,7 @@ pub fn all_natives(
     add_natives_from_module!("create_signer", create_signer::make_all(builder));
     add_natives_from_module!("ed25519", ed25519::make_all(builder));
     add_natives_from_module!("crypto_algebra", cryptography::algebra::make_all(builder));
+    add_natives_from_module!("ibe", cryptography::algebra::make_ibe(builder));
     add_natives_from_module!("genesis", create_signer::make_all(builder));
     add_natives_from_module!("multi_ed25519", multi_ed25519::make_all(builder));
     add_natives_from_module!("bls12381", cryptography::bls12381::make_all(builder));
