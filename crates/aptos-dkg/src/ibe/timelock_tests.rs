@@ -52,7 +52,7 @@ fn test_identity_from_golden_vectors() {
         ),
     ];
     for (id, deadline, expected) in test_cases {
-        assert_eq!(hex::encode(&compute_identity(id, deadline)), expected);
+        assert_eq!(hex::encode(compute_identity(id, deadline)), expected);
     }
 }
 
@@ -388,7 +388,7 @@ fn test_multiple_timelocks() {
 #[test]
 #[should_panic(expected = "EmptyShares")]
 fn test_reconstruct_empty_shares_panics() {
-    reconstruct_ibe_dk_from_g1_shares(&vec![], &vec![], 5).unwrap();
+    reconstruct_ibe_dk_from_g1_shares(&[], &[], 5).unwrap();
 }
 
 #[test]
@@ -417,7 +417,7 @@ fn test_reconstruct_invalid_g1_point() {
 
 #[test]
 fn test_golden_vector_roundtrip_1() {
-    let shares_hex = vec![
+    let shares_hex = [
         vec!["9722f3fe074ff0467af66bbb6564aaeec41ac369dbc55a520e1197e2cabd01489fac2b5260c049e9ed26fdd872391d2d"],
         vec!["b0cc6092fc45df1b1318952c08dd2a877b5b19deb725b63cfc41c48e84da6e8f77600efe4d38aac33273a87775112a31"],
         vec!["ac20a63c6b62ed15a3424d85af25eb006795eba2172996529afbb70d29d1a57066a37ee1c98dea843fa2c998cb6b3919"],
@@ -437,7 +437,7 @@ fn test_golden_vector_roundtrip_1() {
 
 #[test]
 fn test_golden_vector_roundtrip_3() {
-    let shares_hex = vec![
+    let shares_hex = [
         vec!["8723f166aabb441baeb0df1eddfd332c3f5ec3a0b41ae92c54aee283021deb98ac79248dbabd5244bde583b553a4222b", "aff1dc2c26fcb7f48a61f27e34933e8818c3e8f3905ee9cda4956b89d343bc751ed39be795a7762a5aefe742ef192836"],
         vec!["8a96fb8faed4eedb44496140cf2a47c09a56eca0da3a61e8306d11554ca90ba06493ec1d4523cf39326451dbb67d4549"],
         vec!["aff15e922d0418a29c420f384db7524fdf52bfdb16b34710c07b38a40167711c660af07d6261a031a264b78acc63214f", "a24237a89cf507e05553e93950cac155d24496c8d7b5568d4443223826916141c1517ff43873b0fec0a03613f90bec0a"],
@@ -561,7 +561,7 @@ fn generate_timelock_golden_vectors_for_move() {
         println!(
             "public fun {}_identity(): vector<u8> {{ x\"{}\" }}",
             name,
-            hex::encode(&identity)
+            hex::encode(identity)
         );
         println!(
             "public fun {}_mpk(): vector<u8> {{ x\"{}\" }}",

@@ -1,6 +1,8 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(deprecated)]
+
 //! Generate golden test vectors for IBE (Identity-Based Encryption).
 //!
 //! This module generates cryptographic test vectors for:

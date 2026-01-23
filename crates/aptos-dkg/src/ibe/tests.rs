@@ -1,6 +1,8 @@
 // Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(deprecated)]
+
 //! Tests for the IBE module.
 
 use super::*;
