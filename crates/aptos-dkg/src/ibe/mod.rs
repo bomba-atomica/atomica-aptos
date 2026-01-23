@@ -683,5 +683,78 @@ pub fn reconstruct_ibe_dk_from_g1_shares(
     Ok(reconstructed.to_affine())
 }
 
+/// Test helper function for IBE DK reconstruction from secret shares.
+///
+/// This function is used in tests to verify DK reconstruction. It takes scalar
+/// secret shares (not G1 DK shares) and reconstructs the decryption key by:
+/// 1. Converting scalar shares to G1 DK shares using the identity
+/// 2. Calling `reconstruct_ibe_dk_from_g1_shares` for the actual reconstruction
+///
+/// **Note:** This is for testing only. Production code should use
+/// `reconstruct_ibe_dk_from_g1_shares()` directly with pre-computed G1 DK shares.
+///
+/// # Arguments
+///
+/// * `validator_indices` - Indices of participating validators (0-based)
+/// * `scalar_shares` - Nested vector of scalar secret shares per validator
+/// * `weights` - Weights for all validators (not just participating)
+/// * `total_weight` - Sum of all validator weights
+/// * `identity` - 32-byte identity hash for DK derivation
+///
+/// # Returns
+///
+/// The reconstructed IBE decryption key as a G1 affine point.
+#[cfg(any(test, feature = "fuzzing"))]
+pub fn test_reconstruct_ibe_from_secret_shares(
+    validator_indices: &[u64],
+    scalar_shares: &[Vec<Scalar>],
+    weights: &[u64],
+    total_weight: u64,
+    identity: &[u8; 32],
+) -> Result<G1Affine, IbeError> {
+    if validator_indices.len() != scalar_shares.len() {
+        return Err(IbeError::ValidatorIndicesSharesMismatch {
+            indices_len: validator_indices.len(),
+            shares_len: scalar_shares.len(),
+        });
+    }
+
+    let computed_total: u64 = weights.iter().copied().sum();
+    if total_weight != computed_total {
+        return Err(IbeError::WeightSumMismatch {
+            total_weight,
+            computed_sum: computed_total,
+        });
+    }
+
+    let mut virtual_player_ids: Vec<u64> = Vec::new();
+    let mut dk_shares: Vec<Vec<u8>> = Vec::new();
+    let h_identity = hash_to_g1(identity);
+
+    for (vi, &validator_idx) in validator_indices.iter().enumerate() {
+        let weight: u64 = weights[validator_idx as usize];
+        let shares: &[Scalar] = &scalar_shares[vi];
+
+        if shares.len() != weight as usize {
+            return Err(IbeError::ShareWeightMismatch {
+                validator_index: validator_idx,
+                shares_count: shares.len(),
+                expected_weight: weight,
+            });
+        }
+
+        for (j, scalar_share) in shares.iter().enumerate() {
+            let virtual_player_idx =
+                weights[..validator_idx as usize].iter().sum::<u64>() + j as u64;
+            virtual_player_ids.push(virtual_player_idx);
+
+            let dk_share = h_identity.mul(scalar_share).to_affine();
+            dk_shares.push(dk_share.to_compressed().to_vec());
+        }
+    }
+
+    reconstruct_ibe_dk_from_g1_shares(&virtual_player_ids, &dk_shares, total_weight)
+}
+
 #[cfg(test)]
 mod timelock_tests;

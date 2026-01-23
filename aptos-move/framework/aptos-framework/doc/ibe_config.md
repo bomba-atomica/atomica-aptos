@@ -81,7 +81,7 @@ Returns 48-byte compressed G1 (the reconstructed DK).
 -  [Function `initialize_timelock_registry`](#0x1_ibe_config_initialize_timelock_registry)
 -  [Function `register_timelock`](#0x1_ibe_config_register_timelock)
 -  [Function `submit_dk_shares`](#0x1_ibe_config_submit_dk_shares)
--  [Function `reconstruct_and_store_dk`](#0x1_ibe_config_reconstruct_and_store_dk)
+-  [Function `finalize_timelock_reveal`](#0x1_ibe_config_finalize_timelock_reveal)
 -  [Function `remove_pending_timelock_id`](#0x1_ibe_config_remove_pending_timelock_id)
 -  [Function `on_new_block`](#0x1_ibe_config_on_new_block)
 -  [Function `get_timelock`](#0x1_ibe_config_get_timelock)
@@ -765,7 +765,7 @@ Returns 48-byte compressed G1 (the reconstructed DK).
     total_weight: u64
 ) <b>acquires</b> <a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a> {
     <b>let</b> num_shares = <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_length">vector::length</a>(&shares);
-    <b>assert</b>!(num_shares == weight, <a href="ibe_config.md#0x1_ibe_config_E_INVALID_THRESHOLD">E_INVALID_THRESHOLD</a>); // Should be exactly 'weight' shares
+    <b>assert</b>!(num_shares == weight, <a href="ibe_config.md#0x1_ibe_config_E_INVALID_THRESHOLD">E_INVALID_THRESHOLD</a>);
 
     <b>let</b> registry = <b>borrow_global_mut</b>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a>&gt;(@aptos_framework);
     <b>let</b> timelock_info = <a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow_mut">table::borrow_mut</a>(&<b>mut</b> registry.timelocks, timelock_id);
@@ -785,10 +785,6 @@ Returns 48-byte compressed G1 (the reconstructed DK).
     <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> timelock_info.validator_weights, weight);
     <a href="../../aptos-stdlib/../move-stdlib/doc/vector.md#0x1_vector_push_back">vector::push_back</a>(&<b>mut</b> timelock_info.submitters, validator_address);
     timelock_info.share_count = timelock_info.share_count + weight;
-
-    <b>if</b> (timelock_info.share_count &gt;= timelock_info.reveal_threshold) {
-        <a href="ibe_config.md#0x1_ibe_config_reconstruct_and_store_dk">reconstruct_and_store_dk</a>(registry, timelock_id, total_weight);
-    };
 }
 </code></pre>
 
@@ -796,13 +792,13 @@ Returns 48-byte compressed G1 (the reconstructed DK).
 
 </details>
 
-<a id="0x1_ibe_config_reconstruct_and_store_dk"></a>
+<a id="0x1_ibe_config_finalize_timelock_reveal"></a>
 
-## Function `reconstruct_and_store_dk`
+## Function `finalize_timelock_reveal`
 
 
 
-<pre><code><b>fun</b> <a href="ibe_config.md#0x1_ibe_config_reconstruct_and_store_dk">reconstruct_and_store_dk</a>(registry: &<b>mut</b> <a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">ibe_config::TimelockRegistry</a>, timelock_id: u64, total_weight: u64)
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="ibe_config.md#0x1_ibe_config_finalize_timelock_reveal">finalize_timelock_reveal</a>(timelock_id: u64, total_weight: u64)
 </code></pre>
 
 
@@ -811,12 +807,15 @@ Returns 48-byte compressed G1 (the reconstructed DK).
 <summary>Implementation</summary>
 
 
-<pre><code><b>fun</b> <a href="ibe_config.md#0x1_ibe_config_reconstruct_and_store_dk">reconstruct_and_store_dk</a>(
-    registry: &<b>mut</b> <a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a>,
+<pre><code><b>public</b>(<b>friend</b>) <b>fun</b> <a href="ibe_config.md#0x1_ibe_config_finalize_timelock_reveal">finalize_timelock_reveal</a>(
     timelock_id: u64,
     total_weight: u64
-) {
+) <b>acquires</b> <a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a> {
+    <b>let</b> registry = <b>borrow_global_mut</b>&lt;<a href="ibe_config.md#0x1_ibe_config_TimelockRegistry">TimelockRegistry</a>&gt;(@aptos_framework);
     <b>let</b> timelock_info = <a href="../../aptos-stdlib/doc/table.md#0x1_table_borrow_mut">table::borrow_mut</a>(&<b>mut</b> registry.timelocks, timelock_id);
+
+    <b>assert</b>!(timelock_info.share_count &gt;= timelock_info.reveal_threshold, 0);
+    <b>assert</b>!(!timelock_info.is_revealed, 0);
 
     <b>let</b> reconstructed_dk = <a href="../../aptos-stdlib/doc/ibe.md#0x1_ibe_reconstruct_ibe_dk">ibe::reconstruct_ibe_dk</a>&lt;G1&gt;(
         timelock_info.validator_indices,
