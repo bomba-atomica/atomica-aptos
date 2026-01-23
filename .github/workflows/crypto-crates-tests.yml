@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - timelock-das-vpss
+      - dev-atomica
   pull_request:
     branches:
       - dev-atomica
