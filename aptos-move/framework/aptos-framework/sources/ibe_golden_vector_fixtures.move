@@ -147,4 +147,40 @@ module aptos_framework::ibe_golden_vector_fixtures {
         else vector::empty()
     }
 
+    // ============================================================
+    // TIMELOCK-SPECIFIC GOLDEN VECTORS
+    // Generated for Move unit tests
+    // Seed: 42, Timelock ID: 0, Deadline: 1000000000000
+    // ============================================================
+
+    public fun timelock_basic_identity(): vector<u8> { x"cd2f0ecdda375c87027bcbd9a8b429057062065239267bfd2496e844b81f7355" }
+    public fun timelock_basic_mpk(): vector<u8> { x"a5f920e94500f19e64ce6b009cc9af0cf25e8f18d67368e01001a1db11b4d4abc9ce285774396196b227579a98fade920268a88f16a07cbc863209930f2f079018b48c3f0fc2e56e0254860888610466b9d5fe8dc8cc7f200d06792fc2e72c72" }
+    public fun timelock_basic_threshold(): u64 { 3 }
+    public fun timelock_basic_total_weight(): u64 { 5 }
+    public fun timelock_basic_validator_weights(): vector<u64> { vector[1, 1, 1, 1, 1] }
+
+    public fun timelock_basic_dk_shares(): vector<vector<vector<u8>>> {
+        let v = vector::empty<vector<vector<u8>>>();
+        let inner = vector::empty<vector<u8>>();
+        vector::push_back(&mut inner, x"8a30970eedc611ac075723e02e9306ab78f0d737f5ee23fe49fd7981f9a874c681c2a42bda8b2359a6208b269d6ca33a");
+        vector::push_back(&mut v, inner);
+        let inner = vector::empty<vector<u8>>();
+        vector::push_back(&mut inner, x"a6bc5c88a8ba849a3eb2a29f53dc0c6997cdee468a22daa395abe609697b4dd08664dcc51a871086b041576dfe1e2943");
+        vector::push_back(&mut v, inner);
+        let inner = vector::empty<vector<u8>>();
+        vector::push_back(&mut inner, x"a9d8ef450ebd49046f720012bfc7f21da4b0ad2c03604d07b4bf9e5a2a731f59cbc0d551ab05089556a2378ea9d468df");
+        vector::push_back(&mut v, inner);
+        let inner = vector::empty<vector<u8>>();
+        vector::push_back(&mut inner, x"b6b93dfbc4b6ca108c6f82cd63a766428d7846eb60ec94620b89498815aa73d69f800c519f5035a2e5432beeee1d048c");
+        vector::push_back(&mut v, inner);
+        let inner = vector::empty<vector<u8>>();
+        vector::push_back(&mut inner, x"a7c451338310870adcce69c8e0ff971a899ec29fe623e7883360489722d667634ed0a85344824109a6c7e84c2489ed8f");
+        vector::push_back(&mut v, inner);
+        v
+    }
+
+    public fun timelock_basic_reconstructed_dk(): vector<u8> { x"88d6b41d84c6525ad295d8e883191c4888c5d4afa9e98c2020b8c3110cad05173ff47cf64083c4e180959b71907a22a2" }
+    public fun timelock_basic_ciphertext_u(): vector<u8> { x"ae4bd2ca589ec658fe5cad8333ceac2d84c41842c94e155eb58998d9e9de8aed47ad2c8c11d04164732e626efbc0c82912fac72ef817381491d45e120d2d08085c012596dccea73e40095b28b0f9ae04a168cbf52e4f22ef8c98b9e55be777d3" }
+    public fun timelock_basic_ciphertext_v(): vector<u8> { x"73caba73e17bd7178f2418382f1a2c1bb0ebdc48ee" }
+
 }

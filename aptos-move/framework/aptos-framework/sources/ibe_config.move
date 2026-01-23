@@ -223,7 +223,7 @@ module aptos_framework::ibe_config {
         total_weight: u64
     ) acquires TimelockRegistry {
         let num_shares = vector::length(&shares);
-        assert!(num_shares == weight, E_INVALID_THRESHOLD); // Should be exactly 'weight' shares
+        assert!(num_shares == weight, E_INVALID_THRESHOLD);
 
         let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
         let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
@@ -243,18 +243,17 @@ module aptos_framework::ibe_config {
         vector::push_back(&mut timelock_info.validator_weights, weight);
         vector::push_back(&mut timelock_info.submitters, validator_address);
         timelock_info.share_count = timelock_info.share_count + weight;
-
-        if (timelock_info.share_count >= timelock_info.reveal_threshold) {
-            reconstruct_and_store_dk(registry, timelock_id, total_weight);
-        };
     }
 
-    fun reconstruct_and_store_dk(
-        registry: &mut TimelockRegistry,
+    public(friend) fun finalize_timelock_reveal(
         timelock_id: u64,
         total_weight: u64
-    ) {
+    ) acquires TimelockRegistry {
+        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
         let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
+
+        assert!(timelock_info.share_count >= timelock_info.reveal_threshold, 0);
+        assert!(!timelock_info.is_revealed, 0);
 
         let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
             timelock_info.validator_indices,
@@ -428,10 +427,68 @@ module aptos_framework::ibe_config {
         vector::push_back(&mut timelock_info.validator_weights, weight);
         vector::push_back(&mut timelock_info.submitters, validator_address);
         timelock_info.share_count = timelock_info.share_count + weight;
+    }
 
-        if (timelock_info.share_count >= timelock_info.reveal_threshold) {
-            reconstruct_and_store_dk(registry, timelock_id, total_weight);
-        };
+    #[test_only]
+    public fun finalize_timelock_reveal_for_testing(
+        timelock_id: u64,
+        total_weight: u64
+    ) acquires TimelockRegistry {
+        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
+        let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
+
+        assert!(timelock_info.share_count >= timelock_info.reveal_threshold, 0);
+        assert!(!timelock_info.is_revealed, 0);
+
+        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
+            timelock_info.validator_indices,
+            timelock_info.submitted_shares,
+            timelock_info.validator_weights,
+            timelock_info.reveal_threshold,
+            total_weight,
+            timelock_info.identity
+        );
+
+        timelock_info.decryption_key = reconstructed_dk;
+        timelock_info.is_revealed = true;
+        remove_pending_timelock_id(registry, timelock_id);
+
+        let current_time = timestamp::now_microseconds();
+        event::emit_event(&mut registry.reveal_events, TimelockRevealEvent {
+            timelock_id,
+            timestamp_us: current_time,
+        });
+    }
+
+    #[test_only]
+    public fun finalize_timelock_reveal_with_threshold_for_testing(
+        timelock_id: u64,
+        threshold: u64,
+        total_weight: u64
+    ) acquires TimelockRegistry {
+        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
+        let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
+
+        assert!(!timelock_info.is_revealed, 0);
+
+        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
+            timelock_info.validator_indices,
+            timelock_info.submitted_shares,
+            timelock_info.validator_weights,
+            threshold,
+            total_weight,
+            timelock_info.identity
+        );
+
+        timelock_info.decryption_key = reconstructed_dk;
+        timelock_info.is_revealed = true;
+        remove_pending_timelock_id(registry, timelock_id);
+
+        let current_time = timestamp::now_microseconds();
+        event::emit_event(&mut registry.reveal_events, TimelockRevealEvent {
+            timelock_id,
+            timestamp_us: current_time,
+        });
     }
 
     // ================================

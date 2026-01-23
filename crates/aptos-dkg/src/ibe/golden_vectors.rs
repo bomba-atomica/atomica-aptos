@@ -229,7 +229,7 @@ fn generate_golden_vectors() {
             );
 
         assert_eq!(reconstructed_secret.s, secret);
-        use super::reconstruct_ibe_dk;
+        use super::_reconstruct_ibe_dk_reference;
 
         // Generate expected DK using high-level API
         let expected_dk = derive_decryption_key(&secret, &identity);
@@ -243,9 +243,14 @@ fn generate_golden_vectors() {
             .collect();
         let recon_indices: Vec<u64> = vec![0, 1, 2];
         let recon_weights: Vec<u64> = vec![1, 1, 1, 1, 1]; // Full weights for all 5 validators
-        let reconstructed_dk =
-            reconstruct_ibe_dk(&recon_indices, &scalar_shares, &recon_weights, 5, &identity)
-                .expect("reconstruct_ibe_dk should succeed with valid shares");
+        let reconstructed_dk = _reconstruct_ibe_dk_reference(
+            &recon_indices,
+            &scalar_shares,
+            &recon_weights,
+            5,
+            &identity,
+        )
+        .expect("reference reconstruction should succeed");
 
         // Verify reconstructed DK matches expected DK from high-level API
         assert_eq!(reconstructed_dk, expected_dk);
@@ -355,16 +360,21 @@ fn generate_golden_vectors() {
         let mpk = G2Projective::generator().mul(&secret).into();
 
         // Reconstruct DK using the nested DK shares with Lagrange interpolation
-        use super::reconstruct_ibe_dk;
+        use super::_reconstruct_ibe_dk_reference;
         let scalar_shares: Vec<Vec<Scalar>> = shares_for_recon
             .iter()
             .map(|(_, sk_shares)| sk_shares.iter().map(|sk_share| sk_share.0.s).collect())
             .collect();
         let recon_indices: Vec<u64> = vec![0, 2];
         let recon_weights: Vec<u64> = vec![1, 1, 1, 1];
-        let reconstructed_dk =
-            reconstruct_ibe_dk(&recon_indices, &scalar_shares, &recon_weights, 4, &identity)
-                .expect("reconstruct_ibe_dk should succeed with valid shares");
+        let reconstructed_dk = _reconstruct_ibe_dk_reference(
+            &recon_indices,
+            &scalar_shares,
+            &recon_weights,
+            4,
+            &identity,
+        )
+        .expect("reference reconstruction should succeed");
 
         assert_eq!(reconstructed_dk, expected_dk);
 
