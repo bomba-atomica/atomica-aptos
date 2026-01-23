@@ -27,15 +27,14 @@
 use crate::smoke_test_environment::SwarmBuilder;
 use crate::utils::get_on_chain_resource;
 use aptos_api_types::ViewRequest;
-use aptos_forge::{Swarm, SwarmExt};
+use aptos_forge::{NodeExt, Swarm, SwarmExt};
 use aptos_logger::info;
 use aptos_rest_client::Client;
-use aptos_types::account_address::AccountAddress;
 use aptos_types::dkg::DKGState;
 use aptos_types::on_chain_config::OnChainConfig;
 use aptos_types::on_chain_config::OnChainRandomnessConfig;
 use move_core_types::ident_str;
-use move_core_types::language_storage::CORE_CODE_ADDRESS;
+use move_core_types::language_storage::{ModuleId, CORE_CODE_ADDRESS};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -240,8 +239,7 @@ async fn test_e2e_complete_timelock_workflow() {
 
     let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
         aptos_types::transaction::EntryFunction::new(
-            CORE_CODE_ADDRESS,
-            ident_str!("ibe_config").to_owned(),
+            ModuleId::new(CORE_CODE_ADDRESS, ident_str!("ibe_config").to_owned()),
             ident_str!("register_timelock").to_owned(),
             vec![],
             vec![bcs::to_bytes(&deadline_us).unwrap()],
@@ -270,8 +268,11 @@ async fn test_e2e_complete_timelock_workflow() {
     );
     assert!(!timelock_info.is_revealed);
     assert_eq!(timelock_info.share_count, 0);
-    info!("✅ Timelock info verified: identity = {}, shares = {}",
-        hex::encode(&timelock_info.identity[..8])..., timelock_info.share_count);
+    info!(
+        "✅ Timelock info verified: identity = {}, shares = {}",
+        hex::encode(&timelock_info.identity[..8]),
+        timelock_info.share_count
+    );
 
     // Step 4: Simulate validator share submission
     // In production, validators would:
@@ -283,7 +284,7 @@ async fn test_e2e_complete_timelock_workflow() {
     //
     // For this test, we use the golden vector DK shares which are known to be valid.
     info!("Simulating validator DK share submission...");
-    let validator_address = swarm.validators().next().unwrap().address();
+    let validator_address = swarm.validators().next().unwrap().peer_id();
     let validator_index = 0u64;
 
     // Use a known valid G1 point as the DK share (from golden vectors)
@@ -377,8 +378,7 @@ async fn test_timelock_registry_operations() {
         let deadline_us = current_time + (i as u64) * 60_000_000; // 1 min apart
         let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
             aptos_types::transaction::EntryFunction::new(
-                CORE_CODE_ADDRESS,
-                ident_str!("ibe_config").to_owned(),
+                ModuleId::new(CORE_CODE_ADDRESS, ident_str!("ibe_config").to_owned()),
                 ident_str!("register_timelock").to_owned(),
                 vec![],
                 vec![bcs::to_bytes(&deadline_us).unwrap()],
@@ -442,12 +442,14 @@ async fn test_ibe_epoch_progression() {
         .expect("DKG should have completed session");
 
     assert_eq!(
-        dkg_session.epoch, ibe_params.epoch,
+        dkg_session.target_epoch(),
+        ibe_params.epoch,
         "DKG epoch should match IBE epoch"
     );
     info!(
         "✅ IBE epoch {} matches DKG epoch {}",
-        ibe_params.epoch, dkg_session.epoch
+        ibe_params.epoch,
+        dkg_session.target_epoch()
     );
 
     // Wait for epoch 3 and verify epoch progression
