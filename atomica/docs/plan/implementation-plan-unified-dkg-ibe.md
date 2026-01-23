@@ -57,68 +57,18 @@ This plan implements a **dual-output DKG** that produces two types of key materi
 
 ---
 
-#### Layer 2: PVSS Secret Shares (Validator Private State)
+### Key Material Taxonomy
 
-| Name                      | Symbol | Type          | Size              | Held By                  | Visibility              | On-Chain? |
-| ------------------------- | ------ | ------------- | ----------------- | ------------------------ | ----------------------- | --------- |
-| **PVSS Secret Share**     | s_i    | Vec\<Scalar\> | 32 bytes × weight | Validator i              | SECRET - off-chain only | ❌ NO     |
-| **PVSS Public Key Share** | pk_i   | Vec\<G2\>     | 96 bytes × weight | Public (from transcript) | PUBLIC                  | ❌ NO     |
+All cryptographic objects are documented in [Definitions](../definitions.md):
 
-**Relationship:**
-
-```
-pk_i[j] = s_i[j] × g₂                    (for each virtual player j)
-sum_i(Lagrange_i × s_i[0]) = MSK         (reconstruction)
-sum_i(Lagrange_i × pk_i[0]) = MPK        (verification)
-```
-
-**Lifecycle:**
-
-1. DKG creates PVSS transcript with encrypted shares
-2. Each validator decrypts their `s_i` shares using their private key
-3. PVSS transcript contains public key shares `pk_i` for verification
-
-**Security properties:**
-
-- `s_i` values MUST remain secret
-- Knowledge of threshold `t` shares allows MSK reconstruction
-- `pk_i` provides verifiability without revealing `s_i`
-
----
-
-#### Layer 3: IBE Decryption Key Shares (On-Chain Submissions)
-
-| Name         | Symbol     | Type     | Size     | Submitted By | Visibility | On-Chain? |
-| ------------ | ---------- | -------- | -------- | ------------ | ---------- | --------- |
-| **DK Share** | dk_share_i | G1 point | 48 bytes | Validator i  | PUBLIC     | ✅ YES    |
-
-**Computation (off-chain by validator):**
-
-```
-H = hash_to_G1(identity)
-dk_share_i = sum_j(s_i[j] × H) = (sum_j s_i[j]) × H
-```
-
----
-
-#### Layer 4: Reconstructed Decryption Key (Final Output)
-
-| Name               | Symbol | Type     | Size     | Created By      | Visibility             | On-Chain? |
-| ------------------ | ------ | -------- | -------- | --------------- | ---------------------- | --------- |
-| **Decryption Key** | DK     | G1 point | 48 bytes | Native function | PUBLIC after threshold | ✅ YES    |
-
-**Reconstruction:**
-
-```
-DK = sum_i(Lagrange_i(validators) × dk_share_i)
-   = MSK × H
-```
-
-**Verification:**
-
-```
-e(DK, g₂) =? e(H, MPK)
-```
+| Layer | Object                  | Type          | Visibility | On-Chain? |
+| ----- | ----------------------- | ------------- | ---------- | --------- |
+| 1     | Master Secret Key (MSK) | Scalar        | SECRET     | ❌ NO     |
+| 1     | Master Public Key (MPK) | G2 (96 bytes) | PUBLIC     | ✅ YES    |
+| 2     | Secret Shares (s_i)     | Vec\<Scalar\> | SECRET     | ❌ NO     |
+| 2     | Public Shares (pk_i)    | Vec\<G2\>     | PUBLIC     | ❌ NO     |
+| 3     | DK Shares (dk_share_i)  | G1 (48 bytes) | PUBLIC     | ✅ YES    |
+| 4     | Decryption Key (DK)     | G1 (48 bytes) | PUBLIC     | ✅ YES    |
 
 ---
 

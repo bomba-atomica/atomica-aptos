@@ -361,6 +361,82 @@ Output:  DK (G1 point)
 
 ## Change Log
 
-| Version | Date       | Description     |
-| ------- | ---------- | --------------- |
-| 1.0     | 2026-01-07 | Initial version |
+| Version | Date       | Description                 |
+| ------- | ---------- | --------------------------- |
+| 1.0     | 2026-01-07 | Initial version             |
+| 1.1     | 2026-01-22 | Added key material taxonomy |
+
+---
+
+## Key Material Taxonomy
+
+Precise definitions of all cryptographic objects in the dual-output DKG system.
+
+### Layer 1: Master Key Pair (DKG Output)
+
+| Name                  | Symbol | Type        | Size     | Created By        | Visibility              | On-Chain? |
+| --------------------- | ------ | ----------- | -------- | ----------------- | ----------------------- | --------- |
+| **Master Secret Key** | MSK    | Scalar (Fr) | 32 bytes | DKG (distributed) | SECRET - never revealed | ❌ NO     |
+| **Master Public Key** | MPK    | G2 point    | 96 bytes | DKG               | PUBLIC                  | ✅ YES    |
+
+**Relationship:** `MPK = MSK × g₂`
+
+**Lifecycle:**
+
+- MSK is created via distributed key generation (DKG)
+- MSK never exists as a single value on any machine
+- MSK is distributed as PVSS shares to validators
+- MPK is published on-chain after DKG completes
+
+---
+
+### Layer 2: PVSS Secret Shares (Validator Private State)
+
+| Name                      | Symbol | Type          | Size              | Held By                  | Visibility              | On-Chain? |
+| ------------------------- | ------ | ------------- | ----------------- | ------------------------ | ----------------------- | --------- |
+| **PVSS Secret Share**     | s_i    | Vec\<Scalar\> | 32 bytes × weight | Validator i              | SECRET - off-chain only | ❌ NO     |
+| **PVSS Public Key Share** | pk_i   | Vec\<G2\>     | 96 bytes × weight | Public (from transcript) | PUBLIC                  | ❌ NO     |
+
+**Relationship:**
+
+```
+pk_i[j] = s_i[j] × g₂                    (for each virtual player j)
+sum_i(Lagrange_i × s_i[0]) = MSK         (reconstruction)
+sum_i(Lagrange_i × pk_i[0]) = MPK        (verification)
+```
+
+---
+
+### Layer 3: IBE Decryption Key Shares (On-Chain Submissions)
+
+| Name         | Symbol     | Type     | Size     | Submitted By | Visibility | On-Chain? |
+| ------------ | ---------- | -------- | -------- | ------------ | ---------- | --------- |
+| **DK Share** | dk_share_i | G1 point | 48 bytes | Validator i  | PUBLIC     | ✅ YES    |
+
+**Computation (off-chain by validator):**
+
+```
+H = hash_to_G1(identity)
+dk_share_i = sum_j(s_i[j] × H) = (sum_j s_i[j]) × H
+```
+
+---
+
+### Layer 4: Reconstructed Decryption Key (Final Output)
+
+| Name               | Symbol | Type     | Size     | Created By      | Visibility             | On-Chain? |
+| ------------------ | ------ | -------- | -------- | --------------- | ---------------------- | --------- |
+| **Decryption Key** | DK     | G1 point | 48 bytes | Native function | PUBLIC after threshold | ✅ YES    |
+
+**Reconstruction:**
+
+```
+DK = sum_i(Lagrange_i(validators) × dk_share_i)
+   = MSK × H
+```
+
+**Verification:**
+
+```
+e(DK, g₂) =? e(H, MPK)
+```

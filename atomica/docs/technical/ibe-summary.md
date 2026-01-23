@@ -5,6 +5,21 @@
 
 ---
 
+## Key Material Taxonomy
+
+| Layer | Object            | Symbol     | Type              | Visibility | On-Chain? |
+| ----- | ----------------- | ---------- | ----------------- | ---------- | --------- |
+| 1     | Master Secret Key | MSK        | Scalar (32 bytes) | SECRET     | ❌ NO     |
+| 1     | Master Public Key | MPK        | G2 (96 bytes)     | PUBLIC     | ✅ YES    |
+| 2     | Secret Shares     | s_i        | Vec\<Scalar\>     | SECRET     | ❌ NO     |
+| 2     | Public Shares     | pk_i       | Vec\<G2\>         | PUBLIC     | ❌ NO     |
+| 3     | DK Shares         | dk_share_i | G1 (48 bytes)     | PUBLIC     | ✅ YES    |
+| 4     | Decryption Key    | DK         | G1 (48 bytes)     | PUBLIC     | ✅ YES    |
+
+See [Definitions](../definitions.md) for full taxonomy.
+
+---
+
 ## Quick Reference
 
 | Component           | Status                 | Location                            |
