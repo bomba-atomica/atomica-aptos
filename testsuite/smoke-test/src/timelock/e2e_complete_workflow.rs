@@ -102,6 +102,7 @@ async fn get_timelock_info(rest_client: &Client, timelock_id: u64) -> Option<Tim
     }
 }
 
+#[allow(dead_code)]
 async fn is_revealed(rest_client: &Client, timelock_id: u64) -> bool {
     let response = rest_client
         .view(
@@ -119,6 +120,7 @@ async fn is_revealed(rest_client: &Client, timelock_id: u64) -> bool {
     }
 }
 
+#[allow(dead_code)]
 async fn get_decryption_key(rest_client: &Client, timelock_id: u64) -> Option<Vec<u8>> {
     let response = rest_client
         .view(
@@ -229,13 +231,13 @@ async fn test_e2e_complete_timelock_workflow() {
         ibe_params.epoch
     );
 
-    // Step 2: Register a timelock with deadline in the past (for immediate reveal testing)
+    // Step 2: Register a timelock with deadline in the future
     info!("Registering timelock...");
     let current_time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_micros() as u64;
-    let deadline_us = current_time.saturating_sub(1_000_000); // 1 second in the past
+    let deadline_us = current_time + 10_000_000; // 10 seconds in the future
 
     let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
         aptos_types::transaction::EntryFunction::new(
@@ -253,6 +255,10 @@ async fn test_e2e_complete_timelock_workflow() {
         "✅ Timelock {} registered with deadline {}",
         timelock_id, deadline_us
     );
+
+    // Wait for deadline to pass (at least 10s)
+    info!("Waiting for deadline to pass...");
+    tokio::time::sleep(Duration::from_secs(12)).await;
 
     // Step 3: Verify timelock info
     let timelock_info = get_timelock_info(&rest_client, timelock_id)
@@ -284,8 +290,6 @@ async fn test_e2e_complete_timelock_workflow() {
     //
     // For this test, we use the golden vector DK shares which are known to be valid.
     info!("Simulating validator DK share submission...");
-    let validator_address = swarm.validators().next().unwrap().peer_id();
-    let validator_index = 0u64;
 
     // Use a known valid G1 point as the DK share (from golden vectors)
     // In production, this would be computed as s_i * H(identity)
@@ -375,7 +379,7 @@ async fn test_timelock_registry_operations() {
 
     // Register multiple timelocks with different deadlines
     for i in 0..3 {
-        let deadline_us = current_time + (i as u64) * 60_000_000; // 1 min apart
+        let deadline_us = current_time + (i as u64 + 1) * 60_000_000; // start 1 min in future, 1 min apart
         let payload = aptos_types::transaction::TransactionPayload::EntryFunction(
             aptos_types::transaction::EntryFunction::new(
                 ModuleId::new(CORE_CODE_ADDRESS, ident_str!("ibe_config").to_owned()),
