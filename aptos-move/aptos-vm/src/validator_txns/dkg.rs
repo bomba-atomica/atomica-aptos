@@ -52,7 +52,13 @@ enum ExecutionFailure {
 fn extract_mpk_from_transcript(transcript_bytes: &[u8]) -> Result<Vec<u8>, ExecutionFailure> {
     let transcript: Transcripts = bcs::from_bytes(transcript_bytes)
         .map_err(|_| Expected(ExpectedFailure::TranscriptDeserializationFailed))?;
-    Ok(transcript.main.get_dealt_public_key().to_bytes().to_vec())
+
+    // Extract MPK from scalar transcript (G2 point, 96 bytes) for IBE
+    // The main transcript contains G1 points (48 bytes) for randomness
+    match transcript.scalar {
+        Some(scalar_trx) => Ok(scalar_trx.get_dealt_public_key().to_bytes().to_vec()),
+        None => Ok(vec![]),  // No scalar transcript means no IBE support
+    }
 }
 
 impl AptosVM {
