@@ -1,5 +1,20 @@
 name: Test Docker Image
 
+# PURPOSE:
+# This workflow validates that the current code builds into a working docker image
+# that can successfully run a blockchain network. It builds binaries from source
+# (not pre-built) to ensure code changes don't break docker functionality.
+#
+# WHAT IT DOES:
+# 1. Builds aptos-node and aptos CLI from current source code
+# 2. Creates a docker image with these fresh binaries
+# 3. Runs automated testnet tests to verify the network works
+# 4. Fails if the network cannot produce blocks
+#
+# WHY BUILD FROM SOURCE:
+# Pre-built binaries would test old code, not the current changes.
+# Building from source ensures we catch issues before merging.
+
 on:
   pull_request:
     paths:
@@ -8,7 +23,6 @@ on:
       - "**/Cargo.lock"
       - "atomica/docker/**"
       - ".github/workflows/test-docker-image.yml"
-      - ".github/workflows/build-aptos-binary.yml"
   push:
     branches:
       - dev-atomica
@@ -18,13 +32,14 @@ on:
       - "**/Cargo.lock"
       - "atomica/docker/**"
       - ".github/workflows/test-docker-image.yml"
-      - ".github/workflows/build-aptos-binary.yml"
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Reduce memory pressure during builds
   CARGO_BUILD_JOBS: 2
+  # Disable incremental compilation (not useful in CI and uses extra disk space)
   CARGO_INCREMENTAL: 0
 
 jobs:
@@ -92,24 +107,48 @@ jobs:
           workspaces: "."
           add-job-id-key: false
 
-      - name: Build aptos-node
+      - name: Build aptos-node from source
         run: |
-          echo "Building aptos-node with testing features..."
+          echo "Building aptos-node with testing features from CURRENT SOURCE CODE..."
+          echo "This ensures we test the actual code changes, not pre-built binaries."
+          echo "Memory before build:"
+          free -h
+
           cargo build --release --bin aptos-node --features testing
 
-      - name: Build aptos CLI
+          echo "Memory after build:"
+          free -h
+
+      - name: Verify aptos-node binary
         run: |
-          echo "Building aptos CLI..."
+          if [ -f target/release/aptos-node ]; then
+            echo "✓ aptos-node binary built successfully"
+            ./target/release/aptos-node --version
+            ls -lh target/release/aptos-node
+          else
+            echo "✗ Error: aptos-node binary not found"
+            exit 1
+          fi
+
+      - name: Build aptos CLI from source
+        run: |
+          echo "Building aptos CLI from CURRENT SOURCE CODE..."
           cargo build --release --package aptos
 
-      - name: Verify binaries
+      - name: Verify aptos CLI binary
         run: |
-          ./target/release/aptos-node --version
-          ./target/release/aptos --version
+          if [ -f target/release/aptos ]; then
+            echo "✓ aptos CLI binary built successfully"
+            ./target/release/aptos --version
+            ls -lh target/release/aptos
+          else
+            echo "✗ Error: aptos CLI binary not found"
+            exit 1
+          fi
 
       - name: Build Move framework bundle
         run: |
-          echo "Building Move framework release bundle (.mrb)..."
+          echo "Building Move framework release bundle (.mrb) from CURRENT SOURCE CODE..."
           cargo run --release --package aptos-framework -- release
 
           # Compute hash of Move source files for versioning
@@ -139,6 +178,7 @@ jobs:
           sha256sum framework-${{ env.framework_hash }}.mrb > framework-${{ env.framework_hash }}.mrb.sha256
           cd ../../..
 
+          echo "✓ Docker build artifacts prepared"
           ls -lh atomica/docker/binaries/
 
       - name: Set up Docker Buildx
@@ -146,6 +186,9 @@ jobs:
 
       - name: Build Docker image
         run: |
+          echo "Building docker image with binaries compiled from CURRENT SOURCE CODE"
+          echo "This image is NOT published - it's only used for testing"
+
           docker build \
             --build-arg GIT_SHA=${{ steps.git-commit.outputs.sha }} \
             --build-arg BINARY_RELEASE_TAG=binary-${{ steps.git-commit.outputs.sha }} \
@@ -155,7 +198,7 @@ jobs:
             -t test-validator:latest \
             .
 
-          echo "Docker image built successfully"
+          echo "✓ Docker image built successfully (local only, not published)"
           docker images | grep test-validator
 
       - name: Verify Docker image
@@ -174,6 +217,7 @@ jobs:
           echo "$HOME/.bun/bin" >> $GITHUB_PATH
 
           # Install aptos CLI on host (needed for genesis generation)
+          # Using the freshly built binary from source
           sudo cp target/release/aptos /usr/local/bin/aptos
           sudo chmod +x /usr/local/bin/aptos
           aptos --version
@@ -186,11 +230,19 @@ jobs:
         run: |
           cd atomica/docker/tests
 
+          echo "Running automated testnet tests on docker image built from CURRENT SOURCE CODE"
+          echo "This verifies the image can successfully run a blockchain network"
+
           # Set the test image to use the locally built image
           export IMAGE_NAME=test-validator:latest
           export LOG_DIR=./logs/ci-test
 
-          # Run the test
+          # Run the test - this will:
+          # 1. Generate genesis config
+          # 2. Start 4 validator nodes in docker
+          # 3. Wait for network to become healthy
+          # 4. Verify blocks are being produced
+          # 5. Fail if network cannot make progress
           bun run test-network.ts
 
       - name: Upload test logs on failure
