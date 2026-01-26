@@ -57,7 +57,7 @@ fn extract_mpk_from_transcript(transcript_bytes: &[u8]) -> Result<Vec<u8>, Execu
     // The main transcript contains G1 points (48 bytes) for randomness
     match transcript.scalar {
         Some(scalar_trx) => Ok(scalar_trx.get_dealt_public_key().to_bytes().to_vec()),
-        None => Ok(vec![]),  // No scalar transcript means no IBE support
+        None => Ok(vec![]), // No scalar transcript means no IBE support
     }
 }
 
