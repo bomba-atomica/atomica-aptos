@@ -112,7 +112,9 @@ FRAMEWORK_PATHS=(
 )
 
 FRAMEWORK_FOUND=false
-for path in "${FRAMEWORK_PATHS[@]}"; do
+
+# First check the binaries directory with glob (CI copies it here with a hash in the name)
+for path in ../../binaries/framework-*.mrb; do
     if [ -f "$path" ]; then
         echo "  Found framework at: $path"
         cp "$path" genesis-repo/framework.mrb
@@ -120,6 +122,18 @@ for path in "${FRAMEWORK_PATHS[@]}"; do
         break
     fi
 done
+
+# If not found, check other paths
+if [ "$FRAMEWORK_FOUND" = false ]; then
+    for path in "${FRAMEWORK_PATHS[@]}"; do
+        if [ -f "$path" ]; then
+            echo "  Found framework at: $path"
+            cp "$path" genesis-repo/framework.mrb
+            FRAMEWORK_FOUND=true
+            break
+        fi
+    done
+fi
 
 if [ "$FRAMEWORK_FOUND" = false ]; then
     # Try to extract from docker image
