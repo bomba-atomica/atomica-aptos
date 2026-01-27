@@ -122,8 +122,9 @@ done
 
 if [ "$FRAMEWORK_FOUND" = false ]; then
     # Try to extract from docker image
-    echo "  Extracting framework from docker image..."
-    if docker run --rm ghcr.io/bomba-atomica/atomica-aptos/validator:latest cat /opt/aptos/framework/head.mrb > genesis-repo/framework.mrb 2>/dev/null; then
+    DOCKER_IMAGE="${IMAGE_NAME:-ghcr.io/bomba-atomica/atomica-aptos/validator:latest}"
+    echo "  Extracting framework from docker image: $DOCKER_IMAGE"
+    if docker run --rm "$DOCKER_IMAGE" cat /opt/aptos/framework/head.mrb > genesis-repo/framework.mrb 2>/dev/null; then
         FRAMEWORK_FOUND=true
         echo "  Extracted framework from docker image"
     fi
