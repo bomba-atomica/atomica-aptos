@@ -103,6 +103,7 @@ cp layout.yaml genesis-repo/
 # Use freshly built framework with IBE support
 FRAMEWORK_PATHS=(
     "$(pwd)/framework-latest.mrb"
+    "../../../../head.mrb"  # Repository root (CI builds it here)
     "../../aptos-move/framework/releases/head.mrb"
     "$HOME/atomica/source/move-framework-fixtures/head.mrb"
     "/opt/aptos/framework/head.mrb"
