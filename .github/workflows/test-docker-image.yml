@@ -226,6 +226,15 @@ jobs:
           cd atomica/docker/tests
           bun install
 
+      - name: Verify binaries directory before test
+        run: |
+          echo "=== Verifying binaries directory ==="
+          echo "Listing atomica/docker/binaries:"
+          ls -lah atomica/docker/binaries/ || echo "ERROR: binaries directory does not exist"
+          echo ""
+          echo "Checking for framework files:"
+          find atomica/docker/binaries -name "framework-*.mrb" -ls || echo "No framework files found"
+
       - name: Run docker testnet tests
         run: |
           cd atomica/docker/tests
