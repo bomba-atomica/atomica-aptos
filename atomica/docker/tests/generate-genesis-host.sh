@@ -99,6 +99,17 @@ done
 echo "Step 5/7: Setting up genesis repository..."
 cp layout.yaml genesis-repo/
 
+# Debug: show current directory and check binaries location
+echo "  DEBUG: Current directory: $(pwd)"
+echo "  DEBUG: Checking for binaries directory..."
+if [ -d "../../binaries" ]; then
+    echo "  DEBUG: Binaries directory exists"
+    echo "  DEBUG: Contents:"
+    ls -lh ../../binaries/ || echo "  DEBUG: Could not list binaries directory"
+else
+    echo "  DEBUG: Binaries directory does NOT exist at ../../binaries"
+fi
+
 # Find framework.mrb - check multiple locations
 # Use freshly built framework with IBE support
 FRAMEWORK_PATHS=(
@@ -114,12 +125,16 @@ FRAMEWORK_PATHS=(
 FRAMEWORK_FOUND=false
 
 # First check the binaries directory with glob (CI copies it here with a hash in the name)
+echo "  Checking binaries directory: ../../binaries/framework-*.mrb"
 for path in ../../binaries/framework-*.mrb; do
+    echo "  DEBUG: Glob expanded to: $path"
     if [ -f "$path" ]; then
         echo "  Found framework at: $path"
         cp "$path" genesis-repo/framework.mrb
         FRAMEWORK_FOUND=true
         break
+    else
+        echo "  DEBUG: File does not exist: $path"
     fi
 done
 
