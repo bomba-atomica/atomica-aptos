@@ -90,6 +90,8 @@ jobs:
           cache-all-crates: true
           workspaces: "."
           add-job-id-key: false
+          # Always save cache to update with newly built artifacts
+          save-if: true
 
       - name: Run Clippy
         run: |

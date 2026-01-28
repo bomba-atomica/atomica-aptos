@@ -106,6 +106,7 @@ jobs:
           cache-all-crates: true
           workspaces: "."
           add-job-id-key: false
+          save-if: true
 
       - name: Build aptos-node from source
         run: |
