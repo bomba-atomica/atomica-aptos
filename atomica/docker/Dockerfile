@@ -50,7 +50,10 @@ COPY --chmod=755 atomica/docker/binaries/aptos-${GIT_SHA} /usr/local/bin/aptos
 
 # Copy Move framework bundle
 # The framework.mrb file contains the compiled Move modules for genesis generation
-COPY atomica/docker/binaries/framework-*.mrb /opt/aptos/framework/head.mrb
+# Create the directory first, then copy with a shell to handle the glob
+RUN mkdir -p /opt/aptos/framework
+COPY atomica/docker/binaries/framework-*.mrb /opt/aptos/framework/
+RUN mv /opt/aptos/framework/framework-*.mrb /opt/aptos/framework/head.mrb
 
 # Verify the binaries work
 RUN /usr/local/bin/aptos-node --version && \

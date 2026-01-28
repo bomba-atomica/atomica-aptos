@@ -1,0 +1,279 @@
+name: Test Docker Image
+
+# PURPOSE:
+# This workflow validates that the current code builds into a working docker image
+# that can successfully run a blockchain network. It builds binaries from source
+# (not pre-built) to ensure code changes don't break docker functionality.
+#
+# WHAT IT DOES:
+# 1. Builds aptos-node and aptos CLI from current source code
+# 2. Creates a docker image with these fresh binaries
+# 3. Runs automated testnet tests to verify the network works
+# 4. Fails if the network cannot produce blocks
+#
+# WHY BUILD FROM SOURCE:
+# Pre-built binaries would test old code, not the current changes.
+# Building from source ensures we catch issues before merging.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "atomica/docker/**"
+      - ".github/workflows/test-docker-image.yml"
+  push:
+    branches:
+      - dev-atomica
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "atomica/docker/**"
+      - ".github/workflows/test-docker-image.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Reduce memory pressure during builds
+  CARGO_BUILD_JOBS: 2
+  # Disable incremental compilation (not useful in CI and uses extra disk space)
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  test-docker-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get git commit
+        id: git-commit
+        run: |
+          GIT_SHA=$(git rev-parse --short HEAD)
+          GIT_SHA_FULL=$(git rev-parse HEAD)
+          echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
+          echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
+          echo "Git commit: $GIT_SHA (full: $GIT_SHA_FULL)"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.75.0
+
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+
+          # Remove unnecessary software to free up ~30GB
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            clang \
+            libssl-dev \
+            pkg-config \
+            libpq-dev \
+            lld \
+            libudev-dev \
+            libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "aptos-build"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+          save-if: true
+
+      - name: Build aptos-node from source
+        run: |
+          echo "Building aptos-node with testing features from CURRENT SOURCE CODE..."
+          echo "This ensures we test the actual code changes, not pre-built binaries."
+          echo "Memory before build:"
+          free -h
+
+          cargo build --release --bin aptos-node --features testing
+
+          echo "Memory after build:"
+          free -h
+
+      - name: Verify aptos-node binary
+        run: |
+          if [ -f target/release/aptos-node ]; then
+            echo "✓ aptos-node binary built successfully"
+            ./target/release/aptos-node --version
+            ls -lh target/release/aptos-node
+          else
+            echo "✗ Error: aptos-node binary not found"
+            exit 1
+          fi
+
+      - name: Build aptos CLI from source
+        run: |
+          echo "Building aptos CLI from CURRENT SOURCE CODE..."
+          cargo build --release --package aptos
+
+      - name: Verify aptos CLI binary
+        run: |
+          if [ -f target/release/aptos ]; then
+            echo "✓ aptos CLI binary built successfully"
+            ./target/release/aptos --version
+            ls -lh target/release/aptos
+          else
+            echo "✗ Error: aptos CLI binary not found"
+            exit 1
+          fi
+
+      - name: Build Move framework bundle
+        run: |
+          echo "Building Move framework release bundle (.mrb) from CURRENT SOURCE CODE..."
+          cargo run --release --package aptos-framework -- release
+
+          # Compute hash of Move source files for versioning
+          FRAMEWORK_HASH=$(find aptos-move/framework -name "*.move" -type f -exec sha256sum {} \; | sort | sha256sum | cut -c1-16)
+          echo "framework_hash=$FRAMEWORK_HASH" >> $GITHUB_ENV
+          echo "Move framework hash: $FRAMEWORK_HASH"
+
+          ls -lh head.mrb
+
+      - name: Prepare docker build artifacts
+        run: |
+          mkdir -p atomica/docker/binaries
+
+          # Copy binaries with commit hash names (required by Dockerfile)
+          cp target/release/aptos-node atomica/docker/binaries/aptos-node-${{ steps.git-commit.outputs.sha }}
+          cp target/release/aptos atomica/docker/binaries/aptos-${{ steps.git-commit.outputs.sha }}
+          chmod +x atomica/docker/binaries/aptos-node-${{ steps.git-commit.outputs.sha }}
+          chmod +x atomica/docker/binaries/aptos-${{ steps.git-commit.outputs.sha }}
+
+          # Copy framework bundle
+          cp head.mrb atomica/docker/binaries/framework-${{ env.framework_hash }}.mrb
+
+          # Create checksums
+          cd atomica/docker/binaries
+          sha256sum aptos-node-${{ steps.git-commit.outputs.sha }} > aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
+          sha256sum aptos-${{ steps.git-commit.outputs.sha }} > aptos-${{ steps.git-commit.outputs.sha }}.sha256
+          sha256sum framework-${{ env.framework_hash }}.mrb > framework-${{ env.framework_hash }}.mrb.sha256
+          cd ../../..
+
+          echo "✓ Docker build artifacts prepared"
+          ls -lh atomica/docker/binaries/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          echo "Building docker image with binaries compiled from CURRENT SOURCE CODE"
+          echo "This image is NOT published - it's only used for testing"
+
+          docker build \
+            --build-arg GIT_SHA=${{ steps.git-commit.outputs.sha }} \
+            --build-arg BINARY_RELEASE_TAG=binary-${{ steps.git-commit.outputs.sha }} \
+            --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+            -f atomica/docker/Dockerfile \
+            -t test-validator:${{ steps.git-commit.outputs.sha }} \
+            -t test-validator:latest \
+            .
+
+          echo "✓ Docker image built successfully (local only, not published)"
+          docker images | grep test-validator
+
+      - name: Verify Docker image
+        run: |
+          echo "Testing aptos-node binary in container:"
+          docker run --rm test-validator:latest --version
+
+          echo "Testing aptos CLI binary in container:"
+          docker run --rm --entrypoint /usr/local/bin/aptos test-validator:latest --version
+
+      - name: Install test dependencies
+        run: |
+          # Install bun for running tests
+          curl -fsSL https://bun.sh/install | bash
+          export PATH="$HOME/.bun/bin:$PATH"
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+
+          # Install aptos CLI on host (needed for genesis generation)
+          # Using the freshly built binary from source
+          sudo cp target/release/aptos /usr/local/bin/aptos
+          sudo chmod +x /usr/local/bin/aptos
+          aptos --version
+
+          # Install test dependencies
+          cd atomica/docker/tests
+          bun install
+
+      - name: Verify binaries directory before test
+        run: |
+          echo "=== Verifying binaries directory ==="
+          echo "Listing atomica/docker/binaries:"
+          ls -lah atomica/docker/binaries/ || echo "ERROR: binaries directory does not exist"
+          echo ""
+          echo "Checking for framework files:"
+          find atomica/docker/binaries -name "framework-*.mrb" -ls || echo "No framework files found"
+
+      - name: Run docker testnet tests
+        run: |
+          cd atomica/docker/tests
+
+          echo "Running automated testnet tests on docker image built from CURRENT SOURCE CODE"
+          echo "This verifies the image can successfully run a blockchain network"
+
+          # Set the test image to use the locally built image
+          export IMAGE_NAME=test-validator:latest
+          export LOG_DIR=./logs/ci-test
+
+          # Run the test - this will:
+          # 1. Generate genesis config
+          # 2. Start 4 validator nodes in docker
+          # 3. Wait for network to become healthy
+          # 4. Verify blocks are being produced
+          # 5. Fail if network cannot make progress
+          bun run test-network.ts
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-test-logs-${{ steps.git-commit.outputs.sha }}
+          path: atomica/docker/tests/logs/
+          retention-days: 7
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "## Docker Image Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f atomica/docker/tests/logs/ci-test/test-results.json ]; then
+            echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat atomica/docker/tests/logs/ci-test/test-results.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Test results file not found" >> $GITHUB_STEP_SUMMARY
+          fi

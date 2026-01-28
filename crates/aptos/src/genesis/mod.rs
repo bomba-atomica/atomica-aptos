@@ -34,7 +34,7 @@ use aptos_genesis::{
 use aptos_logger::info;
 use aptos_types::{
     account_address::{AccountAddress, AccountAddressWithChecks},
-    on_chain_config::{OnChainConsensusConfig, OnChainExecutionConfig},
+    on_chain_config::{OnChainConsensusConfig, OnChainExecutionConfig, OnChainRandomnessConfig},
 };
 use aptos_vm_genesis::{default_gas_schedule, AccountBalance, EmployeePool};
 use async_trait::async_trait;
@@ -258,7 +258,14 @@ pub fn fetch_mainnet_genesis_info(git_options: GitOptions) -> CliTypedResult<Mai
             execution_config: OnChainExecutionConfig::default_for_genesis(),
             gas_schedule: default_gas_schedule(),
             initial_features_override: None,
-            randomness_config_override: None,
+            randomness_config_override: layout.randomness_config.as_ref().and_then(|s| {
+                match s.as_str() {
+                    "Off" => Some(OnChainRandomnessConfig::Off),
+                    "V1" => Some(OnChainRandomnessConfig::default_for_genesis()),
+                    "V2" => Some(OnChainRandomnessConfig::default_enabled()),
+                    _ => None,
+                }
+            }),
             jwk_consensus_config_override: None,
             initial_jwks: vec![],
             keyless_groth16_vk: None,
@@ -303,7 +310,14 @@ pub fn fetch_genesis_info(git_options: GitOptions) -> CliTypedResult<GenesisInfo
             execution_config: layout.on_chain_execution_config,
             gas_schedule: default_gas_schedule(),
             initial_features_override: None,
-            randomness_config_override: None,
+            randomness_config_override: layout.randomness_config.as_ref().and_then(|s| {
+                match s.as_str() {
+                    "Off" => Some(OnChainRandomnessConfig::Off),
+                    "V1" => Some(OnChainRandomnessConfig::default_for_genesis()),
+                    "V2" => Some(OnChainRandomnessConfig::default_enabled()),
+                    _ => None,
+                }
+            }),
             jwk_consensus_config_override: layout.jwk_consensus_config_override.clone(),
             initial_jwks: layout.initial_jwks.clone(),
             keyless_groth16_vk: layout.keyless_groth16_vk_override.clone(),

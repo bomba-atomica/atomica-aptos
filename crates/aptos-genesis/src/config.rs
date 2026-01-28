@@ -87,6 +87,12 @@ pub struct Layout {
     /// Keyless Groth16 verification key to install in genesis.
     #[serde(default)]
     pub keyless_groth16_vk_override: Option<Groth16VerificationKey>,
+
+    /// Randomness config to enable DKG and on-chain randomness.
+    /// Valid values: "Off", "V1", "V2" (default: "Off")
+    /// "V2" enables dual-output DKG (randomness + IBE).
+    #[serde(default)]
+    pub randomness_config: Option<String>,
 }
 
 impl Layout {
@@ -129,6 +135,7 @@ impl Default for Layout {
             jwk_consensus_config_override: None,
             initial_jwks: vec![],
             keyless_groth16_vk_override: None,
+            randomness_config: None,
         }
     }
 }

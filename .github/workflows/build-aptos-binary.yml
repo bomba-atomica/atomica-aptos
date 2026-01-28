@@ -108,6 +108,8 @@ jobs:
           # Keep environment hash so cache saves on each build (GitHub Actions doesn't save on exact cache hit)
           # rust-cache automatically uses restore-keys to find the closest previous cache
           add-job-id-key: false
+          # Always save cache to update with newly built artifacts
+          save-if: true
 
       - name: Build aptos-node
         run: |

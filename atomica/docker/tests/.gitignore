@@ -1,0 +1,20 @@
+# Generated artifacts
+genesis-workspace/
+genesis-artifacts/
+validators/
+logs/
+
+# Dependencies
+node_modules/
+package-lock.json
+bun.lockb
+
+# TypeScript build
+dist/
+*.js
+*.d.ts
+!test-*.sh
+
+# Environment
+.env
+.env.local
