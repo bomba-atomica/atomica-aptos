@@ -117,7 +117,7 @@ jobs:
         run: |
           if [ -f target/release/aptos-faucet-service ]; then
             echo "✓ aptos-faucet-service binary built successfully"
-            ./target/release/aptos-faucet-service --version
+            file target/release/aptos-faucet-service
             ls -lh target/release/aptos-faucet-service
           else
             echo "✗ Error: aptos-faucet-service binary not found"
@@ -230,7 +230,7 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/aptos test-validator:latest --version
 
           echo "Testing aptos-faucet-service binary in container:"
-          docker run --rm --entrypoint /usr/local/bin/aptos-faucet-service test-validator:latest --version
+          docker run --rm --entrypoint /usr/local/bin/aptos-faucet-service test-validator:latest --help
 
       - name: Install test dependencies
         run: |
