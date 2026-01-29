@@ -86,22 +86,27 @@ jobs:
         run: |
           RELEASE_TAG="${{ steps.release-info.outputs.tag }}"
           BINARY_NAME="aptos-node-${{ steps.release-info.outputs.sha }}"
+          FAUCET_BINARY_NAME="aptos-faucet-service-${{ steps.release-info.outputs.sha }}"
 
-          echo "Checking for binary '$BINARY_NAME' in release '$RELEASE_TAG'"
+          echo "Checking for binary '$BINARY_NAME' and '$FAUCET_BINARY_NAME' in release '$RELEASE_TAG'"
 
           # Use GitHub API to check if asset exists in release
           ASSET_CHECK=$(gh api "repos/${{ github.repository }}/releases/tags/${RELEASE_TAG}" \
-            --jq ".assets[] | select(.name == \"${BINARY_NAME}\") | .name" || echo "")
+            --jq ".assets[] | select(.name == \"${BINARY_NAME}\" or .name == \"${FAUCET_BINARY_NAME}\") | .name" || echo "")
 
-          if [ -n "$ASSET_CHECK" ]; then
+          # Should find at least 2 binaries (node and faucet)
+          BINARY_COUNT=$(echo "$ASSET_CHECK" | wc -l)
+
+          if [ "$BINARY_COUNT" -ge 2 ]; then
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "✓ Binary release found: $RELEASE_TAG"
-            echo "✓ Asset: $BINARY_NAME"
+            echo "✓ Assets found: $BINARY_COUNT"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "✗ Binary release not found"
+            echo "✗ Binary release missing required assets"
             echo "  Release: $RELEASE_TAG"
-            echo "  Expected asset: $BINARY_NAME"
+            echo "  Expected assets: $BINARY_NAME, $FAUCET_BINARY_NAME"
+            echo "  Found: $ASSET_CHECK"
           fi
 
       - name: Fail if binary not found
@@ -137,6 +142,8 @@ jobs:
             --pattern "aptos-node-${GIT_SHA}.sha256" \
             --pattern "aptos-${GIT_SHA}" \
             --pattern "aptos-${GIT_SHA}.sha256" \
+            --pattern "aptos-faucet-service-${GIT_SHA}" \
+            --pattern "aptos-faucet-service-${GIT_SHA}.sha256" \
             --pattern "framework-*.mrb" \
             --pattern "framework-*.mrb.sha256" \
             --dir ./atomica/docker/binaries
@@ -145,11 +152,13 @@ jobs:
           cd ./atomica/docker/binaries
           sha256sum -c "aptos-node-${GIT_SHA}.sha256"
           sha256sum -c "aptos-${GIT_SHA}.sha256"
+          sha256sum -c "aptos-faucet-service-${GIT_SHA}.sha256"
           sha256sum -c framework-*.mrb.sha256
 
           # Make binaries executable
           chmod +x "aptos-node-${GIT_SHA}"
           chmod +x "aptos-${GIT_SHA}"
+          chmod +x "aptos-faucet-service-${GIT_SHA}"
 
           echo "✓ Binaries and framework downloaded and verified"
           ls -lh
