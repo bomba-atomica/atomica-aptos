@@ -6,7 +6,7 @@ name: Test Docker Image
 # (not pre-built) to ensure code changes don't break docker functionality.
 #
 # WHAT IT DOES:
-# 1. Builds aptos-node and aptos CLI from current source code
+# 1. Builds all binaries from current source code (aptos-node, aptos CLI, aptos-faucet-service)
 # 2. Creates a docker image with these fresh binaries
 # 3. Runs automated testnet tests to verify the network works
 # 4. Fails if the network cannot produce blocks
@@ -147,6 +147,22 @@ jobs:
             exit 1
           fi
 
+      - name: Build aptos-faucet-service from source
+        run: |
+          echo "Building aptos-faucet-service from CURRENT SOURCE CODE..."
+          cargo build --release --package aptos-faucet-service
+
+      - name: Verify aptos-faucet-service binary
+        run: |
+          if [ -f target/release/aptos-faucet-service ]; then
+            echo "✓ aptos-faucet-service binary built successfully"
+            ./target/release/aptos-faucet-service --version
+            ls -lh target/release/aptos-faucet-service
+          else
+            echo "✗ Error: aptos-faucet-service binary not found"
+            exit 1
+          fi
+
       - name: Build Move framework bundle
         run: |
           echo "Building Move framework release bundle (.mrb) from CURRENT SOURCE CODE..."
@@ -166,8 +182,10 @@ jobs:
           # Copy binaries with commit hash names (required by Dockerfile)
           cp target/release/aptos-node atomica/docker/binaries/aptos-node-${{ steps.git-commit.outputs.sha }}
           cp target/release/aptos atomica/docker/binaries/aptos-${{ steps.git-commit.outputs.sha }}
+          cp target/release/aptos-faucet-service atomica/docker/binaries/aptos-faucet-service-${{ steps.git-commit.outputs.sha }}
           chmod +x atomica/docker/binaries/aptos-node-${{ steps.git-commit.outputs.sha }}
           chmod +x atomica/docker/binaries/aptos-${{ steps.git-commit.outputs.sha }}
+          chmod +x atomica/docker/binaries/aptos-faucet-service-${{ steps.git-commit.outputs.sha }}
 
           # Copy framework bundle
           cp head.mrb atomica/docker/binaries/framework-${{ env.framework_hash }}.mrb
@@ -176,6 +194,7 @@ jobs:
           cd atomica/docker/binaries
           sha256sum aptos-node-${{ steps.git-commit.outputs.sha }} > aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
           sha256sum aptos-${{ steps.git-commit.outputs.sha }} > aptos-${{ steps.git-commit.outputs.sha }}.sha256
+          sha256sum aptos-faucet-service-${{ steps.git-commit.outputs.sha }} > aptos-faucet-service-${{ steps.git-commit.outputs.sha }}.sha256
           sha256sum framework-${{ env.framework_hash }}.mrb > framework-${{ env.framework_hash }}.mrb.sha256
           cd ../../..
 
@@ -209,6 +228,9 @@ jobs:
 
           echo "Testing aptos CLI binary in container:"
           docker run --rm --entrypoint /usr/local/bin/aptos test-validator:latest --version
+
+          echo "Testing aptos-faucet-service binary in container:"
+          docker run --rm --entrypoint /usr/local/bin/aptos-faucet-service test-validator:latest --version
 
       - name: Install test dependencies
         run: |
