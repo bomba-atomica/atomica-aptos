@@ -22,7 +22,7 @@ on:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - "atomica/docker/**"
-      - ".github/workflows/test-docker-image.yml"
+      - ".github/workflows/**"
   push:
     branches:
       - dev-atomica
@@ -31,7 +31,7 @@ on:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - "atomica/docker/**"
-      - ".github/workflows/test-docker-image.yml"
+      - ".github/workflows/**"
   workflow_dispatch:
 
 env:
