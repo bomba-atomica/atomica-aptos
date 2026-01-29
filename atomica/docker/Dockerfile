@@ -59,7 +59,7 @@ RUN mv /opt/aptos/framework/framework-*.mrb /opt/aptos/framework/head.mrb
 # Verify the binaries work
 RUN /usr/local/bin/aptos-node --version && \
     /usr/local/bin/aptos --version && \
-    /usr/local/bin/aptos-faucet-service --version
+    /usr/local/bin/aptos-faucet-service --help
 
 # Create necessary directories and set permissions
 RUN mkdir -p /opt/aptos/var /opt/aptos/data /opt/aptos/etc && \
