@@ -7,7 +7,7 @@ on:
     inputs:
       release_tag:
         description: "Binary release tag (e.g., binary-80cf17c75e)"
-        required: true
+        required: false
         type: string
       force_rebuild:
         description: "Force rebuild even if image exists"
@@ -35,6 +35,8 @@ jobs:
 
       - name: Determine release tag
         id: release-info
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "${{ github.event.inputs.release_tag }}" ]; then
             # Manual workflow_dispatch with explicit release tag
@@ -45,8 +47,14 @@ jobs:
             RELEASE_TAG="${{ github.event.release.tag_name }}"
             echo "Using release event tag: $RELEASE_TAG"
           else
-            echo "Error: No release tag specified"
-            exit 1
+            # Workflow dispatch without tag - fetch latest
+            echo "No release tag provided, fetching latest release..."
+            RELEASE_TAG=$(gh release view --json tagName --jq .tagName)
+            if [ -z "$RELEASE_TAG" ]; then
+               echo "Error: Could not determine latest release tag"
+               exit 1
+            fi
+            echo "Using latest release tag: $RELEASE_TAG"
           fi
 
           # Validate format: binary-<sha>
