@@ -9,7 +9,7 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "Cargo.lock"
-      - ".github/workflows/lint-format.yml"
+      - ".github/workflows/**"
       - "rustfmt.toml"
       - "clippy.toml"
   pull_request:
@@ -20,6 +20,7 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "Cargo.lock"
+      - ".github/workflows/**"
       - "rustfmt.toml"
       - "clippy.toml"
   workflow_dispatch:

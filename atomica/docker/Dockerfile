@@ -47,6 +47,7 @@ RUN groupadd -g 6180 aptos && \
 # These binaries are downloaded and verified in the CI workflow before building the image
 COPY --chmod=755 atomica/docker/binaries/aptos-node-${GIT_SHA} /usr/local/bin/aptos-node
 COPY --chmod=755 atomica/docker/binaries/aptos-${GIT_SHA} /usr/local/bin/aptos
+COPY --chmod=755 atomica/docker/binaries/aptos-faucet-service-${GIT_SHA} /usr/local/bin/aptos-faucet-service
 
 # Copy Move framework bundle
 # The framework.mrb file contains the compiled Move modules for genesis generation
@@ -57,7 +58,8 @@ RUN mv /opt/aptos/framework/framework-*.mrb /opt/aptos/framework/head.mrb
 
 # Verify the binaries work
 RUN /usr/local/bin/aptos-node --version && \
-    /usr/local/bin/aptos --version
+    /usr/local/bin/aptos --version && \
+    /usr/local/bin/aptos-faucet-service --help
 
 # Create necessary directories and set permissions
 RUN mkdir -p /opt/aptos/var /opt/aptos/data /opt/aptos/etc && \

@@ -142,6 +142,15 @@ jobs:
         run: |
           ./target/release/aptos --version
 
+      - name: Build aptos-faucet-service
+        run: |
+          echo "Building aptos-faucet-service..."
+          cargo build --release --package aptos-faucet-service
+
+      - name: Verify aptos-faucet-service binary
+        run: |
+          ./target/release/aptos-faucet-service --version
+
       - name: Build Move framework bundle
         run: |
           echo "Building Move framework release bundle (.mrb)..."
@@ -159,10 +168,14 @@ jobs:
           mkdir -p artifacts
           cp target/release/aptos artifacts/aptos-${{ steps.git-commit.outputs.sha }}
           cp target/release/aptos artifacts/aptos
+          cp target/release/aptos-faucet-service artifacts/aptos-faucet-service-${{ steps.git-commit.outputs.sha }}
+          cp target/release/aptos-faucet-service artifacts/aptos-faucet-service
           cp target/release/aptos-node artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
           cp target/release/aptos-node artifacts/aptos-node
           chmod +x artifacts/aptos-${{ steps.git-commit.outputs.sha }}
           chmod +x artifacts/aptos
+          chmod +x artifacts/aptos-faucet-service-${{ steps.git-commit.outputs.sha }}
+          chmod +x artifacts/aptos-faucet-service
           chmod +x artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
           chmod +x artifacts/aptos-node
 
@@ -175,6 +188,8 @@ jobs:
           cd artifacts
           sha256sum aptos-${{ steps.git-commit.outputs.sha }} > aptos-${{ steps.git-commit.outputs.sha }}.sha256
           sha256sum aptos > aptos.sha256
+          sha256sum aptos-faucet-service-${{ steps.git-commit.outputs.sha }} > aptos-faucet-service-${{ steps.git-commit.outputs.sha }}.sha256
+          sha256sum aptos-faucet-service > aptos-faucet-service.sha256
           sha256sum aptos-node-${{ steps.git-commit.outputs.sha }} > aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
           sha256sum aptos-node > aptos-node.sha256
           sha256sum framework-${{ env.framework_hash }}.mrb > framework-${{ env.framework_hash }}.mrb.sha256
@@ -205,6 +220,7 @@ jobs:
 
             **Files:**
             - `aptos-${{ steps.git-commit.outputs.sha }}` - Aptos CLI binary
+            - `aptos-faucet-service-${{ steps.git-commit.outputs.sha }}` - Aptos Faucet Service binary
             - `aptos-node-${{ steps.git-commit.outputs.sha }}` - Aptos Node binary
             - `head.mrb` - Move framework bundle (standard)
             - `framework-${{ env.framework_hash }}.mrb` - Move framework bundle (hashed)
@@ -212,6 +228,8 @@ jobs:
           files: |
             artifacts/aptos-${{ steps.git-commit.outputs.sha }}
             artifacts/aptos-${{ steps.git-commit.outputs.sha }}.sha256
+            artifacts/aptos-faucet-service-${{ steps.git-commit.outputs.sha }}
+            artifacts/aptos-faucet-service-${{ steps.git-commit.outputs.sha }}.sha256
             artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}
             artifacts/aptos-node-${{ steps.git-commit.outputs.sha }}.sha256
             artifacts/framework-${{ env.framework_hash }}.mrb
