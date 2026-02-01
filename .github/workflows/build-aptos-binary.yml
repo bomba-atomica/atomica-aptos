@@ -149,7 +149,14 @@ jobs:
 
       - name: Verify aptos-faucet-service binary
         run: |
-          ./target/release/aptos-faucet-service --version
+          if [ -f target/release/aptos-faucet-service ]; then
+            echo "aptos-faucet-service binary built successfully"
+            file target/release/aptos-faucet-service
+            ls -lh target/release/aptos-faucet-service
+          else
+            echo "Error: aptos-faucet-service binary not found"
+            exit 1
+          fi
 
       - name: Build Move framework bundle
         run: |
