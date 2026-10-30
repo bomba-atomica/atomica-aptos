@@ -1,0 +1,35 @@
+# Standalone prototype. Not a member of the atomica-aptos workspace and does not
+# build aptos-node. It pulls the upstream 1.49.6 crates by tag, the same tree as
+# the `baseline/aptos-node-v1.49.6` branch.
+[package]
+name = "proto-fptx-timelock"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Option C prototype: FPTX batch threshold encryption of auction bids outside consensus"
+
+[workspace]
+
+[dependencies]
+anyhow = "1.0.98"
+aptos-batch-encryption = { git = "https://github.com/aptos-labs/aptos-core", tag = "aptos-node-v1.49.6" }
+aptos-crypto = { git = "https://github.com/aptos-labs/aptos-core", tag = "aptos-node-v1.49.6" }
+ark-std = { version = "0.5.0", features = ["getrandom"] }
+serde = { version = "1.0.193", features = ["derive"] }
+bcs = { git = "https://github.com/aptos-labs/bcs.git", rev = "d31fab9d81748e2594be5cd5cdf845786a30562d" }
+thiserror = "1.0.37"
+
+# Copied from the aptos-core 1.49.6 workspace root. Git dependencies do not
+# inherit the upstream [patch] table.
+[patch.crates-io]
+merlin = { git = "https://github.com/aptos-labs/merlin" }
+ark-ec = { git = "https://github.com/aptos-labs/algebra", branch = "fix-fft-parallelism-cutoff" }
+ark-ff = { git = "https://github.com/aptos-labs/algebra", branch = "fix-fft-parallelism-cutoff" }
+ark-ff-macros = { git = "https://github.com/aptos-labs/algebra", branch = "fix-fft-parallelism-cutoff" }
+ark-ff-asm = { git = "https://github.com/aptos-labs/algebra", branch = "fix-fft-parallelism-cutoff" }
+ark-poly = { git = "https://github.com/aptos-labs/algebra", branch = "fix-fft-parallelism-cutoff" }
+ark-serialize = { git = "https://github.com/aptos-labs/algebra", branch = "fix-fft-parallelism-cutoff" }
+
+# Pairing and KZG work is too slow unoptimized.
+[profile.test]
+opt-level = 3
