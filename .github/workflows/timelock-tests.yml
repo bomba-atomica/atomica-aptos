@@ -1,8 +1,12 @@
 name: Timelock Tests
 
-# Standalone FPTX timelock prototype (atomica/proto-fptx-timelock). It is not a
-# workspace member and does not build aptos-node, so it is fast and runs on
-# every change under its folder.
+# Standalone FPTX timelock prototype (atomica/proto-fptx-timelock). It is a
+# reference only: superseded for the product path by
+# atomica/docs/decisions/aptos-upgrade-ibe-chunky-spec.md. It is kept running
+# because it is path-filtered to its own folder (it runs only when the folder
+# changes), it is not a workspace member, and it does not build aptos-node, so
+# it costs little and keeps the reference and the review packet evidence
+# reproducible. Remove this workflow when the prototype folder is deleted.
 
 on:
   push:
