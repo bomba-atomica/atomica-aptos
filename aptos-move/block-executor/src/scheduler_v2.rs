@@ -1380,9 +1380,8 @@ mod tests {
         let mut stall_propagation_queue = BTreeSet::new();
 
         // num_txns is 6.
-        let statuses = ExecutionStatuses::new_for_test(
-            ExecutionQueueManager::new_for_test(6),
-            vec![
+        let statuses =
+            ExecutionStatuses::new_for_test(ExecutionQueueManager::new_for_test(6), vec![
                 ExecutionStatus::new(),
                 ExecutionStatus::new(),
                 // Statuses for txn_idx 2, 3, 4 have incarnation > 0 and different inner status.
@@ -1406,8 +1405,7 @@ mod tests {
                     StatusWithIncarnation::new_for_test(SchedulingStatus::PendingScheduling, 1),
                     1,
                 ),
-            ],
-        );
+            ]);
         assert_eq!(statuses.len(), 6);
         let manager = &statuses.get_execution_queue_manager();
         let mut deps = AbortedDependencies::new();
@@ -1454,9 +1452,8 @@ mod tests {
         let mut stall_propagation_queue = BTreeSet::new();
 
         // num_txns is 8.
-        let mut statuses = ExecutionStatuses::new_for_test(
-            ExecutionQueueManager::new_for_test(6),
-            vec![
+        let mut statuses =
+            ExecutionStatuses::new_for_test(ExecutionQueueManager::new_for_test(6), vec![
                 ExecutionStatus::new_for_test(
                     StatusWithIncarnation::new_for_test(SchedulingStatus::PendingScheduling, 1),
                     0,
@@ -1496,8 +1493,7 @@ mod tests {
                     StatusWithIncarnation::new_for_test(SchedulingStatus::PendingScheduling, 2),
                     2,
                 ),
-            ],
-        );
+            ]);
         let mut deps = AbortedDependencies::new();
         assert_eq!(statuses.len(), 8);
 

@@ -113,12 +113,9 @@ impl Display for Render<'_, StateKey> {
                 write!(f, "{}::{}", Render(&ap.address), Render(&ap.get_path()))
             },
             TableItem { handle, key } => {
-                write!(
-                    f,
-                    "table_item<{},{}>",
-                    Render(handle),
-                    TableKey { bytes: key },
-                )
+                write!(f, "table_item<{},{}>", Render(handle), TableKey {
+                    bytes: key
+                },)
             },
             Raw(..) => panic!("not supported"),
         }
@@ -129,15 +126,11 @@ impl Display for Render<'_, WriteOpType> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use WriteOpType::*;
 
-        write!(
-            f,
-            "{}",
-            match self.0 {
-                Creation => "create",
-                Modification => "modify",
-                Deletion => "delete",
-            }
-        )
+        write!(f, "{}", match self.0 {
+            Creation => "create",
+            Modification => "modify",
+            Deletion => "delete",
+        })
     }
 }
 

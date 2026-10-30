@@ -129,10 +129,9 @@ fn test_serialization() {
         (
             // Serialize first variant, so the depth is 2.
             Value::struct_(Struct::pack(vec![Value::u16(0), Value::bool(true)])),
-            L::Struct(RuntimeVariants(vec![
-                vec![L::Bool],
-                vec![L::Vector(Box::new(L::Vector(Box::new(L::U8))))],
-            ])),
+            L::Struct(RuntimeVariants(vec![vec![L::Bool], vec![L::Vector(
+                Box::new(L::Vector(Box::new(L::U8))),
+            )]])),
         ),
         (
             MockFunction::closure(ClosureMask::empty(), vec![Value::u16(0)], vec![L::U16]),
@@ -145,10 +144,9 @@ fn test_serialization() {
             Value::u16(1),
             Value::vector_unchecked(vec![Value::vector_u8(vec![1, 2])]).unwrap(),
         ])),
-        L::Struct(RuntimeVariants(vec![
-            vec![L::Bool],
-            vec![L::Vector(Box::new(L::Vector(Box::new(L::U8))))],
-        ])),
+        L::Struct(RuntimeVariants(vec![vec![L::Bool], vec![L::Vector(
+            Box::new(L::Vector(Box::new(L::U8))),
+        )]])),
     )];
 
     let ctx = |max_depth: u64| {
