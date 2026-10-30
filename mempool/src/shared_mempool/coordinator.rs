@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Processes that are directly spawned by shared mempool runtime initialization
 use super::types::MempoolClientRequest;
@@ -438,6 +437,7 @@ async fn handle_update_peers<NetworkClient, TransactionValidator>(
         }
         for peer in &disabled {
             debug!(LogSchema::new(LogEntry::LostPeer).peer(peer));
+            smp.inbound_peer_rate_limiters.remove(peer);
         }
     }
 }

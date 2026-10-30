@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{assert_success, tests::common, MoveHarness};
 use aptos_language_e2e_tests::account::Account;
@@ -56,7 +56,7 @@ fn setup(harness: &mut MoveHarness) -> Account {
 
     let account = harness.new_account_at(AccountAddress::ONE);
 
-    assert_success!(harness.publish_package_cache_building(&account, &path));
+    assert_success!(harness.publish_package(&account, &path));
 
     account
 }

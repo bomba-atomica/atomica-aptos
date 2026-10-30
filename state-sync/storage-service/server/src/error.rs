@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -12,6 +12,8 @@ pub enum Error {
     StorageErrorEncountered(String),
     #[error("Too many invalid requests: {0}")]
     TooManyInvalidRequests(String),
+    #[error("Too many requests: {0}")]
+    TooManyRequests(String),
     #[error("Unexpected error encountered: {0}")]
     UnexpectedErrorEncountered(String),
 }
@@ -23,6 +25,7 @@ impl Error {
             Error::InvalidRequest(_) => "invalid_request",
             Error::StorageErrorEncountered(_) => "storage_error",
             Error::TooManyInvalidRequests(_) => "too_many_invalid_requests",
+            Error::TooManyRequests(_) => "too_many_requests",
             Error::UnexpectedErrorEncountered(_) => "unexpected_error",
         }
     }

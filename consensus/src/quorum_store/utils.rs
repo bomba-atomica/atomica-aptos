@@ -1,10 +1,10 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::monitor;
 use aptos_consensus_types::{
     common::{TransactionInProgress, TransactionSummary},
-    proof_of_store::BatchInfo,
+    proof_of_store::{BatchInfoExt, TBatchInfo},
 };
 use aptos_logger::prelude::*;
 use aptos_mempool::{QuorumStoreRequest, QuorumStoreResponse};
@@ -154,7 +154,7 @@ pub struct BatchKey {
 }
 
 impl BatchKey {
-    pub fn from_info(info: &BatchInfo) -> Self {
+    pub fn from_info(info: &BatchInfoExt) -> Self {
         Self {
             author: info.author(),
             batch_id: info.batch_id(),
@@ -169,7 +169,7 @@ pub struct BatchSortKey {
 }
 
 impl BatchSortKey {
-    pub fn from_info(info: &BatchInfo) -> Self {
+    pub fn from_info(info: &BatchInfoExt) -> Self {
         Self {
             batch_key: BatchKey::from_info(info),
             gas_bucket_start: info.gas_bucket_start(),

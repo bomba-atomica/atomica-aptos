@@ -1,7 +1,9 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use crate::delayed_values::delayed_field_id::DelayedFieldID;
+use crate::{delayed_values::delayed_field_id::DelayedFieldID, values::AbstractFunction};
 use move_binary_format::errors::PartialVMResult;
 use move_core_types::{
     account_address::AccountAddress, gas_algebra::AbstractMemorySize, language_storage::TypeTag,
@@ -82,7 +84,7 @@ pub trait ValueView {
             fn visit_u256(
                 &mut self,
                 _depth: u64,
-                _val: move_core_types::int256::U256,
+                _val: &move_core_types::int256::U256,
             ) -> PartialVMResult<()> {
                 self.0 += LEGACY_CONST_SIZE;
                 Ok(())
@@ -116,7 +118,7 @@ pub trait ValueView {
             fn visit_i256(
                 &mut self,
                 _depth: u64,
-                _val: move_core_types::int256::I256,
+                _val: &move_core_types::int256::I256,
             ) -> PartialVMResult<()> {
                 self.0 += LEGACY_CONST_SIZE;
                 Ok(())
@@ -127,7 +129,7 @@ pub trait ValueView {
                 Ok(())
             }
 
-            fn visit_address(&mut self, _depth: u64, _val: AccountAddress) -> PartialVMResult<()> {
+            fn visit_address(&mut self, _depth: u64, _val: &AccountAddress) -> PartialVMResult<()> {
                 self.0 += AbstractMemorySize::new(AccountAddress::LENGTH as u64);
                 Ok(())
             }
@@ -137,7 +139,12 @@ pub trait ValueView {
                 Ok(true)
             }
 
-            fn visit_closure(&mut self, _depth: u64, _len: usize) -> PartialVMResult<bool> {
+            fn visit_closure(
+                &mut self,
+                _depth: u64,
+                _fun: &(dyn AbstractFunction + 'static),
+                _len: usize,
+            ) -> PartialVMResult<bool> {
                 self.0 += LEGACY_CLOSURE_SIZE;
                 Ok(true)
             }
@@ -217,19 +224,32 @@ pub trait ValueVisitor {
     fn visit_u32(&mut self, depth: u64, val: u32) -> PartialVMResult<()>;
     fn visit_u64(&mut self, depth: u64, val: u64) -> PartialVMResult<()>;
     fn visit_u128(&mut self, depth: u64, val: u128) -> PartialVMResult<()>;
-    fn visit_u256(&mut self, depth: u64, val: move_core_types::int256::U256)
-        -> PartialVMResult<()>;
+    fn visit_u256(
+        &mut self,
+        depth: u64,
+        val: &move_core_types::int256::U256,
+    ) -> PartialVMResult<()>;
     fn visit_i8(&mut self, depth: u64, val: i8) -> PartialVMResult<()>;
     fn visit_i16(&mut self, depth: u64, val: i16) -> PartialVMResult<()>;
     fn visit_i32(&mut self, depth: u64, val: i32) -> PartialVMResult<()>;
     fn visit_i64(&mut self, depth: u64, val: i64) -> PartialVMResult<()>;
     fn visit_i128(&mut self, depth: u64, val: i128) -> PartialVMResult<()>;
-    fn visit_i256(&mut self, depth: u64, val: move_core_types::int256::I256)
-        -> PartialVMResult<()>;
+    fn visit_i256(
+        &mut self,
+        depth: u64,
+        val: &move_core_types::int256::I256,
+    ) -> PartialVMResult<()>;
     fn visit_bool(&mut self, depth: u64, val: bool) -> PartialVMResult<()>;
-    fn visit_address(&mut self, depth: u64, val: AccountAddress) -> PartialVMResult<()>;
+    fn visit_address(&mut self, depth: u64, val: &AccountAddress) -> PartialVMResult<()>;
     fn visit_struct(&mut self, depth: u64, len: usize) -> PartialVMResult<bool>;
-    fn visit_closure(&mut self, depth: u64, len: usize) -> PartialVMResult<bool>;
+    /// The `'static` bound costs nothing, since `AbstractFunction` requires `for<'a> Tid<'a>`.
+    /// Spelling it out is what lets a visitor call the function's methods.
+    fn visit_closure(
+        &mut self,
+        depth: u64,
+        fun: &(dyn AbstractFunction + 'static),
+        len: usize,
+    ) -> PartialVMResult<bool>;
     fn visit_vec(&mut self, depth: u64, len: usize) -> PartialVMResult<bool>;
     fn visit_ref(&mut self, depth: u64, is_global: bool) -> PartialVMResult<bool>;
 
@@ -280,7 +300,7 @@ pub trait ValueVisitor {
     ) -> PartialVMResult<()> {
         self.visit_vec(depth, vals.len())?;
         for val in vals {
-            self.visit_u256(depth + 1, *val)?;
+            self.visit_u256(depth + 1, val)?;
         }
         Ok(())
     }
@@ -332,7 +352,7 @@ pub trait ValueVisitor {
     ) -> PartialVMResult<()> {
         self.visit_vec(depth, vals.len())?;
         for val in vals {
-            self.visit_i256(depth + 1, *val)?;
+            self.visit_i256(depth + 1, val)?;
         }
         Ok(())
     }
@@ -348,7 +368,7 @@ pub trait ValueVisitor {
     fn visit_vec_address(&mut self, depth: u64, vals: &[AccountAddress]) -> PartialVMResult<()> {
         self.visit_vec(depth, vals.len())?;
         for val in vals {
-            self.visit_address(depth + 1, *val)?;
+            self.visit_address(depth + 1, val)?;
         }
         Ok(())
     }

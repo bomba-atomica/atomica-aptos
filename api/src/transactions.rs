@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     accept_type::AcceptType,
@@ -12,7 +11,7 @@ use crate::{
     metrics::WAIT_TRANSACTION_GAUGE,
     page::Page,
     response::{
-        api_disabled, api_forbidden, transaction_not_found_by_hash,
+        api_disabled, api_forbidden, pruned_or_internal_error, transaction_not_found_by_hash,
         transaction_not_found_by_version, version_pruned, BadRequestError, BasicError,
         BasicErrorWith404, BasicResponse, BasicResponseStatus, BasicResult, BasicResultWith404,
         ForbiddenError, InsufficientStorageError, InternalError,
@@ -29,7 +28,7 @@ use aptos_api_types::{
     Transaction, TransactionData, TransactionOnChainData, TransactionsBatchSingleSubmissionFailure,
     TransactionsBatchSubmissionResult, UserTransaction, VerifyInput, VerifyInputWithRecursion, U64,
 };
-use aptos_crypto::{hash::CryptoHash, signing_message};
+use aptos_crypto::signing_message;
 use aptos_logger::error;
 use aptos_types::{
     account_address::AccountAddress,
@@ -479,6 +478,12 @@ impl TransactionsApi {
         accept_type: AcceptType,
         data: SubmitTransactionPost,
     ) -> SubmitTransactionResult<PendingTransaction> {
+        fail_point_poem("endpoint_submit_transaction")?;
+        if !self.context.node_config.api.transaction_submission_enabled {
+            return Err(api_disabled("Submit transaction"));
+        }
+        self.context
+            .check_api_output_enabled("Submit transaction", &accept_type)?;
         data.verify()
             .context("Submitted transaction invalid'")
             .map_err(|err| {
@@ -487,12 +492,6 @@ impl TransactionsApi {
                     AptosErrorCode::InvalidInput,
                 )
             })?;
-        fail_point_poem("endpoint_submit_transaction")?;
-        if !self.context.node_config.api.transaction_submission_enabled {
-            return Err(api_disabled("Submit transaction"));
-        }
-        self.context
-            .check_api_output_enabled("Submit transaction", &accept_type)?;
         let ledger_info = self.context.get_latest_ledger_info()?;
         let signed_transaction = self.get_signed_transaction(&ledger_info, data)?;
         self.create(&accept_type, &ledger_info, signed_transaction)
@@ -532,6 +531,29 @@ impl TransactionsApi {
         accept_type: AcceptType,
         data: SubmitTransactionsBatchPost,
     ) -> SubmitTransactionsBatchResult<TransactionsBatchSubmissionResult> {
+        fail_point_poem("endpoint_submit_batch_transactions")?;
+        if !self.context.node_config.api.transaction_submission_enabled {
+            return Err(api_disabled("Submit batch transaction"));
+        }
+        self.context
+            .check_api_output_enabled("Submit batch transactions", &accept_type)?;
+
+        // Verify that the batch is not too large (for JSON requests)
+        let max_transaction_batch_size = self.context.max_submit_transaction_batch_size();
+        if let SubmitTransactionsBatchPost::Json(batch_submission_request) = &data {
+            let num_submitted_transactions = batch_submission_request.0.len();
+            if num_submitted_transactions > max_transaction_batch_size {
+                return Err(SubmitTransactionError::bad_request_with_code_no_info(
+                    anyhow::anyhow!(
+                        "Submitted too many transactions: {}, while limit is {}",
+                        num_submitted_transactions,
+                        max_transaction_batch_size,
+                    ),
+                    AptosErrorCode::InvalidInput,
+                ));
+            }
+        }
+
         data.verify()
             .context("Submitted transactions invalid")
             .map_err(|err| {
@@ -540,15 +562,12 @@ impl TransactionsApi {
                     AptosErrorCode::InvalidInput,
                 )
             })?;
-        fail_point_poem("endpoint_submit_batch_transactions")?;
-        if !self.context.node_config.api.transaction_submission_enabled {
-            return Err(api_disabled("Submit batch transaction"));
-        }
-        self.context
-            .check_api_output_enabled("Submit batch transactions", &accept_type)?;
+
+        // Verify that the batch is not too large (for BCS requests). We have to do this after
+        // parsing, since we don't know how many transactions there are until we parse it.
         let ledger_info = self.context.get_latest_ledger_info()?;
         let signed_transactions_batch = self.get_signed_transactions_batch(&ledger_info, data)?;
-        if self.context.max_submit_transaction_batch_size() < signed_transactions_batch.len() {
+        if max_transaction_batch_size < signed_transactions_batch.len() {
             return Err(SubmitTransactionError::bad_request_with_code(
                 format!(
                     "Submitted too many transactions: {}, while limit is {}",
@@ -559,6 +578,7 @@ impl TransactionsApi {
                 &ledger_info,
             ));
         }
+
         self.create_batch(&accept_type, &ledger_info, signed_transactions_batch)
             .await
     }
@@ -596,6 +616,12 @@ impl TransactionsApi {
         estimate_prioritized_gas_unit_price: Query<Option<bool>>,
         data: SubmitTransactionPost,
     ) -> SimulateTransactionResult<Vec<UserTransaction>> {
+        fail_point_poem("endpoint_simulate_transaction")?;
+        if !self.context.node_config.api.transaction_simulation_enabled {
+            return Err(api_disabled("Simulate transaction"));
+        }
+        self.context
+            .check_api_output_enabled("Simulate transaction", &accept_type)?;
         data.verify()
             .context("Simulated transaction invalid")
             .map_err(|err| {
@@ -604,12 +630,6 @@ impl TransactionsApi {
                     AptosErrorCode::InvalidInput,
                 )
             })?;
-        fail_point_poem("endpoint_simulate_transaction")?;
-        if !self.context.node_config.api.transaction_simulation_enabled {
-            return Err(api_disabled("Simulate transaction"));
-        }
-        self.context
-            .check_api_output_enabled("Simulate transaction", &accept_type)?;
 
         let api = self.clone();
         let context = self.context.clone();
@@ -761,12 +781,6 @@ impl TransactionsApi {
         data: Json<EncodeSubmissionRequest>,
         // TODO: Use a new request type that can't return 507 but still returns all the other necessary errors.
     ) -> BasicResult<HexEncodedBytes> {
-        data.0
-            .verify()
-            .context("'UserTransactionRequest' invalid")
-            .map_err(|err| {
-                BasicError::bad_request_with_code_no_info(err, AptosErrorCode::InvalidInput)
-            })?;
         fail_point_poem("endpoint_encode_submission")?;
         if !self.context.node_config.api.encode_submission_enabled {
             return Err(api_forbidden(
@@ -776,6 +790,12 @@ impl TransactionsApi {
         }
         self.context
             .check_api_output_enabled("Encode submission", &accept_type)?;
+        data.0
+            .verify()
+            .context("'UserTransactionRequest' invalid")
+            .map_err(|err| {
+                BasicError::bad_request_with_code_no_info(err, AptosErrorCode::InvalidInput)
+            })?;
         let api = self.clone();
         api_spawn_blocking(move || api.get_signing_message(&accept_type, data.0)).await
     }
@@ -849,6 +869,8 @@ impl TransactionsApi {
 }
 
 impl TransactionsApi {
+    const MAX_SIGNED_TRANSACTION_DEPTH: usize = 16;
+
     /// List all transactions paging by ledger version
     fn list(&self, accept_type: &AcceptType, page: Page) -> BasicResultWith404<Vec<Transaction>> {
         let latest_ledger_info = self.context.get_latest_ledger_info()?;
@@ -860,13 +882,7 @@ impl TransactionsApi {
             .context
             .get_transactions(start_version, limit, ledger_version)
             .context("Failed to read raw transactions from storage")
-            .map_err(|err| {
-                BasicErrorWith404::internal_with_code(
-                    err,
-                    AptosErrorCode::InternalError,
-                    &latest_ledger_info,
-                )
-            })?;
+            .map_err(|err| pruned_or_internal_error(err, &latest_ledger_info))?;
 
         match accept_type {
             AcceptType::Json => {
@@ -1217,12 +1233,10 @@ impl TransactionsApi {
         ledger_info: &LedgerInfo,
         data: SubmitTransactionPost,
     ) -> Result<SignedTransaction, SubmitTransactionError> {
-        pub const MAX_SIGNED_TRANSACTION_DEPTH: usize = 16;
-
         match data {
             SubmitTransactionPost::Bcs(data) => {
                 let signed_transaction: SignedTransaction =
-                    bcs::from_bytes_with_limit(&data.0, MAX_SIGNED_TRANSACTION_DEPTH)
+                    bcs::from_bytes_with_limit(&data.0, Self::MAX_SIGNED_TRANSACTION_DEPTH)
                         .context("Failed to deserialize input into SignedTransaction")
                         .map_err(|err| {
                             SubmitTransactionError::bad_request_with_code(
@@ -1232,69 +1246,7 @@ impl TransactionsApi {
                             )
                         })?;
                 // Verify the signed transaction
-                match signed_transaction.payload() {
-                    TransactionPayload::EntryFunction(entry_function) => {
-                        TransactionsApi::validate_entry_function_payload_format(
-                            ledger_info,
-                            entry_function,
-                        )?;
-                    },
-                    TransactionPayload::Script(script) => {
-                        TransactionsApi::validate_script(ledger_info, script)?;
-                    },
-                    TransactionPayload::Multisig(multisig) => {
-                        if let Some(payload) = &multisig.transaction_payload {
-                            match payload {
-                                MultisigTransactionPayload::EntryFunction(entry_function) => {
-                                    TransactionsApi::validate_entry_function_payload_format(
-                                        ledger_info,
-                                        entry_function,
-                                    )?;
-                                },
-                            }
-                        }
-                    },
-
-                    // Deprecated. To avoid panics when malicios users submit this
-                    // payload, return an error.
-                    TransactionPayload::ModuleBundle(_) => {
-                        return Err(SubmitTransactionError::bad_request_with_code(
-                            "Module bundle payload has been removed",
-                            AptosErrorCode::InvalidInput,
-                            ledger_info,
-                        ))
-                    },
-                    TransactionPayload::Payload(TransactionPayloadInner::V1 {
-                        executable,
-                        extra_config,
-                    }) => match executable {
-                        TransactionExecutable::Script(script) => {
-                            TransactionsApi::validate_script(ledger_info, script)?;
-                            if extra_config.is_multisig() {
-                                return Err(SubmitTransactionError::bad_request_with_code(
-                                    "Script transaction payload must not be a multisig transaction",
-                                    AptosErrorCode::InvalidInput,
-                                    ledger_info,
-                                ));
-                            }
-                        },
-                        TransactionExecutable::EntryFunction(entry_function) => {
-                            TransactionsApi::validate_entry_function_payload_format(
-                                ledger_info,
-                                entry_function,
-                            )?;
-                        },
-                        TransactionExecutable::Empty => {
-                            if !extra_config.is_multisig() {
-                                return Err(SubmitTransactionError::bad_request_with_code(
-                                    "Empty transaction payload must be a multisig transaction",
-                                    AptosErrorCode::InvalidInput,
-                                    ledger_info,
-                                ));
-                            }
-                        },
-                    },
-                }
+                self.validate_signed_transaction_payload(ledger_info, &signed_transaction)?;
                 // TODO: Verify script args?
 
                 Ok(signed_transaction)
@@ -1311,8 +1263,106 @@ impl TransactionsApi {
                         AptosErrorCode::InvalidInput,
                         ledger_info,
                     )
+                })
+                .and_then(|signed_transaction| {
+                    self.validate_signed_transaction_payload(ledger_info, &signed_transaction)?;
+                    Ok(signed_transaction)
                 }),
         }
+    }
+
+    /// Validates a signed transaction's payload
+    fn validate_signed_transaction_payload(
+        &self,
+        ledger_info: &LedgerInfo,
+        signed_transaction: &SignedTransaction,
+    ) -> Result<(), SubmitTransactionError> {
+        match signed_transaction.payload() {
+            TransactionPayload::EntryFunction(entry_function) => {
+                TransactionsApi::validate_entry_function_payload_format(
+                    ledger_info,
+                    entry_function,
+                )?;
+            },
+            TransactionPayload::Script(script) => {
+                TransactionsApi::validate_script(ledger_info, script)?;
+            },
+            TransactionPayload::Multisig(multisig) => {
+                if let Some(payload) = &multisig.transaction_payload {
+                    match payload {
+                        MultisigTransactionPayload::EntryFunction(entry_function) => {
+                            TransactionsApi::validate_entry_function_payload_format(
+                                ledger_info,
+                                entry_function,
+                            )?;
+                        },
+                        MultisigTransactionPayload::Script(script) => {
+                            TransactionsApi::validate_script(ledger_info, script)?;
+                        },
+                    }
+                }
+            },
+
+            // Deprecated. To avoid panics when malicios users submit this
+            // payload, return an error.
+            TransactionPayload::ModuleBundle(_) => {
+                return Err(SubmitTransactionError::bad_request_with_code(
+                    "Module bundle payload has been removed",
+                    AptosErrorCode::InvalidInput,
+                    ledger_info,
+                ))
+            },
+            TransactionPayload::Payload(TransactionPayloadInner::V1 {
+                executable,
+                extra_config,
+            }) => match executable {
+                TransactionExecutable::Script(script) => {
+                    TransactionsApi::validate_script(ledger_info, script)?;
+                },
+                TransactionExecutable::EntryFunction(entry_function) => {
+                    TransactionsApi::validate_entry_function_payload_format(
+                        ledger_info,
+                        entry_function,
+                    )?;
+                },
+                TransactionExecutable::Empty => {
+                    if !extra_config.is_multisig() {
+                        return Err(SubmitTransactionError::bad_request_with_code(
+                            "Empty transaction payload must be a multisig transaction",
+                            AptosErrorCode::InvalidInput,
+                            ledger_info,
+                        ));
+                    }
+                },
+                TransactionExecutable::Encrypted => {
+                    return Err(SubmitTransactionError::bad_request_with_code(
+                        "Encrypted executable is not supported in PayloadV1",
+                        AptosErrorCode::InvalidInput,
+                        ledger_info,
+                    ));
+                },
+            },
+            TransactionPayload::EncryptedPayload(_) => {
+                if !self.context.node_config.api.allow_encrypted_txns_submission {
+                    return Err(SubmitTransactionError::bad_request_with_code(
+                        "Encrypted Transaction submission is not allowed yet",
+                        AptosErrorCode::InvalidInput,
+                        ledger_info,
+                    ));
+                }
+
+                signed_transaction
+                    .verify_encrypted_payload_for_submission()
+                    .map_err(|error| {
+                        SubmitTransactionError::bad_request_with_code(
+                            error.context("Encrypted transaction payload could not be verified"),
+                            AptosErrorCode::InvalidInput,
+                            ledger_info,
+                        )
+                    })?;
+            },
+        }
+        Ok(())
     }
 
     // Validates that the module, function, and args in EntryFunction payload are correctly
@@ -1363,15 +1413,20 @@ impl TransactionsApi {
     ) -> Result<Vec<SignedTransaction>, SubmitTransactionError> {
         match data {
             SubmitTransactionsBatchPost::Bcs(data) => {
-                let signed_transactions = bcs::from_bytes(&data.0)
-                    .context("Failed to deserialize input into SignedTransaction")
-                    .map_err(|err| {
-                        SubmitTransactionError::bad_request_with_code(
-                            err,
-                            AptosErrorCode::InvalidInput,
-                            ledger_info,
-                        )
-                    })?;
+                let signed_transactions: Vec<SignedTransaction> =
+                    bcs::from_bytes_with_limit(&data.0, Self::MAX_SIGNED_TRANSACTION_DEPTH)
+                        .context("Failed to deserialize input into SignedTransaction")
+                        .map_err(|err| {
+                            SubmitTransactionError::bad_request_with_code(
+                                err,
+                                AptosErrorCode::InvalidInput,
+                                ledger_info,
+                            )
+                        })?;
+                // Verify each signed transaction
+                for signed_transaction in signed_transactions.iter() {
+                    self.validate_signed_transaction_payload(ledger_info, signed_transaction)?;
+                }
                 Ok(signed_transactions)
             }
             SubmitTransactionsBatchPost::Json(data) => data
@@ -1389,6 +1444,10 @@ impl TransactionsApi {
                                 AptosErrorCode::InvalidInput,
                                 ledger_info,
                             )
+                        })
+                        .and_then(|signed_transaction| {
+                            self.validate_signed_transaction_payload(ledger_info, &signed_transaction)?;
+                            Ok(signed_transaction)
                         })
                 })
                 .collect(),
@@ -1447,6 +1506,10 @@ impl TransactionsApi {
             MempoolStatusCode::RejectedByFilter => Err(AptosError::new_with_error_code(
                 mempool_status.message,
                 AptosErrorCode::RejectedByFilter,
+            )),
+            MempoolStatusCode::RateLimited => Err(AptosError::new_with_error_code(
+                mempool_status.message,
+                AptosErrorCode::RateLimited,
             )),
         }
     }
@@ -1542,8 +1605,13 @@ impl TransactionsApi {
         // Return the possible failures, and have a different success code for partial success
         let response_status = if txn_failures.is_empty() {
             SubmitTransactionsBatchResponseStatus::Accepted
+        } else if txn_failures.len() == txns.len() {
+            return Err(SubmitTransactionError::bad_request_with_code(
+                "All transactions submitted were invalid.",
+                AptosErrorCode::InvalidInput,
+                ledger_info,
+            ));
         } else {
-            // TODO: This should really throw an error if all fail
             SubmitTransactionsBatchResponseStatus::AcceptedPartial
         };
 
@@ -1580,6 +1648,18 @@ impl TransactionsApi {
             ));
         }
 
+        if txn
+            .raw_transaction_ref()
+            .payload_ref()
+            .is_encrypted_variant()
+        {
+            return Err(SubmitTransactionError::bad_request_with_code(
+                "Encrypted transactions cannot be simulated",
+                AptosErrorCode::InvalidInput,
+                &ledger_info,
+            ));
+        }
+
         // Simulate transaction
         let state_view = self.context.latest_state_view_poem(&ledger_info)?;
         let (vm_status, output) =
@@ -1610,6 +1690,9 @@ impl TransactionsApi {
                                 &entry_function.function().into(),
                             )
                         },
+                        MultisigTransactionPayload::Script(_) => {
+                            format!("Multisig::Script::{}", txn.committed_hash()).to_string()
+                        },
                     }
                 } else {
                     "Multisig::unknown".to_string()
@@ -1639,6 +1722,9 @@ impl TransactionsApi {
                 };
                 stats_key
             },
+            TransactionPayload::EncryptedPayload(_) => {
+                unreachable!("Encrypted transactions must not be simulated")
+            },
         };
         self.context
             .simulate_txn_stats()
@@ -1648,15 +1734,13 @@ impl TransactionsApi {
         // All state hashes are invalid, and will be filled with 0s
         let txn = aptos_types::transaction::Transaction::UserTransaction(txn);
         let zero_hash = aptos_crypto::HashValue::zero();
-        let info = aptos_types::transaction::TransactionInfo::new(
-            txn.hash(),
-            zero_hash,
-            zero_hash,
-            None,
-            output.gas_used(),
-            exe_status,
-            None,
-        );
+        let info = aptos_types::transaction::TransactionInfo::builder_v0()
+            .transaction_hash(txn.committed_hash())
+            .state_change_hash(zero_hash)
+            .event_root_hash(zero_hash)
+            .gas_used(output.gas_used())
+            .status(exe_status)
+            .build();
         let mut events = output.events().to_vec();
         let _ = self
             .context

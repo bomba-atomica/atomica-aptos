@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     config::{
@@ -30,25 +29,26 @@ pub const BUFFERED_STATE_TARGET_ITEMS_FOR_TEST: usize = 10;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct DbPathConfig {
-    pub ledger_db_path: Option<PathBuf>,
-    pub state_kv_db_path: Option<ShardedDbPathConfig>,
-    pub state_merkle_db_path: Option<ShardedDbPathConfig>,
-    pub hot_state_kv_db_path: Option<ShardedDbPathConfig>,
+struct DbPathConfig {
+    ledger_db_path: Option<PathBuf>,
+    state_kv_db_path: Option<ShardedDbPathConfig>,
+    state_merkle_db_path: Option<ShardedDbPathConfig>,
+    hot_state_kv_db_path: Option<ShardedDbPathConfig>,
+    hot_state_merkle_db_path: Option<ShardedDbPathConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ShardedDbPathConfig {
-    pub metadata_path: Option<PathBuf>,
-    pub shard_paths: Vec<ShardPathConfig>,
+struct ShardedDbPathConfig {
+    metadata_path: Option<PathBuf>,
+    shard_paths: Vec<ShardPathConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ShardPathConfig {
-    pub shards: String,
-    pub path: PathBuf,
+struct ShardPathConfig {
+    shards: String,
+    path: PathBuf,
 }
 
 impl ShardedDbPathConfig {
@@ -112,10 +112,17 @@ pub enum RocksDBStatsLevel {
     All,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IndexType {
+    BinarySearch,
+    HashSearch,
+    TwoLevelIndexSearch,
+}
+
 /// Port selected RocksDB options for tuning underlying rocksdb instance of AptosDB.
 /// see <https://github.com/facebook/rocksdb/blob/master/include/rocksdb/options.h>
 /// for detailed explanations.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RocksdbConfig {
     /// Maximum number of files open by RocksDB at one time
@@ -129,6 +136,10 @@ pub struct RocksdbConfig {
     pub block_cache_size: u64,
     /// Block size for Rocks DB
     pub block_size: u64,
+    /// Index type used for tables.
+    pub index_type: IndexType,
+    /// Use partitioned filters.
+    pub partition_filters: bool,
     /// Whether to cache index and filter blocks into block cache.
     pub cache_index_and_filter_blocks: bool,
     /// Whether to pin L0 filters and indexes in memory. Only makes sense if
@@ -140,6 +151,10 @@ pub struct RocksdbConfig {
     /// If not zero, dump stats to LOG every this many seconds. `None` means using RocksDB's
     /// default.
     pub stats_dump_period_sec: Option<u32>,
+    /// Enable bloom filters with given space per key.
+    pub bloom_filter_bits: Option<f64>,
+    /// If not `None`, use hybrid ribbon filter policy.
+    pub bloom_before_level: Option<i32>,
 }
 
 impl RocksdbConfig {
@@ -152,14 +167,16 @@ impl Default for RocksdbConfig {
         Self {
             // Allow db to close old sst files, saving memory.
             max_open_files: 5000,
-            // For now we set the max total WAL size to be 1G. This config can be useful when column
+            // Max size WAL can accumulate per DB before a flush is forced. Useful when column
             // families are updated at non-uniform frequencies.
-            max_total_wal_size: 1u64 << 30,
+            max_total_wal_size: 512 << 20,
             // This includes jobs for flush and compaction.
             max_background_jobs: 4,
             // Not used. Only kept for backward compatibility.
             block_cache_size: 0,
             block_size: Self::DEFAULT_BLOCK_SIZE,
+            index_type: IndexType::TwoLevelIndexSearch,
+            partition_filters: true,
             // Count index/filter blocks in block cache usage by default.
             cache_index_and_filter_blocks: true,
             // L0 index/filter blocks are usually small and used frequently.
@@ -168,11 +185,13 @@ impl Default for RocksdbConfig {
             stats_level: Some(RocksDBStatsLevel::ExceptHistogramOrTimers),
             // Use RocksDB's default if not specified.
             stats_dump_period_sec: None,
+            bloom_filter_bits: None,
+            bloom_before_level: None,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RocksdbConfigs {
     // TODO(grao): Add RocksdbConfig for individual ledger DBs when necessary.
@@ -201,26 +220,63 @@ impl Default for RocksdbConfigs {
     fn default() -> Self {
         Self {
             ledger_db_config: RocksdbConfig::default(),
-            state_merkle_db_config: RocksdbConfig::default(),
-            state_kv_db_config: RocksdbConfig::default(),
+            state_merkle_db_config: RocksdbConfig {
+                max_total_wal_size: 256 << 20,
+                ..Default::default()
+            },
+            state_kv_db_config: RocksdbConfig {
+                bloom_filter_bits: Some(10.0),
+                bloom_before_level: Some(2),
+                max_total_wal_size: 256 << 20,
+                ..Default::default()
+            },
             index_db_config: RocksdbConfig {
                 max_open_files: 1000,
                 ..Default::default()
             },
             enable_storage_sharding: true,
             high_priority_background_threads: 4,
-            low_priority_background_threads: 2,
+            low_priority_background_threads: 4,
             shared_block_cache_size: Self::DEFAULT_BLOCK_CACHE_SIZE,
         }
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HotStateConfig {
+    /// Max number of items in each shard.
+    pub max_items_per_shard: usize,
+    /// Every now and then refresh `hot_since_version` for hot items to prevent them from being
+    /// evicted.
+    pub refresh_interval_versions: u64,
+    /// Whether to delete persisted data on disk on restart. Used during development.
+    pub delete_on_restart: bool,
+    /// Whether we compute root hashes for hot state in executor and commit the resulting JMT to
+    /// db.
+    pub compute_root_hash: bool,
+}
+
+impl Default for HotStateConfig {
+    fn default() -> Self {
+        Self {
+            max_items_per_shard: 250_000,
+            refresh_interval_versions: 100_000,
+            delete_on_restart: true,
+            compute_root_hash: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
     pub backup_service_address: SocketAddr,
+    pub backup_service_runtime_threads: Option<usize>,
     /// Top level directory to store the RocksDB
     pub dir: PathBuf,
+    /// Hot state configuration
+    pub hot_state_config: HotStateConfig,
     /// Storage pruning configuration
     pub storage_pruner_config: PrunerConfig,
     /// Subdirectory for storage in tests only
@@ -237,15 +293,10 @@ pub struct StorageConfig {
     pub max_num_nodes_per_lru_cache_shard: usize,
     /// Rocksdb-specific configurations
     pub rocksdb_configs: RocksdbConfigs,
-    /// Try to enable the internal indexer. The indexer expects to have seen all transactions
-    /// since genesis. To recover operation after data loss, or to bootstrap a node in fast sync
-    /// mode, the indexer db needs to be copied in from another node.
-    /// TODO(jill): deprecate Indexer once Indexer Async V2 is ready
-    pub enable_indexer: bool,
     /// Fine grained control for db paths of individal databases/shards.
     /// If not specificed, will use `dir` as default.
     /// Only allowed when sharding is enabled.
-    pub db_path_overrides: Option<DbPathConfig>,
+    db_path_overrides: Option<DbPathConfig>,
     /// ensure `ulimit -n`, set to 0 to not ensure.
     pub ensure_rlimit_nofile: u64,
     /// panic if failed to ensure `ulimit -n`
@@ -269,6 +320,7 @@ pub const NO_OP_STORAGE_PRUNER_CONFIG: PrunerConfig = PrunerConfig {
         prune_window: 0,
         batch_size: 0,
     },
+    stale_node_cleanup_batch_size: 50_000,
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -325,12 +377,26 @@ impl From<EpochSnapshotPrunerConfig> for StateMerklePrunerConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Default)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PrunerConfig {
     pub ledger_pruner_config: LedgerPrunerConfig,
     pub state_merkle_pruner_config: StateMerklePrunerConfig,
     pub epoch_snapshot_pruner_config: EpochSnapshotPrunerConfig,
+    /// Batch size for the one-time leaked stale node cleanup that runs on startup.
+    /// Set to 0 to disable.
+    pub stale_node_cleanup_batch_size: usize,
+}
+
+impl Default for PrunerConfig {
+    fn default() -> Self {
+        Self {
+            ledger_pruner_config: LedgerPrunerConfig::default(),
+            state_merkle_pruner_config: StateMerklePrunerConfig::default(),
+            epoch_snapshot_pruner_config: EpochSnapshotPrunerConfig::default(),
+            stale_node_cleanup_batch_size: 50_000,
+        }
+    }
 }
 
 impl Default for LedgerPrunerConfig {
@@ -383,7 +449,9 @@ impl Default for StorageConfig {
     fn default() -> StorageConfig {
         StorageConfig {
             backup_service_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6186),
+            backup_service_runtime_threads: Some(2),
             dir: PathBuf::from("db"),
+            hot_state_config: HotStateConfig::default(),
             // The prune window must at least out live a RPC request because its sub requests are
             // to return a consistent view of the DB at exactly same version. Considering a few
             // thousand TPS we are potentially going to achieve, and a few minutes a consistent view
@@ -393,7 +461,6 @@ impl Default for StorageConfig {
             storage_pruner_config: PrunerConfig::default(),
             data_dir: PathBuf::from("/opt/aptos/data"),
             rocksdb_configs: RocksdbConfigs::default(),
-            enable_indexer: false,
             db_path_overrides: None,
             buffered_state_target_items: BUFFERED_STATE_TARGET_ITEMS,
             max_num_nodes_per_lru_cache_shard: DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
@@ -418,6 +485,7 @@ impl StorageConfig {
         let mut state_kv_db_paths = ShardedDbPaths::default();
         let mut state_merkle_db_paths = ShardedDbPaths::default();
         let mut hot_state_kv_db_paths = ShardedDbPaths::default();
+        let mut hot_state_merkle_db_paths = ShardedDbPaths::default();
 
         if let Some(db_path_overrides) = self.db_path_overrides.as_ref() {
             db_path_overrides
@@ -435,6 +503,12 @@ impl StorageConfig {
             if let Some(hot_state_kv_db_path) = db_path_overrides.hot_state_kv_db_path.as_ref() {
                 hot_state_kv_db_paths = ShardedDbPaths::new(hot_state_kv_db_path);
             }
+
+            if let Some(hot_state_merkle_db_path) =
+                db_path_overrides.hot_state_merkle_db_path.as_ref()
+            {
+                hot_state_merkle_db_paths = ShardedDbPaths::new(hot_state_merkle_db_path);
+            }
         }
 
         StorageDirPaths::new(
@@ -443,6 +517,7 @@ impl StorageConfig {
             state_kv_db_paths,
             state_merkle_db_paths,
             hot_state_kv_db_paths,
+            hot_state_merkle_db_paths,
         )
     }
 
@@ -463,6 +538,9 @@ pub struct StorageDirPaths {
     state_kv_db_paths: ShardedDbPaths,
     state_merkle_db_paths: ShardedDbPaths,
     hot_state_kv_db_paths: ShardedDbPaths,
+    hot_state_merkle_db_paths: ShardedDbPaths,
+    position_db_paths: ShardedDbPaths,
+    position_merkle_db_paths: ShardedDbPaths,
 }
 
 impl StorageDirPaths {
@@ -502,8 +580,50 @@ impl StorageDirPaths {
             .unwrap_or(&self.default_path)
     }
 
+    pub fn hot_state_kv_db_metadata_root_path(&self) -> &PathBuf {
+        self.hot_state_kv_db_paths
+            .metadata_path()
+            .unwrap_or(&self.default_path)
+    }
+
     pub fn hot_state_kv_db_shard_root_path(&self, shard_id: usize) -> &PathBuf {
         self.hot_state_kv_db_paths
+            .shard_path(shard_id)
+            .unwrap_or(&self.default_path)
+    }
+
+    pub fn hot_state_merkle_db_metadata_root_path(&self) -> &PathBuf {
+        self.hot_state_merkle_db_paths
+            .metadata_path()
+            .unwrap_or(&self.default_path)
+    }
+
+    pub fn hot_state_merkle_db_shard_root_path(&self, shard_id: usize) -> &PathBuf {
+        self.hot_state_merkle_db_paths
+            .shard_path(shard_id)
+            .unwrap_or(&self.default_path)
+    }
+
+    pub fn position_db_metadata_root_path(&self) -> &PathBuf {
+        self.position_db_paths
+            .metadata_path()
+            .unwrap_or(&self.default_path)
+    }
+
+    pub fn position_db_shard_root_path(&self, shard_id: usize) -> &PathBuf {
+        self.position_db_paths
+            .shard_path(shard_id)
+            .unwrap_or(&self.default_path)
+    }
+
+    pub fn position_merkle_db_metadata_root_path(&self) -> &PathBuf {
+        self.position_merkle_db_paths
+            .metadata_path()
+            .unwrap_or(&self.default_path)
+    }
+
+    pub fn position_merkle_db_shard_root_path(&self, shard_id: usize) -> &PathBuf {
+        self.position_merkle_db_paths
             .shard_path(shard_id)
             .unwrap_or(&self.default_path)
     }
@@ -515,6 +635,9 @@ impl StorageDirPaths {
             state_kv_db_paths: Default::default(),
             state_merkle_db_paths: Default::default(),
             hot_state_kv_db_paths: Default::default(),
+            hot_state_merkle_db_paths: Default::default(),
+            position_db_paths: Default::default(),
+            position_merkle_db_paths: Default::default(),
         }
     }
 
@@ -524,6 +647,7 @@ impl StorageDirPaths {
         state_kv_db_paths: ShardedDbPaths,
         state_merkle_db_paths: ShardedDbPaths,
         hot_state_kv_db_paths: ShardedDbPaths,
+        hot_state_merkle_db_paths: ShardedDbPaths,
     ) -> Self {
         Self {
             default_path,
@@ -531,6 +655,9 @@ impl StorageDirPaths {
             state_kv_db_paths,
             state_merkle_db_paths,
             hot_state_kv_db_paths,
+            hot_state_merkle_db_paths,
+            position_db_paths: Default::default(),
+            position_merkle_db_paths: Default::default(),
         }
     }
 }
@@ -585,10 +712,11 @@ impl ConfigOptimizer for StorageConfig {
                 config.assert_rlimit_nofile = true;
                 modified_config = true;
             }
-            if (chain_id.is_testnet() || chain_id.is_mainnet())
-                && config_yaml["rocksdb_configs"]["enable_storage_sharding"].as_bool() != Some(true)
+            if chain_id.is_devnet()
+                && config_yaml["hot_state_config"]["delete_on_restart"].is_null()
             {
-                panic!("Storage sharding (AIP-97) is not enabled in node config. Please follow the guide to migration your node, and set storage.rocksdb_configs.enable_storage_sharding to true explicitly in your node config. https://aptoslabs.notion.site/DB-Sharding-Migration-Public-Full-Nodes-1978b846eb7280b29f17ceee7d480730");
+                config.hot_state_config.delete_on_restart = false;
+                modified_config = true;
             }
         }
 
@@ -645,19 +773,13 @@ impl ConfigSanitizer for StorageConfig {
         }
 
         if let Some(db_path_overrides) = config.db_path_overrides.as_ref() {
-            if !config.rocksdb_configs.enable_storage_sharding {
-                return Err(Error::ConfigSanitizerFailed(
-                    sanitizer_name,
-                    "db_path_overrides is allowed only if sharding is enabled.".to_string(),
-                ));
-            }
-
             if let Some(ledger_db_path) = db_path_overrides.ledger_db_path.as_ref() {
                 if !ledger_db_path.is_absolute() {
                     return Err(Error::ConfigSanitizerFailed(
                         sanitizer_name,
-                        "Path {ledger_db_path:?} in db_path_overrides is not an absolute path."
-                            .to_string(),
+                        format!(
+                            "Path {ledger_db_path:?} in db_path_overrides is not an absolute path."
+                        ),
                     ));
                 }
             }
@@ -667,8 +789,7 @@ impl ConfigSanitizer for StorageConfig {
                     if !metadata_path.is_absolute() {
                         return Err(Error::ConfigSanitizerFailed(
                             sanitizer_name,
-                            "Path {metadata_path:?} in db_path_overrides is not an absolute path."
-                                .to_string(),
+                            format!("Path {metadata_path:?} in db_path_overrides is not an absolute path."),
                         ));
                     }
                 }
@@ -683,13 +804,29 @@ impl ConfigSanitizer for StorageConfig {
                     if !metadata_path.is_absolute() {
                         return Err(Error::ConfigSanitizerFailed(
                             sanitizer_name,
-                            "Path {metadata_path:?} in db_path_overrides is not an absolute path."
-                                .to_string(),
+                            format!("Path {metadata_path:?} in db_path_overrides is not an absolute path."),
                         ));
                     }
                 }
 
                 if let Err(e) = state_merkle_db_path.get_shard_paths() {
+                    return Err(Error::ConfigSanitizerFailed(sanitizer_name, e.to_string()));
+                }
+            }
+
+            if let Some(hot_state_merkle_db_path) =
+                db_path_overrides.hot_state_merkle_db_path.as_ref()
+            {
+                if let Some(metadata_path) = hot_state_merkle_db_path.metadata_path.as_ref() {
+                    if !metadata_path.is_absolute() {
+                        return Err(Error::ConfigSanitizerFailed(
+                            sanitizer_name,
+                            format!("Path {metadata_path:?} in db_path_overrides is not an absolute path."),
+                        ));
+                    }
+                }
+
+                if let Err(e) = hot_state_merkle_db_path.get_shard_paths() {
                     return Err(Error::ConfigSanitizerFailed(sanitizer_name, e.to_string()));
                 }
             }
@@ -701,11 +838,9 @@ impl ConfigSanitizer for StorageConfig {
 
 #[cfg(test)]
 mod test {
-    use crate::config::{
-        config_optimizer::ConfigOptimizer, NodeConfig, NodeType, PrunerConfig, ShardPathConfig,
-        ShardedDbPathConfig, StorageConfig,
-    };
-    use aptos_types::chain_id::ChainId;
+    use super::{ShardPathConfig, ShardedDbPathConfig, StorageConfig};
+    use crate::config::{config_optimizer::ConfigOptimizer, NodeConfig, NodeType, PrunerConfig};
+    use aptos_types::chain_id::{ChainId, NamedChain};
 
     #[test]
     pub fn test_default_prune_window() {
@@ -819,5 +954,65 @@ mod test {
 
         assert_eq!(node_config.storage.ensure_rlimit_nofile, 999_999);
         assert!(node_config.storage.assert_rlimit_nofile);
+    }
+
+    #[test]
+    fn test_optimize_delete_on_restart() {
+        let yaml = serde_yaml::from_str(
+            r#"
+            storage:
+              rocksdb_configs:
+                enable_storage_sharding: true
+            "#,
+        )
+        .unwrap();
+
+        // Devnet disables it, including for the chain IDs devnet actually rotates through.
+        for chain_id in [
+            ChainId::new(NamedChain::DEVNET.id()),
+            ChainId::new(30),
+            ChainId::new(240),
+        ] {
+            let mut node_config = NodeConfig::default();
+            assert!(node_config.storage.hot_state_config.delete_on_restart);
+
+            let modified_config = StorageConfig::optimize(
+                &mut node_config,
+                &yaml,
+                NodeType::Validator,
+                Some(chain_id),
+            )
+            .unwrap();
+            assert!(modified_config);
+            assert!(!node_config.storage.hot_state_config.delete_on_restart);
+        }
+
+        // Other chains keep the default.
+        for chain_id in [ChainId::mainnet(), ChainId::testnet(), ChainId::test()] {
+            let mut node_config = NodeConfig::default();
+            StorageConfig::optimize(&mut node_config, &yaml, NodeType::Validator, Some(chain_id))
+                .unwrap();
+            assert!(node_config.storage.hot_state_config.delete_on_restart);
+        }
+
+        // An explicit setting in the local config wins over the optimizer.
+        let yaml = serde_yaml::from_str(
+            r#"
+            storage:
+              hot_state_config:
+                delete_on_restart: true
+            "#,
+        )
+        .unwrap();
+        let mut node_config = NodeConfig::default();
+        let modified_config = StorageConfig::optimize(
+            &mut node_config,
+            &yaml,
+            NodeType::Validator,
+            Some(ChainId::new(NamedChain::DEVNET.id())),
+        )
+        .unwrap();
+        assert!(!modified_config);
+        assert!(node_config.storage.hot_state_config.delete_on_restart);
     }
 }

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_config::config::{AdminServiceConfig, AuthenticationConfig, NodeConfig};
 use aptos_consensus::{
@@ -87,7 +87,7 @@ impl AdminService {
             .unwrap();
 
         // Create a runtime for the admin service
-        let runtime = aptos_runtimes::spawn_named_runtime("admin".into(), None);
+        let runtime = aptos_runtimes::spawn_named_runtime("admin".into(), config.num_threads);
 
         // TODO(grao): Consider support enabling the service through an authenticated request.
         let enabled = config.enabled.unwrap_or(false);
@@ -190,7 +190,9 @@ impl AdminService {
                 malloc::handle_malloc_stats_request(context.config.malloc_stats_max_len)
             },
             #[cfg(unix)]
-            (hyper::Method::GET, "/malloc/dump_profile") => malloc::handle_dump_profile_request(),
+            (hyper::Method::GET, "/malloc/dump_profile") => {
+                malloc::handle_dump_profile_request(req).await
+            },
             (hyper::Method::GET, "/debug/consensus/consensusdb") => {
                 let consensus_db = context.consensus_db.read().clone();
                 if let Some(consensus_db) = consensus_db {

@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Utility for building a `CompiledModule` (or `CompiledScript`).
 //!
@@ -962,7 +962,8 @@ impl<'a> ModuleBuilder<'a> {
                 parameters,
                 return_,
                 type_parameters: fhandle.type_parameters.clone(),
-                access_specifiers: fhandle.access_specifiers.clone(),
+                // Resource access control was removed; never carry access specifiers.
+                access_specifiers: None,
                 attributes: fhandle.attributes.clone(),
             })
         } else {

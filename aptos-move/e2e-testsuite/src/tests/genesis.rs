@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_language_e2e_tests::{common_transactions::peer_to_peer_txn, executor::FakeExecutor};
 use aptos_transaction_simulation::GENESIS_CHANGE_SET_HEAD;
@@ -8,7 +7,6 @@ use aptos_types::{
     transaction::{ChangeSet, Transaction, TransactionStatus, WriteSetPayload},
     write_set::TransactionWrite,
 };
-use move_core_types::vm_status::StatusCode;
 
 #[test]
 fn no_deletion_in_genesis() {
@@ -64,5 +62,7 @@ fn fail_no_epoch_change_write_set() {
     let output_err = executor
         .execute_transaction_block(vec![txn, Transaction::UserTransaction(txn2)])
         .unwrap_err();
-    assert_eq!(StatusCode::INVALID_WRITE_SET, output_err.status_code());
+    // Block execution no longer threads the original StatusCode; the specific
+    // failure reason survives only in the stringified error message.
+    assert!(output_err.message().unwrap().contains("INVALID_WRITE_SET"));
 }

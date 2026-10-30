@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 use anyhow::{ensure, format_err, Error, Result};
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize};
 use std::{convert::TryFrom, fmt, str::FromStr};
@@ -85,6 +84,12 @@ impl ChainId {
     /// Returns true iff the chain ID matches mainnet
     pub fn is_mainnet(&self) -> bool {
         self.matches_named_chain(NamedChain::MAINNET)
+    }
+
+    /// Returns true iff the chain ID matches devnet
+    pub fn is_devnet(&self) -> bool {
+        // NOTE: hardcoded in internal-ops. ID 3 is kept for compatibility with NamedChain::DEVNET.
+        matches!(self.id(), 3 | 10..=49 | 225..=249)
     }
 
     /// Returns true iff the chain ID matches the given named chain
@@ -215,5 +220,28 @@ mod test {
         assert!(ChainId::from_str("255255").is_err());
         assert_eq!(ChainId::from_str("TESTING").unwrap(), ChainId::test());
         assert_eq!(ChainId::from_str("255").unwrap(), ChainId::new(255));
+    }
+
+    #[test]
+    fn test_chain_id_display_roundtrip() {
+        for id in 1..=u8::MAX {
+            let chain_id = ChainId::new(id);
+            assert_eq!(ChainId::from_str(&chain_id.to_string()).unwrap(), chain_id);
+        }
+    }
+
+    #[test]
+    fn test_chain_id_is_devnet() {
+        for id in [3, 10, 49, 225, 249] {
+            assert!(ChainId::new(id).is_devnet(), "{} should be devnet", id);
+        }
+        // Reserved named chains and IDs outside the devnet ranges.
+        for id in [1, 2, 4, 5, 9, 50, 224, 250, 255] {
+            assert!(!ChainId::new(id).is_devnet(), "{} should not be devnet", id);
+        }
+
+        assert!(!ChainId::mainnet().is_devnet());
+        assert!(!ChainId::testnet().is_devnet());
+        assert!(!ChainId::test().is_devnet());
     }
 }

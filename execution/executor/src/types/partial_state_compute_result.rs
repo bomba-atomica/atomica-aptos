@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -9,7 +9,10 @@ use aptos_executor_types::{
     state_compute_result::StateComputeResult, LedgerUpdateOutput,
 };
 use aptos_storage_interface::{
-    state_store::{state::LedgerState, state_summary::LedgerStateSummary},
+    state_store::{
+        sharded_jmt_state::PositionStateWithSummary, state::LedgerState,
+        state_summary::LedgerStateSummary, state_with_summary::LedgerWithSummary,
+    },
     LedgerSummary,
 };
 use once_cell::sync::OnceCell;
@@ -44,6 +47,7 @@ impl PartialStateComputeResult {
         state_checkpoint_output
             .set(StateCheckpointOutput::new_empty(
                 ledger_summary.state_summary,
+                ledger_summary.position_state_summary,
             ))
             .expect("First set.");
 
@@ -71,6 +75,13 @@ impl PartialStateComputeResult {
     pub fn ensure_result_state_summary(&self) -> Result<&LedgerStateSummary> {
         self.ensure_state_checkpoint_output()
             .map(|out| &out.state_summary)
+    }
+
+    pub fn ensure_result_position_state_summary(
+        &self,
+    ) -> Result<Option<&LedgerWithSummary<PositionStateWithSummary>>> {
+        self.ensure_state_checkpoint_output()
+            .map(|out| out.position_state_summary.as_ref())
     }
 
     pub fn set_state_checkpoint_output(&self, state_checkpoint_output: StateCheckpointOutput) {

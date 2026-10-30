@@ -1,30 +1,40 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     db::{
         aptosdb_internal::get_first_seq_num_and_limit,
         test_helper::{
-            arb_blocks_to_commit, put_transaction_auxiliary_data, test_save_blocks_impl,
-            test_sync_transactions_impl,
+            arb_blocks_to_commit, arb_blocks_to_commit_with_params, put_transaction_auxiliary_data,
+            test_save_blocks_impl, test_sync_transactions_impl,
         },
         AptosDB,
     },
-    pruner::{LedgerPrunerManager, PrunerManager, StateMerklePrunerManager},
-    schema::stale_node_index::StaleNodeIndexSchema,
+    pruner::{LedgerPrunerManager, PrunerManager, StateMerkle, StateMerklePrunerManager},
+    schema::{
+        epoch_by_version::EpochByVersionSchema, jellyfish_merkle_node::JellyfishMerkleNodeSchema,
+        ledger_info::LedgerInfoSchema, stale_node_index::StaleNodeIndexSchema,
+        stale_node_index_cross_epoch::StaleNodeIndexCrossEpochSchema,
+        stale_state_value_index_by_key_hash::StaleStateValueIndexByKeyHashSchema,
+        state_value_by_key_hash::StateValueByKeyHashSchema, transaction::TransactionSchema,
+        transaction_accumulator::TransactionAccumulatorSchema,
+        transaction_info::TransactionInfoSchema, version_data::VersionDataSchema,
+        write_set::WriteSetSchema,
+    },
+    utils::truncation_helper::num_frozen_nodes_in_accumulator,
 };
 use aptos_config::config::{
-    EpochSnapshotPrunerConfig, LedgerPrunerConfig, PrunerConfig, RocksdbConfigs,
+    EpochSnapshotPrunerConfig, HotStateConfig, LedgerPrunerConfig, PrunerConfig, RocksdbConfigs,
     StateMerklePrunerConfig, StorageDirPaths, BUFFERED_STATE_TARGET_ITEMS_FOR_TEST,
     DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
 };
 use aptos_crypto::{hash::CryptoHash, HashValue};
-use aptos_storage_interface::{DbReader, Order};
+use aptos_storage_interface::{AptosDbError, DbReader, Order, StateKind};
 use aptos_temppath::TempPath;
 use aptos_types::{
     ledger_info::LedgerInfoWithSignatures,
     proof::SparseMerkleLeafNode,
-    state_store::{state_key::StateKey, state_value::StateValue},
+    state_store::{state_key::StateKey, state_value::StateValue, NUM_STATE_SHARDS},
     transaction::{
         ExecutionStatus, PersistedAuxiliaryInfo, TransactionAuxiliaryData,
         TransactionAuxiliaryDataV1, TransactionInfo, TransactionToCommit, VMErrorDetail, Version,
@@ -96,7 +106,7 @@ fn test_pruner_config() {
     let tmp_dir = TempPath::new();
     let aptos_db = AptosDB::new_for_test(&tmp_dir);
     for enable in [false, true] {
-        let state_merkle_pruner = StateMerklePrunerManager::<StaleNodeIndexSchema>::new(
+        let state_merkle_pruner = StateMerklePrunerManager::<StateMerkle>::new(
             Arc::clone(&aptos_db.state_merkle_db()),
             StateMerklePrunerConfig {
                 enable,
@@ -128,6 +138,7 @@ fn test_error_if_version_pruned() {
     let db = AptosDB::new_for_test(&tmp_dir);
     db.state_store
         .state_db
+        .state_pruner
         .state_merkle_pruner
         .save_min_readable_version(5)
         .unwrap();
@@ -143,9 +154,69 @@ fn test_error_if_version_pruned() {
         db.error_if_ledger_pruned("Transaction", 9)
             .unwrap_err()
             .to_string(),
-        "AptosDB Other Error: Transaction at version 9 is pruned, min available version is 10."
+        "Transaction at version 9 is pruned, min available version is 10."
     );
     assert!(db.error_if_ledger_pruned("Transaction", 10).is_ok());
+
+    // Callers match on the variant, so assert its shape and not just the message.
+    assert!(matches!(
+        db.error_if_ledger_pruned("Transaction", 9).unwrap_err(),
+        AptosDbError::LedgerPruned {
+            version: 9,
+            min_available_version: 10,
+            ..
+        }
+    ));
+
+    // Hot state guards consult the hot pruners, independent of the cold ones set above.
+    db.state_store
+        .state_db
+        .state_pruner
+        .hot_state_merkle_pruner
+        .save_min_readable_version(5)
+        .unwrap();
+    db.state_store
+        .state_db
+        .state_pruner
+        .hot_state_kv_pruner
+        .save_min_readable_version(10)
+        .unwrap();
+    assert_eq!(
+        db.error_if_hot_state_merkle_pruned("Hot state", 4)
+            .unwrap_err()
+            .to_string(),
+        "AptosDB Other Error: Version 4 is not epoch ending."
+    );
+    assert!(db.error_if_hot_state_merkle_pruned("Hot state", 5).is_ok());
+    assert_eq!(
+        db.error_if_hot_state_kv_pruned("HotStateValue", 9)
+            .unwrap_err()
+            .to_string(),
+        "AptosDB Other Error: HotStateValue at version 9 is pruned, min available version is 10."
+    );
+    assert!(db.error_if_hot_state_kv_pruned("HotStateValue", 10).is_ok());
+}
+
+#[test]
+fn test_state_proof_ext_guards_with_hot_pruner() {
+    let tmp_dir = TempPath::new();
+    let db = AptosDB::new_for_test(&tmp_dir);
+    // Prune the hot merkle above the queried version; leave the cold merkle unpruned.
+    db.state_store
+        .state_db
+        .state_pruner
+        .hot_state_merkle_pruner
+        .save_min_readable_version(10)
+        .unwrap();
+    let key_hash = StateKey::raw(b"key").hash();
+    // With use_hot_state the hot pruner must be consulted: version 5 < hot min 10 is rejected at
+    // the guard. Were the cold pruner (min 0) used instead, the guard would let version 5 through.
+    assert_eq!(
+        db.get_state_proof_by_version_ext(&key_hash, 5, 0, true)
+            .unwrap_err()
+            .to_string(),
+        "AptosDB Other Error: Version 5 is not epoch ending."
+    );
 }
 
 #[test]
@@ -197,15 +268,15 @@ fn test_get_latest_ledger_summary() {
     let auxiliary_info = PersistedAuxiliaryInfo::V1 {
         transaction_index: 0,
     };
-    let txn_info = TransactionInfo::new(
-        HashValue::random(),
-        HashValue::random(),
-        HashValue::random(),
-        Some(state_hash),
-        0,
-        ExecutionStatus::MiscellaneousError(None),
-        Some(auxiliary_info.hash()),
-    );
+    let txn_info = TransactionInfo::builder_v0()
+        .transaction_hash(HashValue::random())
+        .state_change_hash(HashValue::random())
+        .event_root_hash(HashValue::random())
+        .state_checkpoint_hash(state_hash)
+        .gas_used(0)
+        .status(ExecutionStatus::MiscellaneousError(None))
+        .auxiliary_info_hash(auxiliary_info.hash())
+        .build();
     let root_hash = txn_info.hash();
     let mut txn_to_commit = TransactionToCommit::dummy();
     txn_to_commit.transaction_info = txn_info;
@@ -250,12 +321,13 @@ pub fn test_state_merkle_pruning_impl(
                 prune_window: 10,
                 batch_size: 1,
             },
+            ..Default::default()
         },
         RocksdbConfigs::default(),
-        false, /* enable_indexer */
         BUFFERED_STATE_TARGET_ITEMS_FOR_TEST,
         DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
         None,
+        HotStateConfig::default(),
     )
     .unwrap();
 
@@ -291,8 +363,8 @@ pub fn test_state_merkle_pruning_impl(
             .collect();
 
         // Prune till the oldest snapshot readable.
-        let pruner = &db.state_store.state_db.state_merkle_pruner;
-        let epoch_snapshot_pruner = &db.state_store.state_db.epoch_snapshot_pruner;
+        let pruner = &db.state_store.state_db.state_pruner.state_merkle_pruner;
+        let epoch_snapshot_pruner = &db.state_store.state_db.state_pruner.epoch_snapshot_pruner;
         pruner.set_worker_target_version(*snapshots.first().unwrap());
         epoch_snapshot_pruner.set_worker_target_version(std::cmp::min(
             *snapshots.first().unwrap(),
@@ -332,5 +404,274 @@ proptest! {
     fn test_state_merkle_pruning(input in arb_blocks_to_commit()) {
         aptos_logger::Logger::new().init();
         test_state_merkle_pruning_impl(input);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(5))]
+
+    #[test]
+    fn test_truncation(input in arb_blocks_to_commit_with_params(
+        500, /* num_accounts — large pool so new key creations continue past target_version */
+        2,   /* max_user_txns_per_block */
+        80,  /* min_blocks */
+        120, /* max_blocks */
+        false, /* make_hot_in_epilogue */
+    )) {
+        aptos_logger::Logger::new().init();
+        let tmp_dir = TempPath::new();
+
+        let db = AptosDB::new_for_test_with_sharding(
+            &tmp_dir, DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
+        );
+        let mut version = 0;
+        for (txns_to_commit, ledger_info_with_sigs) in input.iter() {
+            db.save_transactions_for_test(
+                txns_to_commit,
+                version,
+                Some(ledger_info_with_sigs),
+                true,
+            )
+            .unwrap();
+            version += txns_to_commit.len() as u64;
+        }
+
+        let db_version = db.expect_synced_version();
+        prop_assert_eq!(db_version, version - 1);
+
+        drop(db);
+
+        let mut target_version = db_version - 70;
+
+        let db_dir = StorageDirPaths::from_path(tmp_dir.path());
+        AptosDB::truncate_to_version(&db_dir, target_version).unwrap();
+
+        let db = AptosDB::new_for_test_with_sharding(
+            &tmp_dir, DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
+        );
+        let db_version = db.expect_synced_version();
+        prop_assert!(db_version <= target_version);
+        target_version = db_version;
+
+        let txn_list_with_proof = db
+            .get_transactions(0, db_version + 1, db_version, true)
+            .unwrap()
+            .into_parts()
+            .0;
+        prop_assert_eq!(txn_list_with_proof.transactions.len() as u64, db_version + 1);
+        prop_assert_eq!(
+            txn_list_with_proof.clone().events.unwrap().len() as u64,
+            db_version + 1,
+        );
+        prop_assert_eq!(
+            txn_list_with_proof.get_first_transaction_version(),
+            Some(0),
+        );
+
+        let state_checkpoint_version =
+            db.get_latest_state_checkpoint_version().unwrap().unwrap();
+        let state_leaf_count =
+            db.get_state_item_count(state_checkpoint_version, StateKind::MainState).unwrap();
+        let state_value_chunk_with_proof = db
+            .get_state_value_chunk_with_proof(
+                state_checkpoint_version,
+                0,
+                state_leaf_count,
+                StateKind::MainState,
+            )
+            .unwrap();
+        prop_assert_eq!(state_value_chunk_with_proof.first_index, 0);
+        prop_assert_eq!(
+            state_value_chunk_with_proof.last_index as usize,
+            state_leaf_count - 1,
+        );
+        prop_assert_eq!(
+            state_value_chunk_with_proof.raw_values.len(),
+            state_leaf_count,
+        );
+        prop_assert!(state_value_chunk_with_proof.is_last_chunk());
+
+        drop(db);
+
+        // Open raw DBs to verify all column families are properly truncated.
+        // TODO(HotState): handle _hot_state_merkle_db and _hot_state_kv_db here.
+        let (ledger_db, _hot_state_merkle_db, state_merkle_db, _hot_state_kv_db, state_kv_db) =
+            AptosDB::open_dbs(
+                &db_dir,
+                RocksdbConfigs::default(),
+                None,
+                None,
+                /*readonly=*/ false,
+                /*max_num_nodes_per_lru_cache_shard=*/ 0,
+                HotStateConfig {
+                    delete_on_restart: true,
+                    ..HotStateConfig::default()
+                },
+            )
+            .unwrap();
+
+        let ledger_metadata_db = ledger_db.metadata_db_arc();
+
+        let num_frozen_nodes = num_frozen_nodes_in_accumulator(target_version + 1);
+        let mut iter = ledger_db
+            .transaction_accumulator_db_raw()
+            .iter::<TransactionAccumulatorSchema>()
+            .unwrap();
+        iter.seek_to_last();
+        let position = iter.next().transpose().unwrap().unwrap().0;
+        prop_assert_eq!(position.to_postorder_index() + 1, num_frozen_nodes);
+
+        let mut iter = ledger_db
+            .transaction_info_db_raw()
+            .iter::<TransactionInfoSchema>()
+            .unwrap();
+        iter.seek_to_last();
+        prop_assert_eq!(
+            iter.next().transpose().unwrap().unwrap().0,
+            target_version,
+        );
+
+        let mut iter = ledger_db
+            .transaction_db_raw()
+            .iter::<TransactionSchema>()
+            .unwrap();
+        iter.seek_to_last();
+        prop_assert_eq!(
+            iter.next().transpose().unwrap().unwrap().0,
+            target_version,
+        );
+
+        let mut iter = ledger_metadata_db.iter::<VersionDataSchema>().unwrap();
+        iter.seek_to_last();
+        prop_assert!(
+            iter.next().transpose().unwrap().unwrap().0 <= target_version
+        );
+
+        let mut iter = ledger_db
+            .write_set_db_raw()
+            .iter::<WriteSetSchema>()
+            .unwrap();
+        iter.seek_to_last();
+        prop_assert_eq!(
+            iter.next().transpose().unwrap().unwrap().0,
+            target_version,
+        );
+
+        let mut iter = ledger_metadata_db
+            .iter::<EpochByVersionSchema>()
+            .unwrap();
+        iter.seek_to_last();
+        let (version, epoch) = iter.next().transpose().unwrap().unwrap();
+        prop_assert!(version <= target_version);
+
+        let mut iter = ledger_metadata_db.iter::<LedgerInfoSchema>().unwrap();
+        iter.seek_to_last();
+        prop_assert_eq!(iter.next().transpose().unwrap().unwrap().0, epoch);
+
+        {
+            let mut iter = state_kv_db
+                .metadata_db()
+                .iter::<StateValueByKeyHashSchema>()
+                .unwrap();
+            iter.seek_to_first();
+            for item in iter {
+                let ((_, version), _) = item.unwrap();
+                prop_assert!(version <= target_version);
+            }
+
+            let mut iter = state_kv_db
+                .metadata_db()
+                .iter::<StaleStateValueIndexByKeyHashSchema>()
+                .unwrap();
+            iter.seek_to_first();
+            for item in iter {
+                let version = item.unwrap().0.stale_since_version;
+                prop_assert!(version <= target_version);
+            }
+        }
+
+        let mut iter = state_merkle_db
+            .metadata_db()
+            .iter::<StaleNodeIndexSchema>()
+            .unwrap();
+        iter.seek_to_first();
+        for item in iter {
+            let version = item.unwrap().0.stale_since_version;
+            prop_assert!(version <= target_version);
+        }
+
+        let mut iter = state_merkle_db
+            .metadata_db()
+            .iter::<StaleNodeIndexCrossEpochSchema>()
+            .unwrap();
+        iter.seek_to_first();
+        for item in iter {
+            let version = item.unwrap().0.stale_since_version;
+            prop_assert!(version <= target_version);
+        }
+
+        let mut iter = state_merkle_db
+            .metadata_db()
+            .iter::<JellyfishMerkleNodeSchema>()
+            .unwrap();
+        iter.seek_to_first();
+        for item in iter {
+            let version = item.unwrap().0.version();
+            prop_assert!(version <= target_version);
+        }
+
+        {
+            let state_merkle_db = Arc::new(state_merkle_db);
+            for i in 0..NUM_STATE_SHARDS {
+                let mut kv_shard_iter = state_kv_db
+                    .db_shard(i)
+                    .iter::<StateValueByKeyHashSchema>()
+                    .unwrap();
+                kv_shard_iter.seek_to_first();
+                for item in kv_shard_iter {
+                    let ((_, version), _) = item.unwrap();
+                    prop_assert!(version <= target_version);
+                }
+
+                let value_index_shard_iter = state_kv_db
+                    .db_shard(i)
+                    .iter::<StaleStateValueIndexByKeyHashSchema>()
+                    .unwrap();
+                for item in value_index_shard_iter {
+                    let version = item.unwrap().0.stale_since_version;
+                    prop_assert!(version <= target_version);
+                }
+
+                let mut stale_node_ind_iter = state_merkle_db
+                    .db_shard(i)
+                    .iter::<StaleNodeIndexSchema>()
+                    .unwrap();
+                stale_node_ind_iter.seek_to_first();
+                for item in stale_node_ind_iter {
+                    let version = item.unwrap().0.stale_since_version;
+                    prop_assert!(version <= target_version);
+                }
+
+                let mut jelly_iter = state_merkle_db
+                    .db_shard(i)
+                    .iter::<JellyfishMerkleNodeSchema>()
+                    .unwrap();
+                jelly_iter.seek_to_first();
+                for item in jelly_iter {
+                    let version = item.unwrap().0.version();
+                    prop_assert!(version <= target_version);
+                }
+
+                let mut cross_iter = state_merkle_db
+                    .db_shard(i)
+                    .iter::<StaleNodeIndexCrossEpochSchema>()
+                    .unwrap();
+                cross_iter.seek_to_first();
+                for item in cross_iter {
+                    let version = item.unwrap().0.stale_since_version;
+                    prop_assert!(version <= target_version);
+                }
+            }
+        }
     }
 }

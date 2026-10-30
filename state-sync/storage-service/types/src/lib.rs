@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -35,6 +34,8 @@ pub enum StorageServiceError {
     InvalidRequest(String),
     #[error("Too many invalid requests! Back off required: {0}")]
     TooManyInvalidRequests(String),
+    #[error("Too many requests! Back off required: {0}")]
+    TooManyRequests(String),
 }
 
 /// A single storage service message sent or received over AptosNet.

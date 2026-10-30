@@ -1,11 +1,11 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block_data::{BlockData, BlockType},
     common::{Author, Payload, Round},
     opt_block_data::OptBlockData,
+    payload::{OptQuorumStorePayload, TDataInfo},
     quorum_cert::QuorumCert,
 };
 use anyhow::{bail, ensure, format_err, Result};
@@ -17,6 +17,7 @@ use aptos_types::{
     block_info::BlockInfo,
     block_metadata::BlockMetadata,
     block_metadata_ext::BlockMetadataExt,
+    decryption::{BlockTxnDecryptionKey, DecryptionPayload},
     epoch_state::EpochState,
     ledger_info::LedgerInfo,
     randomness::Randomness,
@@ -43,7 +44,7 @@ pub mod block_test;
 
 #[derive(Serialize, Clone, PartialEq, Eq)]
 /// Block has the core data of a consensus block that should be persistent when necessary.
-/// Each block must know the id of its parent and keep the QuorurmCertificate to that parent.
+/// Each block must know the id of its parent and keep the QuorumCertificate to that parent.
 pub struct Block {
     /// This block's id as a hash value, it is generated at call time
     #[serde(skip)]
@@ -111,16 +112,11 @@ impl Block {
         match self.block_data.payload() {
             None => 0,
             Some(payload) => match payload {
-                Payload::InQuorumStore(pos) => pos.proofs.len(),
                 Payload::DirectMempool(_txns) => 0,
-                Payload::InQuorumStoreWithLimit(pos) => pos.proof_with_data.proofs.len(),
-                Payload::QuorumStoreInlineHybrid(inline_batches, proof_with_data, _)
-                | Payload::QuorumStoreInlineHybridV2(inline_batches, proof_with_data, _) => {
-                    inline_batches.len() + proof_with_data.proofs.len()
-                },
                 Payload::OptQuorumStore(opt_quorum_store_payload) => {
                     opt_quorum_store_payload.num_txns()
                 },
+                _ => 0,
             },
         }
     }
@@ -130,24 +126,20 @@ impl Block {
         match self.block_data.payload() {
             None => (0, 0, 0),
             Some(payload) => match payload {
-                Payload::InQuorumStore(pos) => (pos.num_proofs(), pos.num_txns(), pos.num_bytes()),
-                Payload::DirectMempool(_txns) => (0, 0, 0),
-                Payload::InQuorumStoreWithLimit(pos) => (
-                    pos.proof_with_data.num_proofs(),
-                    pos.proof_with_data.num_txns(),
-                    pos.proof_with_data.num_bytes(),
-                ),
-                Payload::QuorumStoreInlineHybrid(_inline_batches, proof_with_data, _)
-                | Payload::QuorumStoreInlineHybridV2(_inline_batches, proof_with_data, _) => (
-                    proof_with_data.num_proofs(),
-                    proof_with_data.num_txns(),
-                    proof_with_data.num_bytes(),
-                ),
-                Payload::OptQuorumStore(opt_quorum_store_payload) => (
-                    opt_quorum_store_payload.proof_with_data().num_proofs(),
-                    opt_quorum_store_payload.proof_with_data().num_txns(),
-                    opt_quorum_store_payload.proof_with_data().num_bytes(),
-                ),
+                Payload::OptQuorumStore(opt_quorum_store_payload) => match opt_quorum_store_payload
+                {
+                    OptQuorumStorePayload::V1(p) => (
+                        p.proof_with_data().num_proofs(),
+                        p.proof_with_data().num_txns(),
+                        p.proof_with_data().num_bytes(),
+                    ),
+                    OptQuorumStorePayload::V2(p) => (
+                        p.proof_with_data().num_proofs(),
+                        p.proof_with_data().num_txns(),
+                        p.proof_with_data().num_bytes(),
+                    ),
+                },
+                _ => (0, 0, 0),
             },
         }
     }
@@ -157,23 +149,19 @@ impl Block {
         match self.block_data.payload() {
             None => (0, 0, 0),
             Some(payload) => match payload {
-                Payload::QuorumStoreInlineHybrid(inline_batches, _proof_with_data, _)
-                | Payload::QuorumStoreInlineHybridV2(inline_batches, _proof_with_data, _) => (
-                    inline_batches.len(),
-                    inline_batches
-                        .iter()
-                        .map(|(b, _)| b.num_txns() as usize)
-                        .sum(),
-                    inline_batches
-                        .iter()
-                        .map(|(b, _)| b.num_bytes() as usize)
-                        .sum(),
-                ),
-                Payload::OptQuorumStore(opt_quorum_store_payload) => (
-                    opt_quorum_store_payload.inline_batches().num_batches(),
-                    opt_quorum_store_payload.inline_batches().num_txns(),
-                    opt_quorum_store_payload.inline_batches().num_bytes(),
-                ),
+                Payload::OptQuorumStore(opt_quorum_store_payload) => match opt_quorum_store_payload
+                {
+                    OptQuorumStorePayload::V1(p) => (
+                        p.inline_batches().num_batches(),
+                        p.inline_batches().num_txns(),
+                        p.inline_batches().num_bytes(),
+                    ),
+                    OptQuorumStorePayload::V2(p) => (
+                        p.inline_batches().num_batches(),
+                        p.inline_batches().num_txns(),
+                        p.inline_batches().num_bytes(),
+                    ),
+                },
                 _ => (0, 0, 0),
             },
         }
@@ -184,19 +172,19 @@ impl Block {
         match self.block_data.payload() {
             None => (0, 0, 0),
             Some(payload) => match payload {
-                Payload::OptQuorumStore(opt_quorum_store_payload) => (
-                    opt_quorum_store_payload.opt_batches().len(),
-                    opt_quorum_store_payload
-                        .opt_batches()
-                        .iter()
-                        .map(|b| b.num_txns() as usize)
-                        .sum(),
-                    opt_quorum_store_payload
-                        .opt_batches()
-                        .iter()
-                        .map(|b| b.num_bytes() as usize)
-                        .sum(),
-                ),
+                Payload::OptQuorumStore(opt_quorum_store_payload) => match opt_quorum_store_payload
+                {
+                    OptQuorumStorePayload::V1(p) => (
+                        p.opt_batches().len(),
+                        p.opt_batches().iter().map(|b| b.num_txns() as usize).sum(),
+                        p.opt_batches().iter().map(|b| b.num_bytes() as usize).sum(),
+                    ),
+                    OptQuorumStorePayload::V2(p) => (
+                        p.opt_batches().len(),
+                        p.opt_batches().iter().map(|b| b.num_txns() as usize).sum(),
+                        p.opt_batches().iter().map(|b| b.num_bytes() as usize).sum(),
+                    ),
+                },
                 _ => (0, 0, 0),
             },
         }
@@ -482,7 +470,10 @@ impl Block {
             // but don't allow anything that shouldn't be there.
             //
             // we validate the full correctness of this field in round_manager.process_proposal()
-            let succ_round = self.round() + u64::from(self.is_nil_block());
+            let succ_round = self
+                .round()
+                .checked_add(u64::from(self.is_nil_block()))
+                .ok_or_else(|| format_err!("Block round overflow"))?;
             let skipped_rounds = succ_round.checked_sub(parent.round() + 1);
             ensure!(
                 skipped_rounds.is_some(),
@@ -597,6 +588,54 @@ impl Block {
                 }),
             self.timestamp_usecs(),
             randomness,
+        )
+    }
+
+    pub fn new_metadata_with_rand_and_dec_key(
+        &self,
+        validators: &[AccountAddress],
+        randomness: Option<Randomness>,
+        decryption_key: Option<BlockTxnDecryptionKey>,
+    ) -> BlockMetadataExt {
+        BlockMetadataExt::new_v2(
+            self.id(),
+            self.epoch(),
+            self.round(),
+            self.author().unwrap_or(AccountAddress::ZERO),
+            self.previous_bitvec().into(),
+            // For nil block, we use 0x0 which is convention for nil address in move.
+            self.block_data()
+                .failed_authors()
+                .map_or(vec![], |failed_authors| {
+                    Self::failed_authors_to_indices(validators, failed_authors)
+                }),
+            self.timestamp_usecs(),
+            randomness,
+            decryption_key,
+        )
+    }
+
+    pub fn new_metadata_with_rand_and_dec_payload(
+        &self,
+        validators: &[AccountAddress],
+        randomness: Option<Randomness>,
+        decryption_payload: Option<DecryptionPayload>,
+    ) -> BlockMetadataExt {
+        BlockMetadataExt::new_v3(
+            self.id(),
+            self.epoch(),
+            self.round(),
+            self.author().unwrap_or(AccountAddress::ZERO),
+            self.previous_bitvec().into(),
+            // For nil block, we use 0x0 which is convention for nil address in move.
+            self.block_data()
+                .failed_authors()
+                .map_or(vec![], |failed_authors| {
+                    Self::failed_authors_to_indices(validators, failed_authors)
+                }),
+            self.timestamp_usecs(),
+            randomness,
+            decryption_payload,
         )
     }
 

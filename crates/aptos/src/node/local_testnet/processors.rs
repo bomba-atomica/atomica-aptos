@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::{health_checker::HealthChecker, traits::ServiceManager, RunLocalnet};
 use anyhow::{bail, Context, Result};
@@ -43,7 +43,6 @@ pub struct ProcessorArgs {
             ProcessorName::AccountRestorationProcessor,
             ProcessorName::AccountTransactionsProcessor,
             ProcessorName::DefaultProcessor,
-            ProcessorName::EventsProcessor,
             ProcessorName::FungibleAssetProcessor,
             ProcessorName::ObjectsProcessor,
             ProcessorName::StakeProcessor,
@@ -73,17 +72,17 @@ impl ProcessorManager {
             processor_config,
             transaction_stream_config: TransactionStreamConfig {
                 indexer_grpc_data_service_address: data_service_url,
-                auth_token: "notused".to_string(),
+                auth_token: Some("notused".to_string()),
                 starting_version: Some(0),
                 request_ending_version: None,
                 request_name_header: "notused".to_string(),
                 additional_headers: Default::default(),
                 indexer_grpc_http2_ping_interval_secs: Default::default(),
                 indexer_grpc_http2_ping_timeout_secs: 60,
-                indexer_grpc_reconnection_timeout_secs: 60,
                 indexer_grpc_response_item_timeout_secs: 60,
-                indexer_grpc_reconnection_max_retries: Default::default(),
+                reconnection_config: Default::default(),
                 transaction_filter: Default::default(),
+                backup_endpoints: Default::default(),
             },
             db_config: DbConfig::PostgresConfig(PostgresConfig {
                 connection_string: postgres_connection_string,

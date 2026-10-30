@@ -1,14 +1,16 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use crate::values::{DeserializationSeed, SerializationReadyValue, VMValueCast, Value};
+use crate::values::{
+    DepthDisplay, DeserializationSeed, SerializationReadyValue, VMValueCast, Value,
+};
 use better_any::Tid;
 use move_binary_format::errors::{PartialVMError, PartialVMResult};
 use move_core_types::{
     function::{ClosureMask, FUNCTION_DATA_SERIALIZATION_FORMAT_V1},
     identifier::Identifier,
     language_storage::{ModuleId, TypeTag},
-    value::MoveTypeLayout,
+    value::{check_layout_within_bounds, MoveTypeLayout},
     vm_status::StatusCode,
 };
 use serde::{
@@ -32,10 +34,17 @@ pub trait AbstractFunction: for<'a> Tid<'a> {
     fn cmp_dyn(&self, other: &dyn AbstractFunction) -> PartialVMResult<Ordering>;
     fn clone_dyn(&self) -> PartialVMResult<Box<dyn AbstractFunction>>;
     fn to_canonical_string(&self) -> String;
+    /// Deliberately has no default, so that a new implementation has to make a choice instead of
+    /// silently reporting no cost.
+    fn ty_args_pseudo_gas_cost(&self) -> u64;
 }
 
 /// A closure, consisting of an abstract function descriptor and the captured arguments.
-pub struct Closure(pub(crate) Box<dyn AbstractFunction>, pub(crate) Vec<Value>);
+#[allow(clippy::box_collection)]
+pub struct Closure(
+    pub(crate) Box<dyn AbstractFunction>,
+    pub(crate) Box<Vec<Value>>,
+);
 
 /// The representation of a function in storage.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -54,7 +63,7 @@ pub struct SerializedFunctionData {
 
 impl Closure {
     pub fn pack(fun: Box<dyn AbstractFunction>, captured: impl IntoIterator<Item = Value>) -> Self {
-        Self(fun, captured.into_iter().collect())
+        Self(fun, Box::new(captured.into_iter().collect()))
     }
 
     pub fn unpack(self) -> (Box<dyn AbstractFunction>, impl Iterator<Item = Value>) {
@@ -92,13 +101,20 @@ impl Debug for Closure {
     }
 }
 
+pub(crate) fn fmt_closure(c: &Closure, f: &mut Formatter<'_>, depth: usize) -> fmt::Result {
+    let Closure(fun, captured) = c;
+    let captured = fun.closure_mask().format_arguments(
+        captured
+            .iter()
+            .map(|v| DepthDisplay(v, depth + 1).to_string())
+            .collect(),
+    );
+    write!(f, "{}({})", fun.to_canonical_string(), captured.join(", "))
+}
+
 impl Display for Closure {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let Self(fun, captured) = self;
-        let captured = fun
-            .closure_mask()
-            .format_arguments(captured.iter().map(|v| v.to_string()).collect());
-        write!(f, "{}({})", fun.to_canonical_string(), captured.join(", "))
+        fmt_closure(self, f, 0)
     }
 }
 
@@ -114,6 +130,11 @@ impl VMValueCast<Closure> for Value {
 
 impl serde::Serialize for SerializationReadyValue<'_, '_, '_, (), Closure> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.ctx.closure_serialization_disabled {
+            return Err(S::Error::custom(
+                "serialization of function values is disabled",
+            ));
+        }
         let Closure(fun, captured) = self.value;
         let fun_ext = self
             .ctx
@@ -128,7 +149,9 @@ impl serde::Serialize for SerializationReadyValue<'_, '_, '_, (), Closure> {
         seq.serialize_element(&data.fun_id)?;
         seq.serialize_element(&data.ty_args)?;
         seq.serialize_element(&data.mask)?;
-        for (layout, value) in data.captured_layouts.into_iter().zip(captured) {
+        for (layout, value) in data.captured_layouts.into_iter().zip(captured.iter()) {
+            // Reject captured layouts whose DAG would unfold past the node-count cap.
+            check_layout_within_bounds::<S::Error>(&layout)?;
             seq.serialize_element(&layout)?;
             seq.serialize_element(&SerializationReadyValue {
                 ctx: self.ctx,
@@ -201,7 +224,7 @@ impl<'d, 'c> serde::de::Visitor<'d> for ClosureVisitor<'c> {
                 captured_layouts,
             })
             .map_err(A::Error::custom)?;
-        Ok(Closure(fun, captured))
+        Ok(Closure(fun, Box::new(captured)))
     }
 }
 
@@ -308,6 +331,10 @@ pub(crate) mod mock {
                 self.data.fun_id,
                 ty_args_str
             )
+        }
+
+        fn ty_args_pseudo_gas_cost(&self) -> u64 {
+            0
         }
     }
 }

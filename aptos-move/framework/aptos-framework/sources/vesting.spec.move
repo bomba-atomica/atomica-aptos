@@ -112,13 +112,6 @@ spec aptos_framework::vesting {
             global<VestingContract>(a).grant_pool.shareholders_limit <= MAXIMUM_SHAREHOLDERS;
     }
 
-    spec schema AbortsIfPermissionedSigner {
-        use aptos_framework::permissioned_signer;
-        s: signer;
-        let perm = VestPermission {};
-        aborts_if !permissioned_signer::spec_check_permission_exists(s, perm);
-    }
-
     spec stake_pool_address(vesting_contract_address: address): address {
         aborts_if !exists<VestingContract>(vesting_contract_address);
     }
@@ -366,7 +359,7 @@ spec aptos_framework::vesting {
         aborts_if simple_map::spec_contains_key(staking_contracts, new_operator);
 
         let staking_contract = simple_map::spec_get(staking_contracts, old_operator);
-        include DistributeInternalAbortsIf { staker: acc, operator: old_operator, staking_contract, distribute_events: store.distribute_events };
+        include DistributeInternalAbortsIf { staker: acc, operator: old_operator, staking_contract };
     }
 
     spec update_operator_with_same_commission(
@@ -390,7 +383,6 @@ spec aptos_framework::vesting {
         contract_address: address,
         new_voter: address,
     ) {
-        // TODO: set because of timeout (property proved)
         pragma verify_duration_estimate = 300;
         include VerifyAdminAbortsIf;
 
@@ -405,8 +397,6 @@ spec aptos_framework::vesting {
         admin: &signer,
         contract_address: address,
     ) {
-        // TODO: set because of timeout (property proved)
-        pragma verify_duration_estimate = 300;
         aborts_if !exists<VestingContract>(contract_address);
         let vesting_contract = global<VestingContract>(contract_address);
         aborts_if signer::address_of(admin) != vesting_contract.admin;
@@ -429,12 +419,9 @@ spec aptos_framework::vesting {
         shareholder: address,
         new_beneficiary: address,
     ) {
-        // TODO: set because of timeout (property proved)
         pragma verify_duration_estimate = 300;
         pragma aborts_if_is_partial;
         aborts_if !account::spec_exists_at(new_beneficiary);
-        // TODO(fa_migration)
-        // aborts_if !coin::spec_is_account_registered<AptosCoin>(new_beneficiary);
         include VerifyAdminAbortsIf;
         let post vesting_contract = global<VestingContract>(contract_address);
         ensures simple_map::spec_contains_key(vesting_contract.beneficiaries,shareholder);
@@ -523,7 +510,7 @@ spec aptos_framework::vesting {
         let resource_addr = account::spec_create_resource_address(admin_addr, end);
         aborts_if !exists<AdminStore>(admin_addr);
         aborts_if len(account::ZERO_AUTH_KEY) != 32;
-        aborts_if admin_store.nonce + 1 > MAX_U64;
+        aborts_if admin_store.nonce + (1 as u64) > (MAX_U64 as u64);
         let ea = account::spec_exists_at(resource_addr);
         include if (ea) account::CreateResourceAccountAbortsIf else account::CreateAccountAbortsIf {addr: resource_addr};
 
@@ -540,10 +527,8 @@ spec aptos_framework::vesting {
 
     spec verify_admin(admin: &signer, vesting_contract: &VestingContract) {
         pragma verify_duration_estimate = 120;
-        aborts_if permissioned_signer::spec_is_permissioned_signer(admin);
         /// [high-level-req-9]
         aborts_if signer::address_of(admin) != vesting_contract.admin;
-        // include AbortsIfPermissionedSigner { s: admin };
     }
 
     spec assert_vesting_contract_exists(contract_address: address) {
@@ -573,7 +558,7 @@ spec aptos_framework::vesting {
         // verify staking_contract::distribute_internal()
         let store = global<staking_contract::Store>(acc);
         let staking_contract = simple_map::spec_get(store.staking_contracts, operator);
-        include amount != 0 ==> DistributeInternalAbortsIf { staker: acc, operator, staking_contract, distribute_events: store.distribute_events };
+        include amount != 0 ==> DistributeInternalAbortsIf { staker: acc, operator, staking_contract };
     }
 
     spec withdraw_stake(vesting_contract: &VestingContract, contract_address: address): Coin<AptosCoin> {
@@ -592,14 +577,13 @@ spec aptos_framework::vesting {
         // verify staking_contract::distribute_internal()
         let store = global<staking_contract::Store>(contract_address);
         let staking_contract = simple_map::spec_get(store.staking_contracts, operator);
-        include DistributeInternalAbortsIf { staker: contract_address, operator, staking_contract, distribute_events: store.distribute_events };
+        include DistributeInternalAbortsIf { staker: contract_address, operator, staking_contract };
     }
 
     spec schema DistributeInternalAbortsIf {
         staker: address;    // The verification below does not contain the loop in staking_contract::update_distribution_pool().
         operator: address;
         staking_contract: staking_contract::StakingContract;
-        distribute_events: EventHandle<staking_contract::DistributeEvent>;
 
         let pool_address = staking_contract.pool_address;
         aborts_if !exists<stake::StakePool>(pool_address);
@@ -643,7 +627,6 @@ spec aptos_framework::vesting {
         contract_address: address;
         admin: signer;
 
-        aborts_if permissioned_signer::spec_is_permissioned_signer(admin);
         aborts_if !exists<VestingContract>(contract_address);
         let vesting_contract = global<VestingContract>(contract_address);
         aborts_if signer::address_of(admin) != vesting_contract.admin;

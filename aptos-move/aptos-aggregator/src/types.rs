@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::bounded_math::SignedU128;
 use aptos_types::error::{code_invariant_error, NonPanic, PanicError, PanicOr};
@@ -161,13 +161,9 @@ impl DelayedFieldValue {
             (Derived(bytes), layout) if is_derived_string_struct_layout(layout) => {
                 bytes_and_width_to_derived_string_struct(bytes, width as usize)?
             },
-            (value, layout) => {
-                return Err(
-                    PartialVMError::new(StatusCode::VM_EXTENSION_ERROR).with_message(format!(
-                        "Failed to convert {:?} into Move value with {} layout",
-                        value, layout
-                    )),
-                )
+            (value, _layout) => {
+                return Err(PartialVMError::new(StatusCode::VM_EXTENSION_ERROR)
+                    .with_message(format!("Failed to convert {:?} into Move value", value)))
             },
         })
     }
@@ -213,8 +209,8 @@ impl TryFromMoveValue for DelayedFieldValue {
             _ => {
                 return Err(
                     PartialVMError::new(StatusCode::VM_EXTENSION_ERROR).with_message(format!(
-                        "Failed to convert Move value {:?} with {} layout into AggregatorValue",
-                        value, layout
+                        "Failed to convert Move value {} into AggregatorValue",
+                        value
                     )),
                 )
             },

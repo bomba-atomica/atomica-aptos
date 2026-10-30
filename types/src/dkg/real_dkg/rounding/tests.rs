@@ -1,12 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::dkg::real_dkg::rounding::{
     is_valid_profile, total_weight_lower_bound, total_weight_upper_bound, DKGRounding,
     DKGRoundingProfile, DEFAULT_FAST_PATH_SECRECY_THRESHOLD, DEFAULT_RECONSTRUCT_THRESHOLD,
     DEFAULT_SECRECY_THRESHOLD,
 };
-use aptos_dkg::pvss::WeightedConfig;
+use aptos_dkg::pvss::WeightedConfigBlstrs;
 use claims::assert_le;
 use fixed::types::U64F64;
 use rand::{thread_rng, Rng};
@@ -50,7 +50,7 @@ fn test_rounding_single_validator() {
         *DEFAULT_RECONSTRUCT_THRESHOLD.deref(),
         Some(*DEFAULT_FAST_PATH_SECRECY_THRESHOLD.deref()),
     );
-    let wconfig = WeightedConfig::new(1, vec![1]).unwrap();
+    let wconfig = WeightedConfigBlstrs::new(1, vec![1]).unwrap();
     assert_eq!(dkg_rounding.wconfig, wconfig);
 }
 
@@ -67,7 +67,7 @@ fn test_rounding_equal_stakes() {
             *DEFAULT_RECONSTRUCT_THRESHOLD.deref(),
             Some(*DEFAULT_FAST_PATH_SECRECY_THRESHOLD.deref()),
         );
-        let wconfig = WeightedConfig::new(
+        let wconfig = WeightedConfigBlstrs::new(
             (U64F64::from_num(validator_num) * *DEFAULT_SECRECY_THRESHOLD.deref())
                 .ceil()
                 .to_num::<usize>()

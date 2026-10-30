@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_backup_service::start_backup_service;
 use aptos_config::utils::get_available_port;
@@ -48,6 +47,10 @@ pub fn tmp_db_with_random_content() -> (
 
 pub fn start_local_backup_service(db: Arc<AptosDB>) -> (Runtime, u16) {
     let port = get_available_port();
-    let rt = start_backup_service(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port), db);
+    let rt = start_backup_service(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+        db,
+        None,
+    );
     (rt, port)
 }

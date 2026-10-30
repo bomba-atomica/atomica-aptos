@@ -1,20 +1,22 @@
 #[test_only]
 module aptos_framework::ten_x_token_tests {
+    use aptos_framework::aggregator_v2;
     use aptos_framework::fungible_asset::{Self, Metadata, TestToken};
     use aptos_framework::dispatchable_fungible_asset;
     use aptos_framework::primary_fungible_store;
-    use aptos_framework::object;
-    use 0xcafe::ten_x_token;
+    use aptos_framework::ten_x_token;
+    use std::features;
     use std::option;
     use std::signer;
 
-    #[test(creator = @0xcafe)]
+    #[test(creator = @aptos_framework)]
     fun test_ten_x(
         creator: &signer,
     ) {
+        features::change_feature_flags_for_testing(creator, vector[features::get_function_value_dispatch_feature()], vector[]);
         let (creator_ref, token_object) = fungible_asset::create_test_token(creator);
         let (mint, _, _, _) = fungible_asset::init_test_metadata(&creator_ref);
-        let metadata = object::convert<TestToken, Metadata>(token_object);
+        let metadata = token_object.convert<TestToken, Metadata>();
 
         let creator_store = fungible_asset::create_test_store(creator, metadata);
 
@@ -22,7 +24,7 @@ module aptos_framework::ten_x_token_tests {
 
         assert!(dispatchable_fungible_asset::derived_supply(metadata) == option::some(0), 2);
         // Mint
-        let fa = fungible_asset::mint(&mint, 100);
+        let fa = mint.mint(100);
         dispatchable_fungible_asset::deposit(creator_store, fa);
 
         // The derived value is 10x
@@ -30,20 +32,60 @@ module aptos_framework::ten_x_token_tests {
 
         // The derived supply is 10x
         assert!(dispatchable_fungible_asset::derived_supply(metadata) == option::some(1000), 5);
+
+        // The derived balance snapshot is also 10x, computed via the dispatch hook.
+        assert!(
+            aggregator_v2::read_snapshot(
+                &dispatchable_fungible_asset::derived_balance_snapshot(creator_store)
+            ) == 1000,
+            6
+        );
     }
 
-    #[test(creator = @0xcafe)]
+    #[test(creator = @aptos_framework)]
+    fun test_derived_balance_snapshot_without_hook(
+        creator: &signer,
+    ) {
+        // Without a derived_balance dispatch hook, derived_balance_snapshot falls
+        // back to fungible_asset::balance_snapshot and reflects the raw balance.
+        let (creator_ref, token_object) = fungible_asset::create_test_token(creator);
+        let (mint, _, _, _) = fungible_asset::init_test_metadata(&creator_ref);
+        let metadata = token_object.convert<TestToken, Metadata>();
+
+        let creator_store = fungible_asset::create_test_store(creator, metadata);
+
+        // Empty store yields a snapshot of 0.
+        assert!(
+            aggregator_v2::read_snapshot(
+                &dispatchable_fungible_asset::derived_balance_snapshot(creator_store)
+            ) == 0,
+            1
+        );
+
+        let fa = mint.mint(100);
+        dispatchable_fungible_asset::deposit(creator_store, fa);
+
+        assert!(
+            aggregator_v2::read_snapshot(
+                &dispatchable_fungible_asset::derived_balance_snapshot(creator_store)
+            ) == 100,
+            2
+        );
+    }
+
+    #[test(creator = @aptos_framework)]
     fun test_ten_x_pfs(
         creator: &signer,
     ) {
+        features::change_feature_flags_for_testing(creator, vector[features::get_function_value_dispatch_feature()], vector[]);
         let (creator_ref, token_object) = fungible_asset::create_test_token(creator);
         let (mint, _, _) = primary_fungible_store::init_test_metadata_with_primary_store_enabled(&creator_ref);
-        let metadata = object::convert<TestToken, Metadata>(token_object);
+        let metadata = token_object.convert<TestToken, Metadata>();
 
         ten_x_token::initialize(creator, &creator_ref);
         let creator_address = signer::address_of(creator);
 
-        let fa = fungible_asset::mint(&mint, 100);
+        let fa = mint.mint(100);
         primary_fungible_store::deposit(creator_address, fa);
 
         // The derived value is 10x
@@ -51,14 +93,14 @@ module aptos_framework::ten_x_token_tests {
         assert!(primary_fungible_store::is_balance_at_least(creator_address, metadata, 1000), 4);
     }
 
-    #[test(creator = @0xcafe)]
+    #[test(creator = @aptos_framework)]
     #[expected_failure(abort_code=0x1001C, location=aptos_framework::fungible_asset)]
     fun ten_x_balance_abort(
         creator: &signer,
     ) {
         let (creator_ref, token_object) = fungible_asset::create_test_token(creator);
         fungible_asset::init_test_metadata(&creator_ref);
-        let metadata = object::convert<TestToken, Metadata>(token_object);
+        let metadata = token_object.convert<TestToken, Metadata>();
 
         let creator_store = fungible_asset::create_test_store(creator, metadata);
 
@@ -66,14 +108,14 @@ module aptos_framework::ten_x_token_tests {
         assert!(fungible_asset::balance(creator_store) == 0, 1);
     }
 
-    #[test(creator = @0xcafe)]
+    #[test(creator = @aptos_framework)]
     #[expected_failure(abort_code=0x1001C, location=aptos_framework::fungible_asset)]
     fun ten_x_supply_abort(
         creator: &signer,
     ) {
         let (creator_ref, token_object) = fungible_asset::create_test_token(creator);
         fungible_asset::init_test_metadata(&creator_ref);
-        let metadata = object::convert<TestToken, Metadata>(token_object);
+        let metadata = token_object.convert<TestToken, Metadata>();
 
         ten_x_token::initialize(creator, &creator_ref);
 

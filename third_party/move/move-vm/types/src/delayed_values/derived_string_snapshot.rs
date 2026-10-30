@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     delayed_values::error::{code_invariant_error, expect_ok},
@@ -15,7 +17,7 @@ use std::str::FromStr;
 fn is_string_layout(layout: &MoveTypeLayout) -> bool {
     use MoveTypeLayout as L;
     if let L::Struct(move_struct) = layout {
-        if let [L::Vector(elem)] = move_struct.fields(None).iter().as_slice() {
+        if let Some([L::Vector(elem)]) = move_struct.fields(None) {
             if let L::U8 = elem.as_ref() {
                 return true;
             }
@@ -27,7 +29,7 @@ fn is_string_layout(layout: &MoveTypeLayout) -> bool {
 pub fn is_derived_string_struct_layout(layout: &MoveTypeLayout) -> bool {
     use MoveTypeLayout as L;
     if let L::Struct(move_struct) = layout {
-        if let [value_field, L::Vector(padding_elem)] = move_struct.fields(None).iter().as_slice() {
+        if let Some([value_field, L::Vector(padding_elem)]) = move_struct.fields(None) {
             if is_string_layout(value_field) {
                 if let L::U8 = padding_elem.as_ref() {
                     return true;
@@ -38,7 +40,12 @@ pub fn is_derived_string_struct_layout(layout: &MoveTypeLayout) -> bool {
     false
 }
 
-pub fn to_utf8_bytes(value: impl ToString) -> Vec<u8> {
+/// Test-only helper: encodes a value via its `Display` and returns the UTF-8
+/// bytes. Used in `block-executor`'s tests to construct fixture
+/// `DerivedStringSnapshot` values. Not called from production code; the
+/// production path constructs these values by other means (e.g. via the
+/// aggregator natives in `aptos-move/framework`).
+pub fn to_utf8_bytes_for_test(value: impl ToString) -> Vec<u8> {
     value.to_string().into_bytes()
 }
 

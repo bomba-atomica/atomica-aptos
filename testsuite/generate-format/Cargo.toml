@@ -12,8 +12,14 @@ publish = { workspace = true }
 repository = { workspace = true }
 rust-version = { workspace = true }
 
+[[bin]]
+name = "compute"
+path = "src/compute.rs"
+test = false
+
 [dependencies]
 aptos-api-types = { workspace = true }
+aptos-batch-encryption = { workspace = true }
 aptos-config = { workspace = true }
 aptos-consensus = { workspace = true, features = ["fuzzing"] }
 aptos-consensus-types = { workspace = true }
@@ -28,8 +34,3 @@ rand = { workspace = true }
 serde = { workspace = true }
 serde-reflection = { workspace = true }
 serde_yaml = { workspace = true }
-
-[[bin]]
-name = "compute"
-path = "src/compute.rs"
-test = false

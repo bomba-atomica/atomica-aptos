@@ -1,11 +1,12 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // The below is to deal with a strange problem with derive(Dearbitrary), which creates warnings
-// of unused variables in derived code which cannot be turned off by applying the attribute
-// just at the type in question. (Here, MoveStructLayout.)
-#![allow(unused_variables)]
+// of unused variables and unused assignments in derived code which cannot be turned off by
+// applying the attribute just at the type in question. (Here, MoveStructLayout.)
+#![allow(unused_variables, unused_assignments)]
 
 use crate::{
     account_address::AccountAddress,
@@ -23,10 +24,10 @@ use serde::{
     Deserialize, Serialize,
 };
 use std::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{HashMap, HashSet},
     convert::TryInto,
     fmt::{self, Debug},
-    sync::Mutex,
+    sync::Arc,
 };
 
 /// The maximal number of enum variants which are supported in values. This must align with
@@ -52,32 +53,19 @@ pub const MOVE_VARIANT_NAME: &str = "variant";
 pub const MOVE_VARIANT_NAME_FIELD: &str = "name";
 
 /// In order to serialize enums with serde, we have to provide `&'static str` names for
-/// variants. This static cache is used to generate those names, and contains
-/// signatures of the form `["0", "1", "2", ..]`. The size of this cache
-/// is bound by `VARIANT_COUNT_MAX * VARIANT_COUNT_MAX / 2` (8064 with max 127)
-static VARIANT_NAME_PLACEHOLDER_CACHE: Lazy<Mutex<BTreeMap<usize, &'static [&'static str]>>> =
-    Lazy::new(|| Mutex::new(Default::default()));
+/// variants. This static is used to generate those names, and contains signatures of
+/// the form `["0", "1", "2", ..]`.
+static VARIANT_NAME_PLACEHOLDERS: Lazy<[&'static str; VARIANT_COUNT_MAX as usize]> =
+    Lazy::new(|| {
+        std::array::from_fn(|i| Box::leak(format!("{i}").into_boxed_str()) as &'static str)
+    });
 
 /// Returns variant name placeholders for providing dummy names in serde serialization.
 pub fn variant_name_placeholder(len: usize) -> Result<&'static [&'static str], anyhow::Error> {
     if len > VARIANT_COUNT_MAX as usize {
         bail!("variant count is restricted to {}", VARIANT_COUNT_MAX);
     }
-    let mutex = &VARIANT_NAME_PLACEHOLDER_CACHE;
-    let mut lock = mutex.lock().expect("acquire index name lock");
-    match lock.entry(len) {
-        Entry::Vacant(e) => {
-            let signature = Box::new(
-                (0..len)
-                    .map(|idx| Box::new(format!("{}", idx)).leak() as &str)
-                    .collect::<Vec<_>>(),
-            )
-            .leak();
-            e.insert(signature);
-            Ok(signature)
-        },
-        Entry::Occupied(e) => Ok(e.get()),
-    }
+    Ok(&VARIANT_NAME_PLACEHOLDERS[..len])
 }
 
 /// enum signer {
@@ -146,7 +134,7 @@ pub enum MoveValue {
 }
 
 /// A layout associated with a named field
-#[derive(Debug, Clone, Hash, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(
     any(test, feature = "fuzzing"),
     derive(arbitrary::Arbitrary, dearbitrary::Dearbitrary)
@@ -162,7 +150,7 @@ impl MoveFieldLayout {
     }
 }
 
-#[derive(Debug, Clone, Hash, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(
     any(test, feature = "fuzzing"),
     derive(arbitrary::Arbitrary, dearbitrary::Dearbitrary)
@@ -172,7 +160,7 @@ pub struct MoveVariantLayout {
     pub fields: Vec<MoveFieldLayout>,
 }
 
-#[derive(Debug, Clone, Hash, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(
     any(test, feature = "fuzzing"),
     derive(arbitrary::Arbitrary, dearbitrary::Dearbitrary)
@@ -191,11 +179,15 @@ pub enum MoveStructLayout {
         fields: Vec<MoveFieldLayout>,
     },
     /// A decorated representation of struct variants, containing variant and field names.
-    WithVariants(Vec<MoveVariantLayout>),
+    /// Like WithTypes, this carries the type tag for proper type identification.
+    WithVariants {
+        type_: StructTag,
+        variants: Vec<MoveVariantLayout>,
+    },
 }
 
 /// Used to distinguish between aggregators ans snapshots.
-#[derive(Debug, Clone, Hash, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(
     any(test, feature = "fuzzing"),
     derive(arbitrary::Arbitrary, dearbitrary::Dearbitrary)
@@ -231,11 +223,10 @@ impl IdentifierMappingKind {
     }
 }
 
-#[derive(Debug, Clone, Hash, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(
     any(test, feature = "fuzzing"),
-    derive(arbitrary::Arbitrary),
-    derive(dearbitrary::Dearbitrary)
+    derive(arbitrary::Arbitrary, dearbitrary::Dearbitrary)
 )]
 pub enum MoveTypeLayout {
     #[serde(rename(serialize = "bool", deserialize = "bool"))]
@@ -251,7 +242,7 @@ pub enum MoveTypeLayout {
     #[serde(rename(serialize = "vector", deserialize = "vector"))]
     Vector(Box<MoveTypeLayout>),
     #[serde(rename(serialize = "struct", deserialize = "struct"))]
-    Struct(MoveStructLayout),
+    Struct(Arc<MoveStructLayout>),
     #[serde(rename(serialize = "signer", deserialize = "signer"))]
     Signer,
 
@@ -288,6 +279,268 @@ pub enum MoveTypeLayout {
     I128,
     #[serde(rename(serialize = "i256", deserialize = "i256"))]
     I256,
+}
+
+/// Limit on the number of nodes a [`MoveTypeLayout`] may unfold to when serialized.
+pub const MAX_LAYOUT_NODES: u64 = 4096;
+
+/// Returns an error if `layout` unfolds to more than [`MAX_LAYOUT_NODES`] nodes.
+/// Use this before serializing a layout sourced from untrusted input to prevent
+/// pathological DAGs from expanding into multi-megabyte BCS output.
+pub fn check_layout_within_bounds<E: serde::ser::Error>(layout: &MoveTypeLayout) -> Result<(), E> {
+    let count = layout.unfolded_node_count();
+    if count > MAX_LAYOUT_NODES {
+        return Err(E::custom(format!(
+            "layout unfolds to {} nodes, exceeding the maximum of {}",
+            count, MAX_LAYOUT_NODES
+        )));
+    }
+    Ok(())
+}
+
+impl MoveTypeLayout {
+    /// Creates a `MoveTypeLayout::Struct` wrapping the given layout in an `Arc`.
+    pub fn new_struct(layout: MoveStructLayout) -> Self {
+        Self::Struct(Arc::new(layout))
+    }
+
+    /// Counts every node in the layout; shared `Arc<MoveStructLayout>`
+    /// occurrences are not deduped, each contributing its full subtree.
+    pub fn unfolded_node_count(&self) -> u64 {
+        layout_unfolded_node_count(self, &mut LayoutCountCache::new())
+    }
+}
+
+type LayoutCountCache = HashMap<*const MoveStructLayout, u64>;
+
+fn layout_unfolded_node_count(layout: &MoveTypeLayout, cache: &mut LayoutCountCache) -> u64 {
+    use MoveTypeLayout::*;
+    match layout {
+        Bool | U8 | U16 | U32 | U64 | U128 | U256 | I8 | I16 | I32 | I64 | I128 | I256
+        | Address | Signer | Function => 1,
+        Vector(inner) | Native(_, inner) => {
+            1u64.saturating_add(layout_unfolded_node_count(inner, cache))
+        },
+        Struct(inner) => {
+            let ptr = Arc::as_ptr(inner);
+            match cache.get(&ptr) {
+                Some(cached) => *cached,
+                None => {
+                    let count =
+                        1u64.saturating_add(struct_layout_unfolded_node_count(inner, cache));
+                    cache.insert(ptr, count);
+                    count
+                },
+            }
+        },
+    }
+}
+
+fn struct_layout_unfolded_node_count(
+    layout: &MoveStructLayout,
+    cache: &mut LayoutCountCache,
+) -> u64 {
+    use MoveStructLayout::*;
+    match layout {
+        Runtime(fields) => fields.iter().fold(0u64, |acc, l| {
+            acc.saturating_add(layout_unfolded_node_count(l, cache))
+        }),
+        RuntimeVariants(variants) => variants.iter().flat_map(|v| v.iter()).fold(0u64, |acc, l| {
+            acc.saturating_add(layout_unfolded_node_count(l, cache))
+        }),
+        WithFields(fields) | WithTypes { fields, .. } => fields.iter().fold(0u64, |acc, f| {
+            acc.saturating_add(layout_unfolded_node_count(&f.layout, cache))
+        }),
+        WithVariants { variants, .. } => variants
+            .iter()
+            .flat_map(|v| v.fields.iter())
+            .fold(0u64, |acc, f| {
+                acc.saturating_add(layout_unfolded_node_count(&f.layout, cache))
+            }),
+    }
+}
+
+// Equality on the layout DAG with pointer-identity memoization on
+// `Arc<MoveStructLayout>`. A derived `PartialEq` would compare the inner
+// `MoveStructLayout` once per occurrence of a shared `Arc`, expanding the DAG
+// into a tree; the impl below short-circuits on `Arc::ptr_eq` and caches
+// structurally equal pairs so the work is `O(number of unique node pairs)`.
+type LayoutEqCache = HashSet<(*const MoveStructLayout, *const MoveStructLayout)>;
+
+impl PartialEq for MoveTypeLayout {
+    fn eq(&self, other: &Self) -> bool {
+        layout_eq(self, other, &mut LayoutEqCache::new())
+    }
+}
+
+impl Eq for MoveTypeLayout {}
+
+impl PartialEq for MoveStructLayout {
+    fn eq(&self, other: &Self) -> bool {
+        struct_layout_eq(self, other, &mut LayoutEqCache::new())
+    }
+}
+
+impl Eq for MoveStructLayout {}
+
+impl PartialEq for MoveFieldLayout {
+    fn eq(&self, other: &Self) -> bool {
+        field_layout_eq(self, other, &mut LayoutEqCache::new())
+    }
+}
+
+impl Eq for MoveFieldLayout {}
+
+impl PartialEq for MoveVariantLayout {
+    fn eq(&self, other: &Self) -> bool {
+        variant_layout_eq(self, other, &mut LayoutEqCache::new())
+    }
+}
+
+impl Eq for MoveVariantLayout {}
+
+fn layout_eq(a: &MoveTypeLayout, b: &MoveTypeLayout, cache: &mut LayoutEqCache) -> bool {
+    use MoveTypeLayout::*;
+    match (a, b) {
+        (Bool, Bool)
+        | (Address, Address)
+        | (Signer, Signer)
+        | (Function, Function)
+        | (U8, U8)
+        | (U16, U16)
+        | (U32, U32)
+        | (U64, U64)
+        | (U128, U128)
+        | (U256, U256)
+        | (I8, I8)
+        | (I16, I16)
+        | (I32, I32)
+        | (I64, I64)
+        | (I128, I128)
+        | (I256, I256) => true,
+        (Vector(x), Vector(y)) => layout_eq(x, y, cache),
+        (Native(ka, x), Native(kb, y)) => ka == kb && layout_eq(x, y, cache),
+        (Struct(x), Struct(y)) => arc_struct_layout_eq(x, y, cache),
+        // Listed exhaustively so adding a new variant forces an update here.
+        (Bool, _)
+        | (Address, _)
+        | (Signer, _)
+        | (Function, _)
+        | (U8, _)
+        | (U16, _)
+        | (U32, _)
+        | (U64, _)
+        | (U128, _)
+        | (U256, _)
+        | (I8, _)
+        | (I16, _)
+        | (I32, _)
+        | (I64, _)
+        | (I128, _)
+        | (I256, _)
+        | (Vector(_), _)
+        | (Native(_, _), _)
+        | (Struct(_), _) => false,
+    }
+}
+
+fn arc_struct_layout_eq(
+    a: &Arc<MoveStructLayout>,
+    b: &Arc<MoveStructLayout>,
+    cache: &mut LayoutEqCache,
+) -> bool {
+    if Arc::ptr_eq(a, b) {
+        return true;
+    }
+    let key = {
+        let pa = Arc::as_ptr(a);
+        let pb = Arc::as_ptr(b);
+        if pa <= pb {
+            (pa, pb)
+        } else {
+            (pb, pa)
+        }
+    };
+    if cache.contains(&key) {
+        return true;
+    }
+    let result = struct_layout_eq(a, b, cache);
+    if result {
+        cache.insert(key);
+    }
+    result
+}
+
+fn struct_layout_eq(a: &MoveStructLayout, b: &MoveStructLayout, cache: &mut LayoutEqCache) -> bool {
+    use MoveStructLayout::*;
+    match (a, b) {
+        (Runtime(xs), Runtime(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| layout_eq(x, y, cache))
+        },
+        (RuntimeVariants(xs), RuntimeVariants(ys)) => {
+            xs.len() == ys.len()
+                && xs.iter().zip(ys).all(|(vx, vy)| {
+                    vx.len() == vy.len() && vx.iter().zip(vy).all(|(x, y)| layout_eq(x, y, cache))
+                })
+        },
+        (WithFields(xs), WithFields(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| field_layout_eq(x, y, cache))
+        },
+        (
+            WithTypes {
+                type_: ta,
+                fields: fa,
+            },
+            WithTypes {
+                type_: tb,
+                fields: fb,
+            },
+        ) => {
+            ta == tb
+                && fa.len() == fb.len()
+                && fa.iter().zip(fb).all(|(x, y)| field_layout_eq(x, y, cache))
+        },
+        (
+            WithVariants {
+                type_: ta,
+                variants: va,
+            },
+            WithVariants {
+                type_: tb,
+                variants: vb,
+            },
+        ) => {
+            ta == tb
+                && va.len() == vb.len()
+                && va
+                    .iter()
+                    .zip(vb)
+                    .all(|(x, y)| variant_layout_eq(x, y, cache))
+        },
+        // Listed exhaustively so adding a new variant forces an update here.
+        (Runtime(_), _)
+        | (RuntimeVariants(_), _)
+        | (WithFields(_), _)
+        | (WithTypes { .. }, _)
+        | (WithVariants { .. }, _) => false,
+    }
+}
+
+fn field_layout_eq(a: &MoveFieldLayout, b: &MoveFieldLayout, cache: &mut LayoutEqCache) -> bool {
+    a.name == b.name && layout_eq(&a.layout, &b.layout, cache)
+}
+
+fn variant_layout_eq(
+    a: &MoveVariantLayout,
+    b: &MoveVariantLayout,
+    cache: &mut LayoutEqCache,
+) -> bool {
+    a.name == b.name
+        && a.fields.len() == b.fields.len()
+        && a.fields
+            .iter()
+            .zip(&b.fields)
+            .all(|(x, y)| field_layout_eq(x, y, cache))
 }
 
 impl MoveValue {
@@ -409,9 +662,10 @@ impl MoveStruct {
                         .collect(),
                 }
             },
-            (MoveStruct::RuntimeVariant(tag, vals), MoveStructLayout::WithVariants(variants))
-                if (tag as usize) < variants.len() =>
-            {
+            (
+                MoveStruct::RuntimeVariant(tag, vals),
+                MoveStructLayout::WithVariants { variants, .. },
+            ) if (tag as usize) < variants.len() => {
                 let MoveVariantLayout { name, fields } = &variants[tag as usize];
                 MoveStruct::WithVariantFields(
                     name.clone(),
@@ -504,55 +758,23 @@ impl MoveStructLayout {
         Self::WithTypes { type_, fields }
     }
 
-    pub fn with_variants(variants: Vec<MoveVariantLayout>) -> Self {
-        Self::WithVariants(variants)
+    pub fn with_variants(type_: StructTag, variants: Vec<MoveVariantLayout>) -> Self {
+        Self::WithVariants { type_, variants }
     }
 
-    pub fn fields(&self, variant: Option<usize>) -> &[MoveTypeLayout] {
+    /// Returns the field layouts for `variant`, or `None` when the tag is out of
+    /// range so callers can reject invalid enum values.
+    pub fn fields(&self, variant: Option<usize>) -> Option<&[MoveTypeLayout]> {
         match self {
-            Self::Runtime(vals) => vals,
-            Self::RuntimeVariants(variants) => match variant {
-                Some(idx) if idx < variants.len() => &variants[idx],
-                _ => {
-                    // API does not allow to return error, return empty fields instead of crashing
-                    &[]
-                },
+            Self::Runtime(vals) => Some(vals),
+            Self::RuntimeVariants(variants) => {
+                variant.and_then(|idx| variants.get(idx).map(Vec::as_slice))
             },
-            Self::WithFields(_) | Self::WithTypes { .. } | Self::WithVariants(_) => {
+            Self::WithFields(_) | Self::WithTypes { .. } | Self::WithVariants { .. } => {
                 // It's not possible to implement this without changing the return type, and some
                 // performance-critical VM serialization code uses the Runtime case of this.
                 // panicking is the best move
                 panic!("Getting fields for decorated representation")
-            },
-        }
-    }
-
-    pub fn into_fields(self, variant: Option<usize>) -> Vec<MoveTypeLayout> {
-        match self {
-            Self::Runtime(vals) => vals,
-            Self::RuntimeVariants(mut variants) => {
-                match variant {
-                    Some(idx) if idx < variants.len() => variants.remove(idx),
-                    _ => {
-                        // be on the robust side and remove empty vec instead of crash
-                        vec![]
-                    },
-                }
-            },
-            Self::WithFields(fields) | Self::WithTypes { fields, .. } => {
-                fields.into_iter().map(|f| f.layout).collect()
-            },
-            Self::WithVariants(mut variants) => match variant {
-                Some(idx) if idx < variants.len() => variants
-                    .remove(idx)
-                    .fields
-                    .into_iter()
-                    .map(|f| f.layout)
-                    .collect(),
-                _ => {
-                    // be on the robust side and return empty vec instead of crash
-                    vec![]
-                },
             },
         }
     }
@@ -590,7 +812,9 @@ impl<'d> serde::de::DeserializeSeed<'d> for &MoveTypeLayout {
                 AccountAddress::deserialize(deserializer).map(MoveValue::Address)
             },
             MoveTypeLayout::Signer => Err(D::Error::custom("cannot deserialize signer")),
-            MoveTypeLayout::Struct(ty) => Ok(MoveValue::Struct(ty.deserialize(deserializer)?)),
+            MoveTypeLayout::Struct(ty) => {
+                Ok(MoveValue::Struct(ty.as_ref().deserialize(deserializer)?))
+            },
             MoveTypeLayout::Function => Ok(MoveValue::Closure(Box::new(
                 deserializer.deserialize_seq(ClosureVisitor)?,
             ))),
@@ -764,7 +988,10 @@ impl<'d> serde::de::DeserializeSeed<'d> for &MoveStructLayout {
                     _fields: fields,
                 })
             },
-            MoveStructLayout::WithVariants(decorated_variants) => {
+            MoveStructLayout::WithVariants {
+                variants: decorated_variants,
+                ..
+            } => {
                 // Downgrade the decorated variants to simple layouts to deserialize the fields.
                 let variant_names = variant_name_placeholder(decorated_variants.len())
                     .map_err(|e| D::Error::custom(format!("{}", e)))?;
@@ -906,84 +1133,6 @@ impl serde::Serialize for MoveStruct {
     }
 }
 
-impl fmt::Display for MoveFieldLayout {
-    fn fmt(&self, f: &mut fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}: {}", self.name, self.layout)
-    }
-}
-
-impl fmt::Display for MoveTypeLayout {
-    fn fmt(&self, f: &mut fmt::Formatter) -> std::fmt::Result {
-        use MoveTypeLayout::*;
-        match self {
-            Bool => write!(f, "bool"),
-            U8 => write!(f, "u8"),
-            U16 => write!(f, "u16"),
-            U32 => write!(f, "u32"),
-            U64 => write!(f, "u64"),
-            U128 => write!(f, "u128"),
-            U256 => write!(f, "u256"),
-            I8 => write!(f, "i8"),
-            I16 => write!(f, "i16"),
-            I32 => write!(f, "i32"),
-            I64 => write!(f, "i64"),
-            I128 => write!(f, "i128"),
-            I256 => write!(f, "i256"),
-            Address => write!(f, "address"),
-            Vector(typ) => write!(f, "vector<{}>", typ),
-            Struct(s) => fmt::Display::fmt(s, f),
-            Function => write!(f, "function"),
-            Signer => write!(f, "signer"),
-            // TODO[agg_v2](cleanup): consider printing the tag as well.
-            Native(_, typ) => write!(f, "native<{}>", typ),
-        }
-    }
-}
-
-impl fmt::Display for MoveStructLayout {
-    fn fmt(&self, f: &mut fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{{ ")?;
-        match self {
-            Self::Runtime(layouts) => {
-                for (i, l) in layouts.iter().enumerate() {
-                    write!(f, "{}: {}, ", i, l)?
-                }
-            },
-            Self::RuntimeVariants(variants) => {
-                for (i, v) in variants.iter().enumerate() {
-                    write!(f, "#{}{{", i)?;
-                    for (i, l) in v.iter().enumerate() {
-                        write!(f, "{}: {}, ", i, l)?
-                    }
-                    write!(f, "}}")?;
-                }
-            },
-            Self::WithFields(layouts) => {
-                for layout in layouts {
-                    write!(f, "{}, ", layout)?
-                }
-            },
-            Self::WithTypes { type_, fields } => {
-                write!(f, "Type: {}", type_.to_canonical_string())?;
-                write!(f, "Fields:")?;
-                for field in fields {
-                    write!(f, "{}, ", field)?
-                }
-            },
-            Self::WithVariants(variants) => {
-                for v in variants {
-                    write!(f, "{}{{", v.name)?;
-                    for layout in &v.fields {
-                        write!(f, "{}", layout)?;
-                    }
-                    write!(f, "}}")?;
-                }
-            },
-        }
-        write!(f, "}}")
-    }
-}
-
 impl TryInto<TypeTag> for &MoveTypeLayout {
     type Error = anyhow::Error;
 
@@ -1005,7 +1154,7 @@ impl TryInto<TypeTag> for &MoveTypeLayout {
             MoveTypeLayout::I256 => TypeTag::I256,
             MoveTypeLayout::Signer => TypeTag::Signer,
             MoveTypeLayout::Vector(v) => TypeTag::Vector(Box::new(v.as_ref().try_into()?)),
-            MoveTypeLayout::Struct(v) => TypeTag::Struct(Box::new(v.try_into()?)),
+            MoveTypeLayout::Struct(v) => TypeTag::Struct(Box::new(v.as_ref().try_into()?)),
 
             // For function values, we cannot reconstruct the tag because we do not know the
             // argument and return types.
@@ -1026,10 +1175,55 @@ impl TryInto<StructTag> for &MoveStructLayout {
     fn try_into(self) -> Result<StructTag, Self::Error> {
         use MoveStructLayout::*;
         match self {
-            Runtime(..) | RuntimeVariants(..) | WithFields(..) | WithVariants(..) => bail!(
-                "Invalid MoveTypeLayout -> StructTag conversion--needed MoveLayoutType::WithTypes"
+            Runtime(..) | RuntimeVariants(..) | WithFields(..) => bail!(
+                "Invalid MoveTypeLayout -> StructTag conversion--needed MoveLayoutType::WithTypes or WithVariants"
             ),
-            WithTypes { type_, .. } => Ok(type_.clone()),
+            WithTypes { type_, .. } | WithVariants { type_, .. } => Ok(type_.clone()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod unfolded_node_count_tests {
+    use super::*;
+
+    /// Primitives are leaves and always count as 1.
+    #[test]
+    fn primitives_count_as_one() {
+        assert_eq!(MoveTypeLayout::U8.unfolded_node_count(), 1);
+        assert_eq!(MoveTypeLayout::Address.unfolded_node_count(), 1);
+        assert_eq!(MoveTypeLayout::Function.unfolded_node_count(), 1);
+    }
+
+    /// Containers add one node for themselves and recurse into the element.
+    #[test]
+    fn containers_add_one_per_level() {
+        let layout = MoveTypeLayout::Vector(Box::new(MoveTypeLayout::Vector(Box::new(
+            MoveTypeLayout::U8,
+        ))));
+        assert_eq!(layout.unfolded_node_count(), 3);
+    }
+
+    /// Builds layouts for
+    /// ```text
+    /// struct S_0 { v: u8 }
+    /// struct S_i { l: S_{i - 1}, r: S_{i - 1} }  // for i > 0
+    /// ```
+    /// The expanded node count is `c(N) = 3 * 2^N - 1`. Verifies that the count
+    /// reflects the fully-expanded tree, not the deduplicated in-memory DAG.
+    #[test]
+    fn doubling_dag_counts_tree_expansion() {
+        fn build(n: usize) -> MoveTypeLayout {
+            let mut current = Arc::new(MoveStructLayout::Runtime(vec![MoveTypeLayout::U8]));
+            for _ in 0..n {
+                let child = MoveTypeLayout::Struct(current);
+                current = Arc::new(MoveStructLayout::Runtime(vec![child; 2]));
+            }
+            MoveTypeLayout::Struct(current)
+        }
+        for n in 0..10 {
+            let layout = build(n);
+            assert_eq!(layout.unfolded_node_count(), 3u64 * (1u64 << n) - 1);
         }
     }
 }

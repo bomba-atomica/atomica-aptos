@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_logger::{prelude::*, sample, warn};
 use aptos_metrics_core::{
@@ -79,6 +78,15 @@ pub static OTHER_TIMERS: Lazy<HistogramVec> = Lazy::new(|| {
 
 pub static EXECUTOR_ERRORS: Lazy<IntCounter> = Lazy::new(|| {
     register_int_counter!("aptos_executor_error_total", "Cumulative number of errors").unwrap()
+});
+
+pub static CHUNK_EXECUTOR_REQUEST_REJECTED: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "aptos_executor_chunk_executor_request_rejected_total",
+        "Cumulative number of rejected chunk executor requests, by entry point and reason",
+        &["entry_point", "reason"]
+    )
+    .unwrap()
 });
 
 pub static BLOCK_EXECUTION_WORKFLOW_WHOLE: Lazy<Histogram> = Lazy::new(|| {
@@ -187,7 +195,7 @@ pub static PROCESSED_USER_TXNS_BY_PAYLOAD: Lazy<IntCounterVec> = Lazy::new(|| {
     register_int_counter_vec!(
         "aptos_processed_user_transactions_by_payload",
         "Counter of processed user transactions by payload type",
-        &["process", "payload_type", "state"]
+        &["process", "payload_type", "state", "encrypted"]
     )
     .unwrap()
 });
@@ -430,6 +438,11 @@ pub fn update_counters_for_processed_chunk<T>(
                     .observe_with(&[process_type], signature_count as f64);
             }
 
+            let encrypted_label = if user_txn.payload().is_encrypted_variant() {
+                "true"
+            } else {
+                "false"
+            };
             let payload_type = if user_txn.payload().is_multisig() {
                 "multisig"
             } else {
@@ -437,6 +450,7 @@ pub fn update_counters_for_processed_chunk<T>(
                     Ok(TransactionExecutableRef::Script(_)) => "script",
                     Ok(TransactionExecutableRef::EntryFunction(_)) => "function",
                     Ok(TransactionExecutableRef::Empty) => "empty",
+                    Ok(TransactionExecutableRef::Encrypted) => "encrypted",
                     Err(_) => "deprecated_payload",
                 }
             };
@@ -446,11 +460,12 @@ pub fn update_counters_for_processed_chunk<T>(
                         process_type,
                         &(payload_type.to_string() + "_orderless"),
                         state,
+                        encrypted_label,
                     ])
                     .inc();
             } else {
                 PROCESSED_USER_TXNS_BY_PAYLOAD
-                    .with_label_values(&[process_type, payload_type, state])
+                    .with_label_values(&[process_type, payload_type, state, encrypted_label])
                     .inc();
             }
 

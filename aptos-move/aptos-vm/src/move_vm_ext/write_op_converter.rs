@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::move_vm_ext::{session::BytesWithResourceLayout, AptosMoveResolver};
 use aptos_aggregator::delta_change_set::serialize;
@@ -33,37 +33,15 @@ pub(crate) struct WriteOpConverter<'r> {
     new_slot_metadata: Option<StateValueMetadata>,
 }
 
-macro_rules! convert_impl {
-    ($convert_func_name:ident, $get_metadata_callback:ident) => {
-        pub(crate) fn $convert_func_name(
-            &self,
-            state_key: &StateKey,
-            move_storage_op: MoveStorageOp<Bytes>,
-            legacy_creation_as_modification: bool,
-        ) -> PartialVMResult<WriteOp> {
-            let state_value_metadata = self
-                .remote
-                .as_executor_view()
-                .$get_metadata_callback(state_key)?;
-            self.convert(
-                state_value_metadata,
-                move_storage_op,
-                legacy_creation_as_modification,
-            )
-        }
-    };
-}
-
 impl<'r> WriteOpConverter<'r> {
-    convert_impl!(convert_aggregator, get_aggregator_v1_state_value_metadata);
-
     pub(crate) fn new(
         remote: &'r dyn AptosMoveResolver,
         is_storage_slot_metadata_enabled: bool,
     ) -> Self {
         let mut new_slot_metadata: Option<StateValueMetadata> = None;
         if is_storage_slot_metadata_enabled {
-            if let Some(current_time) = CurrentTimeMicroseconds::fetch_config(remote) {
+            if let Some(current_time) = CurrentTimeMicroseconds::fetch_config(remote).ok().flatten()
+            {
                 // The deposit on the metadata is a placeholder (0), it will be updated later when
                 // storage fee is charged.
                 new_slot_metadata = Some(StateValueMetadata::placeholder(&current_time));
@@ -287,6 +265,17 @@ impl<'r> WriteOpConverter<'r> {
         };
 
         Ok(op)
+    }
+
+    pub(crate) fn convert_aggregator_deletion(
+        &self,
+        state_key: &StateKey,
+    ) -> PartialVMResult<WriteOp> {
+        let state_value_metadata = self
+            .remote
+            .as_executor_view()
+            .get_aggregator_v1_state_value_metadata(state_key)?;
+        self.convert(state_value_metadata, MoveStorageOp::Delete, false)
     }
 }
 

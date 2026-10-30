@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module contains the public APIs supported by the bytecode verifier.
 use crate::{
@@ -263,7 +264,7 @@ impl Default for VerifierConfig {
             sig_checker_v2_fix_function_signatures: true,
 
             enable_enum_types: true,
-            enable_resource_access_control: true,
+            enable_resource_access_control: false,
             enable_function_values: true,
 
             max_function_return_values: None,
@@ -312,7 +313,7 @@ impl VerifierConfig {
             sig_checker_v2_fix_function_signatures: true,
 
             enable_enum_types: true,
-            enable_resource_access_control: true,
+            enable_resource_access_control: false,
             enable_function_values: true,
 
             max_function_return_values: Some(128),

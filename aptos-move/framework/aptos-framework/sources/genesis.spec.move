@@ -25,8 +25,8 @@ spec aptos_framework::genesis {
     /// Requirement: The Aptos coin should be initialized during genesis and only the Aptos framework account should own
     /// the mint and burn capabilities for the APT token.
     /// Criticality: Critical
-    /// Implementation: Both mint and burn capabilities are wrapped inside the stake::AptosCoinCapabilities and
-    /// transaction_fee::AptosCoinCapabilities resources which are stored under the aptos framework account.
+    /// Implementation: The stake and transaction_fee modules store the mint and
+    /// burn capabilities under the Aptos framework account.
     /// Enforcement: Formally verified via [high-level-req-3](initialize_aptos_coin).
     ///
     /// No.: 4
@@ -48,6 +48,7 @@ spec aptos_framework::genesis {
     }
 
     spec initialize {
+        pragma opaque;
         pragma aborts_if_is_partial;
         include InitalizeRequires;
 
@@ -96,20 +97,27 @@ spec aptos_framework::genesis {
         ensures exists<account::Account>(@aptos_framework);
         ensures exists<version::SetVersionCapability>(@aptos_framework);
         ensures exists<staking_config::StakingConfig>(@aptos_framework);
+        ensures !exists<stake::AptosCoinCapabilities>(@aptos_framework);
     }
 
     spec initialize_aptos_coin {
+        pragma opaque;
         // property 3: The Aptos coin should be initialized during genesis and only the Aptos framework account should
         // own the mint and burn capabilities for the APT token.
         /// [high-level-req-3]
         requires !exists<stake::AptosCoinCapabilities>(@aptos_framework);
         ensures exists<stake::AptosCoinCapabilities>(@aptos_framework);
-        requires exists<transaction_fee::AptosCoinCapabilities>(@aptos_framework);
-        ensures exists<transaction_fee::AptosCoinCapabilities>(@aptos_framework);
     }
 
     spec initialize_validator {
-        pragma verify_duration_estimate = 120;
+    }
+
+    spec create_accounts {
+        pragma opaque;
+    }
+
+    spec create_employee_validators {
+        pragma opaque;
     }
 
     spec create_initialize_validators_with_commission {
@@ -131,13 +139,10 @@ spec aptos_framework::genesis {
     }
 
     spec create_initialize_validator {
-        pragma verify_duration_estimate = 120;
         include stake::ResourceRequirement;
     }
 
     spec initialize_for_verification {
-        // This function cause timeout (property proved)
-        pragma verify_duration_estimate = 120;
         // We construct `initialize_for_verification` which is a "#[verify_only]" function that
         // simulates the genesis encoding process in `vm-genesis` (written in Rust).
         include InitalizeRequires;

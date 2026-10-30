@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 /// Integer representing the latest gas feature version.
 /// The general rule is that this should bumped exactly once after each release, provided there
@@ -8,9 +8,26 @@
 ///   - Changing how gas is calculated in any way
 ///
 /// Change log:
+/// - V50:
+///   - Raise the abstract value size of a closure from 40 to 200
+///   - Include the cost of a closure's type arguments in its abstract value size
+/// - V49:
+///   - Count the closure function-type node towards type size and depth limits
+/// - V48:
+///   - TBA
+/// - V47:
+///   - TBA
+/// - V46:
+///    - Correct value for gas param `algebra.ark_bn254_fr_one`.
+///    - Fix BN254 `Fr::one()` native to charge `algebra.ark_bn254_fr_one`.
+/// - V45:
+///    - New minimum price per gas unit parameter for higher-limit transactions
+///    - Gas charging for encrypted transaction decryption
+///    - Minimum gas unit price for encrypted transactions
+/// - V41:
+///    - Gas charging for SLH-DSA-SHA2-128s signature verification
 /// - V31:
 ///    - Gas charging for modules used in type tags
-///
 /// - V22
 ///    - Gas parameters for enums
 ///    - Gas parameters for new native function `bcs::serialized_size`
@@ -72,7 +89,7 @@
 ///       global operations.
 /// - V1
 ///   - TBA
-pub const LATEST_GAS_FEATURE_VERSION: u64 = gas_feature_versions::RELEASE_V1_38;
+pub const LATEST_GAS_FEATURE_VERSION: u64 = gas_feature_versions::RELEASE_V1_49;
 
 pub mod gas_feature_versions {
     pub const RELEASE_V1_8: u64 = 11;
@@ -105,4 +122,16 @@ pub mod gas_feature_versions {
     pub const RELEASE_V1_36: u64 = 40;
     pub const RELEASE_V1_37: u64 = 41;
     pub const RELEASE_V1_38: u64 = 42;
+    pub const RELEASE_V1_39: u64 = 43;
+    pub const RELEASE_V1_40: u64 = 44;
+    pub const RELEASE_V1_41: u64 = 45;
+    pub const RELEASE_V1_42: u64 = 46;
+    pub const RELEASE_V1_43: u64 = 47;
+    pub const RELEASE_V1_44: u64 = 48;
+    pub const RELEASE_V1_45: u64 = 49;
+    pub const RELEASE_V1_46: u64 = 50;
+    pub const RELEASE_V1_47: u64 = 51;
+    pub const RELEASE_V1_48: u64 = 52;
+    pub const RELEASE_V1_49: u64 = 53;
+    pub const RELEASE_V1_50: u64 = 54;
 }

@@ -5,7 +5,6 @@
 module std::bcs {
     use std::option::Option;
 
-    /// Note: all natives would fail if the MoveValue contains a permissioned signer in it.
 
     /// Returns the binary representation of `v` in BCS (Binary Canonical Serialization) format.
     /// Aborts with `0x1c5` error code if serialization fails.
@@ -38,11 +37,17 @@ module std::bcs {
 
     spec serialized_size<MoveValue>(v: &MoveValue): u64 {
         pragma opaque;
+        // in practice, this function should never abort
+        aborts_if [abstract] false;
         ensures result == len(serialize(v));
     }
 
     spec constant_serialized_size {
-        // TODO: temporary mockup.
         pragma opaque;
+        // Safely assumed to never abort: the native only aborts on type-layout
+        // construction limits, unreachable for realistic types (same rationale
+        // as `serialized_size` above). The result is left unconstrained; a
+        // precise per-type model would need prover-backend support.
+        aborts_if [abstract] false;
     }
 }

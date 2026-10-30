@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     ledger_db::transaction_accumulator_db::TransactionAccumulatorDb,
@@ -9,7 +9,7 @@ use crate::{
     },
     utils::iterators::ExpectContinuousVersions,
 };
-use aptos_schemadb::{batch::SchemaBatch, DB};
+use aptos_schemadb::{batch::SchemaBatch, ReadOptions, DB};
 use aptos_storage_interface::{AptosDbError, Result};
 use aptos_types::{
     proof::TransactionInfoWithProof,
@@ -64,7 +64,21 @@ impl TransactionInfoDb {
         start_version: Version,
         num_transaction_infos: usize,
     ) -> Result<impl Iterator<Item = Result<TransactionInfo>> + '_> {
-        let mut iter = self.db.iter::<TransactionInfoSchema>()?;
+        self.get_transaction_info_iter_with_opts(
+            start_version,
+            num_transaction_infos,
+            ReadOptions::default(),
+        )
+    }
+
+    /// Same as `get_transaction_info_iter`, but with custom `ReadOptions`.
+    pub(crate) fn get_transaction_info_iter_with_opts(
+        &self,
+        start_version: Version,
+        num_transaction_infos: usize,
+        opts: ReadOptions,
+    ) -> Result<impl Iterator<Item = Result<TransactionInfo>> + '_> {
+        let mut iter = self.db.iter_with_opts::<TransactionInfoSchema>(opts)?;
         iter.seek(&start_version)?;
         iter.expect_continuous_versions(start_version, num_transaction_infos)
     }

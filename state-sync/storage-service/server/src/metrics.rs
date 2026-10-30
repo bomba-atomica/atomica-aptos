@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_config::network_id::NetworkId;
 use aptos_metrics_core::{
@@ -108,6 +107,16 @@ pub static STORAGE_ERRORS_ENCOUNTERED: Lazy<IntCounterVec> = Lazy::new(|| {
         "aptos_storage_service_server_errors",
         "Counters related to the storage server errors encountered",
         &["network_id", "error_type"]
+    )
+    .unwrap()
+});
+
+/// Counter for rate limited storage service requests
+pub static STORAGE_REQUESTS_RATE_LIMITED: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "aptos_storage_service_server_requests_rate_limited",
+        "Counters related to the storage server requests that were rate limited",
+        &["network_id", "request_type"]
     )
     .unwrap()
 });

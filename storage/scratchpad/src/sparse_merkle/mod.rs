@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module implements an in-memory Sparse Merkle Tree that is similar to what we use in
 //! storage to represent world state. This tree will store only a small portion of the state -- the
@@ -131,7 +130,11 @@ impl Drop for Inner {
                 stack.extend(descendant.drain_children_for_drop());
             }
         }
-        self.log_generation("drop");
+
+        // Avoid logging for dummy / empty trees.
+        if self.generation > 0 {
+            self.log_generation("drop");
+        }
     }
 }
 
@@ -369,9 +372,9 @@ impl SparseMerkleTree {
     fn maybe_to_nibble_path(pos: &NodePosition) -> Option<NibblePath> {
         assert!(pos.len() <= HashValue::LENGTH_IN_BITS);
 
-        if pos.len() % BITS_IN_NIBBLE == 0 {
+        if pos.len().is_multiple_of(BITS_IN_NIBBLE) {
             let mut bytes = pos.clone().into_vec();
-            if pos.len() % BITS_IN_BYTE == 0 {
+            if pos.len().is_multiple_of(BITS_IN_BYTE) {
                 Some(NibblePath::new_even(bytes))
             } else {
                 // Unused bits in `BitVec` is uninitialized, setting to 0 to make sure.

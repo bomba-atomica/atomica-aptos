@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     binary_views::BinaryIndexedView,
@@ -673,8 +674,8 @@ impl<'a> BoundsChecker<'a> {
                 | LdI8(_) | LdI16(_) | LdI32(_) | LdI64(_) | LdI256(_) | LdI128(_) | CastI8
                 | CastI16 | CastI32 | CastI64 | CastI128 | CastI256 | LdTrue | LdFalse
                 | ReadRef | WriteRef | Add | Sub | Mul | Mod | Div | Negate | BitOr | BitAnd
-                | Xor | Shl | Shr | Or | And | Not | Eq | Neq | Lt | Gt | Le | Ge | Abort | Nop => {
-                },
+                | Xor | Shl | Shr | Or | And | Not | Eq | Neq | Lt | Gt | Le | Ge | Abort
+                | AbortMsg | Nop => {},
             }
         }
         Ok(())

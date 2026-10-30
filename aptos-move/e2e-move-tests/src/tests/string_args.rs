@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{assert_move_abort, assert_success, assert_vm_status, tests::common, MoveHarness};
 use aptos_types::{
@@ -29,9 +29,7 @@ fn success_generic(ty_args: Vec<TypeTag>, tests: Vec<(&str, Vec<(Vec<Vec<u8>>, &
 
     // Load the code
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
-    assert_success!(
-        h.publish_package_cache_building(&acc, &common::test_dir_path("string_args.data/pack"))
-    );
+    assert_success!(h.publish_package(&acc, &common::test_dir_path("string_args.data/pack")));
 
     let mut module_data = parse_struct_tag("0xCAFE::test::ModuleData").unwrap();
     let string_struct = StructTag {
@@ -92,9 +90,7 @@ fn fail_generic(
 
     // Load the code
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
-    assert_success!(
-        h.publish_package_cache_building(&acc, &common::test_dir_path("string_args.data/pack"))
-    );
+    assert_success!(h.publish_package(&acc, &common::test_dir_path("string_args.data/pack")));
 
     let module_data = parse_struct_tag("0xCAFE::test::ModuleData").unwrap();
 

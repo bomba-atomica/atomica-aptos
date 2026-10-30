@@ -1,17 +1,25 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use crate::{assert_success, harness::MoveHarness, tests::common, BlockSplit, SUCCESS};
+use crate::{tests::common, BlockSplit, SUCCESS};
+use aptos_crypto::HashValue;
 use aptos_language_e2e_tests::account::{Account, TransactionBuilder};
+use aptos_move_e2e_test_harness::{assert_abort, assert_success, MoveHarness};
 use aptos_types::{
     move_utils::MemberId,
     on_chain_config::FeatureFlag,
-    transaction::{EntryFunction, MultisigTransactionPayload, TransactionPayload},
+    secret_sharing::{Ciphertext, EvalProof},
+    transaction::{
+        encrypted_payload::{DecryptedPlaintext, EncryptedInner, EncryptedPayload},
+        EntryFunction, MultisigTransactionPayload, SignedTransaction, TransactionExecutable,
+        TransactionExtraConfig, TransactionPayload, TransactionPayloadInner,
+    },
 };
 use bcs::to_bytes;
 use move_core_types::{
     account_address::AccountAddress,
     ident_str,
+    identifier::Identifier,
     language_storage::{ModuleId, StructTag, TypeTag, CORE_CODE_ADDRESS},
     parser::parse_struct_tag,
 };
@@ -32,6 +40,9 @@ struct TransactionContextStore {
     type_arg_names: Vec<String>,
     args: Vec<Vec<u8>>,
     multisig_address: AccountAddress,
+    is_encrypted_txn: bool,
+    is_orderless_txn: bool,
+    seq_num_proof_checked: bool,
     // Fields for monotonically increasing counter tests
     counter_values: Vec<u128>,
     counter_timestamps: Vec<u64>,
@@ -43,7 +54,7 @@ fn setup(harness: &mut MoveHarness) -> Account {
 
     let account = harness.new_account_at(AccountAddress::ONE);
 
-    assert_success!(harness.publish_package_cache_building(&account, &path));
+    assert_success!(harness.publish_package(&account, &path));
 
     account
 }
@@ -259,7 +270,7 @@ fn test_transaction_context_max_gas_amount() {
     let account = setup(&mut harness);
 
     let max_gas_amount = call_get_max_gas_amount_from_native_txn_context(&mut harness, &account);
-    assert_eq!(max_gas_amount, 2000000);
+    assert_eq!(max_gas_amount, 20000000);
 }
 
 #[test]
@@ -278,6 +289,203 @@ fn test_transaction_context_chain_id() {
 
     let chain_id = call_get_chain_id_from_native_txn_context(&mut harness, &account);
     assert_eq!(chain_id, 4);
+}
+
+#[test]
+fn test_transaction_context_is_encrypted_txn_false_for_normal_txn() {
+    let mut harness = new_move_harness();
+    let account = setup(&mut harness);
+
+    let status = harness.run_entry_function(
+        &account,
+        str::parse("0x1::transaction_context_test::store_is_encrypted_txn").unwrap(),
+        vec![],
+        vec![],
+    );
+    assert!(status.status().unwrap().is_success());
+
+    let txn_ctx_store = harness
+        .read_resource::<TransactionContextStore>(
+            account.address(),
+            parse_struct_tag("0x1::transaction_context_test::TransactionContextStore").unwrap(),
+        )
+        .unwrap();
+
+    assert!(!txn_ctx_store.is_encrypted_txn);
+}
+
+#[test]
+fn test_transaction_context_is_encrypted_txn_true() {
+    let mut harness = MoveHarness::new_with_features(
+        vec![
+            FeatureFlag::GAS_PAYER_ENABLED,
+            FeatureFlag::SPONSORED_AUTOMATIC_ACCOUNT_V1_CREATION,
+            FeatureFlag::TRANSACTION_CONTEXT_EXTENSION,
+            FeatureFlag::ENCRYPTED_TRANSACTIONS,
+        ],
+        vec![],
+    );
+    harness.default_gas_unit_price = 200;
+    let account = setup(&mut harness);
+
+    let entry_fn = EntryFunction::new(
+        ModuleId::new(
+            CORE_CODE_ADDRESS,
+            ident_str!("transaction_context_test").to_owned(),
+        ),
+        ident_str!("store_is_encrypted_txn").to_owned(),
+        vec![],
+        vec![],
+    );
+    let entry_fn_executable = TransactionExecutable::EntryFunction(entry_fn.clone());
+
+    let original = EncryptedInner {
+        ciphertext: Ciphertext::random(),
+        extra_config: TransactionExtraConfig::V1 {
+            multisig_address: None,
+            replay_protection_nonce: None,
+        },
+        payload_hash: HashValue::random(),
+        encryption_epoch: 1,
+        claimed_entry_fun: None,
+    };
+
+    let encrypted_payload = EncryptedPayload::Encrypted(original.clone());
+    let payload = TransactionPayload::EncryptedPayload(encrypted_payload);
+    let mut txn = harness.create_transaction_payload(&account, payload);
+
+    let decrypted_payload = EncryptedPayload::Decrypted {
+        original,
+        eval_proof: EvalProof::random(),
+        decrypted: DecryptedPlaintext::new(entry_fn_executable, [0u8; 16]),
+    };
+    *txn.payload_mut() = TransactionPayload::EncryptedPayload(decrypted_payload);
+
+    let output = harness.run_raw(txn);
+    assert_success!(*output.status());
+
+    let txn_ctx_store = harness
+        .read_resource::<TransactionContextStore>(
+            account.address(),
+            parse_struct_tag("0x1::transaction_context_test::TransactionContextStore").unwrap(),
+        )
+        .unwrap();
+
+    assert!(txn_ctx_store.is_encrypted_txn);
+}
+
+fn new_move_harness_with_orderless_txns_enabled() -> MoveHarness {
+    MoveHarness::new_with_features(
+        vec![
+            FeatureFlag::GAS_PAYER_ENABLED,
+            FeatureFlag::SPONSORED_AUTOMATIC_ACCOUNT_V1_CREATION,
+            FeatureFlag::TRANSACTION_CONTEXT_EXTENSION,
+            FeatureFlag::TRANSACTION_PAYLOAD_V2,
+            FeatureFlag::ORDERLESS_TRANSACTIONS,
+        ],
+        vec![],
+    )
+}
+
+/// Creates a signed orderless transaction (replay-protected by a nonce instead of a
+/// sequence number) calling the given entry function of the test package.
+fn create_orderless_txn(
+    harness: &mut MoveHarness,
+    account: &Account,
+    function_name: &str,
+    nonce: u64,
+) -> SignedTransaction {
+    let entry_fn = EntryFunction::new(
+        ModuleId::new(
+            CORE_CODE_ADDRESS,
+            ident_str!("transaction_context_test").to_owned(),
+        ),
+        Identifier::new(function_name).unwrap(),
+        vec![],
+        vec![],
+    );
+    let payload = TransactionPayload::Payload(TransactionPayloadInner::V1 {
+        executable: TransactionExecutable::EntryFunction(entry_fn),
+        extra_config: TransactionExtraConfig::V1 {
+            multisig_address: None,
+            replay_protection_nonce: Some(nonce),
+        },
+    });
+    // Orderless transactions must expire within a short window
+    // (MAX_EXP_TIME_SECONDS_FOR_ORDERLESS_TXNS in transaction_validation.move), so override
+    // the harness's default one-hour TTL.
+    let expiration_secs = harness.executor.get_block_time_seconds() + 60;
+    harness
+        .create_transaction_without_sign(account, payload)
+        .ttl(expiration_secs)
+        .sign()
+}
+
+fn read_txn_ctx_store(harness: &MoveHarness, account: &Account) -> TransactionContextStore {
+    harness
+        .read_resource::<TransactionContextStore>(
+            account.address(),
+            parse_struct_tag("0x1::transaction_context_test::TransactionContextStore").unwrap(),
+        )
+        .unwrap()
+}
+
+#[test]
+fn test_transaction_context_is_orderless_txn_false_for_seq_num_txn() {
+    let mut harness = new_move_harness_with_orderless_txns_enabled();
+    let account = setup(&mut harness);
+
+    // A regular transaction is replay-protected by a sequence number, so it is not orderless.
+    let status = harness.run_entry_function(
+        &account,
+        str::parse("0x1::transaction_context_test::store_is_orderless_txn").unwrap(),
+        vec![],
+        vec![],
+    );
+    assert!(status.status().unwrap().is_success());
+
+    assert!(!read_txn_ctx_store(&harness, &account).is_orderless_txn);
+}
+
+#[test]
+fn test_transaction_context_is_orderless_txn_true_for_orderless_txn() {
+    let mut harness = new_move_harness_with_orderless_txns_enabled();
+    let account = setup(&mut harness);
+
+    let txn = create_orderless_txn(&mut harness, &account, "store_is_orderless_txn", 1234);
+    let output = harness.run_raw(txn);
+    assert_success!(*output.status());
+
+    assert!(read_txn_ctx_store(&harness, &account).is_orderless_txn);
+}
+
+#[test]
+fn test_seq_num_based_proof_runs_on_seq_num_txn() {
+    let mut harness = new_move_harness_with_orderless_txns_enabled();
+    let account = setup(&mut harness);
+
+    let status = harness.run_entry_function(
+        &account,
+        str::parse("0x1::transaction_context_test::check_seq_num_based_proof").unwrap(),
+        vec![],
+        vec![],
+    );
+    assert!(status.status().unwrap().is_success());
+
+    assert!(read_txn_ctx_store(&harness, &account).seq_num_proof_checked);
+}
+
+#[test]
+fn test_seq_num_based_proof_aborts_on_orderless_txn() {
+    let mut harness = new_move_harness_with_orderless_txns_enabled();
+    let account = setup(&mut harness);
+
+    let txn = create_orderless_txn(&mut harness, &account, "check_seq_num_based_proof", 5678);
+    let output = harness.run_raw(txn);
+    // ESEQ_NUM_PROOF_ON_ORDERLESS_TXN in transaction_context_test.move.
+    assert_abort!(output.status().to_owned(), 200);
+
+    assert!(!read_txn_ctx_store(&harness, &account).seq_num_proof_checked);
 }
 
 #[test]

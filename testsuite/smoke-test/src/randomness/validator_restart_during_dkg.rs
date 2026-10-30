@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     randomness::{decrypt_key_map, verify_dkg_transcript, wait_for_dkg_finish},
@@ -9,7 +9,10 @@ use crate::{
 use aptos_forge::{NodeExt, SwarmExt};
 use aptos_logger::{debug, info};
 use aptos_rest_client::Client;
-use aptos_types::{dkg::DKGState, on_chain_config::OnChainRandomnessConfig};
+use aptos_types::{
+    dkg::DKGState,
+    on_chain_config::{OnChainChunkyDKGConfig, OnChainRandomnessConfig},
+};
 use futures::future::join_all;
 use std::{sync::Arc, time::Duration};
 
@@ -32,6 +35,9 @@ async fn validator_restart_during_dkg() {
             // Ensure randomness is enabled.
             conf.consensus_config.enable_validator_txns();
             conf.randomness_config_override = Some(OnChainRandomnessConfig::default_enabled());
+            // This test restarts validators mid-DKG; keep chunky DKG off so
+            // its dealer state doesn't race with the restart.
+            conf.chunky_dkg_config_override = Some(OnChainChunkyDKGConfig::default_disabled());
         }))
         .build()
         .await;

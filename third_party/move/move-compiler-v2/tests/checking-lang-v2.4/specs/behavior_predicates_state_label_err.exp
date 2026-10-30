@@ -1,0 +1,55 @@
+
+Diagnostics:
+error: `requires_of` describes a single state and cannot have a post-state label; only `ensures_of` and `result_of` support state transitions
+   ┌─ tests/checking-lang-v2.4/specs/behavior_predicates_state_label_err.move:11:27
+   │
+11 │         ensures ..post |~ requires_of<f>(x); // Error: post-state label not allowed on requires_of
+   │                           ^^^^^^^^^^^^^^^^^
+
+error: state label `post` is defined but never referenced; every post-state label must be referenced by a pre-state label in the same spec
+   ┌─ tests/checking-lang-v2.4/specs/behavior_predicates_state_label_err.move:11:27
+   │
+11 │         ensures ..post |~ requires_of<f>(x); // Error: post-state label not allowed on requires_of
+   │                           ^^^^^^^^^^^^^^^^^
+
+error: `aborts_of` describes a single state and cannot have a post-state label; only `ensures_of` and `result_of` support state transitions
+   ┌─ tests/checking-lang-v2.4/specs/behavior_predicates_state_label_err.move:20:29
+   │
+20 │         aborts_if ..post |~ aborts_of<f>(x); // Error: post-state label not allowed on aborts_of
+   │                             ^^^^^^^^^^^^^^^
+
+error: state label `post` is defined but never referenced; every post-state label must be referenced by a pre-state label in the same spec
+   ┌─ tests/checking-lang-v2.4/specs/behavior_predicates_state_label_err.move:20:29
+   │
+20 │         aborts_if ..post |~ aborts_of<f>(x); // Error: post-state label not allowed on aborts_of
+   │                             ^^^^^^^^^^^^^^^
+
+error: state label `orphan` is defined but never referenced; every post-state label must be referenced by a pre-state label in the same spec
+   ┌─ tests/checking-lang-v2.4/specs/behavior_predicates_state_label_err.move:29:29
+   │
+29 │         ensures ..orphan |~ ensures_of<f>(x, result); // Error: 'orphan' is never referenced
+   │                             ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: cyclic state label reference detected: a -> b -> a
+   ┌─ tests/checking-lang-v2.4/specs/behavior_predicates_state_label_err.move:37:5
+   │
+37 │ ╭     spec apply_cycle {
+38 │ │         // a references b's post-state, b references a's post-state - cycle!
+39 │ │         ensures a..b |~ ensures_of<f>(x, result);
+40 │ │         ensures b..a |~ ensures_of<f>(x, result);
+41 │ │     }
+   │ ╰─────^
+
+error: ensures_of/result_of/unchanged_of/folds_of require two-state range notation; use `..S |~` (post-only), `S.. |~` (pre-only), or `A..S |~` (full range) instead of `S |~`
+   ┌─ tests/checking-lang-v2.4/specs/behavior_predicates_state_label_err.move:49:25
+   │
+49 │         ensures a..a |~ ensures_of<f>(x, result);
+   │                         ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: cyclic state label reference detected: a -> a
+   ┌─ tests/checking-lang-v2.4/specs/behavior_predicates_state_label_err.move:48:5
+   │
+48 │ ╭     spec apply_self_cycle {
+49 │ │         ensures a..a |~ ensures_of<f>(x, result);
+50 │ │     }
+   │ ╰─────^

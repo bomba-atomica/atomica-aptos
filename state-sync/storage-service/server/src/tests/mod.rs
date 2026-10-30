@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // TODO(joshlind): once the latest features are stabilized, remove the legacy features and tests!!
 
@@ -12,6 +12,7 @@ mod new_transactions_or_outputs;
 mod number_of_states;
 mod optimistic_fetch;
 mod protocol_version;
+mod rate_limiter;
 mod request_moderator;
 mod response_progress_tracker;
 mod state_values;

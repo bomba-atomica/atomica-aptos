@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     data_cache::StorageAdapter,
@@ -47,10 +47,16 @@ impl<'r> RespawnedSession<'r> {
             base.as_resource_group_view(),
             previous_session_change_set,
         );
+        // The executor view above wraps the raw view underneath `base`, bypassing `base`'s
+        // read recording, so the new resolver must inherit the recorder explicitly.
+        let read_recorder = base.read_recorder();
 
         RespawnedSessionBuilder {
             executor_view,
-            resolver_builder: |executor_view| vm.as_move_resolver_with_group_view(executor_view),
+            resolver_builder: |executor_view| {
+                vm.as_move_resolver_with_group_view(executor_view)
+                    .with_read_recorder(read_recorder)
+            },
             session_builder: |resolver| {
                 Some(vm.new_session(resolver, session_id, user_transaction_context_opt))
             },
@@ -98,7 +104,10 @@ impl<'r> RespawnedSession<'r> {
         }
         let mut change_set = self.into_heads().executor_view.change_set;
         change_set
-            .squash_additional_change_set(additional_change_set)
+            .squash_additional_change_set(
+                additional_change_set,
+                change_set_configs.strict_delayed_field_squash(),
+            )
             .map_err(|_err| {
                 VMStatus::error(
                     StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,

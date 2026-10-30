@@ -5,6 +5,9 @@
 **/*.rs.bk
 .idea/
 
+# Latex specific ignores
+out/
+
 # Ignore wallet mnemonic files used for deterministic key derivation
 *.mnemonic
 
@@ -139,8 +142,10 @@ ecosystem/indexer-grpc/indexer-transaction-generator/*.yaml
 # ignore antithesis
 genesis_antithesis_*/
 
-# ignore cursor rules
+# ignore cursor rules / claude settings
 .cursor/rules
+.claude
+.atlas/
 
 #ignore proptest regressions
 **/proptest_regressions/*
@@ -153,3 +158,17 @@ third_party/move/tools/move-package-resolver/cache
 
 # Ignore cache for docs
 .docs-cache
+
+# ignore batch encryption benchmark results
+crates/aptos-batch-encryption/benchmark_results
+
+# ignore batch encryption pnpm lockfile
+crates/aptos-batch-encryption/ts-batch-encrypt/.pnpm-install.lock
+
+# Telemetry service E2E test generated files
+# Test data directory (created at runtime)
+test-data/
+
+# Any test keys
+**/*.key
+**/*.pub

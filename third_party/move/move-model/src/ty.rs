@@ -1,12 +1,13 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Contains types and related functions.
 
 use crate::{
     ast::{Address, ModuleName, QualifiedSymbol},
-    builder::{ith_str, pluralize},
+    builder::{ith_str, pluralize, pluralize_be},
     model::{
         FunId, GlobalEnv, Loc, ModuleId, QualifiedId, QualifiedInstId, StructEnv, StructId,
         TypeParameter, TypeParameterKind,
@@ -51,6 +52,7 @@ pub enum Type {
     // Types only appearing in specifications.
     TypeDomain(Box<Type>),
     ResourceDomain(ModuleId, StructId, Option<Vec<Type>>),
+    StateDomain,
 
     // Temporary types used during type checking
     Error,
@@ -440,7 +442,16 @@ impl Constraint {
             }
         }
         match (abilities, result) {
-            (Some(abs), Some(Type::Fun(arg, res, _))) => Some(Type::Fun(arg, res, abs)),
+            (Some(abs), Some(Type::Fun(arg, res, _))) => {
+                // Function types can have at most copy, drop, and store. The `key` ability
+                // is never achievable for function values, so these constraints are
+                // incompatible.
+                if abs.setminus(AbilitySet::PUBLIC_FUNCTIONS).is_empty() {
+                    Some(Type::Fun(arg, res, abs))
+                } else {
+                    None
+                }
+            },
             (Some(abs), Some(Type::Primitive(PrimitiveType::U64)))
                 if !abs.has_ability(Ability::Key) =>
             {
@@ -640,6 +651,46 @@ impl Constraint {
                 }
                 Ok(false)
             },
+            // Check compatibility between ability and function value type.
+            // Function values can have at most copy, drop, and store (the last only for
+            // public functions). They can never have the `key` ability.
+            (Constraint::HasAbilities(a1, _), Constraint::SomeFunctionValue(..)) => {
+                let unsupported_abilities = a1.setminus(AbilitySet::PUBLIC_FUNCTIONS);
+                if !unsupported_abilities.is_empty() {
+                    return Err(TypeUnificationError::MissingAbilitiesForConstraints(
+                        loc.clone(),
+                        other.clone(),
+                        unsupported_abilities,
+                        ctx_opt,
+                    ));
+                }
+                Ok(false)
+            },
+            (Constraint::SomeFunctionValue(..), Constraint::HasAbilities(a1, _)) => {
+                let unsupported_abilities = a1.setminus(AbilitySet::PUBLIC_FUNCTIONS);
+                if !unsupported_abilities.is_empty() {
+                    return Err(TypeUnificationError::MissingAbilitiesForConstraints(
+                        loc.clone(),
+                        self.clone(),
+                        unsupported_abilities,
+                        ctx_opt,
+                    ));
+                }
+                Ok(false)
+            },
+            // SomeStruct and SomeReceiverFunction constrain orthogonal aspects of a type
+            // (field existence vs receiver function existence), so they can coexist.
+            (Constraint::SomeStruct(..), Constraint::SomeReceiverFunction(..))
+            | (Constraint::SomeReceiverFunction(..), Constraint::SomeStruct(..)) => Ok(false),
+            // SomeReference is orthogonal to constraints that propagate over references
+            // (SomeStruct, SomeReceiverFunction — see `propagate_over_reference`): the
+            // reference shape applies to the outer type while the field/method
+            // requirement is satisfied by the referent. E.g. `&mut S` is a reference and
+            // `S` has the field/method.
+            (Constraint::SomeReference(..), Constraint::SomeStruct(..))
+            | (Constraint::SomeStruct(..), Constraint::SomeReference(..))
+            | (Constraint::SomeReference(..), Constraint::SomeReceiverFunction(..))
+            | (Constraint::SomeReceiverFunction(..), Constraint::SomeReference(..)) => Ok(false),
             // After the above checks, if one of the constraints is
             // accumulating, indicate its compatible but cannot be joined.
             (c1, c2) if c1.accumulating() || c2.accumulating() => Ok(false),
@@ -798,6 +849,10 @@ pub enum TypeUnificationError {
     FunResultTypeMismatch(Type, Type),
     /// The arity  of some construct mismatches: `ArityMismatch(for_type_args, actual, expected)`
     ArityMismatch(/*for_type_args*/ bool, usize, usize),
+    /// Arity mismatch in function argument types: `FunArgArityMismatch(actual, expected)`
+    FunArgArityMismatch(usize, usize),
+    /// Arity mismatch in function result types: `FunResultArityMismatch(actual, expected)`
+    FunResultArityMismatch(usize, usize),
     /// Two types have different mutability: `MutabilityMismatch(actual, expected)`.
     MutabilityMismatch(Type, Type),
     /// A generic representation of the error that a constraint wasn't satisfied, with
@@ -910,6 +965,19 @@ impl PrimitiveType {
             PrimitiveType::Num => None,
             _ => unreachable!("no num type"),
         }
+    }
+
+    /// Returns true if this is a signed integer type.
+    pub fn is_signed(&self) -> bool {
+        matches!(
+            self,
+            PrimitiveType::I8
+                | PrimitiveType::I16
+                | PrimitiveType::I32
+                | PrimitiveType::I64
+                | PrimitiveType::I128
+                | PrimitiveType::I256
+        )
     }
 
     /// Gets the number of bits in the type, or None if unbounded..
@@ -1107,7 +1175,7 @@ impl Type {
         match self {
             Primitive(p) => p.is_spec(),
             Fun(args, result, _) => args.is_spec() || result.is_spec(),
-            TypeDomain(..) | ResourceDomain(..) | Error => true,
+            TypeDomain(..) | ResourceDomain(..) | StateDomain | Error => true,
             Var(..) | TypeParameter(..) => false,
             Tuple(ts) => ts.iter().any(|t| t.is_spec()),
             Struct(_, _, ts) => ts.iter().any(|t| t.is_spec()),
@@ -1197,7 +1265,7 @@ impl Type {
                 types.push(self.clone());
                 types
             },
-            Type::ResourceDomain(_, _, None) => {
+            Type::ResourceDomain(_, _, None) | Type::StateDomain => {
                 vec![self.clone()]
             },
             Type::Var(..) => {
@@ -1320,6 +1388,7 @@ impl Type {
             Type::Fun(..)
             | Type::TypeDomain(..)
             | Type::ResourceDomain(..)
+            | Type::StateDomain
             | Type::Var(..)
             | Type::Error => false,
         }
@@ -1341,6 +1410,11 @@ impl Type {
         } else {
             self
         }
+    }
+
+    /// Wrap the type in a reference
+    pub fn wrap_in_reference(&self, is_mut: bool) -> Type {
+        Type::Reference(ReferenceKind::from_is_mut(is_mut), Box::new(self.clone()))
     }
 
     /// If this is a reference, return its kind.
@@ -1366,7 +1440,8 @@ impl Type {
         env: &'env GlobalEnv,
     ) -> Option<(StructEnv<'env>, &'env [Type])> {
         if let Type::Struct(module_idx, struct_idx, params) = self {
-            Some((env.get_module(*module_idx).into_struct(*struct_idx), params))
+            env.get_module_opt(*module_idx)
+                .map(|module_env| (module_env.into_struct(*struct_idx), params.as_slice()))
         } else {
             None
         }
@@ -1514,7 +1589,7 @@ impl Type {
                 *sid,
                 args_opt.as_ref().map(|args| replace_vec(args, visiting)),
             ),
-            Type::Primitive(..) | Type::Error => self.clone(),
+            Type::Primitive(..) | Type::StateDomain | Type::Error => self.clone(),
         }
     }
 
@@ -1549,7 +1624,7 @@ impl Type {
             Vector(et) => et.is_incomplete(),
             Reference(_, bt) => bt.is_incomplete(),
             TypeDomain(bt) => bt.is_incomplete(),
-            Error | Primitive(..) | TypeParameter(_) | ResourceDomain(..) => false,
+            Error | Primitive(..) | TypeParameter(_) | ResourceDomain(..) | StateDomain => false,
         }
     }
 
@@ -1737,7 +1812,7 @@ impl Type {
             Vector(et) => et.internal_get_vars(vars),
             Reference(_, bt) => bt.internal_get_vars(vars),
             TypeDomain(bt) => bt.internal_get_vars(vars),
-            Error | Primitive(..) | TypeParameter(..) | ResourceDomain(..) => {},
+            Error | Primitive(..) | TypeParameter(..) | ResourceDomain(..) | StateDomain => {},
         }
     }
 
@@ -1774,6 +1849,43 @@ impl Type {
     /// If this is a tuple and it has zero elements (the 'unit' type), return true.
     pub fn is_unit(&self) -> bool {
         matches!(self, Type::Tuple(ts) if ts.is_empty())
+    }
+
+    /// Normalize a function type into the canonical form used to index and
+    /// compare function types: abilities are stripped (they are abstracted by
+    /// the prover) and both argument and result tuples are unwrapped-if-
+    /// singleton, at every nesting depth — matching the erasure the Boogie
+    /// type name applies, so two types normalize equal exactly when their
+    /// names mangle equal. Panics if not called on a function type.
+    pub fn normalize_fun(self) -> Type {
+        assert!(matches!(self, Type::Fun(..)), "expected fun type");
+        self.normalize_nested_funs()
+    }
+
+    /// Normalize every function type nested anywhere inside `self` into the
+    /// canonical form of `normalize_fun`, leaving other type constructors
+    /// unchanged.
+    pub fn normalize_nested_funs(self) -> Type {
+        match self {
+            Type::Fun(params, results, _) => Type::Fun(
+                Box::new(Type::tuple(params.flatten()).normalize_nested_funs()),
+                Box::new(Type::tuple(results.flatten()).normalize_nested_funs()),
+                AbilitySet::EMPTY,
+            ),
+            Type::Vector(et) => Type::Vector(Box::new(et.normalize_nested_funs())),
+            Type::Struct(mid, sid, ts) => Type::Struct(
+                mid,
+                sid,
+                ts.into_iter().map(Type::normalize_nested_funs).collect(),
+            ),
+            Type::Tuple(ts) => {
+                Type::Tuple(ts.into_iter().map(Type::normalize_nested_funs).collect())
+            },
+            Type::Reference(kind, bt) => {
+                Type::Reference(kind, Box::new(bt.normalize_nested_funs()))
+            },
+            _ => self,
+        }
     }
 
     /// If this is a vector of more than one type, make a tuple out of it, otherwise return the
@@ -2480,7 +2592,7 @@ impl Substitution {
             },
             Fun(_, _, abilities) => check(*abilities),
             Reference(_, _) => check(AbilitySet::REFERENCES),
-            TypeDomain(_) | ResourceDomain(_, _, _) => check(AbilitySet::EMPTY),
+            TypeDomain(_) | ResourceDomain(_, _, _) | StateDomain => check(AbilitySet::EMPTY),
             Error => Ok(()),
             Var(idx) => {
                 // Discharge the constraint by adding it to the substitution for
@@ -2594,6 +2706,26 @@ impl Substitution {
             }
         }
         false
+    }
+
+    /// Extracts function arg/result types from a type, considering constraints.
+    /// Returns `Some((arg_ty, result_ty))` if the type is `Type::Fun` or a constrained
+    /// variable with `SomeFunctionValue`.
+    pub fn get_fun_type(&self, t: &Type) -> Option<(Type, Type)> {
+        let t = self.specialize(t);
+        if let Type::Fun(arg_ty, result_ty, _) = &t {
+            return Some((self.specialize(arg_ty), self.specialize(result_ty)));
+        }
+        if let Type::Var(idx) = &t {
+            if let Some(constrs) = self.constraints.get(idx) {
+                for (_, _, c) in constrs {
+                    if let Constraint::SomeFunctionValue(arg_ty, result_ty) = c {
+                        return Some((self.specialize(arg_ty), self.specialize(result_ty)));
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Return either a shallow or deep substitution of the type variable.
@@ -2810,6 +2942,9 @@ impl Substitution {
                     e1,
                     e2,
                 )?)));
+            },
+            (Type::StateDomain, Type::StateDomain) => {
+                return Ok(Type::StateDomain);
             },
             _ => {},
         }
@@ -3040,61 +3175,68 @@ impl ErrorMessageContext {
                 actual,
             ),
             Argument => format!(
-                "the function takes {} {} but {} were provided",
+                "the function takes {} {} but {} {} provided",
                 expected,
                 if for_type_args {
                     pluralize("type argument", expected)
                 } else {
                     pluralize("argument", expected)
                 },
-                actual
+                actual,
+                pluralize_be(actual),
             ),
             PositionalUnpackArgument => format!(
-                "the struct/variant has {} {} but {} were provided",
+                "the struct/variant has {} {} but {} {} provided",
                 expected,
                 if for_type_args {
                     pluralize("type argument", expected)
                 } else {
                     pluralize("field", expected)
                 },
-                actual
+                actual,
+                pluralize_be(actual),
             ),
             ReceiverArgument => {
                 if for_type_args {
                     format!(
-                        "the receiver function takes {} type {} but {} were provided",
+                        "the receiver function takes {} type {} but {} {} provided",
                         expected,
                         pluralize("argument", expected),
-                        actual
+                        actual,
+                        pluralize_be(actual),
                     )
                 } else {
                     format!(
-                        "the receiver function takes {} {} but {} were provided",
+                        "the receiver function takes {} {} but {} {} provided",
                         expected - 1,
                         pluralize("argument", expected - 1),
-                        actual - 1
+                        actual - 1,
+                        pluralize_be(actual - 1),
                     )
                 }
             },
             OperatorArgument => format!(
-                "the operator takes {} {} but {} were provided",
+                "the operator takes {} {} but {} {} provided",
                 expected,
                 pluralize("argument", expected),
-                actual
+                actual,
+                pluralize_be(actual),
             ),
             TypeArgument => {
                 format!(
-                    "expected {} type {} but {} were provided",
+                    "expected {} type {} but {} {} provided",
                     expected,
                     pluralize("argument", expected),
-                    actual
+                    actual,
+                    pluralize_be(actual),
                 )
             },
             Return => format!(
-                "the function returns {} {} but {} were provided",
+                "the function returns {} {} but {} {} provided",
                 expected,
                 pluralize("argument", expected),
-                actual
+                actual,
+                pluralize_be(actual),
             ),
             SchemaInclusion(_) | General | TypeAnnotation => {
                 format!("expected {} items but found {}", expected, actual)
@@ -3189,7 +3331,13 @@ impl TypeUnificationError {
         match self {
             TypeUnificationError::TypeMismatch(t1, t2)
             | TypeUnificationError::MutabilityMismatch(t1, t2) => {
-                TypeUnificationError::FunArgTypeMismatch(t1, t2)
+                // Swap because function type arguments are unified with `order.swap()` (contra-variance), which causes
+                // `TypeMismatch`/`MutabilityMismatch` with swapped actual/expected values
+                TypeUnificationError::FunArgTypeMismatch(t2, t1)
+            },
+            TypeUnificationError::ArityMismatch(_for_type_args, actual, expected) => {
+                // Swap for the same reason as above
+                TypeUnificationError::FunArgArityMismatch(expected, actual)
             },
             _ => self,
         }
@@ -3200,6 +3348,9 @@ impl TypeUnificationError {
             TypeUnificationError::TypeMismatch(t1, t2)
             | TypeUnificationError::MutabilityMismatch(t1, t2) => {
                 TypeUnificationError::FunResultTypeMismatch(t1, t2)
+            },
+            TypeUnificationError::ArityMismatch(_for_type_args, actual, expected) => {
+                TypeUnificationError::FunResultArityMismatch(actual, expected)
             },
             _ => self,
         }
@@ -3249,8 +3400,7 @@ impl TypeUnificationError {
                 vec![],
                 vec![],
             ),
-            TypeUnificationError::FunArgTypeMismatch(expected, actual) => (
-                // Because of contra-variance, switches actual/expected order
+            TypeUnificationError::FunArgTypeMismatch(actual, expected) => (
                 format!(
                     "expected function type has argument of type `{}` but `{}` was provided",
                     expected.display(display_context),
@@ -3270,6 +3420,28 @@ impl TypeUnificationError {
             ),
             TypeUnificationError::ArityMismatch(for_type_args, actual, expected) => (
                 error_context.arity_mismatch(*for_type_args, *actual, *expected),
+                vec![],
+                vec![],
+            ),
+            TypeUnificationError::FunArgArityMismatch(actual, expected) => (
+                format!(
+                    "expected function type has {} {} but {} {} provided",
+                    expected,
+                    pluralize("argument", *expected),
+                    actual,
+                    pluralize_be(*actual)
+                ),
+                vec![],
+                vec![],
+            ),
+            TypeUnificationError::FunResultArityMismatch(actual, expected) => (
+                format!(
+                    "expected function type returns {} {} but {} {} provided",
+                    expected,
+                    pluralize("value", *expected),
+                    actual,
+                    pluralize_be(*actual)
+                ),
                 vec![],
                 vec![],
             ),
@@ -3772,6 +3944,7 @@ impl fmt::Display for TypeDisplay<'_> {
                 }
                 f.write_str(">")
             },
+            StateDomain => write!(f, "state_domain"),
             Fun(a, t, abilities) => {
                 f.write_str("|")?;
                 if !a.is_unit() {
@@ -4011,9 +4184,10 @@ pub trait AbilityInference: AbilityContext {
                     .unwrap_or(AbilitySet::PRIMITIVES),
             ),
             Type::Fun(_, _, abilities) => (false, *abilities),
-            Type::TypeDomain(_) | Type::ResourceDomain(_, _, _) | Type::Error => {
-                (false, AbilitySet::EMPTY)
-            },
+            Type::TypeDomain(_)
+            | Type::ResourceDomain(_, _, _)
+            | Type::StateDomain
+            | Type::Error => (false, AbilitySet::EMPTY),
         }
     }
 

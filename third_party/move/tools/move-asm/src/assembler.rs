@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Implements the assembler from the abstract syntax into bytecode,
 //! using the `ModuleBuilder`.
@@ -120,6 +120,16 @@ pub fn assemble<'a>(
     context_modules: impl Iterator<Item = &'a CompiledModule>,
 ) -> AsmResult<ModuleOrScript> {
     let ast = syntax::parse_asm(input)?;
+    assemble_unit(options, ast, context_modules)
+}
+
+/// Assembles an already-parsed unit (the AST-level entry of [`assemble`],
+/// for callers which also process the AST themselves).
+pub fn assemble_unit<'a>(
+    options: &Options,
+    ast: Unit,
+    context_modules: impl Iterator<Item = &'a CompiledModule>,
+) -> AsmResult<ModuleOrScript> {
     compile(options.module_builder_options.clone(), context_modules, ast)
 }
 
@@ -354,64 +364,71 @@ impl<'a> Assembler<'a> {
     }
 
     fn define_fun(&mut self, def_idx: FunctionDefinitionIndex, fun: &Fun) {
-        if !fun.instrs.is_empty() {
-            self.setup_fun(fun);
-            let mut open_branches = BTreeMap::new();
-            let mut label_defs = BTreeMap::new();
-            let mut code = vec![];
-            let mut has_errors = false;
-            for (offs, instr) in fun.instrs.iter().enumerate() {
-                if let Some(label) = instr.label.as_ref() {
-                    label_defs.insert(label.clone(), offs as CodeOffset);
-                }
-                if let Some(bc) = self.build_instr(
-                    instr,
-                    offs as CodeOffset,
-                    &mut open_branches,
-                    &mut label_defs,
-                ) {
-                    code.push(bc)
+        if fun.is_native {
+            return;
+        }
+        // The parser enforces that non-native functions have a body,
+        // so instrs is guaranteed non-empty here.
+        assert!(
+            !fun.instrs.is_empty(),
+            "non-native function must have a body"
+        );
+        self.setup_fun(fun);
+        let mut open_branches = BTreeMap::new();
+        let mut label_defs = BTreeMap::new();
+        let mut code = vec![];
+        let mut has_errors = false;
+        for (offs, instr) in fun.instrs.iter().enumerate() {
+            if let Some(label) = instr.label.as_ref() {
+                label_defs.insert(label.clone(), offs as CodeOffset);
+            }
+            if let Some(bc) = self.build_instr(
+                instr,
+                offs as CodeOffset,
+                &mut open_branches,
+                &mut label_defs,
+            ) {
+                code.push(bc)
+            } else {
+                // else error reported
+                has_errors = true
+            }
+        }
+        if !has_errors {
+            // Link forward pointing branch targets
+            for (offs, (use_loc, label)) in open_branches {
+                if let Some(target_offs) = label_defs.get(&label) {
+                    match &mut code[offs as usize] {
+                        Bytecode::Branch(open)
+                        | Bytecode::BrTrue(open)
+                        | Bytecode::BrFalse(open) => *open = *target_offs,
+                        _ => panic!("unexpected bytecode"),
+                    };
                 } else {
-                    // else error reported
-                    has_errors = true
+                    self.error(use_loc, format!("unbound branch label `{}`", label))
                 }
             }
-            if !has_errors {
-                // Link forward pointing branch targets
-                for (offs, (use_loc, label)) in open_branches {
-                    if let Some(target_offs) = label_defs.get(&label) {
-                        match &mut code[offs as usize] {
-                            Bytecode::Branch(open)
-                            | Bytecode::BrTrue(open)
-                            | Bytecode::BrFalse(open) => *open = *target_offs,
-                            _ => panic!("unexpected bytecode"),
-                        };
+            // Define locals signature.
+            let locals_start = fun.params.len();
+            let mut locals: Vec<(LocalIndex, SignatureToken)> = self
+                .require_resolution_context()
+                .local_map
+                .clone()
+                .into_iter()
+                .filter_map(|(_, r)| {
+                    if r.0 as usize >= locals_start {
+                        Some(r)
                     } else {
-                        self.error(use_loc, format!("unbound branch label `{}`", label))
+                        None
                     }
-                }
-                // Define locals signature.
-                let locals_start = fun.params.len();
-                let mut locals: Vec<(LocalIndex, SignatureToken)> = self
-                    .require_resolution_context()
-                    .local_map
-                    .clone()
-                    .into_iter()
-                    .filter_map(|(_, r)| {
-                        if r.0 as usize >= locals_start {
-                            Some(r)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                locals.sort_by(|e1, e2| e1.0.cmp(&e2.0));
-                let res = self
-                    .builder
-                    .signature_index(locals.into_iter().map(|(_, ty)| ty).collect());
-                if let Some(sign_index) = self.add_diags(fun.loc, res) {
-                    self.builder.define_fun_code(def_idx, sign_index, code)
-                }
+                })
+                .collect();
+            locals.sort_by(|e1, e2| e1.0.cmp(&e2.0));
+            let res = self
+                .builder
+                .signature_index(locals.into_iter().map(|(_, ty)| ty).collect());
+            if let Some(sign_index) = self.add_diags(fun.loc, res) {
+                self.builder.define_fun_code(def_idx, sign_index, code)
             }
         }
     }
@@ -848,6 +865,10 @@ impl<'a> Assembler<'a> {
             "abort" => {
                 self.args0(instr)?;
                 Abort
+            },
+            "abort_msg" => {
+                self.args0(instr)?;
+                AbortMsg
             },
             "nop" => {
                 self.args0(instr)?;

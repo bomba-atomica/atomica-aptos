@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -8,14 +7,14 @@ use crate::{
     planned::Planned,
     transactions_with_output::{TransactionsToKeep, TransactionsWithOutput},
 };
+use aptos_config::config::HotStateConfig;
 use aptos_drop_helper::DropHelper;
 use aptos_storage_interface::state_store::{
-    state::LedgerState, state_view::cached_state_view::ShardedStateCache,
+    state::LedgerState, state_view::cached_state_view::ShardedStateCache, HotStateUpdates,
 };
 use aptos_types::{
     contract_event::ContractEvent,
     epoch_state::EpochState,
-    state_store::hot_state::HotStateConfig,
     transaction::{
         block_epilogue::BlockEndInfo, ExecutionStatus, Transaction, TransactionStatus, Version,
     },
@@ -29,7 +28,9 @@ pub struct ExecutionOutput {
     inner: Arc<DropHelper<Inner>>,
 }
 
+#[bon::bon]
 impl ExecutionOutput {
+    #[builder(finish_fn = build)]
     pub fn new(
         is_block: bool,
         first_version: Version,
@@ -39,9 +40,13 @@ impl ExecutionOutput {
         to_retry: TransactionsWithOutput,
         result_state: LedgerState,
         state_reads: ShardedStateCache,
+        hot_state_updates: HotStateUpdates,
         block_end_info: Option<BlockEndInfo>,
         next_epoch_state: Option<EpochState>,
         subscribable_events: Planned<Vec<ContractEvent>>,
+        transaction_info_v1: bool,
+        hot_state_root_in_txn_info: bool,
+        compute_trading_native_state_roots: bool,
     ) -> Self {
         let next_version = first_version + to_commit.len() as Version;
         assert_eq!(next_version, result_state.latest().next_version());
@@ -63,9 +68,13 @@ impl ExecutionOutput {
             to_retry,
             result_state,
             state_reads,
+            hot_state_updates,
             block_end_info,
             next_epoch_state,
             subscribable_events,
+            transaction_info_v1,
+            hot_state_root_in_txn_info,
+            compute_trading_native_state_roots,
         })
     }
 
@@ -79,9 +88,13 @@ impl ExecutionOutput {
             to_retry: TransactionsWithOutput::new_empty(),
             state_reads: ShardedStateCache::new_empty(state.version()),
             result_state: state,
+            hot_state_updates: HotStateUpdates::new_empty(),
             block_end_info: None,
             next_epoch_state: None,
             subscribable_events: Planned::ready(vec![]),
+            transaction_info_v1: false,
+            hot_state_root_in_txn_info: false,
+            compute_trading_native_state_roots: false,
         })
     }
 
@@ -97,9 +110,13 @@ impl ExecutionOutput {
             to_retry: TransactionsWithOutput::new_empty(),
             result_state: LedgerState::new_empty(HotStateConfig::default()),
             state_reads: ShardedStateCache::new_empty(None),
+            hot_state_updates: HotStateUpdates::new_empty(),
             block_end_info: None,
             next_epoch_state: None,
             subscribable_events: Planned::ready(vec![]),
+            transaction_info_v1: false,
+            hot_state_root_in_txn_info: false,
+            compute_trading_native_state_roots: false,
         })
     }
 
@@ -117,9 +134,13 @@ impl ExecutionOutput {
             to_retry: TransactionsWithOutput::new_empty(),
             result_state: self.result_state.clone(),
             state_reads: ShardedStateCache::new_empty(self.next_version().checked_sub(1)),
+            hot_state_updates: HotStateUpdates::new_empty(),
             block_end_info: None,
             next_epoch_state: self.next_epoch_state.clone(),
             subscribable_events: Planned::ready(vec![]),
+            transaction_info_v1: self.transaction_info_v1,
+            hot_state_root_in_txn_info: self.hot_state_root_in_txn_info,
+            compute_trading_native_state_roots: self.compute_trading_native_state_roots,
         })
     }
 
@@ -159,6 +180,8 @@ pub struct Inner {
     /// State items read during execution, useful for calculating the state storge usage and
     /// indices used by the db pruner.
     pub state_reads: ShardedStateCache,
+    /// Updates to hot state, mainly used to compute hot state root hashes.
+    pub hot_state_updates: HotStateUpdates,
 
     /// Optional StateCheckpoint payload
     pub block_end_info: Option<BlockEndInfo>,
@@ -167,6 +190,16 @@ pub struct Inner {
     /// state cache.
     pub next_epoch_state: Option<EpochState>,
     pub subscribable_events: Planned<Vec<ContractEvent>>,
+    /// Whether to assemble `TransactionInfoV1` (instead of `TransactionInfoV0`) in the
+    /// subsequent state-checkpoint / ledger-update phases.
+    pub transaction_info_v1: bool,
+    /// Whether to compute the hot state root hash and commit it to
+    /// `TransactionInfoV1.hot_state_checkpoint_hash`. Implies `transaction_info_v1`.
+    pub hot_state_root_in_txn_info: bool,
+    /// Whether to compute the native-position state root at the checkpoint
+    /// stage and commit it to `TransactionInfoV1.position_state_checkpoint_hash`.
+    /// Implies `transaction_info_v1`.
+    pub compute_trading_native_state_roots: bool,
 }
 
 impl Inner {

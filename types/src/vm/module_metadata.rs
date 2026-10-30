@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     on_chain_config::{FeatureFlag, Features},
@@ -27,8 +27,9 @@ use move_model::{
     model::StructEnv,
 };
 use serde::{Deserialize, Serialize};
-use std::{cell::RefCell, collections::BTreeMap, env, num::NonZeroUsize, str::FromStr, sync::Arc};
+use std::{cell::RefCell, collections::BTreeMap, env, num::NonZeroUsize, str::FromStr};
 use thiserror::Error;
+use triomphe::Arc;
 
 pub mod prelude {
     pub use crate::vm::module_metadata::{
@@ -545,10 +546,33 @@ impl RuntimeModuleMetadataV1 {
             && self.struct_attributes.is_empty()
     }
 
-    pub fn extract_abort_info(&self, code: u64) -> Option<AbortInfo> {
+    pub fn extract_abort_info_legacy(&self, code: u64) -> Option<AbortInfo> {
         self.error_map
             .get(&(code & 0xFFF))
             .or_else(|| self.error_map.get(&code))
+            .map(|descr| AbortInfo {
+                reason_name: descr.code_name.clone(),
+                description: descr.code_description.clone(),
+            })
+    }
+
+    /// Returns the abort info for the given abort code, if any. Tries the full code first, then
+    /// falls back to the lower 2 bytes (the reason) if the upper 5 bytes are zero.
+    ///
+    /// This skips compiler-generated codes such as `UNSPECIFIED_ABORT_CODE`, which have a
+    /// non-zero upper 5 bytes and are not associated with any user-defined error.
+    pub fn extract_abort_info(&self, code: u64) -> Option<AbortInfo> {
+        self.error_map
+            .get(&code)
+            .or_else(|| {
+                // Only extract the reason for canonical std::error codes (upper 5 bytes zero).
+                if code >> 24 == 0 {
+                    let reason = code & 0xFFFF;
+                    self.error_map.get(&reason)
+                } else {
+                    None
+                }
+            })
             .map(|descr| AbortInfo {
                 reason_name: descr.code_name.clone(),
                 description: descr.code_description.clone(),

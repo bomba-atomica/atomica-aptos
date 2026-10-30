@@ -1,13 +1,16 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::chain_id::{ChainId, NamedChain};
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Timelike, Utc};
 use chrono_tz::America::Los_Angeles;
 use serde::Serialize;
 use strum::{EnumCount, IntoEnumIterator};
 use strum_macros::{EnumCount as EnumCountMacro, EnumIter};
 
+/// NOTE: if you add a restriction e.g. for the bytecode verifier and want
+/// to test whether testnet/mainnet is effected, you MUST define an override
+/// to enable the flag during replay. By default, flags are not enabled in replay.
 #[derive(Debug, EnumCountMacro, EnumIter, Clone, Copy, Eq, PartialEq)]
 pub enum TimedFeatureFlag {
     // Was always enabled.
@@ -19,12 +22,55 @@ pub enum TimedFeatureFlag {
 
     // Fixes the bug of table natives not tracking the memory usage of the global values they create.
     FixMemoryUsageTracking,
-    // Disable checking for captured option types.
-    // Only when this feature is turned on, feature flag ENABLE_CAPTURE_OPTION can control whether the option type can be captured.
-    DisabledCaptureOption,
+    // Was used to disable checking for captured option types. Feature is now permanently enabled.
+    _DisabledCaptureOption,
 
     /// Fixes the bug that table natives double count the memory usage of the global values.
     FixTableNativesMemoryDoubleCounting,
+
+    /// Enables depth checking for captured values when packing closures.
+    /// This prevents deeply nested closure chains that could cause stack overflow.
+    ClosureDepthCheck,
+
+    /// Fixes handling of results in crypto algebra natives.
+    FixCryptoAlgebraNativesResultHandling,
+
+    /// Use the full transaction size (including authenticator) for gas checks
+    /// instead of just the raw transaction size.
+    UseFullTransactionSizeForGasCheck,
+
+    /// Enables strict bounds in the production verifier config for struct definitions,
+    /// struct variants, fields in struct, function definitions, and basic blocks in script.
+    EnableStrictBoundsInProdConfig,
+
+    /// Revise some bounds in prod config which have been established by previous configs.
+    RevisedBoundsInProdConfig,
+
+    /// If enabled, `bcs::constant_serialized_size` uses local cache to deduplicate traversals
+    /// of same struct nodes, counting cache hits as 1 node instead of re-expanding its full
+    /// subtree.
+    ConstantSerializedSizeLocalCache,
+
+    /// Reject publishing of v5 module bytecode. Publishing only; already-published modules keep
+    /// loading and executing at any version.
+    RejectV5ModulePublishing,
+
+    /// If enabled, re-resolve a memoized closure when its defining module is
+    /// republished within the same transaction, so it binds to the current
+    /// module version instead of executing stale pre-upgrade code.
+    RevalidateResolvedClosures,
+
+    /// Charge `bcs::to_bytes` and `bcs::serialized_size` per input value node
+    /// instead of only per output byte.
+    MeterBcsByValueSize,
+
+    /// Charge execution gas for value deserialization proportional to the
+    /// produced value size.
+    MeterValueNodesOnDeserialize,
+
+    /// Include the cost of a closure's type arguments in its abstract value
+    /// size, instead of charging a flat amount for any closure.
+    MeterClosureTypeArguments,
 }
 
 /// Representation of features that are gated by the block timestamps.
@@ -45,23 +91,40 @@ pub enum TimedFeatureOverride {
 }
 
 impl TimedFeatureOverride {
-    #[allow(unused, clippy::match_single_binding)]
+    #[allow(unused)]
     const fn get_override(&self, flag: TimedFeatureFlag) -> Option<bool> {
         use TimedFeatureFlag::*;
         use TimedFeatureOverride::*;
 
-        Some(match self {
-            Replay => match flag {
-                _LimitTypeTagSize => true,
-                _ModuleComplexityCheck => true,
-                // Add overrides for replay here.
-                _ => return None,
-            },
-            Testing => match flag {
-                EntryCompatibility => true,
-                _ => return None, // Activate all flags
-            },
-        })
+        match (self, flag) {
+            // Add overrides for replay here.
+            (Replay, _LimitTypeTagSize) => Some(true),
+            (Replay, _ModuleComplexityCheck) => Some(true),
+            // Add overrides for testing here.
+            (Testing, EntryCompatibility) => Some(true),
+            // Exhaustive over flags so adding a new flag forces a decision.
+            (
+                _,
+                _LimitTypeTagSize
+                | _ModuleComplexityCheck
+                | EntryCompatibility
+                | ChargeBytesForPrints
+                | FixMemoryUsageTracking
+                | _DisabledCaptureOption
+                | FixTableNativesMemoryDoubleCounting
+                | ClosureDepthCheck
+                | FixCryptoAlgebraNativesResultHandling
+                | UseFullTransactionSizeForGasCheck
+                | EnableStrictBoundsInProdConfig
+                | RevisedBoundsInProdConfig
+                | ConstantSerializedSizeLocalCache
+                | RejectV5ModulePublishing
+                | RevalidateResolvedClosures
+                | MeterBcsByValueSize
+                | MeterValueNodesOnDeserialize
+                | MeterClosureTypeArguments,
+            ) => None,
+        }
     }
 }
 
@@ -98,7 +161,7 @@ impl TimedFeatureFlag {
 
             // Note: Activation time set to 1 hour after the beginning of time
             //       so we can test the old and new behaviors in tests.
-            (FixMemoryUsageTracking, TESTING) => Utc.with_ymd_and_hms(1970, 1, 1, 1, 0, 0).unwrap(),
+            (FixMemoryUsageTracking, TESTING) => BEGINNING_OF_TIME.with_hour(1).unwrap(),
             (FixMemoryUsageTracking, TESTNET) => Los_Angeles
                 .with_ymd_and_hms(2025, 3, 7, 12, 0, 0)
                 .unwrap()
@@ -116,14 +179,14 @@ impl TimedFeatureFlag {
                 .with_ymd_and_hms(2025, 3, 11, 17, 0, 0)
                 .unwrap()
                 .with_timezone(&Utc),
-            (DisabledCaptureOption, TESTNET) => Los_Angeles
+            (_DisabledCaptureOption, TESTNET) => Los_Angeles
                 .with_ymd_and_hms(2025, 9, 15, 12, 0, 0)
                 .unwrap()
                 .with_timezone(&Utc),
             // For testing, time set to 1 hour after the beginning of time to test the old and new behaviors in tests.
-            (DisabledCaptureOption, TESTING) => Utc.with_ymd_and_hms(1970, 1, 1, 1, 0, 0).unwrap(),
+            (_DisabledCaptureOption, TESTING) => BEGINNING_OF_TIME.with_hour(1).unwrap(),
             // For mainnet, always enable this feature.
-            (DisabledCaptureOption, MAINNET) => BEGINNING_OF_TIME,
+            (_DisabledCaptureOption, MAINNET) => BEGINNING_OF_TIME,
 
             (FixTableNativesMemoryDoubleCounting, TESTNET) => Los_Angeles
                 .with_ymd_and_hms(2025, 10, 16, 17, 0, 0)
@@ -131,6 +194,131 @@ impl TimedFeatureFlag {
                 .with_timezone(&Utc),
             (FixTableNativesMemoryDoubleCounting, MAINNET) => Los_Angeles
                 .with_ymd_and_hms(2025, 10, 21, 10, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            // Security fix: check depth of captured values when packing closures.
+            (ClosureDepthCheck, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 2, 2, 22, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (ClosureDepthCheck, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 2, 9, 12, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            // For testing, time set to 1 hour after the beginning of time to test the old and new behaviors in tests.
+            (FixCryptoAlgebraNativesResultHandling, TESTING) => {
+                BEGINNING_OF_TIME.with_hour(1).unwrap()
+            },
+            (FixCryptoAlgebraNativesResultHandling, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 2, 2, 22, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (FixCryptoAlgebraNativesResultHandling, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 2, 9, 12, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            // Note: This is needed to allow forge to undergo a gated transition as well.
+            (UseFullTransactionSizeForGasCheck, TESTING) => Los_Angeles
+                .with_ymd_and_hms(2026, 2, 16, 10, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (UseFullTransactionSizeForGasCheck, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 2, 2, 22, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (UseFullTransactionSizeForGasCheck, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 2, 9, 12, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            (EnableStrictBoundsInProdConfig, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 2, 25, 10, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (EnableStrictBoundsInProdConfig, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 2, 27, 10, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            (RevisedBoundsInProdConfig, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 3, 3, 21, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (RevisedBoundsInProdConfig, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 3, 5, 10, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            (ConstantSerializedSizeLocalCache, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 3, 11, 21, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (ConstantSerializedSizeLocalCache, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 3, 13, 10, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            // Security hardening: ban publishing of v5 module bytecode.
+            (RejectV5ModulePublishing, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 7, 24, 17, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (RejectV5ModulePublishing, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 7, 29, 12, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            (RevalidateResolvedClosures, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 7, 22, 10, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (RevalidateResolvedClosures, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 7, 24, 10, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            (MeterBcsByValueSize, TESTING) => BEGINNING_OF_TIME.with_hour(1).unwrap(),
+            (MeterBcsByValueSize, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 8, 4, 14, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (MeterBcsByValueSize, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 8, 6, 14, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            // Note: Set to a future date so forge's framework-upgrade compat test runs
+            // with this feature off, matching the pre-feature old image and avoiding a
+            // fork (see UseFullTransactionSizeForGasCheck).
+            (MeterValueNodesOnDeserialize, TESTING) => Los_Angeles
+                .with_ymd_and_hms(2026, 8, 27, 12, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (MeterValueNodesOnDeserialize, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 8, 19, 14, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (MeterValueNodesOnDeserialize, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 8, 21, 14, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+
+            // Note: Set to a future date so forge's framework-upgrade compat test runs
+            // with this feature off, matching the pre-feature old image and avoiding a
+            // fork (see UseFullTransactionSizeForGasCheck).
+            (MeterClosureTypeArguments, TESTING) => Los_Angeles
+                .with_ymd_and_hms(2026, 9, 21, 23, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (MeterClosureTypeArguments, TESTNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 9, 16, 14, 0, 0)
+                .unwrap()
+                .with_timezone(&Utc),
+            (MeterClosureTypeArguments, MAINNET) => Los_Angeles
+                .with_ymd_and_hms(2026, 9, 18, 14, 0, 0)
                 .unwrap()
                 .with_timezone(&Utc),
 

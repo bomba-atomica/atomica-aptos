@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     compression_util::{FileEntry, FileStoreMetadata, StorageFormat, FILE_ENTRY_TRANSACTION_COUNT},
@@ -154,11 +154,11 @@ impl FileStoreOperator for LocalFileStoreOperator {
         let start_version = transactions.first().unwrap().version;
         let batch_size = transactions.len();
         anyhow::ensure!(
-            start_version % FILE_ENTRY_TRANSACTION_COUNT == 0,
+            start_version.is_multiple_of(FILE_ENTRY_TRANSACTION_COUNT),
             "Starting version has to be a multiple of BLOB_STORAGE_SIZE."
         );
         anyhow::ensure!(
-            batch_size % FILE_ENTRY_TRANSACTION_COUNT as usize == 0,
+            batch_size.is_multiple_of(FILE_ENTRY_TRANSACTION_COUNT as usize),
             "The number of transactions to upload has to be multiplier of BLOB_STORAGE_SIZE."
         );
         let mut tasks = vec![];

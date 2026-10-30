@@ -1,7 +1,7 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use aptos_framework::ReleaseBundle;
+use aptos_release_bundle::ReleaseBundle;
 use once_cell::sync::Lazy;
 
 pub mod aptos_framework_sdk_builder;
@@ -9,10 +9,10 @@ pub mod aptos_stdlib;
 pub mod aptos_token_objects_sdk_builder;
 pub mod aptos_token_sdk_builder;
 
-#[cfg(unix)]
-const HEAD_RELEASE_BUNDLE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/head.mrb"));
-#[cfg(windows)]
-const HEAD_RELEASE_BUNDLE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "\\head.mrb"));
+#[cfg(not(feature = "move-harness-with-test-only"))]
+const HEAD_RELEASE_BUNDLE_BYTES: &[u8] = include_bytes!("head.mrb");
+#[cfg(feature = "move-harness-with-test-only")]
+const HEAD_RELEASE_BUNDLE_BYTES: &[u8] = include_bytes!("head-test-only.mrb");
 
 static HEAD_RELEASE_BUNDLE: Lazy<ReleaseBundle> = Lazy::new(|| {
     bcs::from_bytes::<ReleaseBundle>(HEAD_RELEASE_BUNDLE_BYTES).expect("bcs succeeds")

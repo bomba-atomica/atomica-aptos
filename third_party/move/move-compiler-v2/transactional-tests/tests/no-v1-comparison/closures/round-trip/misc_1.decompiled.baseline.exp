@@ -6,7 +6,7 @@ Error: Function execution failed with VMError: {
     sub_status: Some(453),
     location: 0x1::bcs,
     indices: [],
-    offsets: [(FunctionDefinitionIndex(0), 0)],
+    offsets: [(FunctionDefinitionIndex(1), 0)],
 }
 task 2 lines 39-39:  run 0xc0ffee::m::test2
 task 3 lines 41-41:  run 0xc0ffee::m::test3
@@ -15,7 +15,7 @@ Error: compilation errors:
  error: unexpected token
    ┌─ TEMPFILE1:48:23
    │
-48 │         let _v2: ||u64|(u64)|u64 has copy + drop = |arg0| lambda__13__test(p0, arg0);
+48 │         let _v2: ||u64|(u64)|u64 has copy + drop = |x| lambda__13__test(p0, x);
    │                       ^
    │                       │
    │                       Unexpected '|'
@@ -35,7 +35,7 @@ Error: compilation errors:
  error: unexpected token
     ┌─ TEMPFILE2:114:23
     │
-114 │         let _v2: ||u64|(u64)|u64 has copy + drop = |arg0| lambda__256__test(p0, arg0);
+114 │         let _v2: ||u64|(u64)|u64 has copy + drop = |x| lambda__256__test(p0, x);
     │                       ^
     │                       │
     │                       Unexpected '|'

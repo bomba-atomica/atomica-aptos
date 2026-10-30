@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     delayed_values::delayed_field_id::DelayedFieldID,
@@ -97,6 +99,8 @@ pub struct ValueSerDeContext<'a> {
     pub(crate) legacy_signer: bool,
     /// Maximum allowed depth of a VM value. Enforced by serializer.
     pub(crate) max_value_nested_depth: Option<u64>,
+    /// If true, serialization of any value containing a closure fails.
+    pub(crate) closure_serialization_disabled: bool,
 }
 
 impl<'a> ValueSerDeContext<'a> {
@@ -107,12 +111,19 @@ impl<'a> ValueSerDeContext<'a> {
             delayed_fields_extension: None,
             legacy_signer: false,
             max_value_nested_depth,
+            closure_serialization_disabled: false,
         }
     }
 
     /// Serialize signer with legacy format to maintain backwards compatibility.
     pub fn with_legacy_signer(mut self) -> Self {
         self.legacy_signer = true;
+        self
+    }
+
+    /// If `disabled` is true, serialization fails on values containing closures.
+    pub fn with_closure_serialization_disabled(mut self, disabled: bool) -> Self {
+        self.closure_serialization_disabled = disabled;
         self
     }
 
@@ -143,6 +154,7 @@ impl<'a> ValueSerDeContext<'a> {
             delayed_fields_extension: None,
             legacy_signer: self.legacy_signer,
             max_value_nested_depth: self.max_value_nested_depth,
+            closure_serialization_disabled: self.closure_serialization_disabled,
         }
     }
 

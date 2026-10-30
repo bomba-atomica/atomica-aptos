@@ -1,9 +1,24 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use move_core_types::account_address::AccountAddress;
 
-#[derive(Debug)]
+/// Represents the transaction index context for the monotonically increasing counter.
+#[derive(Debug, Clone, Copy)]
+pub enum TransactionIndexKind {
+    /// Actual block/chunk execution (PersistedAuxiliaryInfo::V1).
+    /// The reserved byte in the counter will be 0.
+    BlockExecution { transaction_index: u32 },
+    /// Validation or simulation (PersistedAuxiliaryInfo::TimestampNotYetAssignedV1).
+    /// The reserved byte in the counter will be 1.
+    ValidationOrSimulation { transaction_index: u32 },
+    /// Not available (PersistedAuxiliaryInfo::None).
+    /// Calling the monotonically increasing counter native function
+    /// will abort with ETRANSACTION_INDEX_NOT_AVAILABLE.
+    NotAvailable,
+}
+
+#[derive(Debug, Clone)]
 pub struct UserTransactionContext {
     sender: AccountAddress,
     secondary_signers: Vec<AccountAddress>,
@@ -13,10 +28,10 @@ pub struct UserTransactionContext {
     chain_id: u8,
     entry_function_payload: Option<EntryFunctionPayload>,
     multisig_payload: Option<MultisigPayload>,
-    // The index of the transaction in the block.
-    // None for transaction validation and simulation.
-    // Should be Some(.) for actual block execution and chunk execution.
-    transaction_index: Option<u32>,
+    /// The transaction index context for the monotonically increasing counter.
+    transaction_index_kind: TransactionIndexKind,
+    is_encrypted_txn: bool,
+    is_orderless_txn: bool,
 }
 
 impl UserTransactionContext {
@@ -29,7 +44,9 @@ impl UserTransactionContext {
         chain_id: u8,
         entry_function_payload: Option<EntryFunctionPayload>,
         multisig_payload: Option<MultisigPayload>,
-        transaction_index: Option<u32>,
+        transaction_index_kind: TransactionIndexKind,
+        is_encrypted_txn: bool,
+        is_orderless_txn: bool,
     ) -> Self {
         Self {
             sender,
@@ -40,7 +57,9 @@ impl UserTransactionContext {
             chain_id,
             entry_function_payload,
             multisig_payload,
-            transaction_index,
+            transaction_index_kind,
+            is_encrypted_txn,
+            is_orderless_txn,
         }
     }
 
@@ -76,8 +95,16 @@ impl UserTransactionContext {
         self.multisig_payload.clone()
     }
 
-    pub fn transaction_index(&self) -> Option<u32> {
-        self.transaction_index
+    pub fn transaction_index_kind(&self) -> TransactionIndexKind {
+        self.transaction_index_kind
+    }
+
+    pub fn is_encrypted_txn(&self) -> bool {
+        self.is_encrypted_txn
+    }
+
+    pub fn is_orderless_txn(&self) -> bool {
+        self.is_orderless_txn
     }
 }
 

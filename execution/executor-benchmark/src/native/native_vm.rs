@@ -1,19 +1,17 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     db_access::DbAccessUtil,
     native::{
-        native_config::{NativeConfig, NATIVE_EXECUTOR_POOL},
+        native_config::NativeConfig,
         native_transaction::{compute_deltas_for_batch, NativeTransaction},
     },
 };
 use aptos_aggregator::{
     bounded_math::SignedU128,
     delayed_change::{DelayedApplyChange, DelayedChange},
-    delta_change_set::{DeltaOp, DeltaWithMax},
-    delta_math::DeltaHistory,
+    delta_change_set::DeltaWithMax,
 };
 use aptos_block_executor::{
     code_cache_global_manager::AptosModuleCacheManager,
@@ -26,25 +24,23 @@ use aptos_mvhashmap::types::TxnIndex;
 use aptos_types::{
     account_address::AccountAddress,
     account_config::{
-        primary_apt_store, AccountResource, CoinInfoResource, CoinRegister, CoinStoreResource,
-        ConcurrentSupplyResource, DepositEvent, DepositFAEvent, FungibleStoreResource,
-        WithdrawEvent, WithdrawFAEvent,
+        primary_apt_store, AccountResource, ConcurrentSupplyResource, DepositFAEvent,
+        FungibleStoreResource, WithdrawFAEvent,
     },
     block_executor::{
         config::{BlockExecutorConfig, BlockExecutorConfigFromOnchain, BlockExecutorLocalConfig},
         transaction_slice_metadata::TransactionSliceMetadata,
     },
     contract_event::ContractEvent,
+    error::PanicError,
     fee_statement::FeeStatement,
-    move_utils::{move_event_v1::MoveEventV1Type, move_event_v2::MoveEventV2Type},
-    on_chain_config::FeatureFlag,
+    move_utils::move_event_v2::MoveEventV2Type,
     state_store::{state_key::StateKey, state_value::StateValueMetadata, StateView},
     transaction::{
-        signature_verified_transaction::SignatureVerifiedTransaction, AuxiliaryInfo, BlockOutput,
-        Transaction, TransactionOutput, TransactionStatus, WriteSetPayload,
+        signature_verified_transaction::SignatureVerifiedTransaction, AuxiliaryInfo, BlockError,
+        BlockOutput, TransactionOutput, TransactionStatus,
     },
     write_set::WriteOp,
-    AptosCoinType,
 };
 use aptos_vm::{
     block_executor::{AptosBlockExecutorWrapper, AptosTransactionOutput},
@@ -69,7 +65,7 @@ use move_core_types::{
 };
 use move_vm_types::delayed_values::delayed_field_id::DelayedFieldID;
 use serde::{de::DeserializeOwned, Serialize};
-use std::{collections::BTreeMap, fmt::Debug, sync::Arc};
+use std::{collections::BTreeMap, fmt::Debug};
 
 pub struct NativeVMBlockExecutor;
 
@@ -90,20 +86,23 @@ impl VMBlockExecutor for NativeVMBlockExecutor {
         state_view: &(impl StateView + Sync),
         onchain_config: BlockExecutorConfigFromOnchain,
         transaction_slice_metadata: TransactionSliceMetadata,
-    ) -> Result<BlockOutput<SignatureVerifiedTransaction, TransactionOutput>, VMStatus> {
-        AptosBlockExecutorWrapper::<NativeVMExecutorTask>::execute_block_on_thread_pool::<
+    ) -> Result<BlockOutput<SignatureVerifiedTransaction, TransactionOutput>, BlockError> {
+        AptosBlockExecutorWrapper::<NativeVMExecutorTask>::execute_block::<
             _,
             NoOpTransactionCommitHook<VMStatus>,
             _,
         >(
-            Arc::clone(&NATIVE_EXECUTOR_POOL),
             txn_provider,
             state_view,
             &AptosModuleCacheManager::new(),
             BlockExecutorConfig {
-                local: BlockExecutorLocalConfig::default_with_concurrency_level(
-                    NativeConfig::get_concurrency_level(),
-                ),
+                local: BlockExecutorLocalConfig {
+                    concurrency_level: NativeConfig::get_concurrency_level(),
+                    enable_pre_write: false,
+                    ..BlockExecutorLocalConfig::default_with_concurrency_level(
+                        NativeConfig::get_concurrency_level(),
+                    )
+                },
                 onchain: onchain_config,
             },
             transaction_slice_metadata,
@@ -113,34 +112,20 @@ impl VMBlockExecutor for NativeVMBlockExecutor {
 }
 
 pub(crate) struct NativeVMExecutorTask {
-    fa_migration_complete: bool,
     db_util: DbAccessUtil,
 }
 
 impl ExecutorTask for NativeVMExecutorTask {
     type AuxiliaryInfo = AuxiliaryInfo;
-    type Error = VMStatus;
     type Output = AptosTransactionOutput;
     type Txn = SignatureVerifiedTransaction;
 
     fn init(
-        env: &AptosEnvironment,
+        _env: &AptosEnvironment,
         _state_view: &impl StateView,
         _async_runtime_checks_enabled: bool,
     ) -> Self {
-        let fa_migration_complete = env
-            .features()
-            .is_enabled(FeatureFlag::OPERATIONS_DEFAULT_TO_FA_APT_STORE);
-        let new_accounts_default_to_fa = env
-            .features()
-            .is_enabled(FeatureFlag::NEW_ACCOUNTS_DEFAULT_TO_FA_APT_STORE);
-        assert_eq!(
-            fa_migration_complete, new_accounts_default_to_fa,
-            "native code only works with both flags either enabled or disabled"
-        );
-
         Self {
-            fa_migration_complete,
             db_util: DbAccessUtil::new(),
         }
     }
@@ -154,34 +139,27 @@ impl ExecutorTask for NativeVMExecutorTask {
         txn: &SignatureVerifiedTransaction,
         _auxiliary_info: &AuxiliaryInfo,
         _txn_idx: TxnIndex,
-    ) -> ExecutionStatus<AptosTransactionOutput, VMStatus> {
-        match self.execute_transaction_impl(
-            executor_with_group_view,
-            txn,
-            self.fa_migration_complete,
-        ) {
-            Ok((change_set, gas_units)) => {
-                ExecutionStatus::Success(AptosTransactionOutput::new(VMOutput::new(
-                    change_set,
-                    ModuleWriteSet::empty(),
-                    FeeStatement::new(gas_units, gas_units, 0, 0, 0),
-                    TransactionStatus::Keep(aptos_types::transaction::ExecutionStatus::Success),
-                )))
+    ) -> Result<ExecutionStatus<AptosTransactionOutput>, PanicError> {
+        Ok(
+            match self.execute_transaction_impl(executor_with_group_view, txn) {
+                Ok((change_set, gas_units)) => ExecutionStatus::Executed {
+                    output: AptosTransactionOutput::new(VMOutput::new(
+                        change_set,
+                        ModuleWriteSet::empty(),
+                        FeeStatement::builder()
+                            .total_charge_gas_units(gas_units)
+                            .execution_gas_units(gas_units)
+                            .io_gas_units(0)
+                            .storage_fee_octas(0)
+                            .storage_fee_refund_octas(0)
+                            .build(),
+                        TransactionStatus::Keep(aptos_types::transaction::ExecutionStatus::Success),
+                    )),
+                    skips_rest: false,
+                },
+                Err(_) => ExecutionStatus::SpeculativeFailure,
             },
-            Err(_) => ExecutionStatus::SpeculativeExecutionAbortError("something".to_string()),
-        }
-    }
-
-    fn is_transaction_dynamic_change_set_capable(txn: &Self::Txn) -> bool {
-        if txn.is_valid() {
-            if let Transaction::GenesisTransaction(WriteSetPayload::Direct(_)) = txn.expect_valid()
-            {
-                // WriteSetPayload::Direct cannot be handled in mode where delayed_field_optimization or
-                // resource_groups_split_in_change_set is enabled.
-                return false;
-            }
-        }
-        true
+        )
     }
 }
 
@@ -190,7 +168,6 @@ impl NativeVMExecutorTask {
         &self,
         view: &(impl ExecutorView + ResourceGroupView),
         txn: &SignatureVerifiedTransaction,
-        fa_migration_complete: bool,
     ) -> Result<(VMChangeSet, u64), ()> {
         let gas_units = 4;
         let gas = gas_units * 100;
@@ -198,16 +175,12 @@ impl NativeVMExecutorTask {
         let mut resource_write_set = BTreeMap::new();
         let mut events = Vec::new();
         let mut delayed_field_change_set = BTreeMap::new();
-        let aggregator_v1_write_set = BTreeMap::new();
-        let mut aggregator_v1_delta_set = BTreeMap::new();
 
         self.reduce_apt_supply(
-            fa_migration_complete,
             gas,
             view,
             &mut resource_write_set,
             &mut delayed_field_change_set,
-            &mut aggregator_v1_delta_set,
         )
         .unwrap();
 
@@ -222,15 +195,7 @@ impl NativeVMExecutorTask {
                     view,
                     &mut resource_write_set,
                 )?;
-                self.withdraw_apt(
-                    fa_migration_complete,
-                    sender,
-                    0,
-                    view,
-                    gas,
-                    &mut resource_write_set,
-                    &mut events,
-                )?;
+                self.withdraw_apt(sender, 0, view, gas, &mut resource_write_set, &mut events)?;
             },
             NativeTransaction::FaTransfer {
                 sender,
@@ -278,7 +243,6 @@ impl NativeVMExecutorTask {
                 )?;
 
                 self.withdraw_apt(
-                    fa_migration_complete,
                     sender,
                     amount,
                     view,
@@ -288,7 +252,6 @@ impl NativeVMExecutorTask {
                 )?;
 
                 let exists = self.deposit_apt(
-                    fa_migration_complete,
                     recipient,
                     amount,
                     view,
@@ -301,7 +264,7 @@ impl NativeVMExecutorTask {
                         recipient,
                         fail_on_account_existing,
                         fail_on_account_missing,
-                        !fa_migration_complete,
+                        false,
                         view,
                         &mut resource_write_set,
                     )?;
@@ -326,7 +289,6 @@ impl NativeVMExecutorTask {
                     compute_deltas_for_batch(recipients, amounts, sender);
 
                 self.withdraw_apt(
-                    fa_migration_complete,
                     sender,
                     amount_to_sender,
                     view,
@@ -337,7 +299,6 @@ impl NativeVMExecutorTask {
 
                 for (recipient_address, transfer_amount) in deltas.into_iter() {
                     let existed = self.deposit_apt(
-                        fa_migration_complete,
                         recipient_address,
                         transfer_amount as u64,
                         view,
@@ -350,7 +311,7 @@ impl NativeVMExecutorTask {
                             recipient_address,
                             fail_on_recipient_account_existing,
                             fail_on_recipient_account_missing,
-                            !fa_migration_complete,
+                            false,
                             view,
                             &mut resource_write_set,
                         )?;
@@ -362,20 +323,20 @@ impl NativeVMExecutorTask {
         };
 
         events.push((
-            FeeStatement::new(gas_units, gas_units, 0, 0, 0)
+            FeeStatement::builder()
+                .total_charge_gas_units(gas_units)
+                .execution_gas_units(gas_units)
+                .io_gas_units(0)
+                .storage_fee_octas(0)
+                .storage_fee_refund_octas(0)
+                .build()
                 .create_event_v2()
                 .expect("Creating FeeStatement should always succeed"),
             None,
         ));
 
         Ok((
-            VMChangeSet::new(
-                resource_write_set,
-                events,
-                delayed_field_change_set,
-                aggregator_v1_write_set,
-                aggregator_v1_delta_set,
-            ),
+            VMChangeSet::new(resource_write_set, events, delayed_field_change_set),
             gas_units,
         ))
     }
@@ -431,10 +392,13 @@ impl NativeVMExecutorTask {
                     account.sequence_number += 1;
                     resource_write_set.insert(
                         sender_account_key,
-                        AbstractResourceWriteOp::Write(WriteOp::modification(
-                            Bytes::from(bcs::to_bytes(&account).map_err(hide_error)?),
-                            metadata,
-                        )),
+                        AbstractResourceWriteOp::Write(
+                            WriteOp::modification(
+                                Bytes::from(bcs::to_bytes(&account).map_err(hide_error)?),
+                                metadata,
+                            ),
+                            false,
+                        ),
                     );
                     Ok(())
                 } else {
@@ -451,9 +415,12 @@ impl NativeVMExecutorTask {
                     account.sequence_number = 1;
                     resource_write_set.insert(
                         sender_account_key,
-                        AbstractResourceWriteOp::Write(WriteOp::legacy_creation(Bytes::from(
-                            bcs::to_bytes(&account).map_err(hide_error)?,
-                        ))),
+                        AbstractResourceWriteOp::Write(
+                            WriteOp::legacy_creation(Bytes::from(
+                                bcs::to_bytes(&account).map_err(hide_error)?,
+                            )),
+                            false,
+                        ),
                     );
                     Ok(())
                 } else {
@@ -493,9 +460,12 @@ impl NativeVMExecutorTask {
 
                     resource_write_set.insert(
                         account_key,
-                        AbstractResourceWriteOp::Write(WriteOp::legacy_creation(Bytes::from(
-                            bcs::to_bytes(&account).map_err(hide_error)?,
-                        ))),
+                        AbstractResourceWriteOp::Write(
+                            WriteOp::legacy_creation(Bytes::from(
+                                bcs::to_bytes(&account).map_err(hide_error)?,
+                            )),
+                            false,
+                        ),
                     );
                 }
             },
@@ -506,18 +476,12 @@ impl NativeVMExecutorTask {
 
     fn reduce_apt_supply(
         &self,
-        fa_migration_complete: bool,
         gas: u64,
         view: &(impl ExecutorView + ResourceGroupView),
         resource_write_set: &mut BTreeMap<StateKey, AbstractResourceWriteOp>,
         delayed_field_change_set: &mut BTreeMap<DelayedFieldID, DelayedChange<DelayedFieldID>>,
-        aggregator_v1_delta_set: &mut BTreeMap<StateKey, DeltaOp>,
     ) -> Result<(), ()> {
-        if fa_migration_complete {
-            self.reduce_fa_apt_supply(gas, view, resource_write_set, delayed_field_change_set)
-        } else {
-            self.reduce_coin_apt_supply(gas, view, aggregator_v1_delta_set)
-        }
+        self.reduce_fa_apt_supply(gas, view, resource_write_set, delayed_field_change_set)
     }
 
     fn reduce_fa_apt_supply(
@@ -533,7 +497,7 @@ impl NativeVMExecutorTask {
 
         let concurrent_supply_rg_tag = &self.db_util.common.concurrent_supply;
 
-        let concurrent_supply_layout = MoveTypeLayout::Struct(MoveStructLayout::new(vec![
+        let concurrent_supply_layout = MoveTypeLayout::new_struct(MoveStructLayout::new(vec![
             MoveTypeLayout::Native(
                 IdentifierMappingKind::Aggregator,
                 Box::new(MoveTypeLayout::U128),
@@ -576,31 +540,8 @@ impl NativeVMExecutorTask {
         Ok(())
     }
 
-    fn reduce_coin_apt_supply(
-        &self,
-        gas: u64,
-        view: &(impl ExecutorView + ResourceGroupView),
-        aggregator_v1_delta_set: &mut BTreeMap<StateKey, DeltaOp>,
-    ) -> Result<(), ()> {
-        let (sender_coin_store, _metadata) = Self::get_value::<CoinInfoResource<AptosCoinType>>(
-            &self.db_util.common.apt_coin_info_resource,
-            view,
-        )?
-        .ok_or(())?;
-
-        let delta_op = DeltaOp::new(SignedU128::Negative(gas as u128), u128::MAX, DeltaHistory {
-            max_achieved_positive_delta: 0,
-            min_achieved_negative_delta: gas as u128,
-            min_overflow_positive_delta: None,
-            max_underflow_negative_delta: None,
-        });
-        aggregator_v1_delta_set.insert(sender_coin_store.supply_aggregator_state_key(), delta_op);
-        Ok(())
-    }
-
     fn withdraw_apt(
         &self,
-        fa_migration_complete: bool,
         sender: AccountAddress,
         amount: u64,
         view: &(impl ExecutorView + ResourceGroupView),
@@ -608,26 +549,7 @@ impl NativeVMExecutorTask {
         resource_write_set: &mut BTreeMap<StateKey, AbstractResourceWriteOp>,
         events: &mut Vec<(ContractEvent, Option<MoveTypeLayout>)>,
     ) -> Result<(), ()> {
-        if fa_migration_complete {
-            self.withdraw_fa_apt_from_signer(
-                sender,
-                amount,
-                view,
-                gas,
-                resource_write_set,
-                events,
-            )?;
-        } else {
-            self.withdraw_coin_apt_from_signer(
-                sender,
-                amount,
-                view,
-                gas,
-                resource_write_set,
-                events,
-            )?;
-        }
-        Ok(())
+        self.withdraw_fa_apt_from_signer(sender, amount, view, gas, resource_write_set, events)
     }
 
     fn withdraw_fa_apt_from_signer(
@@ -681,84 +603,22 @@ impl NativeVMExecutorTask {
         }
     }
 
-    fn withdraw_coin_apt_from_signer(
-        &self,
-        sender_address: AccountAddress,
-        transfer_amount: u64,
-        view: &(impl ExecutorView + ResourceGroupView),
-        gas: u64,
-        resource_write_set: &mut BTreeMap<StateKey, AbstractResourceWriteOp>,
-        events: &mut Vec<(ContractEvent, Option<MoveTypeLayout>)>,
-    ) -> Result<(), ()> {
-        let sender_coin_store_key = self.db_util.new_state_key_aptos_coin(&sender_address);
-
-        let sender_coin_store_opt =
-            Self::get_value::<CoinStoreResource<AptosCoinType>>(&sender_coin_store_key, view)?;
-
-        let (mut sender_coin_store, metadata) = match sender_coin_store_opt {
-            None => {
-                return self.withdraw_fa_apt_from_signer(
-                    sender_address,
-                    transfer_amount,
-                    view,
-                    gas,
-                    resource_write_set,
-                    events,
-                )
-            },
-            Some((sender_coin_store, metadata)) => (sender_coin_store, metadata),
-        };
-
-        sender_coin_store.set_coin(sender_coin_store.coin() - transfer_amount - gas);
-
-        // first need to create events, to update the handle, and then serialize sender_coin_store
-        if transfer_amount > 0 {
-            events.push((
-                WithdrawEvent::new(transfer_amount)
-                    .create_event_v1(sender_coin_store.withdraw_events_mut()),
-                None,
-            ));
-        }
-
-        // coin doesn't emit WithdrawEvent for gas.
-        resource_write_set.insert(
-            sender_coin_store_key,
-            AbstractResourceWriteOp::Write(WriteOp::modification(
-                Bytes::from(bcs::to_bytes(&sender_coin_store).map_err(hide_error)?),
-                metadata,
-            )),
-        );
-
-        Ok(())
-    }
-
     /// Returns bool whether FungibleStore existed.
     fn deposit_apt(
         &self,
-        fa_migration_complete: bool,
         recipient_address: AccountAddress,
         transfer_amount: u64,
         view: &(impl ExecutorView + ResourceGroupView),
         resource_write_set: &mut BTreeMap<StateKey, AbstractResourceWriteOp>,
         events: &mut Vec<(ContractEvent, Option<MoveTypeLayout>)>,
     ) -> Result<bool, ()> {
-        if fa_migration_complete {
-            self.deposit_fa_apt(
-                recipient_address,
-                transfer_amount,
-                view,
-                resource_write_set,
-                events,
-            )
-        } else {
-            self.deposit_coin_apt(
-                recipient_address,
-                transfer_amount,
-                view,
-                resource_write_set,
-                events,
-            )
-        }
+        self.deposit_fa_apt(
+            recipient_address,
+            transfer_amount,
+            view,
+            resource_write_set,
+            events,
+        )
     }
 
     /// Returns bool whether FungibleStore existed.
@@ -784,7 +644,7 @@ impl NativeVMExecutorTask {
             )? {
                 Some(fa_store) => (fa_store, None, true),
                 None => (
-                    FungibleStoreResource::new(AccountAddress::TEN, 0, false),
+                    FungibleStoreResource::new_apt(0, false),
                     Some(BTreeMap::from([(
                         self.db_util.common.object_core.clone(),
                         bcs::to_bytes(&DbAccessUtil::new_object_core(
@@ -828,70 +688,6 @@ impl NativeVMExecutorTask {
                 None,
             ));
         }
-        Ok(existed)
-    }
-
-    fn deposit_coin_apt(
-        &self,
-        recipient_address: AccountAddress,
-        transfer_amount: u64,
-        view: &(impl ExecutorView + ResourceGroupView),
-        resource_write_set: &mut BTreeMap<StateKey, AbstractResourceWriteOp>,
-        events: &mut Vec<(ContractEvent, Option<MoveTypeLayout>)>,
-    ) -> Result<bool, ()> {
-        let recipient_coin_store_key = self.db_util.new_state_key_aptos_coin(&recipient_address);
-        let (mut recipient_coin_store, recipient_coin_store_metadata, existed) =
-            match Self::get_value::<CoinStoreResource<AptosCoinType>>(
-                &recipient_coin_store_key,
-                view,
-            )? {
-                Some((recipient_coin_store, metadata)) => {
-                    (recipient_coin_store, Some(metadata), true)
-                },
-                None => {
-                    events.push((
-                        CoinRegister {
-                            account: AccountAddress::ONE,
-                            type_info: DbAccessUtil::new_type_info_resource::<AptosCoinType>()
-                                .map_err(hide_error)?,
-                        }
-                        .create_event_v2()
-                        .expect("Creating CoinRegister should always succeed"),
-                        None,
-                    ));
-                    (
-                        DbAccessUtil::new_apt_coin_store(0, recipient_address),
-                        None,
-                        false,
-                    )
-                },
-            };
-
-        recipient_coin_store.set_coin(recipient_coin_store.coin() + transfer_amount);
-
-        // first need to create events, to update the handle, and then serialize sender_coin_store
-        if transfer_amount > 0 {
-            events.push((
-                DepositEvent::new(transfer_amount)
-                    .create_event_v1(recipient_coin_store.deposit_events_mut()),
-                None,
-            ))
-        }
-        let write_op = if existed {
-            WriteOp::modification(
-                Bytes::from(bcs::to_bytes(&recipient_coin_store).map_err(hide_error)?),
-                recipient_coin_store_metadata.unwrap(),
-            )
-        } else {
-            WriteOp::legacy_creation(Bytes::from(
-                bcs::to_bytes(&recipient_coin_store).map_err(hide_error)?,
-            ))
-        };
-        resource_write_set.insert(
-            recipient_coin_store_key,
-            AbstractResourceWriteOp::Write(write_op),
-        );
-
         Ok(existed)
     }
 

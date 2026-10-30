@@ -1,12 +1,14 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use move_cli::base::test::{run_move_unit_tests, UnitTestResult};
 use move_core_types::{account_address::AccountAddress, effects::ChangeSet};
 use move_model::metadata::CompilerVersion;
 use move_package::CompilerConfig;
 use move_stdlib::natives::{all_natives, GasParameters};
-use move_unit_test::UnitTestingConfig;
+use move_unit_test::{
+    package_test::{run_move_unit_tests, UnitTestResult},
+    UnitTestingConfig,
+};
 use std::path::PathBuf;
 use tempfile::tempdir;
 

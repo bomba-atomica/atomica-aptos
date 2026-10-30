@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Defines async type checker that abstractly interprets Move bytecode to perform type checks
 //! based on the execution trace.
@@ -24,7 +26,6 @@ use crate::{
     execution_tracing::{Trace, TraceCursor},
     frame::Frame,
     frame_type_cache::{FrameTypeCache, PerInstructionCache},
-    instr::Instruction,
     interpreter::{CallStack, Stack},
     interpreter_caches::InterpreterFunctionCaches,
     loader::FunctionHandle,
@@ -41,6 +42,7 @@ use move_binary_format::{
 use move_core_types::function::ClosureMask;
 use move_vm_types::{
     gas::UnmeteredGasMeter,
+    instr::Instruction,
     loaded_data::runtime_types::{Type, TypeBuilder},
     ty_interner::{InternedTypePool, TypeVecId},
     values::{Locals, Value},
@@ -116,7 +118,7 @@ where
 
     /// Replays the trace performing type checks. If any checks fail, an error is returned.
     pub fn replay(mut self, trace: &Trace) -> VMResult<()> {
-        // If there is no type checks ar all: no need to replay the trace.
+        // If there are no type checks at all: no need to replay the trace.
         if !self.vm_config.paranoid_type_checks {
             debug_assert!(!self.vm_config.optimize_trusted_code);
             return Ok(());
@@ -200,7 +202,8 @@ where
                         .consume_closure_call()
                         .map_err(|err| err.finish(Location::Undefined))
                         .map(|(f, mask)| (Rc::new(f.clone()), mask))?;
-                    let callee_frame_cache = FrameTypeCache::make_rc_for_function(&callee);
+                    let callee_frame_cache =
+                        self.function_caches.get_or_create_frame_cache(&callee);
                     self.execute_closure_call::<RTTCheck>(
                         cursor,
                         &mut current_frame,
@@ -259,7 +262,7 @@ where
                 Instruction::Ret => {
                     return Ok(ExitCode::Return);
                 },
-                Instruction::Abort => {
+                Instruction::Abort | Instruction::AbortMsg => {
                     return Ok(ExitCode::Done);
                 },
                 Instruction::Call(idx) => {
@@ -279,10 +282,9 @@ where
                     let taken = cursor.consume_branch()?;
                     if taken {
                         frame.pc = *target;
-                    } else {
-                        frame.pc += 1;
+                        continue;
                     }
-                    continue;
+                    // Not-taken branch: fall through to post-execution checks.
                 },
                 Instruction::StLoc(idx) => {
                     // Store dummy value - these are not needed for type checks, as we only need to
@@ -594,8 +596,10 @@ where
             CallType::Regular,
             self.vm_config,
             function,
+            None,
             locals,
             frame_cache,
+            &self.type_stack,
         )
     }
 
@@ -640,8 +644,10 @@ where
             call_type,
             self.vm_config,
             callee,
+            None,
             locals,
             callee_frame_cache,
+            &self.type_stack,
         )?;
         std::mem::swap(current_frame, &mut frame);
         self.call_stack.push(frame).map_err(|_| {
@@ -659,29 +665,43 @@ where
     ) -> PartialVMResult<(Rc<LoadedFunction>, Rc<RefCell<FrameTypeCache>>)> {
         use PerInstructionCache::*;
 
-        let pc = current_frame.pc as usize;
+        let pc = current_frame.pc;
         let current_frame_cache = &mut *current_frame.frame_cache.borrow_mut();
 
-        let function_and_cache =
-            if let Call(function, frame_cache) = &current_frame_cache.per_instruction_cache[pc] {
-                (Rc::clone(function), Rc::clone(frame_cache))
-            } else {
-                let (function, frame_cache) = match current_frame_cache.function_cache.entry(idx) {
-                    Entry::Vacant(e) => {
-                        let function = self.idx_to_loaded_function(current_frame, idx)?;
-                        let frame_cache = self
-                            .function_caches
-                            .get_or_create_frame_cache_non_generic(&function);
-                        e.insert((function.clone(), frame_cache.clone()));
-                        (function, frame_cache)
-                    },
-                    Entry::Occupied(e) => e.into_mut().clone(),
-                };
-
-                current_frame_cache.per_instruction_cache[pc] =
-                    Call(Rc::clone(&function), Rc::clone(&frame_cache));
-                (function, frame_cache)
+        let function_and_cache = if let Some(Call(function, frame_cache)) =
+            current_frame_cache.instruction_cache_at(pc)
+        {
+            let frame_cache = frame_cache.upgrade().ok_or_else(|| {
+                PartialVMError::new_invariant_violation(
+                    "Frame cache is dropped during interpreter execution",
+                )
+            })?;
+            (Rc::clone(function), frame_cache)
+        } else {
+            let (function, frame_cache) = match current_frame_cache.function_cache.entry(idx) {
+                Entry::Vacant(e) => {
+                    let function = self.idx_to_loaded_function(current_frame, idx)?;
+                    let frame_cache = self
+                        .function_caches
+                        .get_or_create_frame_cache_non_generic(&function);
+                    e.insert((function.clone(), Rc::downgrade(&frame_cache)));
+                    (function, frame_cache)
+                },
+                Entry::Occupied(e) => {
+                    let (function, frame_cache) = e.get();
+                    let frame_cache = frame_cache.upgrade().ok_or_else(|| {
+                        PartialVMError::new_invariant_violation(
+                            "Frame cache is dropped during interpreter execution",
+                        )
+                    })?;
+                    (function.clone(), frame_cache)
+                },
             };
+
+            current_frame_cache
+                .memoize_instruction(pc, Call(Rc::clone(&function), Rc::downgrade(&frame_cache)));
+            (function, frame_cache)
+        };
         Ok(function_and_cache)
     }
 
@@ -691,32 +711,51 @@ where
         current_frame: &mut Frame,
         idx: FunctionInstantiationIndex,
     ) -> PartialVMResult<(Rc<LoadedFunction>, Rc<RefCell<FrameTypeCache>>)> {
-        let pc = current_frame.pc as usize;
+        let pc = current_frame.pc;
         let current_frame_cache = &mut *current_frame.frame_cache.borrow_mut();
 
-        let function_and_cache = if let PerInstructionCache::CallGeneric(function, frame_cache) =
-            &current_frame_cache.per_instruction_cache[pc]
-        {
-            (Rc::clone(function), Rc::clone(frame_cache))
-        } else {
-            let (function, frame_cache) =
-                match current_frame_cache.generic_function_cache.entry(idx) {
-                    Entry::Vacant(e) => {
-                        let function =
-                            self.instantiation_idx_to_loaded_function(current_frame, idx)?;
-                        let frame_cache = self
-                            .function_caches
-                            .get_or_create_frame_cache_generic(&function);
-                        e.insert((function.clone(), frame_cache.clone()));
-                        (function, frame_cache)
-                    },
-                    Entry::Occupied(e) => e.into_mut().clone(),
-                };
+        let function_and_cache =
+            if let Some(PerInstructionCache::CallGeneric(function, frame_cache)) =
+                current_frame_cache.instruction_cache_at(pc)
+            {
+                let frame_cache = frame_cache.upgrade().ok_or_else(|| {
+                    PartialVMError::new_invariant_violation(
+                        "Frame cache is dropped during interpreter execution",
+                    )
+                })?;
+                (Rc::clone(function), frame_cache)
+            } else {
+                let (function, frame_cache) =
+                    match current_frame_cache.generic_function_cache.entry(idx) {
+                        Entry::Vacant(e) => {
+                            let function =
+                                self.instantiation_idx_to_loaded_function(current_frame, idx)?;
+                            let frame_cache = self
+                                .function_caches
+                                .get_or_create_frame_cache_generic(&function);
+                            e.insert((function.clone(), Rc::downgrade(&frame_cache)));
+                            (function, frame_cache)
+                        },
+                        Entry::Occupied(e) => {
+                            let (function, frame_cache) = e.get();
+                            let frame_cache = frame_cache.upgrade().ok_or_else(|| {
+                                PartialVMError::new_invariant_violation(
+                                    "Frame cache is dropped during interpreter execution",
+                                )
+                            })?;
+                            (function.clone(), frame_cache)
+                        },
+                    };
 
-            current_frame_cache.per_instruction_cache[pc] =
-                PerInstructionCache::CallGeneric(Rc::clone(&function), Rc::clone(&frame_cache));
-            (function, frame_cache)
-        };
+                current_frame_cache.memoize_instruction(
+                    pc,
+                    PerInstructionCache::CallGeneric(
+                        Rc::clone(&function),
+                        Rc::downgrade(&frame_cache),
+                    ),
+                );
+                (function, frame_cache)
+            };
         Ok(function_and_cache)
     }
 

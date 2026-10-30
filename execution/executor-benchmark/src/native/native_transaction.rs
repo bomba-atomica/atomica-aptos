@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_types::{
     account_address::AccountAddress,
@@ -122,6 +122,7 @@ impl NativeTransaction {
             },
             aptos_types::transaction::Transaction::BlockEpilogue(_) => Self::BlockEpilogue,
             aptos_types::transaction::Transaction::BlockMetadata(_) => Self::BlockMetadata,
+            aptos_types::transaction::Transaction::BlockMetadataExt(_) => Self::BlockMetadata,
             _ => unimplemented!("non-user transaction {:?}", txn),
         }
     }

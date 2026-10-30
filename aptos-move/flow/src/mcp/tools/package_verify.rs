@@ -1,0 +1,354 @@
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
+
+use super::{
+    super::{package_data::DiagnosticSource, session::FlowSession},
+    load_sanitized_prover_options, module_part_of, resolve_excludes, resolve_filter,
+};
+use codespan_reporting::term::termcolor::NoColor;
+use rmcp::{
+    handler::server::wrapper::Parameters,
+    model::{CallToolResult, Content},
+    schemars, tool, tool_router,
+};
+use std::time::Instant;
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct MovePackageVerifyParams {
+    /// Path to the Move package directory.
+    package_path: String,
+    /// Optional filter: `module_name` or `module_name::function_name`.
+    /// When omitted, all target modules are verified.
+    filter: Option<String>,
+    /// Optional list of targets to exclude from verification.
+    /// Each entry follows the same format as `filter`: `module_name` or
+    /// `module_name::function_name`. Exclusions take precedence over the filter scope.
+    exclude: Option<Vec<String>>,
+    /// Solver timeout per verification condition, in seconds. Default: 10. Maximum: 60.
+    timeout: Option<usize>,
+    /// If set, generate an independent verification condition for each
+    /// assertion in a function instead of a single combined condition. Can
+    /// help when a function mixes provable-but-hard asserts with asserts
+    /// that produce counterexamples; useful for diagnosing per-function
+    /// timeouts.
+    split_vcs_by_assert: Option<bool>,
+    /// Maximum number of counterexamples reported per verification condition.
+    /// The request also has a fixed aggregate diagnostic limit.
+    error_limit: Option<usize>,
+}
+
+const DEFAULT_VC_TIMEOUT: usize = 10;
+const MAX_VC_TIMEOUT: usize = 60;
+const MCP_PROCESS_TIMEOUT_GRACE_SECS: u64 = 10;
+const MAX_VC_ERROR_LIMIT: usize = 20;
+const MAX_PACKAGE_ERROR_LIMIT: usize = 20;
+
+#[tool_router(router = package_verify_router, vis = "pub(crate)")]
+impl FlowSession {
+    // Low-level prover tool. Requires phased verification workflow context
+    // (timeout handling, diagnostic interpretation) that is only available
+    // through subagent delegation.
+    #[tool(
+        description = "Verify Move specifications using the Move Prover",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn move_package_verify(
+        &self,
+        Parameters(params): Parameters<MovePackageVerifyParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        log::info!(
+            "move_package_verify({}, filter={:?}, exclude={:?}, timeout={:?}, \
+             split_vcs_by_assert={:?}, error_limit={:?})",
+            params.package_path,
+            params.filter,
+            params.exclude,
+            params.timeout,
+            params.split_vcs_by_assert,
+            params.error_limit
+        );
+        let (pkg, _) = self.resolve_package(&params.package_path).await?;
+        let filter = params.filter.clone();
+        let exclude = params.exclude.clone();
+        let vc_timeout = params.timeout.unwrap_or(DEFAULT_VC_TIMEOUT);
+        let split_vcs_by_assert = params.split_vcs_by_assert.unwrap_or(false);
+        let error_limit = params.error_limit;
+
+        if vc_timeout == 0 || vc_timeout > MAX_VC_TIMEOUT {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "timeout must be between 1 and 60 seconds; read the instructions about timeout management \
+                 in the verification agent guide",
+            )]));
+        }
+        if error_limit.is_some_and(|n| !(1..=MAX_VC_ERROR_LIMIT).contains(&n)) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "error_limit must be between 1 and {}",
+                MAX_VC_ERROR_LIMIT
+            ))]));
+        }
+
+        let tool_timeout = self.tool_timeout();
+        let hard_timeout_secs = tool_timeout
+            .as_secs()
+            .saturating_sub(1)
+            .min(MAX_VC_TIMEOUT as u64 + MCP_PROCESS_TIMEOUT_GRACE_SECS)
+            .max(1);
+        let result = tokio::time::timeout(
+            tool_timeout,
+            tokio::task::spawn_blocking(move || {
+                let mut data = pkg.lock().unwrap();
+
+                // 1. Check for compilation errors.
+                if data.has_compilation_errors() {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "package has compilation errors; run move_package_status for details",
+                    )]));
+                }
+
+                // 2. Resolve filter into (VerifiedScope, VerificationScope).
+                let (scope, verification_scope) = resolve_filter(data.env(), filter.as_deref())?;
+                let verify_exclude = resolve_excludes(exclude.as_deref());
+                let has_excludes = !verify_exclude.is_empty();
+
+                // Reject `exclude` entries that don't match any target module
+                // (or function, for `module::function` entries). Both
+                // `build_filtered_env` and the anti-vacuity check below silently
+                // no-op on unmatched names, which would otherwise hide typos.
+                for entry in exclude.as_deref().unwrap_or(&[]) {
+                    let module_name = module_part_of(entry);
+                    let func_name = entry.rfind("::").map(|pos| &entry[pos + 2..]);
+                    let exists = data.env().get_modules().any(|m| {
+                        m.is_target()
+                            && m.matches_name(module_name)
+                            && func_name
+                                .is_none_or(|f| m.get_functions().any(|fn_env| fn_env.matches_name(f)))
+                    });
+                    if !exists {
+                        let kind = if func_name.is_some() { "function" } else { "module" };
+                        return Err(rmcp::ErrorData::invalid_params(
+                            format!("exclude entry `{}` does not match any target {}", entry, kind),
+                            None,
+                        ));
+                    }
+                }
+
+                let exclude_entries: Vec<&str> = exclude
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                let func_excluded = |m: &move_model::model::ModuleEnv,
+                                     func: &move_model::model::FunctionEnv|
+                 -> bool {
+                    exclude_entries.iter().any(|e| match e.rfind("::") {
+                        Some(pos) => m.matches_name(&e[..pos]) && func.matches_name(&e[pos + 2..]),
+                        None => m.matches_name(e),
+                    })
+                };
+                let any_verifiable = data.env().get_modules().any(|m| {
+                    m.is_target()
+                        && m.get_functions().any(|func| {
+                            func.should_verify(&verification_scope) && !func_excluded(&m, &func)
+                        })
+                });
+                if !any_verifiable {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        "nothing to verify: filter and exclude leave no verifiable functions in scope",
+                    )]));
+                }
+
+                // 4. Check cache (skip when exclusions are active — cached results
+                //    don't account for the exclusion set).
+                //    - Success propagates via entailment (wider success ⇒ narrower success).
+                //    - Errors only reuse an exact scope match; a wider-scope failure does
+                //      not imply a narrower scope also fails (the error may be elsewhere).
+                if !has_excludes {
+                    if let Some((ref cached_scope, success, cached_timeout)) = data.verified() {
+                        let hit = if success {
+                            cached_scope.entails_success(&scope) && vc_timeout >= cached_timeout
+                        } else {
+                            cached_scope.entails_error(&scope) && vc_timeout <= cached_timeout
+                        };
+                        if hit {
+                            let msg = if success {
+                                "verification succeeded (cached result)"
+                            } else {
+                                "verification failed (cached result)"
+                            };
+                            log::info!("move_package_verify: cache hit, success={}", success);
+                            return Ok(if success {
+                                CallToolResult::success(vec![Content::text(msg)])
+                            } else {
+                                CallToolResult::error(vec![Content::text(msg)])
+                            });
+                        }
+                    }
+                }
+
+                // 5. Build the env to run on (filtered or cached) up front so
+                //    verify_exclude can be aligned with the actual target set.
+                let excluded_modules: Vec<String> = exclude
+                    .as_deref()
+                    .map(|v| v.iter().filter(|e| !e.contains("::")).cloned().collect())
+                    .unwrap_or_default();
+                let needs_filtered_env = filter.is_some() || !excluded_modules.is_empty();
+                let mut maybe_filtered_env = if needs_filtered_env {
+                    match data.build_filtered_env(filter.as_deref(), &excluded_modules) {
+                        Ok(env) => Some(env),
+                        Err(e) => {
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "failed to rebuild env for filter `{:?}` exclude `{:?}`: {}",
+                                filter, excluded_modules, e
+                            ))]))
+                        },
+                    }
+                } else {
+                    data.env().clear_diag();
+                    None
+                };
+
+                // Keep verify_exclude entries whose module is still a target in
+                // the env that will actually run. Modules demoted out of targets
+                // are silently dropped (prover would otherwise reject them);
+                // modules that survived (e.g. via soft fallback on file-share)
+                // remain so the prover still applies them.
+                let env_for_check = maybe_filtered_env.as_ref().unwrap_or_else(|| data.env());
+                let prover_verify_exclude: Vec<_> = verify_exclude
+                    .iter()
+                    .filter(|s| {
+                        use move_model::model::VerificationScope::*;
+                        let module_name = match s {
+                            OnlyModule(name) => name.as_str(),
+                            Only(qname) => module_part_of(qname),
+                            _ => return true,
+                        };
+                        env_for_check
+                            .get_modules()
+                            .any(|m| m.is_target() && m.matches_name(module_name))
+                    })
+                    .cloned()
+                    .collect();
+
+                // 6. Build prover options.
+                let temp_dir = tempfile::tempdir().map_err(|e| {
+                    rmcp::ErrorData::internal_error(
+                        format!("failed to create temp dir: {}", e),
+                        None,
+                    )
+                })?;
+                let mut options = match load_sanitized_prover_options(data.path()) {
+                    Ok(o) => o,
+                    Err(msg) => {
+                        return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                    },
+                };
+                options.prover.verify_scope = verification_scope;
+                options.prover.verify_exclude = prover_verify_exclude;
+                options.backend.vc_timeout = vc_timeout;
+                options.backend.hard_timeout_secs = hard_timeout_secs;
+                options.backend.package_timeout_secs = hard_timeout_secs;
+                options.backend.package_error_limit = MAX_PACKAGE_ERROR_LIMIT;
+                options.backend.split_vcs_by_assert = split_vcs_by_assert;
+                if let Some(n) = error_limit {
+                    options.backend.error_limit = n;
+                }
+                aptos_framework::prover::configure_aptos_custom_natives(&mut options);
+                #[cfg(test)]
+                {
+                    options.prover.stable_test_output = true;
+                    options.backend.stable_test_output = true;
+                }
+                options.output_path = temp_dir
+                    .path()
+                    .join("output.bpl")
+                    .to_string_lossy()
+                    .into_owned();
+
+                // 7. Run the prover.
+                let mut error_writer = NoColor::new(Vec::new());
+                let (prover_result, fallback_env_diags) =
+                    if let Some(env) = maybe_filtered_env.as_mut() {
+                        let result = move_prover::run_move_prover_with_model_v2(
+                            env,
+                            &mut error_writer,
+                            options,
+                            Instant::now(),
+                        );
+                        let fallback = if result.is_err() {
+                            super::super::package_data::render_diagnostics(env)
+                        } else {
+                            Vec::new()
+                        };
+                        (result, fallback)
+                    } else {
+                        let result = move_prover::run_move_prover_with_model_v2(
+                            data.env_mut(),
+                            &mut error_writer,
+                            options,
+                            Instant::now(),
+                        );
+                        let fallback = if result.is_err() {
+                            super::super::package_data::render_diagnostics(data.env())
+                        } else {
+                            Vec::new()
+                        };
+                        (result, fallback)
+                    };
+
+                match prover_result {
+                    Ok(()) => {
+                        // Only cache when no exclusions — an excluded-scope result
+                        // doesn't represent the full scope and must not be reused.
+                        if !has_excludes {
+                            data.set_verified(scope, true, vc_timeout);
+                        }
+                        log::info!("move_package_verify: succeeded");
+                        Ok(CallToolResult::success(vec![Content::text(
+                            "verification succeeded",
+                        )]))
+                    },
+                    Err(e) => {
+                        if !has_excludes {
+                            data.set_verified(scope, false, vc_timeout);
+                        }
+                        let diag_text =
+                            String::from_utf8(error_writer.into_inner()).unwrap_or_default();
+                        let msg = if !diag_text.is_empty() {
+                            data.set_diagnostics(DiagnosticSource::Verifier, vec![
+                                diag_text.clone()
+                            ]);
+                            format!("verification failed:\n{}", diag_text)
+                        } else if !fallback_env_diags.is_empty() {
+                            // The prover may return errors (e.g. tool version
+                            // mismatch, boogie crash) that bypass the diagnostic
+                            // writer. Use the env diags captured above from
+                            // whichever env actually ran.
+                            let joined = fallback_env_diags.join("\n");
+                            data.set_diagnostics(DiagnosticSource::Verifier, fallback_env_diags);
+                            format!("verification failed:\n{}", joined)
+                        } else {
+                            let err_msg = format!("{:#}", e);
+                            data.set_diagnostics(DiagnosticSource::Verifier, vec![err_msg.clone()]);
+                            format!("verification failed: {}", err_msg)
+                        };
+                        log::info!("move_package_verify: failed\n{}", msg);
+                        Ok(CallToolResult::error(vec![Content::text(msg)]))
+                    },
+                }
+            }),
+        )
+        .await
+        .map_err(|_| {
+            self.invalidate_package(&params.package_path);
+            rmcp::ErrorData::internal_error(
+                format!("tool timeout ({}s exceeded)", tool_timeout.as_secs()),
+                None,
+            )
+        })?
+        .map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("verify task panicked: {}", e), None)
+        })??;
+
+        Ok(result)
+    }
+}

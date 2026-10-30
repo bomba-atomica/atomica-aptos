@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 use crate::{
     monitor,
     network::{NetworkSender, QuorumStoreSender},
@@ -14,7 +14,7 @@ use crate::{
 use aptos_config::config::QuorumStoreConfig;
 use aptos_consensus_types::{
     common::{TransactionInProgress, TransactionSummary},
-    proof_of_store::BatchInfo,
+    proof_of_store::{BatchInfoExt, BatchKind, TBatchInfo},
 };
 use aptos_experimental_runtimes::thread_manager::optimal_min_len;
 use aptos_logger::prelude::*;
@@ -31,9 +31,9 @@ use tokio::time::Interval;
 
 #[derive(Debug)]
 pub enum BatchGeneratorCommand {
-    CommitNotification(u64, Vec<BatchInfo>),
+    CommitNotification(u64, Vec<BatchInfoExt>),
     ProofExpiration(Vec<BatchId>),
-    RemoteBatch(Batch),
+    RemoteBatch(Batch<BatchInfoExt>),
     Shutdown(tokio::sync::oneshot::Sender<()>),
 }
 
@@ -72,9 +72,80 @@ pub struct BatchGenerator {
     last_end_batch_time: Instant,
     // quorum store back pressure, get updated from proof manager
     back_pressure: BackPressure,
+    /// Monotonic counter for pull rounds, used by transaction tracing.
+    pull_round: u64,
+    /// Monotonic counter for total batches created, used by transaction tracing.
+    total_batches_created: u64,
+    /// Recent batch creation events, capped at 500 entries (~37s at 75ms/round).
+    /// Each entry = one pull round that produced batches, with gas bucket breakdown.
+    recent_batch_records:
+        std::collections::VecDeque<aptos_transaction_tracing::types::BatchCreationRecord>,
+    /// Cached Arc of batch bucket boundaries for tracing records (avoids cloning per record).
+    tracing_bucket_boundaries: std::sync::Arc<Vec<u64>>,
 }
 
 impl BatchGenerator {
+    /// Categorize a transaction to determine its batch kind.
+    /// This is the central place to add new categorization logic.
+    fn categorize_transaction(txn: &SignedTransaction) -> BatchKind {
+        if txn.is_encrypted_txn() {
+            BatchKind::Encrypted
+        } else {
+            BatchKind::Normal
+        }
+    }
+
+    /// Process a group of transactions with the same batch kind through the bucketing algorithm.
+    fn process_transaction_group(
+        &mut self,
+        batches: &mut Vec<Batch<BatchInfoExt>>,
+        txns: &mut Vec<SignedTransaction>,
+        expiry_time: u64,
+        reverse_buckets_excluding_zero: &[u64],
+        max_batches_remaining: &mut u64,
+        batch_kind: BatchKind,
+    ) {
+        for bucket_start in reverse_buckets_excluding_zero {
+            if txns.is_empty() || *max_batches_remaining == 0 {
+                break;
+            }
+
+            // Search for key in descending gas order
+            let num_txns_in_bucket = match txns
+                .binary_search_by_key(&(u64::MAX - (*bucket_start - 1), PeerId::ZERO), |txn| {
+                    (u64::MAX - txn.gas_unit_price(), txn.sender())
+                }) {
+                Ok(index) => index,
+                Err(index) => index,
+            };
+            if num_txns_in_bucket == 0 {
+                continue;
+            }
+
+            self.push_bucket_to_batches(
+                batches,
+                txns,
+                num_txns_in_bucket,
+                expiry_time,
+                *bucket_start,
+                max_batches_remaining,
+                batch_kind,
+            );
+        }
+        // Handle remaining transactions in the zero bucket
+        if !txns.is_empty() && *max_batches_remaining > 0 {
+            self.push_bucket_to_batches(
+                batches,
+                txns,
+                txns.len(),
+                expiry_time,
+                0,
+                max_batches_remaining,
+                batch_kind,
+            );
+        }
+    }
+
     pub(crate) fn new(
         epoch: u64,
         my_peer_id: PeerId,
@@ -100,6 +171,7 @@ impl BatchGenerator {
         db.save_batch_id(epoch, incremented_batch_id)
             .expect("Could not save to db");
 
+        let tracing_bucket_boundaries = std::sync::Arc::new(config.batch_buckets.clone());
         Self {
             epoch,
             my_peer_id,
@@ -117,6 +189,10 @@ impl BatchGenerator {
                 txn_count: false,
                 proof_count: false,
             },
+            pull_round: 0,
+            total_batches_created: 0,
+            recent_batch_records: std::collections::VecDeque::new(),
+            tracing_bucket_boundaries,
         }
     }
 
@@ -175,7 +251,8 @@ impl BatchGenerator {
         txns: Vec<SignedTransaction>,
         expiry_time: u64,
         bucket_start: u64,
-    ) -> Batch {
+        batch_kind: BatchKind,
+    ) -> Batch<BatchInfoExt> {
         let batch_id = self.batch_id;
         self.batch_id.increment();
         self.db
@@ -184,36 +261,92 @@ impl BatchGenerator {
 
         self.insert_batch(self.my_peer_id, batch_id, txns.clone(), expiry_time);
 
-        counters::CREATED_BATCHES_COUNT.inc();
-        counters::num_txn_per_batch(bucket_start.to_string().as_str(), txns.len());
+        let batch_version = if self.config.enable_batch_v2_tx {
+            "v2"
+        } else {
+            "v1"
+        };
+        let kind_str = if self.config.enable_batch_v2_tx {
+            match batch_kind {
+                BatchKind::Normal => "normal",
+                BatchKind::Encrypted => "encrypted",
+            }
+        } else {
+            "na"
+        };
+        counters::CREATED_BATCHES_COUNT
+            .with_label_values(&[batch_version, kind_str])
+            .inc();
+        counters::num_txn_per_batch(bucket_start.to_string().as_str(), txns.len(), batch_version);
+        counters::CREATED_TXNS_BY_KIND
+            .with_label_values(&[batch_version, kind_str])
+            .inc_by(txns.len() as u64);
 
-        Batch::new(
-            batch_id,
-            txns,
-            self.epoch,
-            expiry_time,
-            self.my_peer_id,
-            bucket_start,
-        )
+        // Always collect hashes for register_batch when tracing is enabled.
+        // register_batch is cheap (filters against traces DashMap), and ensures
+        // all traced txns get complete pipeline coverage (BlockProposed → Committed).
+        // Only the expensive QsBatchPull metadata loop is gated by should_sample_batch.
+        let store = aptos_transaction_tracing::store::TransactionTraceStore::global();
+        let txn_hashes: Option<Vec<_>> = if store.is_enabled() {
+            Some(txns.iter().map(|t| t.committed_hash()).collect())
+        } else {
+            None
+        };
+
+        let batch = if self.config.enable_batch_v2_tx {
+            Batch::new_v2(
+                batch_id,
+                txns,
+                self.epoch,
+                expiry_time,
+                self.my_peer_id,
+                bucket_start,
+                batch_kind,
+            )
+        } else {
+            Batch::new_v1(
+                batch_id,
+                txns,
+                self.epoch,
+                expiry_time,
+                self.my_peer_id,
+                bucket_start,
+            )
+        };
+
+        if let Some(hashes) = &txn_hashes {
+            store.register_batch(*batch.digest(), hashes);
+            store.record_batch_stage(
+                batch.digest(),
+                aptos_transaction_tracing::types::TransactionStage::QsBatchCreated,
+            );
+        }
+
+        batch
     }
 
     /// Push num_txns from txns into batches. If num_txns is larger than max size, then multiple
     /// batches are pushed.
     fn push_bucket_to_batches(
         &mut self,
-        batches: &mut Vec<Batch>,
+        batches: &mut Vec<Batch<BatchInfoExt>>,
         txns: &mut Vec<SignedTransaction>,
         num_txns_in_bucket: usize,
         expiry_time: u64,
         bucket_start: u64,
         total_batches_remaining: &mut u64,
+        batch_kind: BatchKind,
     ) {
         let mut txns_remaining = num_txns_in_bucket;
         while txns_remaining > 0 {
             if *total_batches_remaining == 0 {
                 return;
             }
-            let num_take_txns = std::cmp::min(self.config.sender_max_batch_txns, txns_remaining);
+            let max_batch_txns = match batch_kind {
+                BatchKind::Encrypted => self.config.sender_max_encrypted_batch_txns,
+                BatchKind::Normal => self.config.sender_max_batch_txns,
+            };
+            let num_take_txns = std::cmp::min(max_batch_txns, txns_remaining);
             let mut batch_bytes_remaining = self.config.sender_max_batch_bytes as u64;
             let num_batch_txns = txns
                 .iter()
@@ -230,10 +363,23 @@ impl BatchGenerator {
                 .count();
             if num_batch_txns > 0 {
                 let batch_txns: Vec<_> = txns.drain(0..num_batch_txns).collect();
-                let batch = self.create_new_batch(batch_txns, expiry_time, bucket_start);
+                let batch =
+                    self.create_new_batch(batch_txns, expiry_time, bucket_start, batch_kind);
                 batches.push(batch);
                 *total_batches_remaining = total_batches_remaining.saturating_sub(1);
                 txns_remaining -= num_batch_txns;
+            } else {
+                // First transaction exceeds sender_max_batch_bytes - skip to avoid infinite loop
+                if let Some(txn) = txns.drain(0..1).next() {
+                    warn!(
+                        "Skipping transaction that exceeds sender_max_batch_bytes ({} bytes): sender={}, size={}",
+                        self.config.sender_max_batch_bytes,
+                        txn.sender(),
+                        txn.txn_bytes_len()
+                    );
+                    counters::BATCH_GENERATOR_SKIPPED_OVERSIZED_TXN.inc();
+                }
+                txns_remaining -= 1;
             }
         }
     }
@@ -242,7 +388,7 @@ impl BatchGenerator {
         &mut self,
         pulled_txns: &mut Vec<SignedTransaction>,
         expiry_time: u64,
-    ) -> Vec<Batch> {
+    ) -> Vec<Batch<BatchInfoExt>> {
         // Sort by gas, in descending order. This is a stable sort on existing mempool ordering,
         // so will not reorder accounts or their sequence numbers as long as they have the same gas.
         pulled_txns.sort_by_key(|txn| u64::MAX - txn.gas_unit_price());
@@ -258,42 +404,59 @@ impl BatchGenerator {
 
         let mut max_batches_remaining = self.config.sender_max_num_batches as u64;
         let mut batches = vec![];
-        for bucket_start in &reverse_buckets_excluding_zero {
-            if pulled_txns.is_empty() || max_batches_remaining == 0 {
-                return batches;
+
+        // Only categorize and separate transactions when BatchV2 is enabled
+        if self.config.enable_batch_v2_tx {
+            // Group transactions by their batch kind
+            let mut txns_by_kind: HashMap<BatchKind, Vec<SignedTransaction>> = HashMap::new();
+
+            for txn in pulled_txns.drain(..) {
+                let batch_kind = Self::categorize_transaction(&txn);
+                txns_by_kind.entry(batch_kind).or_default().push(txn);
             }
 
-            // Search for key in descending gas order
-            let num_txns_in_bucket = match pulled_txns
-                .binary_search_by_key(&(u64::MAX - (*bucket_start - 1), PeerId::ZERO), |txn| {
-                    (u64::MAX - txn.gas_unit_price(), txn.sender())
-                }) {
-                Ok(index) => index,
-                Err(index) => index,
-            };
-            if num_txns_in_bucket == 0 {
-                continue;
+            // Sort each group by gas, in descending order. This is a stable sort on existing mempool ordering,
+            // so will not reorder accounts or their sequence numbers as long as they have the same gas.
+            for txns in txns_by_kind.values_mut() {
+                txns.sort_by_key(|txn| u64::MAX - txn.gas_unit_price());
             }
 
-            self.push_bucket_to_batches(
+            // Process each batch kind group. Processing order: Normal first, then others.
+            // This ensures backwards compatibility and prioritizes regular transactions.
+            let batch_kind_order = [BatchKind::Normal, BatchKind::Encrypted];
+
+            for &batch_kind in &batch_kind_order {
+                if let Some(mut txns) = txns_by_kind.remove(&batch_kind) {
+                    self.process_transaction_group(
+                        &mut batches,
+                        &mut txns,
+                        expiry_time,
+                        &reverse_buckets_excluding_zero,
+                        &mut max_batches_remaining,
+                        batch_kind,
+                    );
+                }
+            }
+        } else {
+            // Legacy path: filter out encrypted transactions (only supported in BatchV2)
+            // and treat remaining transactions as Normal
+            if pulled_txns.iter().any(|txn| txn.is_encrypted_txn()) {
+                error!(
+                    "QS: Found encrypted transaction(s) in pulled_txns when BatchV2 is disabled. These will be filtered out."
+                );
+            }
+            pulled_txns.retain(|txn| !txn.is_encrypted_txn());
+
+            self.process_transaction_group(
                 &mut batches,
                 pulled_txns,
-                num_txns_in_bucket,
                 expiry_time,
-                *bucket_start,
+                &reverse_buckets_excluding_zero,
                 &mut max_batches_remaining,
+                BatchKind::Normal,
             );
         }
-        if !pulled_txns.is_empty() && max_batches_remaining > 0 {
-            self.push_bucket_to_batches(
-                &mut batches,
-                pulled_txns,
-                pulled_txns.len(),
-                expiry_time,
-                0,
-                &mut max_batches_remaining,
-            );
-        }
+
         batches
     }
 
@@ -325,12 +488,14 @@ impl BatchGenerator {
         self.txns_in_progress_sorted.len()
     }
 
-    pub(crate) async fn handle_scheduled_pull(&mut self, max_count: u64) -> Vec<Batch> {
-        counters::BATCH_PULL_EXCLUDED_TXNS.observe(self.txns_in_progress_sorted.len() as f64);
-        trace!(
-            "QS: excluding txs len: {:?}",
-            self.txns_in_progress_sorted.len()
-        );
+    pub(crate) async fn handle_scheduled_pull(
+        &mut self,
+        max_count: u64,
+    ) -> Vec<Batch<BatchInfoExt>> {
+        self.pull_round += 1;
+        let excluded_count = self.txns_in_progress_sorted.len();
+        counters::BATCH_PULL_EXCLUDED_TXNS.observe(excluded_count as f64);
+        trace!("QS: excluding txs len: {:?}", excluded_count);
 
         let mut pulled_txns = self
             .mempool_proxy
@@ -342,7 +507,66 @@ impl BatchGenerator {
             .await
             .unwrap_or_default();
 
+        // Local batches can reach our own proposal pipeline without peer batch
+        // verification. Recheck the submission representation before batching,
+        // including transactions admitted before this check was deployed.
+        pulled_txns = pulled_txns
+            .into_par_iter()
+            .filter(|txn| {
+                if let Err(error) = txn.verify_encrypted_payload_for_submission() {
+                    warn!(
+                        "QS: skipping invalid encrypted transaction {}: {}",
+                        txn.committed_hash(),
+                        error,
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+
         trace!("QS: pulled_txns len: {:?}", pulled_txns.len());
+
+        // Record QsBatchPull with context for traced transactions.
+        // Two-level gating: should_sample_batch() skips ~90% of pull rounds (~5ns),
+        // then per-txn is_traced() skips non-traced txns within sampled rounds.
+        {
+            let store = aptos_transaction_tracing::store::TransactionTraceStore::global();
+            if store.should_sample_batch(self.pull_round) {
+                use std::sync::Arc;
+                let mut pull_info: Option<Arc<aptos_transaction_tracing::types::BatchPullInfo>> =
+                    None;
+                for txn in &pulled_txns {
+                    let hash = txn.committed_hash();
+                    if !store.is_traced(&hash) {
+                        continue;
+                    }
+                    let info = pull_info.get_or_insert_with(|| {
+                        Arc::new(aptos_transaction_tracing::types::BatchPullInfo {
+                            pull_round: self.pull_round,
+                            total_batches_created: self.total_batches_created,
+                            pulled_txn_count: pulled_txns.len() as u64,
+                            pull_max_txn: max_count,
+                            excluded_txn_count: excluded_count as u64,
+                            bp_txn: self.back_pressure.txn_count,
+                            bp_proof: self.back_pressure.proof_count,
+                            recent_batches: Arc::new(
+                                self.recent_batch_records.iter().cloned().collect(),
+                            ),
+                        })
+                    });
+                    store.set_gas_unit_price(&hash, txn.gas_unit_price());
+                    store.record_stage_with_metadata(
+                        &hash,
+                        aptos_transaction_tracing::types::TransactionStage::QsBatchPull,
+                        aptos_transaction_tracing::types::StageMetadata::BatchPull(Arc::clone(
+                            info,
+                        )),
+                    );
+                }
+            }
+        }
 
         if pulled_txns.is_empty() {
             counters::PULLED_EMPTY_TXNS_COUNT.inc();
@@ -363,9 +587,40 @@ impl BatchGenerator {
         counters::BATCH_CREATION_DURATION.observe_duration(self.last_end_batch_time.elapsed());
 
         let bucket_compute_start = Instant::now();
+        let pulled_count = pulled_txns.len() as u64;
         let expiry_time = aptos_infallible::duration_since_epoch().as_micros() as u64
             + self.config.batch_expiry_gap_when_init_usecs;
         let batches = self.bucket_into_batches(&mut pulled_txns, expiry_time);
+        self.total_batches_created += batches.len() as u64;
+
+        // Always record BatchCreationRecord when tracing is enabled (cheap: ~50ns).
+        // Gas bucket info comes from the batches themselves -- O(num_batches), no per-txn iteration.
+        // This keeps wait() summary accurate even when batch sampling skips the per-txn loop.
+        if aptos_transaction_tracing::store::TransactionTraceStore::global().is_enabled()
+            && !batches.is_empty()
+        {
+            use aptos_consensus_types::proof_of_store::TBatchInfo;
+            let gas_bucket_txn_counts: Vec<(u64, u64)> = batches
+                .iter()
+                .map(|b| (b.batch_info().gas_bucket_start(), b.batch_info().num_txns()))
+                .collect();
+            let now = aptos_infallible::duration_since_epoch().as_micros() as u64;
+            self.recent_batch_records.push_back(
+                aptos_transaction_tracing::types::BatchCreationRecord {
+                    timestamp_usecs: now,
+                    num_batches: batches.len() as u64,
+                    pulled_txn_count: pulled_count,
+                    pull_max_txn: max_count,
+                    bp_txn: self.back_pressure.txn_count,
+                    bp_proof: self.back_pressure.proof_count,
+                    gas_bucket_txn_counts,
+                    bucket_boundaries: self.tracing_bucket_boundaries.clone(),
+                },
+            );
+            while self.recent_batch_records.len() > 500 {
+                self.recent_batch_records.pop_front();
+            }
+        }
         self.last_end_batch_time = Instant::now();
         counters::BATCH_CREATION_COMPUTE_LATENCY.observe_duration(bucket_compute_start.elapsed());
 
@@ -474,7 +729,14 @@ impl BatchGenerator {
                             self.batch_writer.persist(persist_requests);
                             counters::BATCH_CREATION_PERSIST_LATENCY.observe_duration(persist_start.elapsed());
 
-                            network_sender.broadcast_batch_msg(batches).await;
+                            if self.config.enable_batch_v2_tx {
+                                network_sender.broadcast_batch_msg_v2(batches).await;
+                            } else {
+                                let batches = batches.into_iter().map(|batch| {
+                                    batch.try_into().expect("Cannot send V2 batch with flag disabled")
+                                }).collect();
+                                network_sender.broadcast_batch_msg(batches).await;
+                            }
                         } else if tick_start.elapsed() > interval.period().checked_div(2).unwrap_or(Duration::ZERO) {
                             // If the pull takes too long, it's also accounted as a non-empty pull to avoid pulling too often.
                             last_non_empty_pull = tick_start;

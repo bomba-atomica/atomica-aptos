@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::transcript_aggregation::TranscriptAggregationState;
 use aptos_crypto::{bls12381::bls12381_keys, Uniform};
@@ -42,9 +42,10 @@ fn test_transcript_aggregation_state() {
         .map(ValidatorConsensusInfoMoveStruct::from)
         .collect::<Vec<_>>();
     let verifier = ValidatorVerifier::new(validator_infos.clone());
+    let randomness_config = OnChainRandomnessConfig::default_enabled();
     let pub_params = RealDKG::new_public_params(&DKGSessionMetadata {
         dealer_epoch: 999,
-        randomness_config: OnChainRandomnessConfig::default_enabled().into(),
+        randomness_config: randomness_config.into(),
         dealer_validator_set: validator_consensus_info_move_structs.clone(),
         target_validator_set: validator_consensus_info_move_structs.clone(),
     });
@@ -56,8 +57,13 @@ fn test_transcript_aggregation_state() {
         epoch_state,
     ));
 
-    let good_trx_0 =
-        RealDKG::sample_secret_and_generate_transcript(&mut rng, &pub_params, 0, &private_keys[0]);
+    let good_trx_0 = RealDKG::sample_secret_and_generate_transcript(
+        &mut rng,
+        &pub_params,
+        0,
+        &private_keys[0],
+        &public_keys[0],
+    );
     let good_trx_0_bytes = bcs::to_bytes(&good_trx_0).unwrap();
 
     // Node with incorrect epoch should be rejected.
@@ -112,25 +118,14 @@ fn test_transcript_aggregation_state() {
     });
     assert!(result.is_err());
 
-    // Transcript where fast-path secret and main-path secret do not match should be rejected.
-    let bad_trx_2 = RealDKG::generate_transcript_for_inconsistent_secrets(
+    // Good node should be accepted.
+    let good_trx_3 = RealDKG::sample_secret_and_generate_transcript(
         &mut rng,
         &pub_params,
-        2,
-        &private_keys[2],
+        3,
+        &private_keys[3],
+        &public_keys[3],
     );
-    let result = trx_agg_state.add(addrs[2], DKGTranscript {
-        metadata: DKGTranscriptMetadata {
-            epoch: 999,
-            author: addrs[2],
-        },
-        transcript_bytes: bcs::to_bytes(&bad_trx_2).unwrap(),
-    });
-    assert!(result.is_err());
-
-    // Good node should be accepted.
-    let good_trx_3 =
-        RealDKG::sample_secret_and_generate_transcript(&mut rng, &pub_params, 3, &private_keys[3]);
     let result = trx_agg_state.add(addrs[3], DKGTranscript {
         metadata: DKGTranscriptMetadata {
             epoch: 999,
@@ -142,8 +137,13 @@ fn test_transcript_aggregation_state() {
     assert!(matches!(result, Ok(None)));
 
     // Repeated contribution should be ignored.
-    let good_trx_3_another =
-        RealDKG::sample_secret_and_generate_transcript(&mut rng, &pub_params, 3, &private_keys[3]);
+    let good_trx_3_another = RealDKG::sample_secret_and_generate_transcript(
+        &mut rng,
+        &pub_params,
+        3,
+        &private_keys[3],
+        &public_keys[3],
+    );
     let result = trx_agg_state.add(addrs[3], DKGTranscript {
         metadata: DKGTranscriptMetadata {
             epoch: 999,
@@ -154,8 +154,13 @@ fn test_transcript_aggregation_state() {
     assert!(matches!(result, Ok(None)));
 
     // Aggregated trx should be returned if after adding a node, the threshold is exceeded.
-    let good_trx_4 =
-        RealDKG::sample_secret_and_generate_transcript(&mut rng, &pub_params, 4, &private_keys[4]);
+    let good_trx_4 = RealDKG::sample_secret_and_generate_transcript(
+        &mut rng,
+        &pub_params,
+        4,
+        &private_keys[4],
+        &public_keys[4],
+    );
     let result = trx_agg_state.add(addrs[4], DKGTranscript {
         metadata: DKGTranscriptMetadata {
             epoch: 999,
@@ -164,4 +169,66 @@ fn test_transcript_aggregation_state() {
         transcript_bytes: bcs::to_bytes(&good_trx_4).unwrap(),
     });
     assert!(matches!(result, Ok(Some(_))));
+}
+
+#[test]
+fn test_oversized_transcript_rejected_before_deserialize() {
+    let num_validators = 5;
+    let epoch = 999;
+    let addrs: Vec<AccountAddress> = (0..num_validators)
+        .map(|_| AccountAddress::random())
+        .collect();
+    let private_keys: Vec<bls12381_keys::PrivateKey> = (0..num_validators)
+        .map(|_| bls12381_keys::PrivateKey::generate_for_testing())
+        .collect();
+    let public_keys: Vec<bls12381_keys::PublicKey> = (0..num_validators)
+        .map(|i| bls12381_keys::PublicKey::from(&private_keys[i]))
+        .collect();
+    let voting_powers = [1, 1, 1, 6, 6];
+    let validator_infos: Vec<ValidatorConsensusInfo> = (0..num_validators)
+        .map(|i| ValidatorConsensusInfo::new(addrs[i], public_keys[i].clone(), voting_powers[i]))
+        .collect();
+    let validator_consensus_info_move_structs = validator_infos
+        .clone()
+        .into_iter()
+        .map(ValidatorConsensusInfoMoveStruct::from)
+        .collect::<Vec<_>>();
+    let verifier = ValidatorVerifier::new(validator_infos);
+    let randomness_config = OnChainRandomnessConfig::default_enabled();
+    let pub_params = RealDKG::new_public_params(&DKGSessionMetadata {
+        dealer_epoch: 999,
+        randomness_config: randomness_config.into(),
+        dealer_validator_set: validator_consensus_info_move_structs.clone(),
+        target_validator_set: validator_consensus_info_move_structs,
+    });
+    let session_bound = RealDKG::expected_max_transcript_size(&pub_params);
+    let epoch_state = Arc::new(EpochState::new(epoch, verifier));
+    let trx_agg_state = Arc::new(TranscriptAggregationState::<RealDKG>::new(
+        duration_since_epoch(),
+        addrs[0],
+        pub_params,
+        epoch_state,
+    ));
+
+    // One byte over the per-session bound — the size gate should reject it.
+    let oversized = vec![0u8; session_bound + 1];
+    let start = std::time::Instant::now();
+    let result = trx_agg_state.add(addrs[0], DKGTranscript {
+        metadata: DKGTranscriptMetadata {
+            epoch: 999,
+            author: addrs[0],
+        },
+        transcript_bytes: oversized,
+    });
+    let elapsed = start.elapsed();
+    assert!(result.is_err());
+    let err_msg = format!("{:#}", result.unwrap_err());
+    assert!(
+        err_msg.contains("exceeds max"),
+        "expected size-gate rejection, got: {err_msg}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "rejection took {elapsed:?}; expected sub-second"
+    );
 }

@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Contains tests for serialization
 
@@ -11,7 +13,7 @@ mod tests {
         values::{function_values_impl::mock::MockAbstractFunction, values_impl, Struct, Value},
     };
     use better_any::TidExt;
-    use claims::{assert_err, assert_ok, assert_some};
+    use claims::{assert_err, assert_none, assert_ok, assert_some};
     use move_binary_format::errors::PartialVMResult;
     use move_core_types::{
         ability::AbilitySet,
@@ -29,7 +31,7 @@ mod tests {
     // Enums
 
     fn enum_layout() -> MoveTypeLayout {
-        MoveTypeLayout::Struct(MoveStructLayout::RuntimeVariants(vec![
+        MoveTypeLayout::new_struct(MoveStructLayout::RuntimeVariants(vec![
             vec![MoveTypeLayout::U64],
             vec![],
             vec![MoveTypeLayout::Bool, MoveTypeLayout::U32],
@@ -128,6 +130,28 @@ mod tests {
                 .is_none(),
             "serialization fails"
         );
+    }
+
+    #[test]
+    fn enum_out_of_range_zero_field_tag_fails_to_serialize() {
+        let layout = enum_layout();
+
+        let bad_zero_field_tag = Value::struct_(Struct::pack_variant(3, iter::empty()));
+        assert!(
+            ValueSerDeContext::new(None)
+                .serialize(&bad_zero_field_tag, &layout)
+                .unwrap()
+                .is_none(),
+            "serializing an out-of-range zero-field variant tag must fail"
+        );
+
+        let variants_layout = MoveStructLayout::RuntimeVariants(vec![
+            vec![MoveTypeLayout::U64],
+            vec![],
+            vec![MoveTypeLayout::Bool, MoveTypeLayout::U32],
+        ]);
+        assert!(variants_layout.fields(Some(3)).is_none());
+        assert!(variants_layout.fields(Some(1)).is_some());
     }
 
     // ---------------------------------------------------------------------------
@@ -448,6 +472,57 @@ mod tests {
             .expect_err("bad size value deserialization fails");
     }
 
+    #[test]
+    fn closure_serialization_disabled() {
+        let mut ext_mock = MockFunctionValueExtension::new();
+        ext_mock
+            .expect_get_serialization_data()
+            .returning(move |af| {
+                Ok(af
+                    .downcast_ref::<MockAbstractFunction>()
+                    .expect("cast")
+                    .data
+                    .clone())
+            });
+
+        let make_closure = || {
+            let fun = MockAbstractFunction::new("f", vec![], ClosureMask::new(0b1), vec![
+                MoveTypeLayout::U64,
+            ]);
+            Value::closure(Box::new(fun), vec![Value::u64(22)])
+        };
+
+        // Closure serialization fails when disabled.
+        let result = assert_ok!(ValueSerDeContext::new(None)
+            .with_func_args_deserialization(&ext_mock)
+            .with_closure_serialization_disabled(true)
+            .serialize(&make_closure(), &make_fun_layout()));
+        assert_none!(result);
+        assert_err!(ValueSerDeContext::new(None)
+            .with_func_args_deserialization(&ext_mock)
+            .with_closure_serialization_disabled(true)
+            .serialized_size(&make_closure(), &make_fun_layout()));
+
+        // Values containing a closure fail as well.
+        let struct_layout = MoveTypeLayout::new_struct(MoveStructLayout::Runtime(vec![
+            make_fun_layout(),
+            MoveTypeLayout::U64,
+        ]));
+        let struct_value = Value::struct_(Struct::pack(vec![make_closure(), Value::u64(7)]));
+        let result = assert_ok!(ValueSerDeContext::new(None)
+            .with_func_args_deserialization(&ext_mock)
+            .with_closure_serialization_disabled(true)
+            .serialize(&struct_value, &struct_layout));
+        assert_none!(result);
+
+        // Values without closures are unaffected.
+        let result = assert_ok!(ValueSerDeContext::new(None)
+            .with_func_args_deserialization(&ext_mock)
+            .with_closure_serialization_disabled(true)
+            .serialize(&Value::u64(7), &MoveTypeLayout::U64));
+        assert_some!(result);
+    }
+
     // ======================================================================================
     // Serialization size tests
 
@@ -463,8 +538,8 @@ mod tests {
             Value::delayed_value(DelayedFieldID::new_with_width(12, 60));
 
         // First field is a string, second field is a padding to ensure constant size.
-        let derived_string_layout = Struct(Runtime(vec![
-            Struct(Runtime(vec![Vector(Box::new(U8))])),
+        let derived_string_layout = MoveTypeLayout::new_struct(Runtime(vec![
+            MoveTypeLayout::new_struct(Runtime(vec![Vector(Box::new(U8))])),
             Vector(Box::new(U8)),
         ]));
 
@@ -494,7 +569,7 @@ mod tests {
                     Value::bool(true),
                     Value::vector_u32(vec![1, 2, 3, 4, 5]),
                 ])),
-                Struct(Runtime(vec![Bool, Vector(Box::new(U32))])),
+                MoveTypeLayout::new_struct(Runtime(vec![Bool, Vector(Box::new(U32))])),
             ),
         ];
         for (value, layout) in good_values_layouts_sizes {

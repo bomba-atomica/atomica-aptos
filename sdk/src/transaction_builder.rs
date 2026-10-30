@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     move_types::account_address::AccountAddress,
@@ -9,14 +8,33 @@ use crate::{
         transaction::{authenticator::AuthenticationKey, RawTransaction, TransactionPayload},
     },
 };
+use anyhow::Result;
+use aptos_batch_encryption::{
+    schemes::fptx_weighted::FPTXWeighted, traits::BatchThresholdEncryption,
+};
 pub use aptos_cached_packages::aptos_stdlib;
-use aptos_crypto::{ed25519::Ed25519PublicKey, HashValue};
+use aptos_crypto::{ed25519::Ed25519PublicKey, hash::CryptoHash, HashValue};
 use aptos_global_constants::{GAS_UNIT_PRICE, MAX_GAS_AMOUNT};
 use aptos_types::{
     function_info::FunctionInfo,
-    transaction::{EntryFunction, Script},
+    secret_sharing::EncryptionKey,
+    transaction::{
+        encrypted_payload::{
+            DecryptedPlaintext, DecryptionNonce, EncryptedInner, EncryptedPayload,
+            PayloadAssociatedData,
+        },
+        EntryFunction, Script,
+    },
 };
+use ark_std::rand::{rngs::StdRng, SeedableRng};
 use rand::{thread_rng, Rng};
+use std::sync::{Arc, RwLock};
+
+#[derive(Debug, Default)]
+pub struct EncryptionKeyState {
+    pub epoch: u64,
+    pub key: Option<EncryptionKey>,
+}
 
 pub struct TransactionBuilder {
     sender: Option<AccountAddress>,
@@ -26,6 +44,9 @@ pub struct TransactionBuilder {
     gas_unit_price: u64,
     expiration_timestamp_secs: u64,
     chain_id: ChainId,
+    encryption_key: Arc<RwLock<EncryptionKeyState>>,
+    auth_key: Option<AuthenticationKey>,
+    additional_signer_auth_keys: Vec<(AccountAddress, AuthenticationKey)>,
 }
 
 impl TransactionBuilder {
@@ -43,6 +64,9 @@ impl TransactionBuilder {
             gas_unit_price: std::cmp::max(GAS_UNIT_PRICE, 1),
             sender: None,
             sequence_number: None,
+            encryption_key: Arc::new(RwLock::new(EncryptionKeyState::default())),
+            auth_key: None,
+            additional_signer_auth_keys: Vec::new(),
         }
     }
 
@@ -76,6 +100,19 @@ impl TransactionBuilder {
         self
     }
 
+    pub fn auth_key(mut self, auth_key: Option<AuthenticationKey>) -> Self {
+        self.auth_key = auth_key;
+        self
+    }
+
+    pub fn additional_signer_auth_keys(
+        mut self,
+        keys: Vec<(AccountAddress, AuthenticationKey)>,
+    ) -> Self {
+        self.additional_signer_auth_keys = keys;
+        self
+    }
+
     pub fn has_nonce(&self) -> bool {
         self.payload.replay_protection_nonce().is_some()
     }
@@ -97,7 +134,32 @@ impl TransactionBuilder {
         self
     }
 
-    pub fn build(self) -> RawTransaction {
+    pub fn build(mut self) -> RawTransaction {
+        // Read the encryption key at build time (not at builder-creation time)
+        // so that epoch-change key rotations are always picked up.
+        let encryption_key_state = self.encryption_key.read().unwrap();
+        let encryption_key = encryption_key_state.key.clone();
+        let encryption_epoch = encryption_key_state.epoch;
+        drop(encryption_key_state);
+        if let Some(ref encryption_key) = encryption_key {
+            assert!(!self.payload.is_encrypted_variant());
+            let sender = self.sender.expect("sender must have been set");
+            let auth_key = self
+                .auth_key
+                .expect("auth_key must be set for encrypted payloads");
+            let mut signer_auth_keys = vec![(sender, auth_key)];
+            signer_auth_keys.extend(std::mem::take(&mut self.additional_signer_auth_keys));
+            let encrypted_payload = TransactionFactory::encrypt_payload(
+                self.payload.clone(),
+                sender,
+                signer_auth_keys,
+                encryption_key,
+                encryption_epoch,
+            )
+            .expect("Payload must encrypt");
+            self.payload = TransactionPayload::EncryptedPayload(encrypted_payload);
+        }
+
         let sequence_number = if self.has_nonce() {
             u64::MAX
         } else {
@@ -131,6 +193,10 @@ pub struct TransactionFactory {
 
     use_txn_payload_v2_format: bool,
     use_replay_protection_nonce: bool,
+    /// Shared encryption key. All clones of a factory share the same key,
+    /// allowing it to be updated (e.g., on epoch change) and have all
+    /// generators see the new key immediately.
+    encryption_key: Arc<RwLock<EncryptionKeyState>>,
 }
 
 impl TransactionFactory {
@@ -145,7 +211,34 @@ impl TransactionFactory {
             chain_id,
             use_txn_payload_v2_format: false,
             use_replay_protection_nonce: false,
+            encryption_key: Arc::new(RwLock::new(EncryptionKeyState::default())),
         }
+    }
+
+    /// Updates the encryption key and epoch at runtime. Since the state is
+    /// shared across all clones of this factory, this affects all transaction
+    /// generators that were created from this factory.
+    pub fn update_encryption_key_state(&self, epoch: u64, key_bytes: Option<&[u8]>) -> Result<()> {
+        let new_key = key_bytes.map(bcs::from_bytes).transpose()?;
+        let mut state = self.encryption_key.write().unwrap();
+        state.epoch = epoch;
+        state.key = new_key;
+        Ok(())
+    }
+
+    /// Detaches this factory from any shared encryption key, giving it its
+    /// own independent (empty) key. Useful for init/setup factories that must
+    /// never encrypt, even if sibling factories share the same Arc.
+    pub fn without_encryption(mut self) -> Self {
+        self.encryption_key = Arc::new(RwLock::new(EncryptionKeyState::default()));
+        self
+    }
+
+    /// Returns a handle to the shared encryption key. This can be used to
+    /// update the key from outside the factory (e.g., from an emitter worker
+    /// that detects an epoch change).
+    pub fn encryption_key_handle(&self) -> Arc<RwLock<EncryptionKeyState>> {
+        self.encryption_key.clone()
     }
 
     pub fn with_max_gas_amount(mut self, max_gas_amount: u64) -> Self {
@@ -179,6 +272,18 @@ impl TransactionFactory {
 
     pub fn with_chain_id(mut self, chain_id: ChainId) -> Self {
         self.chain_id = chain_id;
+        self
+    }
+
+    /// Enables or disables nonce-based replay protection (orderless transactions).
+    /// When enabled, this also enables the v2 payload format, which is a prerequisite.
+    /// Note: disabling does not revert `use_txn_payload_v2_format` since it may have
+    /// been set independently.
+    pub fn with_use_replay_protection_nonce(mut self, use_replay_protection_nonce: bool) -> Self {
+        self.use_replay_protection_nonce = use_replay_protection_nonce;
+        if use_replay_protection_nonce {
+            self.use_txn_payload_v2_format = true;
+        }
         self
     }
 
@@ -357,9 +462,9 @@ impl TransactionFactory {
         TransactionBuilder {
             sender: None,
             sequence_number: None,
-            payload: if self.use_txn_payload_v2_format || self.use_replay_protection_nonce {
+            payload: if self.use_txn_payload_v2_format {
                 payload.upgrade_payload_with_fn(
-                    self.use_txn_payload_v2_format,
+                    true,
                     self.use_replay_protection_nonce
                         .then_some(|| thread_rng().r#gen()),
                 )
@@ -370,7 +475,55 @@ impl TransactionFactory {
             gas_unit_price: self.gas_unit_price,
             expiration_timestamp_secs: self.expiration_timestamp(),
             chain_id: self.chain_id,
+            encryption_key: self.encryption_key.clone(),
+            auth_key: None,
+            additional_signer_auth_keys: Vec::new(),
         }
+    }
+
+    /// Encrypts a transaction payload using the provided encryption key.
+    /// This is a helper method used internally by `with_encrypted_payload` and `payload`.
+    fn encrypt_payload(
+        payload: TransactionPayload,
+        sender: AccountAddress,
+        signer_auth_keys: Vec<(AccountAddress, AuthenticationKey)>,
+        encryption_key: &EncryptionKey,
+        encryption_epoch: u64,
+    ) -> Result<EncryptedPayload> {
+        // Convert payload to executable
+        let executable = payload.executable()?;
+        let extra_config = payload.extra_config();
+
+        // Generate decryption nonce
+        let decryption_nonce: DecryptionNonce = rand::random();
+
+        // Create DecryptedPayload for encryption
+        let decrypted_payload = DecryptedPlaintext::new(executable, decryption_nonce);
+
+        let associated_data = PayloadAssociatedData::new(sender, signer_auth_keys);
+
+        // Encrypt the payload
+        // Note: FPTXWeighted::encrypt requires CryptoRng from ark_std::rand, so we use StdRng
+        let mut rng = StdRng::from_entropy();
+        let ciphertext = FPTXWeighted::encrypt(
+            encryption_key,
+            &mut rng,
+            &decrypted_payload,
+            &associated_data,
+        )?;
+
+        // Compute payload hash from the executable
+        // We need to compute hash before encryption, so we use the executable directly
+        let payload_hash = CryptoHash::hash(&decrypted_payload);
+
+        // Create encrypted payload
+        Ok(EncryptedPayload::Encrypted(EncryptedInner {
+            ciphertext,
+            extra_config,
+            payload_hash,
+            encryption_epoch,
+            claimed_entry_fun: None,
+        }))
     }
 
     fn expiration_timestamp(&self) -> u64 {
@@ -388,5 +541,109 @@ impl TransactionFactory {
                 expiration_timestamp,
             } => expiration_timestamp,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_batch_encryption::traits::BatchThresholdEncryption;
+    use aptos_crypto::{
+        ed25519::Ed25519PrivateKey, weighted_config::WeightedConfigArkworks, PrivateKey, Uniform,
+    };
+    use aptos_types::transaction::{ReplayProtector, TransactionPayload};
+    use rand::Rng;
+
+    fn test_payload() -> TransactionPayload {
+        aptos_stdlib::aptos_account_transfer(AccountAddress::ONE, 100)
+    }
+
+    #[test]
+    fn test_orderless_transaction_factory() {
+        let factory =
+            TransactionFactory::new(ChainId::test()).with_use_replay_protection_nonce(true);
+
+        let builder = factory.payload(test_payload());
+
+        // The builder should have a nonce set for orderless transactions.
+        assert!(builder.has_nonce());
+
+        // Building the transaction with u64::MAX as sequence number (orderless
+        // convention) should produce a raw transaction with the nonce in the
+        // payload.
+        let raw_txn = builder
+            .sender(AccountAddress::ONE)
+            .sequence_number(u64::MAX)
+            .build();
+
+        assert!(matches!(
+            raw_txn.replay_protector(),
+            ReplayProtector::Nonce(_)
+        ));
+        assert!(raw_txn.payload_ref().replay_protection_nonce().is_some());
+    }
+
+    #[test]
+    fn test_regular_transaction_factory() {
+        let factory = TransactionFactory::new(ChainId::test());
+
+        let builder = factory.payload(test_payload());
+
+        // Without orderless enabled, there should be no nonce.
+        assert!(!builder.has_nonce());
+
+        let raw_txn = builder
+            .sender(AccountAddress::ONE)
+            .sequence_number(5)
+            .build();
+
+        assert_eq!(
+            raw_txn.replay_protector(),
+            ReplayProtector::SequenceNumber(5)
+        );
+        assert!(raw_txn.payload_ref().replay_protection_nonce().is_none());
+    }
+
+    #[test]
+    fn test_encrypted_payload_verification_binds_sender_and_auth_key() {
+        let mut rng = rand::thread_rng();
+        let threshold_config = WeightedConfigArkworks::new(1, vec![1]).unwrap();
+        let (encryption_key, _, _, _) =
+            FPTXWeighted::setup_for_testing(rng.r#gen(), 8, 1, &threshold_config).unwrap();
+
+        let sender_private_key = Ed25519PrivateKey::generate_for_testing();
+        let sender_public_key = sender_private_key.public_key();
+        let sender_auth_key = AuthenticationKey::ed25519(&sender_public_key);
+        let sender = sender_auth_key.account_address();
+        let wrong_private_key = Ed25519PrivateKey::generate(&mut rand::thread_rng());
+        let wrong_auth_key = AuthenticationKey::ed25519(&wrong_private_key.public_key());
+        assert_ne!(wrong_auth_key, sender_auth_key);
+        let wrong_sender = if sender == AccountAddress::ONE {
+            AccountAddress::TWO
+        } else {
+            AccountAddress::ONE
+        };
+
+        let encrypted_payload = TransactionFactory::encrypt_payload(
+            test_payload(),
+            sender,
+            vec![(sender, sender_auth_key)],
+            &encryption_key,
+            0,
+        )
+        .unwrap();
+
+        encrypted_payload
+            .verify(sender, vec![(sender, sender_auth_key)])
+            .expect("sender and auth_key used for encryption should verify");
+        assert!(encrypted_payload
+            .verify(sender, vec![(sender, wrong_auth_key)])
+            .is_err());
+        assert!(encrypted_payload
+            .verify(wrong_sender, vec![(
+                wrong_sender,
+                AuthenticationKey::ed25519(&sender_public_key)
+            )])
+            .is_err());
     }
 }

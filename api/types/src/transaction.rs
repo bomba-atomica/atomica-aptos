@@ -1,9 +1,8 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
-    Address, AptosError, EntryFunctionId, EventGuid, HashValue, HexEncodedBytes,
+    Address, AptosError, EntryFunctionId, EventGuid, HashValue, HexEncodedBytes, IdentifierWrapper,
     MoveModuleBytecode, MoveModuleId, MoveResource, MoveScriptBytecode, MoveStructTag, MoveType,
     MoveValue, VerifyInput, VerifyInputWithRecursion, U64,
 };
@@ -13,7 +12,7 @@ use aptos_crypto::{
     multi_ed25519::{self, MultiEd25519PublicKey, BITMAP_NUM_OF_BYTES, MAX_NUM_OF_KEYS},
     secp256k1_ecdsa, secp256r1_ecdsa,
     secp256r1_ecdsa::PUBLIC_KEY_LENGTH,
-    ValidCryptoMaterial,
+    slh_dsa_sha2_128s, ValidCryptoMaterial,
 };
 use aptos_types::{
     account_address::AccountAddress,
@@ -21,7 +20,9 @@ use aptos_types::{
     block_metadata::BlockMetadata,
     block_metadata_ext::BlockMetadataExt,
     contract_event::{ContractEvent, EventWithVersion},
-    dkg::{DKGTranscript, DKGTranscriptMetadata},
+    dkg::{
+        chunky_dkg::CertifiedAggregatedChunkySubtranscript, DKGTranscript, DKGTranscriptMetadata,
+    },
     function_info::FunctionInfo,
     jwks::{jwk::JWK, ProviderJWKs, QuorumCertifiedUpdate},
     keyless,
@@ -352,6 +353,10 @@ impl From<(&SignedTransaction, TransactionPayload)> for UserTransactionRequest {
             signature: Some(txn.authenticator().into()),
             payload,
             replay_protection_nonce: txn.replay_protector().get_nonce().map(|nonce| nonce.into()),
+            txn_limits_request: txn
+                .extra_config()
+                .txn_limits_request()
+                .map(UserTxnLimitsRequest::from),
         }
     }
 }
@@ -489,7 +494,11 @@ pub struct UserTransactionRequestInner {
 
 impl VerifyInput for UserTransactionRequestInner {
     fn verify(&self) -> anyhow::Result<()> {
-        self.payload.verify()
+        self.payload.verify()?;
+        // Ciphertext verification for encrypted payloads is done in
+        // `validate_signed_transaction_payload` which has access to the full
+        // SignedTransaction (needed to extract the authenticator's auth_key).
+        Ok(())
     }
 }
 
@@ -505,6 +514,8 @@ pub struct UserTransactionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<TransactionSignature>,
     pub replay_protection_nonce: Option<U64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub txn_limits_request: Option<UserTxnLimitsRequest>,
 }
 
 impl UserTransactionRequest {
@@ -513,6 +524,87 @@ impl UserTransactionRequest {
             aptos_types::transaction::ReplayProtector::Nonce(nonce.0)
         } else {
             aptos_types::transaction::ReplayProtector::SequenceNumber(self.sequence_number.0)
+        }
+    }
+}
+
+/// Multipliers for higher transaction limits, expressed as percent of the base
+/// limit (100 = 1x, 200 = 2x, 250 = 2.5x).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct RequestedMultipliers {
+    pub execution_multiplier_percent: U64,
+    pub io_multiplier_percent: U64,
+}
+
+/// A higher-limits request whose backing is a stake pool the fee payer owns.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct StakePoolOwnerLimitsRequest {
+    pub multipliers: RequestedMultipliers,
+}
+
+/// A higher-limits request backed by a stake pool the fee payer is the
+/// delegated voter of.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct DelegatedVoterLimitsRequest {
+    pub pool_address: Address,
+    pub multipliers: RequestedMultipliers,
+}
+
+/// A higher-limits request backed by a delegation pool the fee payer delegates
+/// to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct DelegationPoolDelegatorLimitsRequest {
+    pub pool_address: Address,
+    pub multipliers: RequestedMultipliers,
+}
+
+/// A request for higher transaction execution limits, backed by a staking proof.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Union)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[oai(one_of, discriminator_name = "type", rename_all = "snake_case")]
+pub enum UserTxnLimitsRequest {
+    StakePoolOwner(StakePoolOwnerLimitsRequest),
+    DelegatedVoter(DelegatedVoterLimitsRequest),
+    DelegationPoolDelegator(DelegationPoolDelegatorLimitsRequest),
+}
+
+impl From<&aptos_types::transaction::RequestedMultipliers> for RequestedMultipliers {
+    fn from(multipliers: &aptos_types::transaction::RequestedMultipliers) -> Self {
+        match multipliers {
+            aptos_types::transaction::RequestedMultipliers::V1 {
+                execution_multiplier_percent,
+                io_multiplier_percent,
+            } => Self {
+                execution_multiplier_percent: (*execution_multiplier_percent).into(),
+                io_multiplier_percent: (*io_multiplier_percent).into(),
+            },
+        }
+    }
+}
+
+impl From<&aptos_types::transaction::UserTxnLimitsRequest> for UserTxnLimitsRequest {
+    fn from(request: &aptos_types::transaction::UserTxnLimitsRequest) -> Self {
+        use aptos_types::transaction::UserTxnLimitsRequest as Protocol;
+        match request {
+            Protocol::StakePoolOwner { multipliers } => {
+                Self::StakePoolOwner(StakePoolOwnerLimitsRequest {
+                    multipliers: multipliers.into(),
+                })
+            },
+            Protocol::DelegatedVoter {
+                pool_address,
+                multipliers,
+            } => Self::DelegatedVoter(DelegatedVoterLimitsRequest {
+                pool_address: (*pool_address).into(),
+                multipliers: multipliers.into(),
+            }),
+            Protocol::DelegationPoolDelegator {
+                pool_address,
+                multipliers,
+            } => Self::DelegationPoolDelegator(DelegationPoolDelegatorLimitsRequest {
+                pool_address: (*pool_address).into(),
+                multipliers: multipliers.into(),
+            }),
         }
     }
 }
@@ -599,12 +691,27 @@ pub struct BlockMetadataExtensionRandomness {
     randomness: Option<HexEncodedBytes>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct BlockMetadataExtensionRandomnessAndDecKey {
+    randomness: Option<HexEncodedBytes>,
+    decryption_key: Option<HexEncodedBytes>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct BlockMetadataExtensionRandomnessAndDecPayload {
+    randomness: Option<HexEncodedBytes>,
+    decryption_key: Option<HexEncodedBytes>,
+    decryption_round: Option<U64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Union)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[oai(one_of, discriminator_name = "type", rename_all = "snake_case")]
 pub enum BlockMetadataExtension {
     V0(BlockMetadataExtensionEmpty),
     V1(BlockMetadataExtensionRandomness),
+    V2(BlockMetadataExtensionRandomnessAndDecKey),
+    V3(BlockMetadataExtensionRandomnessAndDecPayload),
 }
 
 impl BlockMetadataExtension {
@@ -617,6 +724,32 @@ impl BlockMetadataExtension {
                     .as_ref()
                     .map(|pr| HexEncodedBytes::from(pr.randomness_cloned())),
             }),
+            BlockMetadataExt::V2(payload) => Self::V2(BlockMetadataExtensionRandomnessAndDecKey {
+                randomness: payload
+                    .randomness
+                    .as_ref()
+                    .map(|pr| HexEncodedBytes::from(pr.randomness_cloned())),
+                decryption_key: payload
+                    .decryption_key
+                    .as_ref()
+                    .map(|dk| HexEncodedBytes::from(dk.decryption_key_cloned())),
+            }),
+            BlockMetadataExt::V3(payload) => {
+                Self::V3(BlockMetadataExtensionRandomnessAndDecPayload {
+                    randomness: payload
+                        .randomness
+                        .as_ref()
+                        .map(|pr| HexEncodedBytes::from(pr.randomness_cloned())),
+                    decryption_key: payload
+                        .decryption_payload
+                        .as_ref()
+                        .map(|p| HexEncodedBytes::from(p.key.decryption_key_cloned())),
+                    decryption_round: payload
+                        .decryption_payload
+                        .as_ref()
+                        .map(|p| U64::from(p.decryption_round)),
+                })
+            },
         }
     }
 }
@@ -665,6 +798,8 @@ impl BlockMetadataTransaction {
             None => "block_metadata_transaction",
             Some(BlockMetadataExtension::V0(_)) => "block_metadata_ext_transaction__v0",
             Some(BlockMetadataExtension::V1(_)) => "block_metadata_ext_transaction__v1",
+            Some(BlockMetadataExtension::V2(_)) => "block_metadata_ext_transaction__v2",
+            Some(BlockMetadataExtension::V3(_)) => "block_metadata_ext_transaction__v3",
         }
     }
 }
@@ -679,7 +814,7 @@ impl BlockMetadataTransaction {
 pub enum ValidatorTransaction {
     ObservedJwkUpdate(JWKUpdateTransaction),
     DkgResult(DKGResultTransaction),
-    TimelockShare(TimelockShareTransaction),
+    ChunkyDKGResult(ChunkyDKGResultTransaction),
 }
 
 impl ValidatorTransaction {
@@ -689,7 +824,7 @@ impl ValidatorTransaction {
                 "validator_transaction__observed_jwk_update"
             },
             ValidatorTransaction::DkgResult(_) => "validator_transaction__dkg_result",
-            ValidatorTransaction::TimelockShare(_) => "validator_transaction__timelock_share",
+            ValidatorTransaction::ChunkyDKGResult(_) => "validator_transaction__chunky_dkg_result",
         }
     }
 
@@ -697,7 +832,7 @@ impl ValidatorTransaction {
         match self {
             ValidatorTransaction::ObservedJwkUpdate(t) => &t.info,
             ValidatorTransaction::DkgResult(t) => &t.info,
-            ValidatorTransaction::TimelockShare(t) => &t.info,
+            ValidatorTransaction::ChunkyDKGResult(t) => &t.info,
         }
     }
 
@@ -705,7 +840,7 @@ impl ValidatorTransaction {
         match self {
             ValidatorTransaction::ObservedJwkUpdate(t) => &mut t.info,
             ValidatorTransaction::DkgResult(t) => &mut t.info,
-            ValidatorTransaction::TimelockShare(t) => &mut t.info,
+            ValidatorTransaction::ChunkyDKGResult(t) => &mut t.info,
         }
     }
 
@@ -713,7 +848,7 @@ impl ValidatorTransaction {
         match self {
             ValidatorTransaction::ObservedJwkUpdate(t) => t.timestamp,
             ValidatorTransaction::DkgResult(t) => t.timestamp,
-            ValidatorTransaction::TimelockShare(t) => t.timestamp,
+            ValidatorTransaction::ChunkyDKGResult(t) => t.timestamp,
         }
     }
 
@@ -721,7 +856,7 @@ impl ValidatorTransaction {
         match self {
             ValidatorTransaction::ObservedJwkUpdate(t) => &t.events,
             ValidatorTransaction::DkgResult(t) => &t.events,
-            ValidatorTransaction::TimelockShare(t) => &t.events,
+            ValidatorTransaction::ChunkyDKGResult(t) => &t.events,
         }
     }
 }
@@ -759,14 +894,13 @@ impl
                 timestamp: U64::from(timestamp),
                 quorum_certified_update: quorum_certified_update.into(),
             }),
-            aptos_types::validator_txn::ValidatorTransaction::TimelockShare(timelock_share) => {
-                Self::TimelockShare(TimelockShareTransaction {
+            aptos_types::validator_txn::ValidatorTransaction::ChunkyDKGResult(dkg_output) => {
+                Self::ChunkyDKGResult(ChunkyDKGResultTransaction {
                     info,
                     events,
                     timestamp: U64::from(timestamp),
-                    deadline_id: timelock_share.deadline_id.into(),
-                    author: timelock_share.author.into(),
-                    share: timelock_share.share.into(),
+                    certified_subtrx: dkg_output.certified_transcript.into(),
+                    encryption_key: HexEncodedBytes::from(dkg_output.encryption_key),
                 })
             },
         }
@@ -856,18 +990,6 @@ pub struct DKGResultTransaction {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
-pub struct TimelockShareTransaction {
-    #[serde(flatten)]
-    #[oai(flatten)]
-    pub info: TransactionInfo,
-    pub events: Vec<Event>,
-    pub timestamp: U64,
-    pub deadline_id: U64,
-    pub author: Address,
-    pub share: HexEncodedBytes,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
 pub struct ExportedDKGTranscript {
     pub epoch: U64,
     pub author: Address,
@@ -885,6 +1007,46 @@ impl From<DKGTranscript> for ExportedDKGTranscript {
             epoch: epoch.into(),
             author: author.into(),
             payload: HexEncodedBytes::from(transcript_bytes),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct ChunkyDKGResultTransaction {
+    #[serde(flatten)]
+    #[oai(flatten)]
+    pub info: TransactionInfo,
+    pub events: Vec<Event>,
+    pub timestamp: U64,
+    pub certified_subtrx: ExportedCertifiedAggregatedChunkySubtranscript,
+    pub encryption_key: HexEncodedBytes,
+}
+
+/// A more API-friendly representation of the on-chain
+/// `aptos_types::dkg::chunky_dkg::CertifiedAggregatedChunkySubtranscript`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct ExportedCertifiedAggregatedChunkySubtranscript {
+    pub epoch: U64,
+    pub author: Address,
+    pub subtrx: HexEncodedBytes,
+    pub signature: ExportedAggregateSignature,
+}
+
+impl From<CertifiedAggregatedChunkySubtranscript>
+    for ExportedCertifiedAggregatedChunkySubtranscript
+{
+    fn from(value: CertifiedAggregatedChunkySubtranscript) -> Self {
+        let CertifiedAggregatedChunkySubtranscript {
+            metadata,
+            transcript_bytes,
+            signature,
+        } = value;
+        let DKGTranscriptMetadata { epoch, author } = metadata;
+        Self {
+            epoch: epoch.into(),
+            author: author.into(),
+            subtrx: HexEncodedBytes::from(transcript_bytes),
+            signature: signature.into(),
         }
     }
 }
@@ -977,6 +1139,7 @@ pub enum TransactionPayload {
     // ordering, unfortunately.
     ModuleBundlePayload(DeprecatedModuleBundlePayload),
     MultisigPayload(MultisigPayload),
+    EncryptedTransactionPayload(EncryptedTransactionPayload),
 }
 
 impl VerifyInput for TransactionPayload {
@@ -985,6 +1148,8 @@ impl VerifyInput for TransactionPayload {
             TransactionPayload::EntryFunctionPayload(inner) => inner.verify(),
             TransactionPayload::ScriptPayload(inner) => inner.verify(),
             TransactionPayload::MultisigPayload(inner) => inner.verify(),
+
+            TransactionPayload::EncryptedTransactionPayload(inner) => inner.verify(),
 
             // Deprecated.
             TransactionPayload::ModuleBundlePayload(_) => {
@@ -1054,13 +1219,13 @@ impl TryFrom<Script> for ScriptPayload {
     }
 }
 
-// We use an enum here for extensibility so we can add Script payload support
-// in the future for example.
+/// Enum for multisig transaction payloads, supporting both entry functions and scripts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Union)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[oai(one_of, discriminator_name = "type", rename_all = "snake_case")]
 pub enum MultisigTransactionPayload {
     EntryFunctionPayload(EntryFunctionPayload),
+    ScriptPayload(ScriptPayload),
 }
 
 /// A multisig transaction that allows an owner of a multisig account to execute a pre-approved
@@ -1085,10 +1250,99 @@ impl VerifyInput for MultisigPayload {
                         type_arg.verify(0)?;
                     }
                 },
+                MultisigTransactionPayload::ScriptPayload(script_payload) => {
+                    script_payload.verify()?;
+                },
             }
         }
 
         Ok(())
+    }
+}
+
+/// The inner payload of an encrypted transaction, present only when decrypted.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Union)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[oai(one_of, discriminator_name = "type", rename_all = "snake_case")]
+pub enum EncryptedTransactionInnerPayload {
+    EntryFunctionPayload(EntryFunctionPayload),
+    ScriptPayload(ScriptPayload),
+    MultisigPayload(MultisigPayload),
+}
+
+/// An encrypted transaction payload, discriminated by encrypted_state.
+///
+/// NOTE: multisig_address and replay_protection_nonce are not surfaced here.
+/// They are part of extra_config and already exposed on UserTransactionRequest.
+/// For Decrypted state, multisig_address is embedded in the MultisigPayload variant
+/// of decrypted_payload.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Union)]
+#[serde(tag = "encrypted_state", rename_all = "snake_case")]
+#[oai(
+    one_of,
+    discriminator_name = "encrypted_state",
+    rename_all = "snake_case"
+)]
+pub enum EncryptedTransactionPayload {
+    Encrypted(EncryptedPayload),
+    FailedDecryption(FailedDecryptionPayload),
+    Decrypted(DecryptedPayload),
+}
+
+/// An encrypted payload's claim about the entry function. Specifies at least the module address,
+/// and optionally the specific entry funtion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct ClaimedEntryFunction {
+    pub module: MoveModuleId,
+    pub name: Option<IdentifierWrapper>,
+}
+
+/// Payload is still encrypted and cannot be read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct EncryptedPayload {
+    pub payload_hash: HashValue,
+    /// BCS-serialized ciphertext bytes, hex-encoded.
+    pub ciphertext: HexEncodedBytes,
+    pub encryption_epoch: U64,
+    pub claimed_entry_fun: Option<ClaimedEntryFunction>,
+}
+
+/// Decryption was attempted but failed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct FailedDecryptionPayload {
+    pub payload_hash: HashValue,
+    /// BCS-serialized ciphertext bytes, hex-encoded.
+    pub ciphertext: HexEncodedBytes,
+    pub encryption_epoch: U64,
+    pub claimed_entry_fun: Option<ClaimedEntryFunction>,
+}
+
+/// Payload has been successfully decrypted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct DecryptedPayload {
+    pub payload_hash: HashValue,
+    /// BCS-serialized ciphertext bytes, hex-encoded.
+    pub ciphertext: HexEncodedBytes,
+    pub encryption_epoch: U64,
+    pub claimed_entry_fun: Option<ClaimedEntryFunction>,
+    pub decrypted_payload: EncryptedTransactionInnerPayload,
+    pub decryption_nonce: HexEncodedBytes,
+}
+
+impl VerifyInput for EncryptedTransactionPayload {
+    /// Basic structural checks. Full ciphertext verification happens in
+    /// `validate_signed_transaction_payload`, after JSON or BCS requests are
+    /// converted into a `SignedTransaction`.
+    fn verify(&self) -> anyhow::Result<()> {
+        match self {
+            EncryptedTransactionPayload::Encrypted(_) => Ok(()),
+            EncryptedTransactionPayload::FailedDecryption(_) => {
+                bail!("Cannot submit a failed decryption payload")
+            },
+            EncryptedTransactionPayload::Decrypted(_) => {
+                bail!("Cannot submit a decrypted payload")
+            },
+        }
     }
 }
 
@@ -1477,6 +1731,35 @@ impl VerifyInput for Secp256k1EcdsaSignature {
     }
 }
 
+/// A single SlhDsa_Sha2_128s signature
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+#[allow(non_camel_case_types)]
+pub struct SlhDsa_Sha2_128sSignature {
+    pub public_key: HexEncodedBytes,
+    pub signature: HexEncodedBytes,
+}
+
+impl VerifyInput for SlhDsa_Sha2_128sSignature {
+    fn verify(&self) -> anyhow::Result<()> {
+        let public_key_len = self.public_key.inner().len();
+        let signature_len = self.signature.inner().len();
+        if public_key_len != slh_dsa_sha2_128s::PUBLIC_KEY_LENGTH {
+            bail!(
+                "SlhDsa_Sha2_128s signature's public key is an invalid number of bytes, should be {} bytes but found {}",
+                slh_dsa_sha2_128s::PUBLIC_KEY_LENGTH, public_key_len
+            )
+        } else if signature_len != slh_dsa_sha2_128s::SIGNATURE_LENGTH {
+            bail!(
+                "SlhDsa_Sha2_128s signature length is an invalid number of bytes, should be {} bytes but found {}",
+                slh_dsa_sha2_128s::SIGNATURE_LENGTH, signature_len
+            )
+        } else {
+            // TODO: Check if they match / parse correctly?
+            Ok(())
+        }
+    }
+}
+
 /// A single WebAuthn signature
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
 pub struct WebAuthnSignature {
@@ -1541,11 +1824,13 @@ impl VerifyInput for KeylessSignature {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Union)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[oai(one_of, discriminator_name = "type", rename_all = "snake_case")]
+#[allow(non_camel_case_types)]
 pub enum Signature {
     Ed25519(Ed25519),
     Secp256k1Ecdsa(Secp256k1Ecdsa),
     WebAuthn(WebAuthn),
     Keyless(Keyless),
+    SlhDsa_Sha2_128s(SlhDsa_Sha2_128s),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
@@ -1576,6 +1861,18 @@ pub struct Secp256r1Ecdsa {
 }
 
 impl Secp256r1Ecdsa {
+    pub fn new(value: HexEncodedBytes) -> Self {
+        Self { value }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+#[allow(non_camel_case_types)]
+pub struct SlhDsa_Sha2_128s {
+    pub value: HexEncodedBytes,
+}
+
+impl SlhDsa_Sha2_128s {
     pub fn new(value: HexEncodedBytes) -> Self {
         Self { value }
     }
@@ -1622,6 +1919,9 @@ impl TryFrom<&Signature> for AnySignature {
             Signature::Secp256k1Ecdsa(s) => {
                 AnySignature::secp256k1_ecdsa(s.value.inner().try_into()?)
             },
+            Signature::SlhDsa_Sha2_128s(s) => {
+                AnySignature::slh_dsa_sha2_128s(s.value.inner().try_into()?)
+            },
             Signature::WebAuthn(s) => AnySignature::webauthn(s.value.inner().try_into()?),
             Signature::Keyless(s) => AnySignature::keyless(s.value.inner().try_into()?),
         })
@@ -1637,6 +1937,9 @@ impl From<&AnySignature> for Signature {
             AnySignature::Secp256k1Ecdsa { signature } => {
                 Signature::Secp256k1Ecdsa(Secp256k1Ecdsa::new(signature.to_bytes().to_vec().into()))
             },
+            AnySignature::SlhDsa_Sha2_128s { signature } => Signature::SlhDsa_Sha2_128s(
+                SlhDsa_Sha2_128s::new(signature.to_bytes().to_vec().into()),
+            ),
             AnySignature::WebAuthn { signature } => {
                 Signature::WebAuthn(WebAuthn::new(signature.to_bytes().to_vec().into()))
             },
@@ -1650,12 +1953,14 @@ impl From<&AnySignature> for Signature {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Union)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[oai(one_of, discriminator_name = "type", rename_all = "snake_case")]
+#[allow(non_camel_case_types)]
 pub enum PublicKey {
     Ed25519(Ed25519),
     Secp256k1Ecdsa(Secp256k1Ecdsa),
     Secp256r1Ecdsa(Secp256r1Ecdsa),
     Keyless(Keyless),
     FederatedKeyless(FederatedKeyless),
+    SlhDsa_Sha2_128s(SlhDsa_Sha2_128s),
 }
 
 impl TryFrom<&PublicKey> for AnyPublicKey {
@@ -1669,6 +1974,9 @@ impl TryFrom<&PublicKey> for AnyPublicKey {
             },
             PublicKey::Secp256r1Ecdsa(p) => {
                 AnyPublicKey::secp256r1_ecdsa(p.value.inner().try_into()?)
+            },
+            PublicKey::SlhDsa_Sha2_128s(p) => {
+                AnyPublicKey::slh_dsa_sha2_128s(p.value.inner().try_into()?)
             },
             PublicKey::Keyless(p) => AnyPublicKey::keyless(p.value.inner().try_into()?),
             PublicKey::FederatedKeyless(p) => {
@@ -1689,6 +1997,9 @@ impl From<&AnyPublicKey> for PublicKey {
             ),
             AnyPublicKey::Secp256r1Ecdsa { public_key } => PublicKey::Secp256r1Ecdsa(
                 Secp256r1Ecdsa::new(public_key.to_bytes().to_vec().into()),
+            ),
+            AnyPublicKey::SlhDsa_Sha2_128s { public_key } => PublicKey::SlhDsa_Sha2_128s(
+                SlhDsa_Sha2_128s::new(public_key.to_bytes().to_vec().into()),
             ),
             AnyPublicKey::Keyless { public_key } => {
                 PublicKey::Keyless(Keyless::new(public_key.to_bytes().into()))
@@ -1717,6 +2028,13 @@ impl VerifyInput for SingleKeySignature {
             .verify(),
             (PublicKey::Secp256k1Ecdsa(p), Signature::Secp256k1Ecdsa(s)) => {
                 Secp256k1EcdsaSignature {
+                    public_key: p.value.clone(),
+                    signature: s.value.clone(),
+                }
+                .verify()
+            },
+            (PublicKey::SlhDsa_Sha2_128s(p), Signature::SlhDsa_Sha2_128s(s)) => {
+                SlhDsa_Sha2_128sSignature {
                     public_key: p.value.clone(),
                     signature: s.value.clone(),
                 }
@@ -1776,6 +2094,12 @@ impl TryFrom<&SingleKeySignature> for AccountAuthenticator {
                     )?;
                     AnyPublicKey::secp256r1_ecdsa(key)
                 },
+                PublicKey::SlhDsa_Sha2_128s(ref p) => {
+                    let key = p.value.inner().try_into().context(
+                        "Failed to parse given public_key bytes as SlhDsa_Sha2_128sPublicKey",
+                    )?;
+                    AnyPublicKey::slh_dsa_sha2_128s(key)
+                },
                 PublicKey::Keyless(ref p) => {
                     let key = p.value.inner().try_into().context(
                         "Failed to parse given public_key bytes as AnyPublicKey::Keyless",
@@ -1805,6 +2129,12 @@ impl TryFrom<&SingleKeySignature> for AccountAuthenticator {
                         "Failed to parse given signature bytes as Secp256k1EcdsaSignature",
                     )?;
                 AnySignature::secp256k1_ecdsa(signature)
+            },
+            Signature::SlhDsa_Sha2_128s(ref s) => {
+                let signature = s.value.inner().try_into().context(
+                    "Failed to parse given signature bytes as SlhDsa_Sha2_128sSignature",
+                )?;
+                AnySignature::slh_dsa_sha2_128s(signature)
             },
             Signature::WebAuthn(ref s) => {
                 let signature = s
@@ -1905,6 +2235,12 @@ impl TryFrom<&MultiKeySignature> for AccountAuthenticator {
                     )?;
                     AnyPublicKey::secp256r1_ecdsa(key)
                 },
+                PublicKey::SlhDsa_Sha2_128s(p) => {
+                    let key = p.value.inner().try_into().context(
+                        "Failed to parse given public_key bytes as SlhDsa_Sha2_128sPublicKey",
+                    )?;
+                    AnyPublicKey::slh_dsa_sha2_128s(key)
+                },
                 PublicKey::Keyless(p) => {
                     let key = p.value.inner().try_into().context(
                         "Failed to parse given public_key bytes as AnyPublicKey::Keyless",
@@ -1936,6 +2272,12 @@ impl TryFrom<&MultiKeySignature> for AccountAuthenticator {
                             "Failed to parse given signature as Secp256k1EcdsaSignature",
                         )?;
                         AnySignature::secp256k1_ecdsa(signature)
+                    },
+                    Signature::SlhDsa_Sha2_128s(s) => {
+                        let signature = s.value.inner().try_into().context(
+                            "Failed to parse given signature as SlhDsa_Sha2_128sSignature",
+                        )?;
+                        AnySignature::slh_dsa_sha2_128s(signature)
                     },
                     Signature::WebAuthn(s) => {
                         let paar = s.value.inner().try_into().context(
@@ -2150,6 +2492,17 @@ impl
 
 impl From<(&secp256k1_ecdsa::PublicKey, &secp256k1_ecdsa::Signature)> for Secp256k1EcdsaSignature {
     fn from((pk, sig): (&secp256k1_ecdsa::PublicKey, &secp256k1_ecdsa::Signature)) -> Self {
+        Self {
+            public_key: pk.to_bytes().to_vec().into(),
+            signature: sig.to_bytes().to_vec().into(),
+        }
+    }
+}
+
+impl From<(&slh_dsa_sha2_128s::PublicKey, &slh_dsa_sha2_128s::Signature)>
+    for SlhDsa_Sha2_128sSignature
+{
+    fn from((pk, sig): (&slh_dsa_sha2_128s::PublicKey, &slh_dsa_sha2_128s::Signature)) -> Self {
         Self {
             public_key: pk.to_bytes().to_vec().into(),
             signature: sig.to_bytes().to_vec().into(),
@@ -2444,6 +2797,114 @@ impl From<aptos_types::transaction::PersistedAuxiliaryInfo> for PersistedAuxilia
             aptos_types::transaction::PersistedAuxiliaryInfo::V1 { transaction_index } => Self {
                 transaction_index: Some(transaction_index),
             },
+            aptos_types::transaction::PersistedAuxiliaryInfo::TimestampNotYetAssignedV1 {
+                transaction_index,
+            } => Self {
+                transaction_index: Some(transaction_index),
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_types::{
+        account_address::AccountAddress,
+        transaction::{
+            RequestedMultipliers as ProtocolMultipliers,
+            UserTxnLimitsRequest as ProtocolLimitsRequest,
+        },
+    };
+    use std::str::FromStr;
+
+    fn multipliers() -> ProtocolMultipliers {
+        ProtocolMultipliers::V1 {
+            execution_multiplier_percent: 200,
+            io_multiplier_percent: 150,
+        }
+    }
+
+    #[test]
+    fn stake_pool_owner_limits_request_to_json() {
+        let request = ProtocolLimitsRequest::StakePoolOwner {
+            multipliers: multipliers(),
+        };
+        let json = serde_json::to_value(UserTxnLimitsRequest::from(&request)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "stake_pool_owner",
+                "multipliers": {
+                    "execution_multiplier_percent": "200",
+                    "io_multiplier_percent": "150",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn delegated_voter_limits_request_to_json() {
+        let pool = AccountAddress::from_hex_literal("0x1234").unwrap();
+        let request = ProtocolLimitsRequest::DelegatedVoter {
+            pool_address: pool,
+            multipliers: multipliers(),
+        };
+        let json = serde_json::to_value(UserTxnLimitsRequest::from(&request)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "delegated_voter",
+                "pool_address": pool.to_hex_literal(),
+                "multipliers": {
+                    "execution_multiplier_percent": "200",
+                    "io_multiplier_percent": "150",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn delegation_pool_delegator_limits_request_to_json() {
+        let pool = AccountAddress::from_hex_literal("0xabcd").unwrap();
+        let request = ProtocolLimitsRequest::DelegationPoolDelegator {
+            pool_address: pool,
+            multipliers: multipliers(),
+        };
+        let json = serde_json::to_value(UserTxnLimitsRequest::from(&request)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "delegation_pool_delegator",
+                "pool_address": pool.to_hex_literal(),
+                "multipliers": {
+                    "execution_multiplier_percent": "200",
+                    "io_multiplier_percent": "150",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn omitted_when_absent() {
+        // A request without a limits request must not emit the key, so existing
+        // transaction JSON stays byte-for-byte unchanged.
+        let request = UserTransactionRequest {
+            sender: AccountAddress::ONE.into(),
+            sequence_number: 0.into(),
+            max_gas_amount: 0.into(),
+            gas_unit_price: 0.into(),
+            expiration_timestamp_secs: 0.into(),
+            payload: TransactionPayload::EntryFunctionPayload(EntryFunctionPayload {
+                function: EntryFunctionId::from_str("0x1::foo::bar").unwrap(),
+                type_arguments: vec![],
+                arguments: vec![],
+            }),
+            signature: None,
+            replay_protection_nonce: None,
+            txn_limits_request: None,
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("txn_limits_request").is_none());
     }
 }

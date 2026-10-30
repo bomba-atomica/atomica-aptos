@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::unit_arg)]
 
@@ -66,6 +65,8 @@ pub enum MempoolStatusCode {
     UnknownStatus = 6,
     // The transaction filter has rejected the transaction
     RejectedByFilter = 7,
+    // The inbound rate limit was exceeded; the transaction was dropped
+    RateLimited = 8,
 }
 
 impl TryFrom<u64> for MempoolStatusCode {
@@ -81,6 +82,7 @@ impl TryFrom<u64> for MempoolStatusCode {
             5 => Ok(MempoolStatusCode::VmError),
             6 => Ok(MempoolStatusCode::UnknownStatus),
             7 => Ok(MempoolStatusCode::RejectedByFilter),
+            8 => Ok(MempoolStatusCode::RateLimited),
             _ => Err("invalid StatusCode"),
         }
     }

@@ -1,13 +1,15 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{genesis::GENESIS_CHANGE_SET_HEAD, Account, AccountData};
 use anyhow::{anyhow, bail, Result};
 use aptos_types::{
     account_config::{
-        primary_apt_store, CoinStoreResource, FungibleStoreResource, ObjectGroupResource,
+        primary_apt_store, CoinStoreResource, FungibleStoreResource, ObjectCoreResource,
+        ObjectGroupResource,
     },
     chain_id::ChainId,
+    event::EventHandle,
     on_chain_config::{FeatureFlag, Features, OnChainConfig},
     state_store::{
         state_key::StateKey, state_slot::StateSlot, state_storage_usage::StateStorageUsage,
@@ -130,7 +132,7 @@ pub trait SimulationStateStore: TStateView<Key = StateKey> {
         Self: Sized,
         C: OnChainConfig,
     {
-        C::fetch_config(self).ok_or_else(|| {
+        C::fetch_config(self)?.ok_or_else(|| {
             anyhow!(
                 "failed to fetch on-chain config: {:?}",
                 std::any::type_name::<C>()
@@ -294,6 +296,17 @@ pub trait SimulationStateStore: TStateView<Key = StateKey> {
             .get_resource_group::<ObjectGroupResource>(primary_store_object_address)?
             .unwrap_or_else(BTreeMap::new);
 
+        resource_group
+            .entry(ObjectCoreResource::struct_tag())
+            .or_insert(bcs::to_bytes(&ObjectCoreResource::new(
+                address,
+                false,
+                EventHandle::new(
+                    aptos_types::event::EventKey::new(0, primary_store_object_address),
+                    0,
+                ),
+            ))?);
+
         let mut fungible_store = match resource_group.get(&FungibleStoreResource::struct_tag()) {
             Some(blob) => bcs::from_bytes(blob)?,
             None => FungibleStoreResource::new(AccountAddress::TEN, 0, false),
@@ -437,7 +450,7 @@ where
 
     fn get_state_slot(&self, state_key: &Self::Key) -> StateViewResult<StateSlot> {
         let value_opt = self.get_state_value(state_key)?.map(|value| (0, value));
-        Ok(StateSlot::from_db_get(value_opt))
+        Ok(StateSlot::from_db_get(state_key.clone(), value_opt))
     }
 
     fn get_state_value(&self, state_key: &Self::Key) -> StateViewResult<Option<StateValue>> {

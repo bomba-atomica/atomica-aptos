@@ -1,9 +1,12 @@
+// @checks=experimental
 module 0xc0ffee::unnecessary_casts_test {
 
     const U8_VALUE: u8 = 255;
+    #[lint::skip(unused_constant)]
     const U64_VALUE: u64 = 1000;
 
     fun helper_u64(x: u64): u64 { x }
+    #[lint::skip(unused_function)]
     fun helper_u8(x: u8): u8 { x }
 
     // ========== POSITIVE TESTS (should warn) ==========
@@ -87,13 +90,13 @@ module 0xc0ffee::unnecessary_casts_test {
 
     // ========== LINT SKIP TESTS ==========
 
-    #[lint::skip(find_unnecessary_casts)]
+    #[lint::skip(unnecessary_casts)]
     public fun test_skip_function_no_warn() {
         let x: u64 = 42;
         let y = (x as u64);
     }
 
-    #[lint::skip(find_unnecessary_casts)]
+    #[lint::skip(unnecessary_casts)]
     public fun test_skip_multiple_casts_no_warn() {
         let a: u32 = 1;
         let b: u32 = 2;
@@ -102,7 +105,7 @@ module 0xc0ffee::unnecessary_casts_test {
 }
 
 // Module-level lint skip test
-#[lint::skip(find_unnecessary_casts)]
+#[lint::skip(unnecessary_casts)]
 module 0xc0ffee::unnecessary_casts_skip_module {
 
     public fun test_module_skip_no_warn() {

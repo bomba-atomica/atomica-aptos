@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     aptos_vm::get_system_transaction_output,
@@ -12,9 +12,8 @@ use crate::{
     },
     AptosVM,
 };
-use aptos_dkg::pvss::traits::transcript::Transcript;
 use aptos_types::{
-    dkg::{real_dkg::Transcripts, DKGState, DKGTrait, DKGTranscript, DefaultDKG},
+    dkg::{DKGState, DKGTrait, DKGTranscript, DefaultDKG},
     move_utils::as_move_value::AsMoveValue,
     on_chain_config::{ConfigurationResource, OnChainConfig},
     transaction::TransactionStatus,
@@ -49,18 +48,6 @@ enum ExecutionFailure {
     Unexpected(VMStatus),
 }
 
-fn extract_mpk_from_transcript(transcript_bytes: &[u8]) -> Result<Vec<u8>, ExecutionFailure> {
-    let transcript: Transcripts = bcs::from_bytes(transcript_bytes)
-        .map_err(|_| Expected(ExpectedFailure::TranscriptDeserializationFailed))?;
-
-    // Extract MPK from scalar transcript (G2 point, 96 bytes) for IBE
-    // The main transcript contains G1 points (48 bytes) for randomness
-    match transcript.scalar {
-        Some(scalar_trx) => Ok(scalar_trx.get_dealt_public_key().to_bytes().to_vec()),
-        None => Ok(vec![]), // No scalar transcript means no IBE support
-    }
-}
-
 impl AptosVM {
     pub(crate) fn process_dkg_result(
         &self,
@@ -81,7 +68,11 @@ impl AptosVM {
             Err(Expected(failure)) => {
                 // Pretend we are inside Move, and expected failures are like Move aborts.
                 Ok((
-                    VMStatus::MoveAbort(AbortLocation::Script, failure as u64),
+                    VMStatus::MoveAbort {
+                        location: AbortLocation::Script,
+                        code: failure as u64,
+                        message: None,
+                    },
                     VMOutput::empty_with_status(TransactionStatus::Discard(StatusCode::ABORTED)),
                 ))
             },
@@ -97,9 +88,13 @@ impl AptosVM {
         session_id: SessionId,
         dkg_node: DKGTranscript,
     ) -> Result<(VMStatus, VMOutput), ExecutionFailure> {
-        let dkg_state =
-            OnChainConfig::fetch_config(resolver).ok_or(Expected(MissingResourceDKGState))?;
+        let dkg_state = OnChainConfig::fetch_config(resolver)
+            .ok()
+            .flatten()
+            .ok_or(Expected(MissingResourceDKGState))?;
         let config_resource = ConfigurationResource::fetch_config(resolver)
+            .ok()
+            .flatten()
             .ok_or(Expected(MissingResourceConfiguration))?;
         let DKGState { in_progress, .. } = dkg_state;
         let in_progress_session_state =
@@ -120,15 +115,12 @@ impl AptosVM {
         DefaultDKG::verify_transcript(&pub_params, &transcript)
             .map_err(|_| Expected(TranscriptVerificationFailed))?;
 
-        let mpk = extract_mpk_from_transcript(dkg_node.transcript_bytes.as_slice())?;
-
         // All check passed, invoke VM to publish DKG result on chain.
         let mut gas_meter = UnmeteredGasMeter;
         let mut session = self.new_session(resolver, session_id, None);
         let args = vec![
             MoveValue::Signer(AccountAddress::ONE),
             dkg_node.transcript_bytes.as_move_value(),
-            mpk.as_move_value(),
         ];
 
         let traversal_storage = TraversalStorage::new();

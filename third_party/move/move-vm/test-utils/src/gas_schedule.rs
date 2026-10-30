@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module lays out the basic abstract costing schedule for bytecode instructions.
 //!
@@ -538,6 +539,10 @@ impl GasMeter for GasStatus {
     fn charge_create_ty(&mut self, _num_nodes: NumTypeNodes) -> PartialVMResult<()> {
         Ok(())
     }
+
+    fn charge_abort_message(&mut self, _bytes: &[u8]) -> PartialVMResult<()> {
+        Ok(())
+    }
 }
 
 pub fn new_from_instructions(mut instrs: Vec<(Bytecode, GasCost)>) -> CostTable {
@@ -624,6 +629,7 @@ pub fn zero_cost_instruction_table() -> Vec<(Bytecode, GasCost)> {
         (CastU64, GasCost::new(0, 0)),
         (CastU128, GasCost::new(0, 0)),
         (Abort, GasCost::new(0, 0)),
+        (AbortMsg, GasCost::new(0, 0)),
         (MutBorrowLoc(0), GasCost::new(0, 0)),
         (ImmBorrowLoc(0), GasCost::new(0, 0)),
         (LdConst(ConstantPoolIndex::new(0)), GasCost::new(0, 0)),
@@ -819,6 +825,7 @@ pub fn bytecode_instruction_costs() -> Vec<(Bytecode, GasCost)> {
         (CastU64, GasCost::new(1, 1)),
         (CastU128, GasCost::new(1, 1)),
         (Abort, GasCost::new(1, 1)),
+        (AbortMsg, GasCost::new(1, 1)),
         (MutBorrowLoc(0), GasCost::new(2, 1)),
         (ImmBorrowLoc(0), GasCost::new(1, 1)),
         (LdConst(ConstantPoolIndex::new(0)), GasCost::new(1, 1)),

@@ -3,7 +3,7 @@
 module aptos_std::keyless {
     use aptos_std::bcs_stream::{Self, deserialize_u8};
     use std::error;
-    use std::string::{Self, String};
+    use std::string::String;
     friend aptos_std::federated_keyless;
 
     #[test_only]
@@ -37,7 +37,7 @@ module aptos_std::keyless {
     // Structs
     //
 
-    /// An *unvalidated* any public key: not necessarily an elliptic curve point, just a sequence of 32 bytes
+    /// An *unvalidated* keyless public key
     struct PublicKey has copy, drop, store {
         iss: String,
         idc: vector<u8>
@@ -64,7 +64,7 @@ module aptos_std::keyless {
 
     /// Creates a new keyless public key from an issuer string and an identifier bytes.
     public fun new(iss: String, idc: vector<u8>): PublicKey {
-        assert!(string::bytes(&iss).length() <= MAX_ISSUER_UTF8_BYTES_LENGTH, error::invalid_argument(E_INVALID_ISSUER_UTF8_BYTES_LENGTH));
+        assert!(iss.bytes().length() <= MAX_ISSUER_UTF8_BYTES_LENGTH, error::invalid_argument(E_INVALID_ISSUER_UTF8_BYTES_LENGTH));
         assert!(idc.length() == ID_COMMITMENT_BYTES_LENGTH, error::invalid_argument(E_INVALID_ID_COMMITMENT_BYTES_LENGTH));
         PublicKey { iss, idc }
     }

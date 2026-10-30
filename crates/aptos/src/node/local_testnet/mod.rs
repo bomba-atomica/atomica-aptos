@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 mod logging;
 mod postgres;
@@ -72,7 +72,7 @@ pub struct RunLocalnet {
     /// This will wipe the aptosdb in `--test-dir` to remove any incompatible changes, and start
     /// the chain fresh. Note, that you will need to publish the module again and distribute funds
     /// from the faucet accordingly.
-    #[clap(long)]
+    #[clap(short = 'f', long)]
     force_restart: bool,
 
     #[clap(flatten)]
@@ -105,9 +105,26 @@ pub struct RunLocalnet {
     /// By default, tracing output goes to files. With this set, it goes to stdout.
     #[clap(long, hide = true)]
     log_to_stdout: bool,
+
+    /// If set, use an existing Docker network instead of creating a new one.
+    ///
+    /// When specified, the CLI will verify that this network exists and use it for all
+    /// Docker containers in the localnet. If not specified, a network named
+    /// "aptos-local-testnet-network" will be created automatically.
+    #[clap(long)]
+    docker_network: Option<String>,
 }
 
 impl RunLocalnet {
+    /// Get the Docker network name to use for containers and whether it already exists.
+    /// We assume if the user provided a network name that it exists.
+    pub fn get_docker_network(&self) -> (&str, bool) {
+        match self.docker_network {
+            Some(ref network_name) => (network_name, true),
+            None => (docker::CONTAINER_NETWORK_NAME, false),
+        }
+    }
+
     /// Wait for many services to start up. This prints a message like "X is starting,
     /// please wait..." for each service and then "X is ready. Endpoint: <url>"
     /// when it's ready.
@@ -190,6 +207,29 @@ impl CliCommand<()> for RunLocalnet {
     async fn execute(mut self) -> CliTypedResult<()> {
         if self.log_to_stdout {
             setup_logging(None);
+        }
+
+        if !self.indexer_api_args.with_indexer_api && self.docker_network.is_some() {
+            return Err(CliError::UnexpectedError(
+                "You cannot specify --docker-network without --with-indexer-api, Docker is only used when --with-indexer-api is set.".to_string(),
+            ));
+        }
+
+        // If a custom Docker network is specified, verify that it exists. We only need
+        // to do this if the indexer API is being run, otherwise we don't use Docker.
+        if let Some(ref network_name) = self.docker_network {
+            if !docker::network_exists(network_name).await.map_err(|e| {
+                CliError::UnexpectedError(format!(
+                    "Failed to check if Docker network exists: {}",
+                    e
+                ))
+            })? {
+                return Err(CliError::UnexpectedError(format!(
+                "Docker network '{}' does not exist. Please create it first or omit --docker-network to use the default network.",
+                network_name
+            )));
+            }
+            info!("Using existing Docker network: {}", network_name);
         }
 
         // Based on the input and global config, get the test directory.
