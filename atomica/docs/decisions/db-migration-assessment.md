@@ -25,7 +25,7 @@ Trunk (`dev-atomica`, `aptos-node` 1.38.5, `aptos-node/Cargo.toml:4`) against `b
 python3 -I atomica/scripts/storage_schema_diff.py HEAD baseline/aptos-node-v1.49.6
 ```
 
-Result on this tree: 1 breaking finding (the `ValidatorTransaction` tag), everything else additive. Exit code 1 by design on any breaking finding.
+Result on this tree: 1 breaking finding (the `ValidatorTransaction` tag), everything else additive. The script exits 1 on a breaking finding only with `--strict`.
 
 ## Evidence that open works
 

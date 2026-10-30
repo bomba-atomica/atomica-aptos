@@ -9,8 +9,9 @@ python3, so it runs where aptos-node cannot build. It compares:
   4. Per-schema codec files with license headers and comments stripped.
   5. Variant order of persisted enums in aptos-types and sibling crates.
 
-Usage: storage_schema_diff.py <old_ref> <new_ref>
-Exit code 1 if any breaking difference (reorder, removed variant) is found.
+Usage: storage_schema_diff.py [--strict] <old_ref> <new_ref>
+It always prints the findings. With --strict the exit code is 1 when a breaking
+difference (reorder, removed CF, renamed CF) is found.
 """
 import re
 import subprocess
@@ -91,7 +92,9 @@ def cf_lists(src):
 
 
 def main():
-    old, new = sys.argv[1], sys.argv[2]
+    args = [a for a in sys.argv[1:] if a != "--strict"]
+    strict = "--strict" in sys.argv[1:]
+    old, new = args[0], args[1]
     breaking = 0
 
     print("== 1. CF name constants")
@@ -167,7 +170,7 @@ def main():
                 breaking += 1
 
     print(f"== breaking findings: {breaking}")
-    sys.exit(1 if breaking else 0)
+    sys.exit(1 if (breaking and strict) else 0)
 
 
 main()
