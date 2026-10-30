@@ -1,9 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub use aptos_gas_schedule::LATEST_GAS_FEATURE_VERSION;
 use aptos_gas_schedule::{
-    gas_feature_versions::{RELEASE_V1_15, RELEASE_V1_30, RELEASE_V1_34, RELEASE_V1_38},
+    gas_feature_versions::{
+        RELEASE_V1_15, RELEASE_V1_30, RELEASE_V1_34, RELEASE_V1_38, RELEASE_V1_41, RELEASE_V1_42,
+        RELEASE_V1_45, RELEASE_V1_49, RELEASE_V1_50,
+    },
     AptosGasParameters,
 };
 use aptos_types::{
@@ -22,6 +25,7 @@ use move_vm_types::{
     loaded_data::runtime_types::TypeBuilder, values::DEFAULT_MAX_VM_VALUE_NESTED_DEPTH,
 };
 use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
 
 static PARANOID_TYPE_CHECKS: OnceCell<bool> = OnceCell::new();
 static PARANOID_REF_CHECKS: OnceCell<bool> = OnceCell::new();
@@ -33,6 +37,9 @@ static PARANOID_REF_CHECKS: OnceCell<bool> = OnceCell::new();
 /// not set - always performs the checks in-place at runtime.
 static ASYNC_RUNTIME_CHECKS: OnceCell<bool> = OnceCell::new();
 static TIMED_FEATURE_OVERRIDE: OnceCell<TimedFeatureOverride> = OnceCell::new();
+
+/// Controls whether debugging is enabled. This is thread safe.
+static DEBUGGING_ENABLED: OnceLock<bool> = OnceLock::new();
 
 /// If enabled, types layouts are cached in a global long-living cache. Caches ensure the behavior
 /// is the same as without caches, and so, using node config suffices.
@@ -68,6 +75,26 @@ pub fn get_paranoid_ref_checks() -> bool {
     PARANOID_REF_CHECKS.get().cloned().unwrap_or(false)
 }
 
+/// Set whether debugging is enabled. This can be called from multiple threads. If there
+/// are multiple sets, all must have the same value. Notice that enabling debugging can
+/// make execution slower.
+pub fn set_debugging_enabled(enable: bool) {
+    match DEBUGGING_ENABLED.set(enable) {
+        Err(old) if old != enable => panic!(
+            "tried to set \
+        enable_debugging to {}, but was already set to {}",
+            enable, old
+        ),
+        _ => {},
+    }
+}
+
+/// Returns whether debugging is enabled. Only accessed privately to construct
+/// VMConfig.
+fn get_debugging_enabled() -> bool {
+    DEBUGGING_ENABLED.get().cloned().unwrap_or(false)
+}
+
 /// Set the timed feature override.
 pub fn set_timed_feature_override(profile: TimedFeatureOverride) {
     TIMED_FEATURE_OVERRIDE.set(profile).ok();
@@ -96,17 +123,33 @@ pub fn aptos_prod_ty_builder(
     if gas_feature_version >= RELEASE_V1_15 {
         let max_ty_size = gas_params.vm.txn.max_ty_size;
         let max_ty_depth = gas_params.vm.txn.max_ty_depth;
-        TypeBuilder::with_limits(max_ty_size.into(), max_ty_depth.into())
+
+        let check_depth_on_type_counts_v2 = gas_feature_version >= RELEASE_V1_42;
+        let count_function_type_node = gas_feature_version >= RELEASE_V1_49;
+        TypeBuilder::with_limits(
+            max_ty_size.into(),
+            max_ty_depth.into(),
+            check_depth_on_type_counts_v2,
+            count_function_type_node,
+        )
     } else {
-        aptos_default_ty_builder()
+        aptos_default_ty_builder(false, false)
     }
 }
 
 /// Returns default [TypeBuilder], used only when:
 ///  1. Type size gas parameters are not yet in gas schedule (before 1.15).
 ///   2. No gas parameters are found on-chain.
-pub fn aptos_default_ty_builder() -> TypeBuilder {
-    TypeBuilder::with_limits(128, 20)
+pub fn aptos_default_ty_builder(
+    check_depth_on_type_counts_v2: bool,
+    count_function_type_node: bool,
+) -> TypeBuilder {
+    TypeBuilder::with_limits(
+        128,
+        20,
+        check_depth_on_type_counts_v2,
+        count_function_type_node,
+    )
 }
 
 /// Returns [DeserializerConfig] used by the Aptos blockchain in production.
@@ -118,15 +161,23 @@ pub fn aptos_prod_deserializer_config(features: &Features) -> DeserializerConfig
 }
 
 /// Returns [VerifierConfig] used by the Aptos blockchain in production.
-pub fn aptos_prod_verifier_config(gas_feature_version: u64, features: &Features) -> VerifierConfig {
+pub fn aptos_prod_verifier_config(
+    gas_feature_version: u64,
+    features: &Features,
+    timed_features: &TimedFeatures,
+) -> VerifierConfig {
     let sig_checker_v2_fix_script_ty_param_count =
         features.is_enabled(FeatureFlag::SIGNATURE_CHECKER_V2_SCRIPT_FIX);
     let sig_checker_v2_fix_function_signatures = gas_feature_version >= RELEASE_V1_34;
     let enable_enum_types = features.is_enabled(FeatureFlag::ENABLE_ENUM_TYPES);
-    let enable_resource_access_control =
-        features.is_enabled(FeatureFlag::ENABLE_RESOURCE_ACCESS_CONTROL);
+    // Resource access control was never enabled and has been removed. Access specifiers
+    // are permanently rejected by the verifier.
+    let enable_resource_access_control = false;
     let enable_function_values = features.is_enabled(FeatureFlag::ENABLE_FUNCTION_VALUES);
     // Note: we reuse the `enable_function_values` flag to set various stricter limits on types.
+
+    let strict_bounds = timed_features.is_enabled(TimedFeatureFlag::EnableStrictBoundsInProdConfig);
+    let revised_bounds = timed_features.is_enabled(TimedFeatureFlag::RevisedBoundsInProdConfig);
 
     VerifierConfig {
         scope: VerificationScope::Everything,
@@ -141,13 +192,29 @@ pub fn aptos_prod_verifier_config(gas_feature_version: u64, features: &Features)
             Some(256)
         },
         max_push_size: Some(10000),
-        max_struct_definitions: None,
-        max_struct_variants: None,
-        max_fields_in_struct: None,
-        max_function_definitions: None,
+        max_struct_definitions: if strict_bounds {
+            if revised_bounds {
+                Some(1100)
+            } else {
+                Some(200)
+            }
+        } else {
+            None
+        },
+        max_struct_variants: if strict_bounds {
+            if revised_bounds {
+                Some(127)
+            } else {
+                Some(64)
+            }
+        } else {
+            None
+        },
+        max_fields_in_struct: if strict_bounds { Some(64) } else { None },
+        max_function_definitions: if strict_bounds { Some(1000) } else { None },
         max_back_edges_per_function: None,
         max_back_edges_per_module: None,
-        max_basic_blocks_in_script: None,
+        max_basic_blocks_in_script: if strict_bounds { Some(1024) } else { None },
         max_per_fun_meter_units: Some(1000 * 80000),
         max_per_mod_meter_units: Some(1000 * 80000),
         _use_signature_checker_v2: true,
@@ -181,9 +248,10 @@ pub fn aptos_prod_vm_config(
     let paranoid_type_checks = get_paranoid_type_checks();
     let paranoid_ref_checks = get_paranoid_ref_checks();
     let enable_layout_caches = get_layout_caches();
+    let enable_debugging = get_debugging_enabled();
 
     let deserializer_config = aptos_prod_deserializer_config(features);
-    let verifier_config = aptos_prod_verifier_config(gas_feature_version, features);
+    let verifier_config = aptos_prod_verifier_config(gas_feature_version, features, timed_features);
     let enable_enum_option = features.is_enabled(FeatureFlag::ENABLE_ENUM_OPTION);
     let enable_framework_for_option = features.is_enabled(FeatureFlag::ENABLE_FRAMEWORK_FOR_OPTION);
 
@@ -200,8 +268,7 @@ pub fn aptos_prod_vm_config(
     // shallow while the value can be deeply nested, thanks to captured arguments not visible in a
     // type. Hence, depth checks have been adjusted to operate on values.
     let enable_depth_checks = features.is_enabled(FeatureFlag::ENABLE_FUNCTION_VALUES);
-    let enable_capture_option = !timed_features.is_enabled(TimedFeatureFlag::DisabledCaptureOption)
-        || features.is_enabled(FeatureFlag::ENABLE_CAPTURE_OPTION);
+    let enable_closure_depth_check = timed_features.is_enabled(TimedFeatureFlag::ClosureDepthCheck);
 
     // Some feature gating was missed, so for native dynamic dispatch the feature is always on for
     // testnet after 1.38 release.
@@ -231,12 +298,24 @@ pub fn aptos_prod_vm_config(
         enable_depth_checks,
         optimize_trusted_code: features.is_trusted_code_enabled(),
         paranoid_ref_checks,
-        enable_capture_option,
         enable_enum_option,
         enable_layout_caches,
         propagate_dependency_limit_error: gas_feature_version >= RELEASE_V1_38,
         enable_framework_for_option,
         enable_function_caches_for_native_dynamic_dispatch,
+        enable_debugging,
+        enable_closure_depth_check,
+        enable_struct_layout_local_cache: gas_feature_version >= RELEASE_V1_41,
+        check_depth_on_type_counts: gas_feature_version >= RELEASE_V1_41,
+        enable_public_struct_args: features.is_enabled(FeatureFlag::PUBLIC_STRUCT_ENUM_ARGS),
+        include_closure_mask_in_cmp: gas_feature_version >= RELEASE_V1_45,
+        revalidate_resolved_closures: timed_features
+            .is_enabled(TimedFeatureFlag::RevalidateResolvedClosures),
+        // The gas version check keeps the 1.50 parameters meaningful on a chain
+        // where the timed feature never activated.
+        meter_closure_ty_args: timed_features
+            .is_enabled(TimedFeatureFlag::MeterClosureTypeArguments)
+            || gas_feature_version >= RELEASE_V1_50,
     };
 
     // Note: if max_value_nest_depth changed, make sure the constant is in-sync. Do not remove this
@@ -259,9 +338,13 @@ impl RandomnessConfig {
     /// Returns randomness config based on the current state.
     pub fn fetch(state_view: &impl StateView) -> Self {
         let randomness_api_v0_required_deposit = RequiredGasDeposit::fetch_config(state_view)
+            .ok()
+            .flatten()
             .unwrap_or_else(RequiredGasDeposit::default_if_missing)
             .gas_amount;
         let allow_rand_contract_custom_max_gas = AllowCustomMaxGasFlag::fetch_config(state_view)
+            .ok()
+            .flatten()
             .unwrap_or_else(AllowCustomMaxGasFlag::default_if_missing)
             .value;
         Self {

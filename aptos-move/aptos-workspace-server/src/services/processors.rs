@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::{node::get_data_service_url, postgres::get_postgres_connection_string};
 use crate::{
@@ -34,7 +34,6 @@ const PROCESSOR_NAMES: &[ProcessorName] = {
     &[
         AccountTransactionsProcessor,
         DefaultProcessor,
-        EventsProcessor,
         FungibleAssetProcessor,
         ObjectsProcessor,
         StakeProcessor,
@@ -69,17 +68,17 @@ fn start_processor<T: Future<Output = Result<(u16, u16), ArcError>> + Clone + Se
             processor_config: get_processor_config(&processor_name_)?,
             transaction_stream_config: TransactionStreamConfig {
                 indexer_grpc_data_service_address: get_data_service_url(indexer_grpc_port),
-                auth_token: "notused".to_string(),
+                auth_token: Some("notused".to_string()),
                 starting_version: Some(0),
                 request_ending_version: None,
                 request_name_header: "notused".to_string(),
                 additional_headers: Default::default(),
                 indexer_grpc_http2_ping_interval_secs: Default::default(),
                 indexer_grpc_http2_ping_timeout_secs: 60,
-                indexer_grpc_reconnection_timeout_secs: 60,
                 indexer_grpc_response_item_timeout_secs: 60,
-                indexer_grpc_reconnection_max_retries: Default::default(),
+                reconnection_config: Default::default(),
                 transaction_filter: Default::default(),
+                backup_endpoints: Default::default(),
             },
             db_config: DbConfig::PostgresConfig(PostgresConfig {
                 connection_string: get_postgres_connection_string(postgres_port),

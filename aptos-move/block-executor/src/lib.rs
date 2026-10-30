@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 /**
 The high level parallel execution logic is implemented in 'executor.rs'. The
@@ -137,6 +136,7 @@ due to the ESTIMATE markers on memory locations, instead of waiting for a
 subsequent incarnation to finish.
 **/
 mod captured_reads;
+pub use captured_reads::{CapturedReadSet, LegacyReads, TxnInput};
 mod code_cache;
 pub mod code_cache_global;
 pub mod code_cache_global_manager;
@@ -146,6 +146,7 @@ pub mod counters;
 pub mod errors;
 pub mod executor;
 mod executor_utilities;
+pub use executor_utilities::{check_resource_group_serialization, Materializer};
 pub mod explicit_sync_wrapper;
 pub mod hot_state_op_accumulator;
 mod limit_processor;
@@ -162,3 +163,4 @@ pub mod types;
 mod unit_tests;
 mod value_exchange;
 pub mod view;
+mod worker_pool;

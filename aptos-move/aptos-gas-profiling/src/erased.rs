@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     log::{
@@ -133,29 +133,25 @@ impl ExecutionGasEvent {
         use ExecutionGasEvent::*;
 
         match self {
-            Loc(offset) => Node::new(format!("@{}", offset), 0),
-            Bytecode { op, cost } => Node::new(format!("{:?}", op).to_ascii_lowercase(), *cost),
+            Loc(offset) => Node::new(format!("@{offset}"), 0),
+            Bytecode { op, cost } => Node::new(format!("{op:?}").to_ascii_lowercase(), *cost),
             Call(frame) => frame.to_erased(keep_generic_types),
             CallNative {
                 module_id,
                 fn_name,
                 ty_args,
                 cost,
-            } => Node::new(
-                format!(
-                    "{}",
-                    Render(&(
-                        module_id,
-                        fn_name.as_ident_str(),
-                        if keep_generic_types {
-                            ty_args.as_slice()
-                        } else {
-                            &[]
-                        }
-                    ))
-                ),
-                *cost,
-            ),
+            } => {
+                let ty_args = if keep_generic_types {
+                    ty_args.as_slice()
+                } else {
+                    &[]
+                };
+                Node::new(
+                    Render(&(module_id, fn_name.as_ident_str(), ty_args)).to_string(),
+                    *cost,
+                )
+            },
             LoadResource { addr, ty, cost } => Node::new(
                 format!("load<{}::{}>", Render(addr), ty.to_canonical_string()),
                 *cost,
@@ -175,26 +171,19 @@ impl CallFrame {
                 name,
                 ty_args,
             } => {
-                format!(
-                    "{}",
-                    Render(&(
-                        module_id,
-                        name.as_ident_str(),
-                        if keep_generic_types {
-                            ty_args.as_slice()
-                        } else {
-                            &[]
-                        }
-                    ))
-                )
+                let ty_args = if keep_generic_types {
+                    ty_args.as_slice()
+                } else {
+                    &[]
+                };
+                Render(&(module_id, name.as_ident_str(), ty_args)).to_string()
             },
         };
 
         let children = self
             .events
             .iter()
-            .map(|event| event.to_erased(keep_generic_types))
-            .collect::<Vec<_>>();
+            .map(|event| event.to_erased(keep_generic_types));
 
         Node::new_with_children(name, 0, children)
     }
@@ -224,11 +213,15 @@ impl Dependency {
 impl ExecutionAndIOCosts {
     /// Convert the gas log into a type-erased representation.
     pub fn to_erased(&self, keep_generic_types: bool) -> TypeErasedExecutionAndIoCosts {
-        let mut nodes = vec![];
-
-        nodes.push(Node::new("intrinsic", self.intrinsic_cost));
-
-        nodes.push(Node::new("keyless", self.keyless_cost));
+        let mut nodes = vec![
+            Node::new("intrinsic", self.intrinsic_cost),
+            Node::new("keyless", self.keyless_cost),
+            Node::new("slh_dsa_sha2_128s", self.slh_dsa_sha2_128s_cost),
+            Node::new(
+                "encrypted_txn_decryption",
+                self.encrypted_txn_decryption_cost,
+            ),
+        ];
 
         if !self.dependencies.is_empty() {
             let deps = Node::new_with_children(
@@ -245,7 +238,7 @@ impl ExecutionAndIOCosts {
 
         TypeErasedExecutionAndIoCosts {
             gas_scaling_factor: self.gas_scaling_factor,
-            total: self.total,
+            total: self.total(),
             tree: Node::new_with_children("execution & IO (gas unit, full trace)", 0, nodes),
         }
     }

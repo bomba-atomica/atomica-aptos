@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     smoke_test_environment::SwarmBuilder,
@@ -201,6 +201,9 @@ fn verify_first_ledger_info(node: &mut LocalNode) {
     // Verify that the ledger info exists at version 0
     let aptos_db = AptosDB::new_for_test_with_sharding(db_path_buf.as_path(), 1 << 13);
     aptos_db.get_epoch_ending_ledger_info(0).unwrap();
+
+    // Drop the DB handle before restarting the node to release the rocks DB lock file
+    drop(aptos_db);
 
     // Restart the node
     node.start().unwrap();

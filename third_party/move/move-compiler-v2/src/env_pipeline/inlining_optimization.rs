@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module implements the inlining optimization, whose aim is to reduce the number
 //! of function calls (which comes at the cost of increasing code size).
@@ -13,9 +13,8 @@ use crate::{
 use codespan_reporting::diagnostic::Severity;
 use move_binary_format::file_format::Visibility;
 use move_model::{
-    ast::{AccessSpecifierKind, Exp, ExpData, Operation, Pattern, TempIndex},
+    ast::{Exp, ExpData, Operation, Pattern, TempIndex},
     exp_rewriter::ExpRewriterFunctions,
-    metadata::LanguageVersion,
     model::{
         FunId, FunctionEnv, FunctionSize, GlobalEnv, Loc, ModuleEnv, ModuleId, NodeId, Parameter,
         QualifiedId,
@@ -250,7 +249,7 @@ fn compute_call_sites_to_inline_and_new_function_size(
                 || has_privileged_operations(caller_mid, &callee_env)
                 || has_invisible_calls(caller_module, &callee_env, across_package)
                 || has_module_lock_attribute(&callee_env)
-                || has_access_controls(&callee_env)
+                || has_cross_module_event_emit(caller_mid, &callee_env)
             {
                 // won't inline if:
                 // - callee is inline (should have been inlined already)
@@ -262,6 +261,8 @@ fn compute_call_sites_to_inline_and_new_function_size(
                 //   perform directly
                 // - callee has calls to functions that are not visible from the caller module
                 // - callee has the `#[module_lock]` attribute
+                // - callee emits an event whose struct is defined in a module other than the
+                //   caller's (0x1::event::emit<T> must be called from T's defining module)
                 // - callee has runtime access control checks
                 // - callee has an abort expression
                 None
@@ -543,7 +544,7 @@ fn has_abort(function: &FunctionEnv, caller: &FunctionEnv) -> bool {
     }
     let mut found = false;
     exp.visit_pre_order(&mut |e: &ExpData| {
-        if let ExpData::Call(_, Operation::Abort, _) = e {
+        if let ExpData::Call(_, Operation::Abort(_), _) = e {
             found = true;
         }
         // Keep going if not yet found
@@ -552,29 +553,44 @@ fn has_abort(function: &FunctionEnv, caller: &FunctionEnv) -> bool {
     found
 }
 
-/// Does `function` have any runtime access control checks?
-/// If so, by inlining, such checks would not be performed.
-fn has_access_controls(function: &FunctionEnv) -> bool {
-    if let Some(access_specifiers) = function.get_access_specifiers() {
-        if access_specifiers.is_empty() {
-            // empty access specifiers means no access is allowed, the strictest form
-            // of access control
-            return true;
-        }
-        // any reads or writes specification is considered an access control
-        access_specifiers
-            .iter()
-            .any(|spec| spec.kind != AccessSpecifierKind::LegacyAcquires)
-    } else {
-        false
-    }
-}
-
 /// Does `function` have the `#[module_lock]` attribute?
 fn has_module_lock_attribute(function: &FunctionEnv) -> bool {
     let env = function.env();
     function.has_attribute(|attr| {
         env.symbol_pool().string(attr.name()).as_str() == well_known::MODULE_LOCK_ATTRIBUTE
+    })
+}
+
+/// Returns true when inlining `callee` would move an `event::emit<T>` call
+/// out of `T`'s module.
+///
+/// `event::emit<T>` is only valid when it runs in `T`'s defining module, and
+/// the extended checker enforces this per call-site. Inlining copies the
+/// callee's bytecode into the caller, so any emit inside the callee lands in
+/// the caller's module. That only works when `T` is a struct defined in the
+/// caller's own module.
+fn has_cross_module_event_emit(caller_mid: ModuleId, callee: &FunctionEnv) -> bool {
+    let env = callee.env();
+    let Some(body) = callee.get_def() else {
+        return false;
+    };
+    let stdlib_address = env.get_stdlib_address();
+    body.any(&mut |exp: &ExpData| {
+        let ExpData::Call(node_id, Operation::MoveFunction(mid, fid), _) = exp else {
+            return false;
+        };
+        let call = env.get_function(mid.qualified(*fid));
+        if call.module_env.get_name().addr() != &stdlib_address
+            || call.get_full_name_str() != well_known::EVENT_EMIT
+        {
+            return false;
+        }
+
+        // We can only inline if struct is in the same module as caller.
+        !matches!(
+            env.get_node_instantiation(*node_id).first(),
+            Some(Type::Struct(struct_mid, _, _)) if *struct_mid == caller_mid
+        )
     })
 }
 
@@ -703,6 +719,10 @@ impl ExpRewriterFunctions for CalleeRewriter<'_> {
             Pattern::Tuple(_, pattern_vec) => Some(Pattern::Tuple(new_id, pattern_vec.clone())),
             Pattern::Var(_, symbol) => Some(Pattern::Var(new_id, *symbol)),
             Pattern::Wildcard(_) => Some(Pattern::Wildcard(new_id)),
+            Pattern::LiteralValue(_, val) => Some(Pattern::LiteralValue(new_id, val.clone())),
+            Pattern::Range(_, lo, hi, inc) => {
+                Some(Pattern::Range(new_id, lo.clone(), hi.clone(), *inc))
+            },
             Pattern::Error(_) => None,
         }
     }
@@ -743,13 +763,7 @@ impl CalleeRewriter<'_> {
                     .function_env
                     .env()
                     .new_node(loc.clone(), ty.instantiate(self.type_args));
-                if self
-                    .function_env
-                    .env()
-                    .language_version()
-                    .is_at_least(LanguageVersion::V2_1)
-                    && self.function_env.symbol_pool().string(*sym).as_ref() == "_"
-                {
+                if self.function_env.symbol_pool().string(*sym).as_ref() == "_" {
                     Pattern::Wildcard(id)
                 } else {
                     Pattern::Var(id, *sym)

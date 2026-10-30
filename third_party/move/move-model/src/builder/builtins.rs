@@ -1,27 +1,27 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Defines builtin functions, adding them to the model builder.
 
 use crate::{
-    ast::{Operation, TraceKind, Value},
+    ast::{MemoryRange, Operation, TraceKind, Value},
     builder::model_builder::{ConstEntry, EntryVisibility, ModelBuilder, SpecOrBuiltinFunEntry},
-    metadata::{
-        lang_feature_versions::{COMPILE_FOR_TESTING_VALUE, SINT_LANGUAGE_VERSION_VALUE},
-        LanguageVersion,
-    },
+    metadata::{lang_feature_versions::LANGUAGE_VERSION_FOR_SINT, LanguageVersion},
     model::{Parameter, TypeParameter, TypeParameterKind},
     options::ModelBuilderOptions,
     ty::{Constraint, PrimitiveType, ReferenceKind, Type},
+    well_known::{BORROW_GLOBAL, BORROW_GLOBAL_MUT},
 };
 use legacy_move_compiler::parser::ast as PA;
+use move_binary_format::file_format::Visibility;
 use move_core_types::{
     ability::{Ability, AbilitySet},
     int256::{I256, U256},
 };
 use num::BigInt;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Adds builtin functions.
 pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
@@ -53,6 +53,10 @@ pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
         ty: ty.clone(),
         value: Value::Number(value),
         visibility,
+        move_visibility: Visibility::Private,
+        has_package_visibility: false,
+        users: BTreeSet::new(),
+        attributes: vec![],
     };
 
     let mk_num_const =
@@ -63,20 +67,19 @@ pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
         ty: bool_t.clone(),
         value: Value::Bool(value),
         visibility,
+        move_visibility: Visibility::Private,
+        has_package_visibility: false,
+        users: BTreeSet::new(),
+        attributes: vec![],
     };
 
     {
-        if options
-            .language_version
-            .is_at_least(COMPILE_FOR_TESTING_VALUE)
-        {
-            use EntryVisibility::SpecAndImpl;
-            // Compiler builtin constants.
-            trans.define_const(
-                trans.builtin_qualified_symbol("__COMPILE_FOR_TESTING__"),
-                mk_bool_const(options.compile_for_testing, SpecAndImpl),
-            );
-        }
+        use EntryVisibility::SpecAndImpl;
+        // Compiler builtin constants.
+        trans.define_const(
+            trans.builtin_qualified_symbol("__COMPILE_FOR_TESTING__"),
+            mk_bool_const(options.compile_for_testing, SpecAndImpl),
+        );
     }
 
     {
@@ -467,16 +470,11 @@ pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
             Type::new_prim(PrimitiveType::Num),
             Spec, // visible only in the spec language
         );
-        // Declare the implementation cmp ops
-        if trans
-            .env
-            .language_version()
-            .is_at_least(LanguageVersion::V2_2)
+        // Declare the implementation cmp ops. Comparison is supported on all types:
+        // - integer types supported by the VM natively
+        // - other types supported by the `compare` native function
+        //      - implicitly through compiler rewrite at the AST level
         {
-            // For LanguageVersion::V2_2 and later, we support comparison on all types.
-            // - integer types supported by the VM natively
-            // - other types supported by the `compare` native function
-            //      - implicitly through compiler rewrite at the AST level
             let ref_param_t = Type::Reference(ReferenceKind::Immutable, Box::new(param_t.clone()));
             // Allow cmp over both generic types and reference types
             for pt in [ref_param_t.clone(), param_t.clone()] {
@@ -488,22 +486,6 @@ pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
                     Impl, // visible only in the impl language
                 );
             }
-        } else {
-            // For LanguageVersion::V2_1 and earlier, we support only integer types.
-            // We use a generic function with a constraint, conceptually:
-            // `fun _cmp_<A>(x: A, y: A): bool where A: u8|u16|..|u256`.
-            declare_cmp_ops(
-                trans,
-                std::slice::from_ref(&param_t_decl),
-                &[(
-                    0,
-                    Constraint::SomeNumber(PrimitiveType::all_int_types().into_iter().collect()),
-                )]
-                .into_iter()
-                .collect(),
-                param_t.clone(),
-                Impl, // visible only in the impl language
-            );
         }
 
         declare_bin(trans, Range, Operation::Range, num_t, num_t, range_t, Spec);
@@ -590,7 +572,7 @@ pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
         );
         if options
             .language_version
-            .is_at_least(SINT_LANGUAGE_VERSION_VALUE)
+            .is_at_least(LANGUAGE_VERSION_FOR_SINT)
         {
             trans.define_spec_or_builtin_fun(
                 trans.unary_op_symbol(&PA::UnaryOp_::Negate),
@@ -866,7 +848,7 @@ pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
         let ref_param_t = Type::Reference(ReferenceKind::Immutable, Box::new(param_t.clone()));
         let mut_ref_param_t = Type::Reference(ReferenceKind::Mutable, Box::new(param_t.clone()));
         trans.define_spec_or_builtin_fun(
-            trans.builtin_qualified_symbol("borrow_global"),
+            trans.builtin_qualified_symbol(BORROW_GLOBAL),
             SpecOrBuiltinFunEntry {
                 loc: loc.clone(),
                 oper: Operation::BorrowGlobal(ReferenceKind::Immutable),
@@ -878,7 +860,7 @@ pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
             },
         );
         trans.define_spec_or_builtin_fun(
-            trans.builtin_qualified_symbol("borrow_global_mut"),
+            trans.builtin_qualified_symbol(BORROW_GLOBAL_MUT),
             SpecOrBuiltinFunEntry {
                 loc: loc.clone(),
                 oper: Operation::BorrowGlobal(ReferenceKind::Mutable),
@@ -963,6 +945,20 @@ pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
             },
         );
 
+        // State domain (for quantifying over state labels: `forall S in *:`)
+        trans.define_spec_or_builtin_fun(
+            trans.builtin_qualified_symbol("$spec_state_domain"),
+            SpecOrBuiltinFunEntry {
+                loc: loc.clone(),
+                oper: Operation::StateDomain,
+                type_params: vec![],
+                type_param_constraints: BTreeMap::default(),
+                params: vec![],
+                result_type: Type::StateDomain,
+                visibility: Spec,
+            },
+        );
+
         // Old
         trans.define_spec_or_builtin_fun(
             trans.builtin_qualified_symbol("old"),
@@ -973,6 +969,50 @@ pub(crate) fn declare_builtins(trans: &mut ModelBuilder) {
                 type_param_constraints: BTreeMap::default(),
                 params: vec![mk_param(trans, 1, param_t.clone())],
                 result_type: param_t.clone(),
+                visibility: Spec,
+            },
+        );
+
+        // Spec mutation builtins
+        trans.define_spec_or_builtin_fun(
+            trans.builtin_qualified_symbol("publish"),
+            SpecOrBuiltinFunEntry {
+                loc: loc.clone(),
+                oper: Operation::SpecPublish(MemoryRange::default()),
+                type_params: vec![param_t_with_key_decl.clone()],
+                type_param_constraints: BTreeMap::new(),
+                params: vec![
+                    mk_param(trans, 1, address_t.clone()),
+                    mk_param(trans, 2, param_t.clone()),
+                ],
+                result_type: bool_t.clone(),
+                visibility: Spec,
+            },
+        );
+        trans.define_spec_or_builtin_fun(
+            trans.builtin_qualified_symbol("remove"),
+            SpecOrBuiltinFunEntry {
+                loc: loc.clone(),
+                oper: Operation::SpecRemove(MemoryRange::default()),
+                type_params: vec![param_t_with_key_decl.clone()],
+                type_param_constraints: BTreeMap::new(),
+                params: vec![mk_param(trans, 1, address_t.clone())],
+                result_type: bool_t.clone(),
+                visibility: Spec,
+            },
+        );
+        trans.define_spec_or_builtin_fun(
+            trans.builtin_qualified_symbol("update"),
+            SpecOrBuiltinFunEntry {
+                loc: loc.clone(),
+                oper: Operation::SpecUpdate(MemoryRange::default()),
+                type_params: vec![param_t_with_key_decl.clone()],
+                type_param_constraints: BTreeMap::new(),
+                params: vec![
+                    mk_param(trans, 1, address_t.clone()),
+                    mk_param(trans, 2, param_t.clone()),
+                ],
+                result_type: bool_t.clone(),
                 visibility: Spec,
             },
         );

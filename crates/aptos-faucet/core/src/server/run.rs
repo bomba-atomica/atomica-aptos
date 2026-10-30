@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::server_args::ServerConfig;
 use crate::{
@@ -9,7 +9,10 @@ use crate::{
         build_openapi_service, convert_error, mint, BasicApi, CaptchaApi, FundApi,
         FundApiComponents,
     },
-    funder::{ApiConnectionConfig, FunderConfig, MintFunderConfig, TransactionSubmissionConfig},
+    funder::{
+        ApiConnectionConfig, AssetConfig, FunderConfig, MintAssetConfig, MintFunderConfig,
+        TransactionSubmissionConfig, DEFAULT_ASSET_NAME,
+    },
     middleware::middleware_log,
 };
 use anyhow::{anyhow, Context, Result};
@@ -18,14 +21,18 @@ use aptos_faucet_metrics_server::{run_metrics_server, MetricsServerConfig};
 use aptos_logger::info;
 use aptos_sdk::{
     crypto::ed25519::Ed25519PrivateKey,
-    types::{account_config::aptos_test_root_address, chain_id::ChainId},
+    types::{
+        account_address::AccountAddress, account_config::aptos_test_root_address, chain_id::ChainId,
+    },
 };
 use clap::Parser;
 use futures::{channel::oneshot::Sender as OneShotSender, lock::Mutex};
 use poem::{http::Method, listener::TcpAcceptor, middleware::Cors, EndpointExt, Route, Server};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use std::{fs::File, io::BufReader, path::PathBuf, pin::Pin, str::FromStr, sync::Arc};
+use std::{
+    collections::HashMap, fs::File, io::BufReader, path::PathBuf, pin::Pin, str::FromStr, sync::Arc,
+};
 use tokio::{net::TcpListener, sync::Semaphore, task::JoinSet};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -251,7 +258,7 @@ impl RunConfig {
         do_not_delegate: bool,
         chain_id: Option<ChainId>,
     ) -> Self {
-        let (key_file_path, key) = match funder_key {
+        let (key_file_path, _key) = match funder_key {
             FunderKeyEnum::KeyFile(key_file_path) => (key_file_path, None),
             FunderKeyEnum::Key(key) => (PathBuf::from_str("/dummy").unwrap(), Some(key)),
         };
@@ -273,13 +280,9 @@ impl RunConfig {
                     api_url,
                     None,
                     None,
-                    key_file_path,
-                    key,
                     chain_id.unwrap_or_else(ChainId::test),
                 ),
                 transaction_submission_config: TransactionSubmissionConfig::new(
-                    None,    // maximum_amount
-                    None,    // maximum_amount_with_bypass
                     30,      // gas_unit_price_ttl_secs
                     None,    // gas_unit_price_override
                     500_000, // max_gas_amount
@@ -287,8 +290,16 @@ impl RunConfig {
                     35,      // wait_for_outstanding_txns_secs
                     false,   // wait_for_transactions
                 ),
-                mint_account_address: Some(aptos_test_root_address()),
-                do_not_delegate,
+                assets: HashMap::from([(
+                    DEFAULT_ASSET_NAME.to_string(),
+                    MintAssetConfig::new(
+                        AssetConfig::new(_key, key_file_path),
+                        Some(aptos_test_root_address()),
+                        do_not_delegate,
+                    ),
+                )]),
+                default_asset: MintFunderConfig::get_default_asset_name(),
+                amount_to_fund: 100_000_000_000,
             }),
             handler_config: HandlerConfig {
                 use_helpful_errors: true,
@@ -350,16 +361,28 @@ pub struct RunSimple {
     #[clap(long, default_value_t = 8081)]
     pub listen_port: u16,
 
+    /// Path to the private key file for the APT asset
+    #[clap(long, default_value = "/tmp/mint.key")]
+    pub key_file_path: PathBuf,
+
+    /// Address of the mint account (optional)
     #[clap(long)]
-    do_not_delegate: bool,
+    pub mint_account_address: Option<AccountAddress>,
+
+    /// Whether to skip delegation
+    #[clap(long)]
+    pub do_not_delegate: bool,
 }
 
 impl RunSimple {
     pub async fn run_simple(&self) -> Result<()> {
-        let key = self
-            .api_connection_config
+        // Create an AssetConfig from the CLI arguments to get the key
+        let asset_config = AssetConfig::new(None, self.key_file_path.clone());
+
+        let key = asset_config
             .get_key()
             .context("Failed to load private key")?;
+
         let run_config = RunConfig::build_for_cli(
             self.api_connection_config.node_url.clone(),
             self.listen_address.clone(),
@@ -974,6 +997,70 @@ mod test {
             .await?;
 
         assert_eq!(response.into_inner(), 100);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_asset_disabled() -> Result<()> {
+        make_auth_tokens_file(&["test_token"])?;
+
+        let aptos_node_api_client = aptos_sdk::rest_client::Client::new(
+            reqwest::Url::from_str("http://127.0.0.1:8080").unwrap(),
+        );
+        aptos_node_api_client
+            .get_index_bcs()
+            .await
+            .context("Localnet API couldn't be reached at port 8080, have you started one?")?;
+
+        init();
+        let (port, _handle) = {
+            let _guard = MUTEX.get().unwrap().lock().await;
+            let config_content =
+                include_str!("../../../configs/testing_mint_funder_local_asset_disabled.yaml");
+            start_server(config_content).await?
+        };
+
+        // A normal request (no bypass) should be rejected with AssetDisabled
+        // because maximum_amount is 0.
+        let fund_request = get_fund_request(Some(10));
+        let response = reqwest::Client::new()
+            .post(get_fund_endpoint(port))
+            .body(fund_request.to_json_string())
+            .header(CONTENT_TYPE, "application/json")
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::GONE);
+        let aptos_error = AptosTapError::parse_from_json_string(&response.text().await?)
+            .expect("Failed to read response as AptosError");
+        assert_eq!(aptos_error.error_code, AptosTapErrorCode::AssetDisabled);
+        assert!(
+            aptos_error.message.contains("disabled"),
+            "Expected 'disabled' in error message, got: {}",
+            aptos_error.message
+        );
+
+        // A bypassed request should succeed because maximum_amount_with_bypass
+        // is non-zero (10000).
+        let fund_request = get_fund_request(Some(10));
+        unwrap_reqwest_result(
+            reqwest::Client::new()
+                .post(get_fund_endpoint(port))
+                .body(fund_request.to_json_string())
+                .header(CONTENT_TYPE, "application/json")
+                .header(AUTHORIZATION, "Bearer test_token")
+                .send()
+                .await,
+        )
+        .await?;
+
+        // Confirm the bypassed account actually received funds.
+        let response = aptos_node_api_client
+            .view_apt_account_balance(
+                AccountAddress::from_str(&fund_request.address.unwrap()).unwrap(),
+            )
+            .await?;
+        assert_eq!(response.into_inner(), 10);
 
         Ok(())
     }

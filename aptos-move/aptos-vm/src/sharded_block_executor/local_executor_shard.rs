@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::sharded_block_executor::{
     coordinator_client::CoordinatorClient,
@@ -195,7 +195,7 @@ impl<S: StateView + Sync + Send + 'static> ExecutorClient<S> for LocalExecutorCl
                     state_view.clone(),
                     sub_blocks_for_shard,
                     concurrency_level_per_shard,
-                    onchain_config.clone(),
+                    onchain_config,
                 ))
                 .unwrap();
         }

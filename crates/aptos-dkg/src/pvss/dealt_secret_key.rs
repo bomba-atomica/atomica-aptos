@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 macro_rules! dealt_secret_key_impl {
     (
@@ -13,8 +13,8 @@ macro_rules! dealt_secret_key_impl {
         use crate::{
             algebra::lagrange::lagrange_coefficients,
             pvss::{
-                dealt_secret_key_share::$gt::DealtSecretKeyShare, Player,
-                threshold_config::ThresholdConfigBlstrs, traits, traits::SecretSharingConfig,
+                dealt_secret_key_share::$gt::DealtSecretKeyShare,
+                threshold_config::ThresholdConfigBlstrs,
             },
             utils::{$gt_multi_exp},
         };
@@ -23,7 +23,10 @@ macro_rules! dealt_secret_key_impl {
         use blstrs::{$GTProjective, Scalar};
         use ff::Field;
         use more_asserts::{assert_ge, assert_le};
-        use crate::pvss::traits::ThresholdConfig;
+        use aptos_crypto::traits::{TSecretSharingConfig as _};
+        use aptos_crypto::traits::{ThresholdConfig as _};
+        use aptos_crypto::arkworks::shamir::Reconstructable;
+        use aptos_crypto::arkworks::shamir::ShamirShare;
 
         /// The size of a serialized *dealt secret key*.
         pub(crate) const DEALT_SK_NUM_BYTES: usize = $GT_PROJ_NUM_BYTES;
@@ -80,12 +83,12 @@ macro_rules! dealt_secret_key_impl {
             }
         }
 
-        impl traits::Reconstructable<ThresholdConfigBlstrs> for DealtSecretKey {
-            type Share = DealtSecretKeyShare;
+        impl Reconstructable<ThresholdConfigBlstrs> for DealtSecretKey {
+            type ShareValue = DealtSecretKeyShare;
 
             /// Reconstructs the `DealtSecretKey` given a sufficiently-large subset of shares from players.
             /// Mainly used for testing the PVSS transcript dealing and decryption.
-            fn reconstruct(sc: &ThresholdConfigBlstrs, shares: &Vec<(Player, Self::Share)>) -> Self {
+            fn reconstruct(sc: &ThresholdConfigBlstrs, shares: &[ShamirShare<Self::ShareValue>]) -> anyhow::Result<Self> {
                 assert_ge!(shares.len(), sc.get_threshold());
                 assert_le!(shares.len(), sc.get_total_num_players());
 
@@ -97,7 +100,7 @@ macro_rules! dealt_secret_key_impl {
                 );
                 let bases = shares
                     .iter()
-                    .map(|(_, share)| share.0.h_hat)
+                    .map(|(_, share)| *share.as_group_element())
                     .collect::<Vec<$GTProjective>>();
 
                 // println!();
@@ -113,9 +116,9 @@ macro_rules! dealt_secret_key_impl {
 
                 assert_eq!(lagr.len(), bases.len());
 
-                DealtSecretKey {
+                Ok(DealtSecretKey {
                     h_hat: $gt_multi_exp(bases.as_slice(), lagr.as_slice()),
-                }
+                })
             }
         }
     };
@@ -129,79 +132,6 @@ pub mod g1 {
         G1Projective,
         g1
     );
-}
-
-pub mod scalar {
-    use crate::pvss::traits::ThresholdConfig;
-    use crate::{
-        algebra::lagrange::lagrange_coefficients,
-        pvss::{
-            dealt_secret_key_share::scalar::DealtSecretKeyShare,
-            threshold_config::ThresholdConfigBlstrs, traits, traits::SecretSharingConfig, Player,
-        },
-    };
-    use aptos_crypto::CryptoMaterialError;
-    use aptos_crypto_derive::{SilentDebug, SilentDisplay};
-    use blstrs::Scalar;
-    use ff::Field;
-    use more_asserts::{assert_ge, assert_le};
-
-    pub const DEALT_SK_NUM_BYTES: usize = 32;
-
-    #[derive(SilentDebug, SilentDisplay, PartialEq, Clone)]
-    pub struct DealtSecretKey {
-        pub s: Scalar,
-    }
-
-    impl DealtSecretKey {
-        pub fn new(s: Scalar) -> Self {
-            Self { s }
-        }
-
-        pub fn to_bytes(&self) -> [u8; DEALT_SK_NUM_BYTES] {
-            self.s.to_bytes_le()
-        }
-    }
-
-    impl TryFrom<&[u8]> for DealtSecretKey {
-        type Error = CryptoMaterialError;
-
-        fn try_from(bytes: &[u8]) -> std::result::Result<DealtSecretKey, Self::Error> {
-            let s = Scalar::from_bytes_le(
-                bytes
-                    .try_into()
-                    .map_err(|_| CryptoMaterialError::DeserializationError)?,
-            );
-            if s.is_some().into() {
-                Ok(DealtSecretKey { s: s.unwrap() })
-            } else {
-                Err(CryptoMaterialError::DeserializationError)
-            }
-        }
-    }
-
-    impl traits::Reconstructable<ThresholdConfigBlstrs> for DealtSecretKey {
-        type Share = DealtSecretKeyShare;
-
-        fn reconstruct(sc: &ThresholdConfigBlstrs, shares: &Vec<(Player, Self::Share)>) -> Self {
-            assert_ge!(shares.len(), sc.get_threshold());
-            assert_le!(shares.len(), sc.get_total_num_players());
-
-            let ids = shares.iter().map(|(p, _)| p.id).collect::<Vec<usize>>();
-            let lagr = lagrange_coefficients(
-                sc.get_batch_evaluation_domain(),
-                ids.as_slice(),
-                &Scalar::ZERO,
-            );
-
-            let mut acc = Scalar::ZERO;
-            for (coeff, (_, share)) in lagr.iter().zip(shares.iter()) {
-                acc += share.0.s * coeff;
-            }
-
-            DealtSecretKey { s: acc }
-        }
-    }
 }
 
 pub mod g2 {

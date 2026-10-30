@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     peer_states::key_value::PeerStateKey,
@@ -135,7 +135,11 @@ async fn test_basic_peer_updater_loop() {
 
     // Create a peer state for the fullnode
     let node_config = NodeConfig::default();
-    let mut peer_state = PeerState::new(node_config.clone(), time_service.clone());
+    let mut peer_state = PeerState::new(
+        node_config.clone(),
+        peer_monitoring_client.clone(),
+        time_service.clone(),
+    );
     peer_monitor_state
         .peer_states
         .write()

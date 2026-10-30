@@ -41,13 +41,13 @@ module aptos_framework::optional_aggregator {
             value <= (integer.limit - integer.value),
             error::out_of_range(EAGGREGATOR_OVERFLOW)
         );
-        integer.value = integer.value + value;
+        integer.value += value;
     }
 
     /// Subtracts `value` from integer. Aborts on going below zero.
     fun sub_integer(integer: &mut Integer, value: u128) {
         assert!(value <= integer.value, error::out_of_range(EAGGREGATOR_UNDERFLOW));
-        integer.value = integer.value - value;
+        integer.value -= value;
     }
 
     /// Returns an overflow limit of integer.
@@ -74,7 +74,7 @@ module aptos_framework::optional_aggregator {
     }
 
     /// Creates a new optional aggregator.
-    public(friend) fun new(parallelizable: bool): OptionalAggregator {
+    friend fun new(parallelizable: bool): OptionalAggregator {
         if (parallelizable) {
             OptionalAggregator {
                 aggregator: option::some(aggregator_factory::create_aggregator_internal()),
@@ -88,8 +88,20 @@ module aptos_framework::optional_aggregator {
         }
     }
 
-    /// Switches between parallelizable and non-parallelizable implementations.
-    public fun switch(_optional_aggregator: &mut OptionalAggregator) {
+    /// Switches from parallelizable to non-parallelizable implementation.
+    public fun switch(optional_aggregator: &mut OptionalAggregator) {
+        if (optional_aggregator.aggregator.is_some()) {
+            let aggregator = optional_aggregator.aggregator.extract();
+            let limit = aggregator::limit(&aggregator);
+            let value = aggregator::read(&aggregator);
+            aggregator::destroy(aggregator);
+            optional_aggregator.integer.fill(Integer {
+                value, limit
+            });
+            return;
+        }
+
+        // Do not allow upgrades to parallelizable.
         abort error::invalid_state(ESWITCH_DEPRECATED)
     }
 
@@ -105,64 +117,75 @@ module aptos_framework::optional_aggregator {
     /// Destroys parallelizable optional aggregator and returns its limit.
     fun destroy_optional_aggregator(optional_aggregator: OptionalAggregator): u128 {
         let OptionalAggregator { aggregator, integer } = optional_aggregator;
-        let limit = aggregator::limit(option::borrow(&aggregator));
-        aggregator::destroy(option::destroy_some(aggregator));
-        option::destroy_none(integer);
+        let limit = aggregator::limit(aggregator.borrow());
+        aggregator::destroy(aggregator.destroy_some());
+        integer.destroy_none();
         limit
     }
 
     /// Destroys non-parallelizable optional aggregator and returns its limit.
     fun destroy_optional_integer(optional_aggregator: OptionalAggregator): u128 {
         let OptionalAggregator { aggregator, integer } = optional_aggregator;
-        let limit = limit(option::borrow(&integer));
-        destroy_integer(option::destroy_some(integer));
-        option::destroy_none(aggregator);
+        let limit = limit(integer.borrow());
+        destroy_integer(integer.destroy_some());
+        aggregator.destroy_none();
         limit
     }
 
     /// Adds `value` to optional aggregator, aborting on exceeding the `limit`.
     public fun add(optional_aggregator: &mut OptionalAggregator, value: u128) {
-        if (option::is_some(&optional_aggregator.aggregator)) {
-            let aggregator = option::borrow_mut(&mut optional_aggregator.aggregator);
+        if (optional_aggregator.aggregator.is_some()) {
+            let aggregator = optional_aggregator.aggregator.borrow_mut();
             aggregator::add(aggregator, value);
         } else {
-            let integer = option::borrow_mut(&mut optional_aggregator.integer);
+            let integer = optional_aggregator.integer.borrow_mut();
             add_integer(integer, value);
         }
     }
 
     /// Subtracts `value` from optional aggregator, aborting on going below zero.
     public fun sub(optional_aggregator: &mut OptionalAggregator, value: u128) {
-        if (option::is_some(&optional_aggregator.aggregator)) {
-            let aggregator = option::borrow_mut(&mut optional_aggregator.aggregator);
+        if (optional_aggregator.aggregator.is_some()) {
+            let aggregator = optional_aggregator.aggregator.borrow_mut();
             aggregator::sub(aggregator, value);
         } else {
-            let integer = option::borrow_mut(&mut optional_aggregator.integer);
+            let integer = optional_aggregator.integer.borrow_mut();
             sub_integer(integer, value);
         }
     }
 
     /// Returns the value stored in optional aggregator.
     public fun read(optional_aggregator: &OptionalAggregator): u128 {
-        if (option::is_some(&optional_aggregator.aggregator)) {
-            let aggregator = option::borrow(&optional_aggregator.aggregator);
+        if (optional_aggregator.aggregator.is_some()) {
+            let aggregator = optional_aggregator.aggregator.borrow();
             aggregator::read(aggregator)
         } else {
-            let integer = option::borrow(&optional_aggregator.integer);
+            let integer = optional_aggregator.integer.borrow();
             read_integer(integer)
         }
     }
 
     /// Returns true if optional aggregator uses parallelizable implementation.
     public fun is_parallelizable(optional_aggregator: &OptionalAggregator): bool {
-        option::is_some(&optional_aggregator.aggregator)
+        optional_aggregator.aggregator.is_some()
+    }
+
+    #[test(account = @aptos_framework)]
+    fun optional_aggregator_switch_to_integer_test(account: signer) {
+        aggregator_factory::initialize_aggregator_factory(&account);
+        let aggregator = new(true);
+        add(&mut aggregator, 100);
+        switch(&mut aggregator);
+        assert!(!is_parallelizable(&aggregator), 0);
+        assert!(read(&aggregator) == 100, 0);
+        destroy(aggregator);
     }
 
     #[test(account = @aptos_framework)]
     #[expected_failure(abort_code = 0x030003, location = Self)]
-    fun optional_aggregator_swith_fail_test(account: signer) {
+    fun optional_aggregator_switch_to_aggregator_fail_test(account: signer) {
         aggregator_factory::initialize_aggregator_factory(&account);
-        let aggregator = new(true);
+        let aggregator = new(false);
         switch(&mut aggregator);
         destroy(aggregator);
     }

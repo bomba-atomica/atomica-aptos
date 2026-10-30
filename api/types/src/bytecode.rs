@@ -1,11 +1,10 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     move_types::{
         MoveAbility, MoveFunctionGenericTypeParam, MoveStruct, MoveStructField,
-        MoveStructGenericTypeParam,
+        MoveStructGenericTypeParam, MoveStructVariant,
     },
     MoveFunction, MoveStructTag, MoveType,
 };
@@ -17,7 +16,7 @@ use move_binary_format::{
         AddressIdentifierIndex, CompiledModule, CompiledScript, FieldDefinition,
         FunctionDefinition, FunctionHandle, FunctionHandleIndex, IdentifierIndex, ModuleHandle,
         ModuleHandleIndex, Signature, SignatureIndex, SignatureToken, StructDefinition,
-        StructFieldInformation, StructHandle, StructHandleIndex,
+        StructFieldInformation, StructHandle, StructHandleIndex, VariantDefinition,
     },
 };
 use move_core_types::{
@@ -69,6 +68,17 @@ pub trait Bytecode {
         MoveStructField {
             name: self.identifier_at(def.name).to_owned().into(),
             typ: self.new_move_type(&def.signature.0),
+        }
+    }
+
+    fn new_move_struct_variant(&self, def: &VariantDefinition) -> MoveStructVariant {
+        MoveStructVariant {
+            name: self.identifier_at(def.name).to_owned().into(),
+            fields: def
+                .fields
+                .iter()
+                .map(|f| self.new_move_struct_field(f))
+                .collect(),
         }
     }
 
@@ -138,14 +148,15 @@ pub trait Bytecode {
     fn new_move_struct(&self, def: &StructDefinition) -> MoveStruct {
         let handle = self.struct_handle_at(def.struct_handle);
         let mut is_enum = self.struct_is_enum(def);
-        let (is_native, fields) = match &def.field_information {
-            StructFieldInformation::Native => (true, vec![]),
+        let (is_native, fields, variants) = match &def.field_information {
+            StructFieldInformation::Native => (true, vec![], vec![]),
             StructFieldInformation::Declared(fields) => (
                 false,
                 fields
                     .iter()
                     .map(|f| self.new_move_struct_field(f))
                     .collect(),
+                vec![],
             ),
             StructFieldInformation::DeclaredVariants(variant_defs) => {
                 // For `Option`, we want to keep it backwards compatible with the old representation
@@ -165,10 +176,13 @@ pub trait Bytecode {
                         name: Identifier::new(LEGACY_OPTION_VEC).unwrap().into(),
                         typ: field_type,
                     };
-                    (false, vec![field])
+                    (false, vec![field], vec![])
                 } else {
-                    // TODO(#13806): implement for enums. Currently we pretend they don't have fields
-                    (false, vec![])
+                    let variants = variant_defs
+                        .iter()
+                        .map(|v| self.new_move_struct_variant(v))
+                        .collect();
+                    (false, vec![], variants)
                 }
             },
         };
@@ -192,6 +206,7 @@ pub trait Bytecode {
             abilities,
             generic_type_params,
             fields,
+            variants,
         }
     }
 

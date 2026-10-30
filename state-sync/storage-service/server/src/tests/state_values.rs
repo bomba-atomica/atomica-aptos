@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::tests::{
     mock,
@@ -258,8 +258,9 @@ fn expect_get_state_values_with_proof(
                 eq(version),
                 eq(start_index as usize),
                 eq(chunk_size as usize),
+                always(),
             )
-            .returning(move |_, _, _| Ok(state_value_chunk_with_proof.clone()));
+            .returning(move |_, _, _, _| Ok(state_value_chunk_with_proof.clone()));
         return;
     }
 
@@ -277,16 +278,17 @@ fn expect_get_state_values_with_proof(
             eq(version),
             eq(start_index as usize),
             eq(chunk_size as usize),
+            always(),
         )
-        .returning(move |_, _, _| Ok(Box::new(state_value_iterator.clone())))
+        .returning(move |_, _, _, _| Ok(Box::new(state_value_iterator.clone())))
         .in_sequence(&mut expectation_sequence);
 
     // Expect a call to get the state value chunk proof
     mock_db
         .expect_get_state_value_chunk_proof()
         .times(1)
-        .with(eq(version), eq(start_index as usize), always())
-        .return_once(move |_, _, given_state_values| {
+        .with(eq(version), eq(start_index as usize), always(), always())
+        .return_once(move |_, _, given_state_values, _| {
             state_value_chunk_with_proof.raw_values = given_state_values;
             Ok(state_value_chunk_with_proof)
         })
@@ -413,9 +415,10 @@ fn create_mock_db_with_state_value_expectations(
                 eq(version),
                 eq(start_index as usize),
                 eq(chunk_size as usize),
+                always(),
             )
             .in_sequence(&mut expectation_sequence)
-            .returning(move |_, _, _| Ok(state_value_chunk_with_proof.clone()));
+            .returning(move |_, _, _, _| Ok(state_value_chunk_with_proof.clone()));
 
         chunk_size /= 2;
     }

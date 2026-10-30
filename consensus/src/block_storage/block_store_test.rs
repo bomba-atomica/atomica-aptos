@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block_storage::{block_store::sync_manager::NeedFetchResult, BlockReader},
@@ -355,7 +354,7 @@ async fn test_illegal_timestamp() {
     let block_store = build_default_empty_tree();
     let genesis = block_store.ordered_root();
     let block_with_illegal_timestamp = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         0,
         // This timestamp is illegal, it is the same as genesis
         genesis.timestamp_usecs(),
@@ -458,7 +457,7 @@ async fn test_need_sync_for_ledger_info() {
             certificate_for_genesis(),
             1,
             round,
-            Payload::empty(false, true),
+            Payload::empty(false),
             vec![],
         );
         gen_test_certificate(
@@ -473,15 +472,21 @@ async fn test_need_sync_for_ledger_info() {
     // it's larger and the block doesn't exist in the tree
     let ordered_round_too_far = block_store.ordered_root().round() + 1;
     let ordered_too_far = create_ledger_info(ordered_round_too_far);
-    assert!(block_store.need_sync_for_ledger_info(&ordered_too_far));
+    assert!(block_store
+        .need_sync_for_ledger_info(&ordered_too_far)
+        .is_some());
 
     let committed_round_too_far =
-        block_store.commit_root().round() + 30.max(block_store.vote_back_pressure_limit * 2) + 1;
+        block_store.commit_root().round() + 60.max(block_store.vote_back_pressure_limit * 2) + 1;
     let committed_too_far = create_ledger_info(committed_round_too_far);
-    assert!(block_store.need_sync_for_ledger_info(&committed_too_far));
+    assert!(block_store
+        .need_sync_for_ledger_info(&committed_too_far)
+        .is_some());
 
     let round_not_too_far =
         block_store.commit_root().round() + block_store.vote_back_pressure_limit + 1;
     let not_too_far = create_ledger_info(round_not_too_far);
-    assert!(!block_store.need_sync_for_ledger_info(&not_too_far));
+    assert!(block_store
+        .need_sync_for_ledger_info(&not_too_far)
+        .is_none());
 }

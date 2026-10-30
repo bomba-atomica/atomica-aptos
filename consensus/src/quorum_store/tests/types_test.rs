@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     quorum_store::types::{Batch, BatchRequest},
@@ -39,4 +39,11 @@ fn test_batch() {
     assert_err!(batch.verify_with_digest(HashValue::random()));
 
     assert_eq!(batch.into_transactions(), signed_txns);
+}
+
+#[test]
+fn test_batch_verify_rejects_empty() {
+    let source = AccountAddress::random();
+    let batch = Batch::new(BatchId::new_for_test(1), vec![], 0, 1, source, 0);
+    assert_err!(batch.verify());
 }

@@ -12,6 +12,9 @@ publish = { workspace = true }
 repository = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+default = []
+
 [dependencies]
 anyhow = { workspace = true }
 aptos-crypto = { workspace = true, features = ["cloneable-private-keys"] }

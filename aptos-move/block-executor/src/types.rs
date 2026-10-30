@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_types::transaction::BlockExecutableTransaction as Transaction;
 use move_vm_types::delayed_values::delayed_field_id::DelayedFieldID;
@@ -93,7 +93,7 @@ pub(crate) mod delayed_field_mock_serialization {
     use move_vm_types::delayed_values::delayed_field_id::{DelayedFieldID, ExtractUniqueIndex};
 
     pub(crate) fn mock_layout() -> MoveTypeLayout {
-        MoveTypeLayout::Struct(MoveStructLayout::new(vec![]))
+        MoveTypeLayout::new_struct(MoveStructLayout::new(vec![]))
     }
 
     // ID is just the unique index as u128.

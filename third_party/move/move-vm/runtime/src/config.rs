@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use move_binary_format::deserializer::DeserializerConfig;
 use move_bytecode_verifier::VerifierConfig;
@@ -45,7 +47,6 @@ pub struct VMConfig {
     /// reference safety is maintained during execution. Note that the checks might be delayed and
     /// instead execution trace can be recorded (so that checks are done based on the trace later).
     pub paranoid_ref_checks: bool,
-    pub enable_capture_option: bool,
     pub enable_enum_option: bool,
     /// If true, Move VM will try to fetch layout from remote cache.
     pub enable_layout_caches: bool,
@@ -53,6 +54,40 @@ pub struct VMConfig {
     pub enable_framework_for_option: bool,
     /// Same as enable_function_caches, but gates missed gating for native dynamic dispatch.
     pub enable_function_caches_for_native_dynamic_dispatch: bool,
+    /// Whether this VM should support debugging. If set, environment variables
+    /// `MOVE_VM_TRACE` and `MOVE_VM_STEP` will be recognized.
+    pub enable_debugging: bool,
+    /// When enabled, checks the depth of captured values when packing closures.
+    /// This prevents deeply nested closure chains that could cause stack overflow.
+    /// Also controls whether error messages format values (which could cause stack
+    /// overflow during Display formatting).
+    pub enable_closure_depth_check: bool,
+    /// If true, the layout converter caches struct layouts within a single layout
+    /// construction pass, sharing `Arc<MoveStructLayout>` on cache hits and skipping
+    /// duplicate node-count charges. This avoids spurious `TOO_MANY_TYPE_NODES` errors
+    /// when the same struct appears in multiple positions (e.g., enum variants).
+    pub enable_struct_layout_local_cache: bool,
+    /// When enabled, checks the depth of types during gas charging for type node counting.
+    /// This prevents types from being created at depths exceeding maximum allowed depth during
+    /// execution when types are not created (e.g., local types when there are no runtime type
+    /// checks).
+    pub check_depth_on_type_counts: bool,
+    /// Whether this VM should support public copy structs/enums as transaction arguments.
+    /// When enabled, non-private structs and enums with the copy ability can be used as
+    /// transaction arguments if they have public pack functions with the Pack attribute.
+    pub enable_public_struct_args: bool,
+    /// When enabled, closure equality and comparison include the closure mask.
+    /// Without this, two closures over the same function with different masks but identical
+    /// captured values are incorrectly treated as equal.
+    pub include_closure_mask_in_cmp: bool,
+    /// When enabled, a resolved closure is validated against the current
+    /// version (hash) of its defining module before use, and re-resolved if the
+    /// module was republished since the resolution.
+    pub revalidate_resolved_closures: bool,
+    /// When enabled, a closure records the pseudo-gas cost of its type arguments
+    /// so that it can be priced by the size of its instantiation rather than by
+    /// a flat amount.
+    pub meter_closure_ty_args: bool,
 }
 
 impl Default for VMConfig {
@@ -69,18 +104,25 @@ impl Default for VMConfig {
             type_base_cost: 0,
             type_byte_cost: 0,
             delayed_field_optimization_enabled: false,
-            ty_builder: TypeBuilder::with_limits(128, 20),
+            ty_builder: TypeBuilder::with_limits(128, 20, true, true),
             enable_function_caches: true,
             enable_lazy_loading: true,
             enable_depth_checks: true,
             optimize_trusted_code: false,
             paranoid_ref_checks: false,
-            enable_capture_option: false,
             enable_enum_option: true,
             enable_layout_caches: true,
             propagate_dependency_limit_error: true,
-            enable_framework_for_option: false,
+            enable_framework_for_option: true,
             enable_function_caches_for_native_dynamic_dispatch: true,
+            enable_debugging: false,
+            enable_closure_depth_check: true,
+            enable_struct_layout_local_cache: true,
+            check_depth_on_type_counts: true,
+            enable_public_struct_args: true,
+            include_closure_mask_in_cmp: true,
+            revalidate_resolved_closures: true,
+            meter_closure_ty_args: true,
         }
     }
 }
@@ -91,6 +133,14 @@ impl VMConfig {
         Self {
             paranoid_ref_checks: enable,
             ..self
+        }
+    }
+
+    /// Default for use in tests.
+    pub fn default_for_test() -> Self {
+        Self {
+            enable_debugging: true,
+            ..Self::default()
         }
     }
 }

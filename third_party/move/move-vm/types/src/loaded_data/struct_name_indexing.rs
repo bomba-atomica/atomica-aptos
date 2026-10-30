@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::loaded_data::runtime_types::StructIdentifier;
 use move_binary_format::errors::PartialVMResult;
@@ -19,7 +21,7 @@ macro_rules! panic_error {
 
 /// Represents a unique identifier for the struct name. Note that this index has no public
 /// constructor - the only way to construct it is via [StructNameIndexMap].
-#[derive(Debug, Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
 pub struct StructNameIndex(u32);
 
 impl StructNameIndex {

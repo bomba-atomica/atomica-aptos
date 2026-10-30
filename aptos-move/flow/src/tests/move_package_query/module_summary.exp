@@ -1,0 +1,36 @@
+{
+  "0xcafe::token": {
+    "constants": [
+      {
+        "name": "MAX_SUPPLY",
+        "type": "u64",
+        "value": "1000000"
+      }
+    ],
+    "structs": [
+      {
+        "name": "Token",
+        "abilities": [
+          "store",
+          "key"
+        ],
+        "fields": [
+          "value: u64",
+          "owner: address"
+        ]
+      }
+    ],
+    "functions": [
+      {
+        "name": "burn",
+        "signature": "public entry fun burn(t: Token)",
+        "isLambdaLifted": false
+      },
+      {
+        "name": "mint",
+        "signature": "public fun mint(amount: u64,owner: address): Token",
+        "isLambdaLifted": false
+      }
+    ]
+  }
+}

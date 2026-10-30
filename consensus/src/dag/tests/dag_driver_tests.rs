@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     dag::{
@@ -156,6 +156,7 @@ fn setup(
 
     let validators: Vec<_> = signers.iter().map(|s| s.author()).collect();
     let rb = Arc::new(ReliableBroadcast::new(
+        "dag_test",
         validators[0],
         validators,
         network_sender.clone(),
@@ -208,7 +209,6 @@ fn setup(
             NoPipelineBackpressure::new(),
         ),
         false,
-        true,
     )
 }
 

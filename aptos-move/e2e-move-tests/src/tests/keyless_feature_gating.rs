@@ -1,9 +1,9 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{assert_success, tests::common, MoveHarness};
 use aptos_cached_packages::aptos_stdlib;
-use aptos_crypto::{hash::CryptoHash, SigningKey};
+use aptos_crypto::SigningKey;
 use aptos_framework::BuiltPackage;
 use aptos_language_e2e_tests::account::{Account, AccountPublicKey, TransactionBuilder};
 use aptos_types::{
@@ -424,7 +424,7 @@ fn spend_keyless_account(
     };
     println!(
         "Submitted TXN hash: {}",
-        Transaction::UserTransaction(transaction.clone()).hash()
+        Transaction::UserTransaction(transaction.clone()).committed_hash()
     );
     transaction
 }

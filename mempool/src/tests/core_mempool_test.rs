@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     core_mempool::{sender_bucket, CoreMempool, MempoolTransaction, SubmittedBy, TimelineState},
@@ -93,7 +92,7 @@ fn test_transaction_ordering_seqnos_and_nonces() {
     );
 
     // Expected transaction order in priority queue
-    let ordered_transactions = vec![
+    let ordered_transactions = [
         TestTransaction::new(0, ReplayProtector::Nonce(200), 7),
         TestTransaction::new(0, ReplayProtector::SequenceNumber(1), 5),
         TestTransaction::new(0, ReplayProtector::Nonce(150), 3),
@@ -575,7 +574,6 @@ fn test_reset_sequence_number_on_failure() {
     ];
     let hashes: Vec<_> = txns
         .iter()
-        .cloned()
         .map(|txn| txn.make_signed_transaction().committed_hash())
         .collect();
     // Add two transactions for account.
@@ -1271,7 +1269,7 @@ fn test_parking_lot_eviction_benchmark() {
     add_signed_txn(&mut pool, huge_signed_txn).unwrap();
     let time_to_evict_ms = now.elapsed().as_millis();
 
-    let has_remainder = huge_txn_size % small_txn_size != 0;
+    let has_remainder = !huge_txn_size.is_multiple_of(small_txn_size);
     let num_expected_evicted = num_small_txns / 2 + has_remainder as usize;
     assert_eq!(
         pool.get_parking_lot_size(),

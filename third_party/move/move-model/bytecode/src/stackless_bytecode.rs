@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::function_target::FunctionTarget;
 use ethnum::{I256, U256};
@@ -301,6 +302,10 @@ pub enum Operation {
     // Special ops
     Uninit,
     Havoc(HavocKind),
+    /// Havocs the given global memory: its post-state is arbitrary. Emitted
+    /// by loop analysis at loop headers for memory the loop body may modify,
+    /// so the loop-exit path does not retain pre-loop memory.
+    HavocGlobal(ModuleId, StructId, Vec<Type>),
     Stop,
 
     // Debugging
@@ -347,6 +352,7 @@ impl Operation {
             Operation::FreezeRef(_) => false,
             Operation::Vector => false,
             Operation::Havoc(_) => false,
+            Operation::HavocGlobal(..) => false,
             Operation::Stop => false,
             Operation::WriteBack(..) => false,
             Operation::IsParent(..) => false,
@@ -505,7 +511,7 @@ pub enum Bytecode {
     Branch(AttrId, Label, Label, TempIndex),
     Jump(AttrId, Label),
     Label(AttrId, Label),
-    Abort(AttrId, TempIndex),
+    Abort(AttrId, TempIndex, Option<TempIndex>),
     Nop(AttrId),
     SpecBlock(AttrId, Spec),
 
@@ -566,6 +572,10 @@ impl Bytecode {
         matches!(self, Bytecode::Ret(..))
     }
 
+    pub fn is_abort(&self) -> bool {
+        matches!(self, Bytecode::Abort(..))
+    }
+
     pub fn is_always_branching(&self) -> bool {
         matches!(
             self,
@@ -610,8 +620,11 @@ impl Bytecode {
             Bytecode::Branch(_, _, _, cond) => {
                 vec![*cond]
             },
-            Bytecode::Abort(_, src) => {
+            Bytecode::Abort(_, src, None) => {
                 vec![*src]
+            },
+            Bytecode::Abort(_, src0, Some(src1)) => {
+                vec![*src0, *src1]
             },
             Bytecode::Load(_, _, _)
             | Bytecode::Jump(_, _)
@@ -652,7 +665,7 @@ impl Bytecode {
             | Bytecode::Branch(_, _, _, _)
             | Bytecode::Jump(_, _)
             | Bytecode::Label(_, _)
-            | Bytecode::Abort(_, _)
+            | Bytecode::Abort(_, _, _)
             | Bytecode::Nop(_)
             | Bytecode::SaveMem(_, _, _)
             | Bytecode::SaveSpecVar(_, _, _)
@@ -801,7 +814,7 @@ impl Bytecode {
             Branch(attr, if_label, else_label, cond) => {
                 Branch(attr, if_label, else_label, f(true, cond))
             },
-            Abort(attr, cond) => Abort(attr, f(true, cond)),
+            Abort(attr, cond0, cond1) => Abort(attr, f(true, cond0), cond1.map(|c| f(true, c))),
             Prop(attr, kind, exp) => {
                 let new_exp = Bytecode::remap_exp(func_target, &mut |idx| f(true, idx), exp);
                 Prop(attr, kind, new_exp)
@@ -998,8 +1011,63 @@ impl Bytecode {
                 }
                 (add_abort(val_targets, aa), mut_targets)
             },
+            // A `Prop(Assume, ...)` that records an inline ghost-field
+            // update — `stackless_bytecode_generator` encodes it as
+            // `Eq(base.f, rhs)` and keys the spec's `update_map` by the
+            // Prop's `node_id()`. Loop analysis needs to see the base as a
+            // modified local so its ghost state is havocked at the loop
+            // header (otherwise a false postcondition over the ghost state
+            // survives the loop-exit abstraction).
+            Prop(_, PropKind::Assume, exp) => {
+                let mut val = vec![];
+                let mut mut_ = vec![];
+                if func_target
+                    .get_spec()
+                    .update_map
+                    .contains_key(&exp.node_id())
+                {
+                    if let ExpData::Call(_, ast::Operation::Eq, args) = exp.as_ref() {
+                        if args.len() == 2 {
+                            if let ExpData::Call(_, ast::Operation::Select(..), sel_args) =
+                                args[0].as_ref()
+                            {
+                                if let Some(base) = sel_args.first() {
+                                    if let ExpData::Temporary(_, idx) = base.as_ref() {
+                                        if func_target.get_local_type(*idx).is_mutable_reference() {
+                                            mut_.push((*idx, false));
+                                        } else {
+                                            val.push(*idx);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                (val, mut_)
+            },
             _ => (vec![], vec![]),
         }
+    }
+
+    /// Returns true if this bytecode is a state-transition operation that changes global
+    /// memory state. These are: function calls, invoke (dynamic calls), MoveFrom, MoveTo,
+    /// and WriteBack to global root.
+    pub fn is_global_state_transition(&self) -> bool {
+        matches!(
+            self,
+            Bytecode::Call(
+                _,
+                _,
+                Operation::Function(..)
+                    | Operation::Invoke
+                    | Operation::MoveFrom(..)
+                    | Operation::MoveTo(..)
+                    | Operation::WriteBack(BorrowNode::GlobalRoot(..), ..),
+                _,
+                _,
+            )
+        )
     }
 }
 
@@ -1082,8 +1150,11 @@ impl fmt::Display for BytecodeDisplay<'_> {
             Label(_, label) => {
                 write!(f, "label L{}", label.as_usize())?;
             },
-            Abort(_, src) => {
-                write!(f, "abort({})", self.lstr(*src))?;
+            Abort(_, src0, None) => {
+                write!(f, "abort({})", self.lstr(*src0))?;
+            },
+            Abort(_, src0, Some(src1)) => {
+                write!(f, "abort({}, {})", self.lstr(*src0), self.lstr(*src1))?;
             },
             Nop(_) => {
                 write!(f, "nop")?;
@@ -1397,6 +1468,9 @@ impl fmt::Display for OperationDisplay<'_> {
                     HavocKind::MutationValue => "mut",
                     HavocKind::MutationAll => "mut_all",
                 })?;
+            },
+            HavocGlobal(mid, sid, targs) => {
+                write!(f, "havoc_global<{}>", self.struct_str(*mid, *sid, targs))?;
             },
             Stop => {
                 write!(f, "stop")?;

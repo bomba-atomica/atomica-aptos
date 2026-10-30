@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(unexpected_cfgs)]
 
@@ -18,8 +17,8 @@ use serde_yaml::Value;
 use std::path::PathBuf;
 
 // NOTE: when changing, make sure to update QuorumStoreBackPressureConfig::backlog_txn_limit_count as well.
-const MAX_SENDING_BLOCK_TXNS_AFTER_FILTERING: u64 = 1800;
-const MAX_SENDING_OPT_BLOCK_TXNS_AFTER_FILTERING: u64 = 1000;
+pub const MAX_SENDING_BLOCK_TXNS_AFTER_FILTERING: u64 = 1800;
+const MAX_SENDING_OPT_BLOCK_TXNS_AFTER_FILTERING: u64 = 1300;
 const MAX_SENDING_BLOCK_TXNS: u64 = 5000;
 pub(crate) static MAX_RECEIVING_BLOCK_TXNS: Lazy<u64> =
     Lazy::new(|| 10000.max(2 * MAX_SENDING_BLOCK_TXNS));
@@ -75,6 +74,13 @@ pub struct ConsensusConfig {
     pub intra_consensus_channel_buffer_size: usize,
     pub quorum_store: QuorumStoreConfig,
     pub vote_back_pressure_limit: u64,
+    /// Maximum gap between commit round and current commit root before triggering state sync.
+    /// Must be larger than buffer manager MAX_BACKLOG (20). Defaults to 60.
+    pub max_commit_gap: u64,
+    /// If set, skip state sync when the block is not in the tree but the round gap
+    /// is within this threshold. The block is likely in-flight from an optimistic proposal.
+    /// Defaults to Some(20). Set to None to disable.
+    pub skip_sync_small_gap_rounds: Option<u64>,
     /// If backpressure target block size is below it, update `max_txns_to_execute` instead.
     /// Applied to execution, pipeline and chain health backpressure.
     /// Needed as we cannot subsplit QS batches.
@@ -95,13 +101,27 @@ pub struct ConsensusConfig {
     pub broadcast_vote: bool,
     pub proof_cache_capacity: u64,
     pub rand_rb_config: ReliableBroadcastConfig,
+    pub secret_share_rb_config: ReliableBroadcastConfig,
+    /// Delay in ms before broadcasting secret share requests.
+    pub secret_share_request_delay_ms: u64,
+    /// Path to the digest key blob file (BCS-serialized DigestKey).
+    /// Required for validators on non-test chains. For test chains, falls back to TEST_DIGEST_KEY.
+    pub digest_key_blob_path: Option<PathBuf>,
+    /// Path to the public parameters blob file (BCS-serialized PublicParameters).
+    /// Required for validators on non-test chains. For test chains, falls back to TEST_PUBLIC_PARAMETERS.
+    pub public_parameters_blob_path: Option<PathBuf>,
     pub num_bounded_executor_tasks: u64,
     pub enable_pre_commit: bool,
     pub max_pending_rounds_in_commit_vote_cache: u64,
     pub optimistic_sig_verification: bool,
+    pub optimistic_rand_share_verification: bool,
+    pub optimistic_secret_share_verification: bool,
     pub enable_round_timeout_msg: bool,
     pub enable_optimistic_proposal_rx: bool,
     pub enable_optimistic_proposal_tx: bool,
+    // Number of tokio worker theads to use for the Consensus runtime.
+    // If set to 0, it will be minimum of num_cpus/2 and DEFAULT_WORKER_THREADS.
+    pub num_tokio_worker_threads: u16,
 }
 
 /// Deprecated
@@ -152,11 +172,11 @@ impl Default for ExecutionBackpressureTxnLimitConfig {
     fn default() -> Self {
         Self {
             lookback_config: ExecutionBackpressureLookbackConfig {
-                num_blocks_to_look_at: 18,
+                num_blocks_to_look_at: 30,
                 min_block_time_ms_to_activate: 50,
-                min_blocks_to_activate: 4,
+                min_blocks_to_activate: 10,
                 metric: ExecutionBackpressureMetric::Percentile(0.5),
-                target_block_time_ms: 90,
+                target_block_time_ms: 150,
             },
             min_calibrated_txns_per_block: 30,
         }
@@ -177,13 +197,13 @@ impl Default for ExecutionBackpressureGasLimitConfig {
         Self {
             lookback_config: ExecutionBackpressureLookbackConfig {
                 num_blocks_to_look_at: 30,
-                min_block_time_ms_to_activate: 10,
-                min_blocks_to_activate: 4,
+                min_block_time_ms_to_activate: 30,
+                min_blocks_to_activate: 10,
                 metric: ExecutionBackpressureMetric::Mean,
-                target_block_time_ms: 90,
+                target_block_time_ms: 150,
             },
             block_execution_overhead_ms: 10,
-            min_calibrated_block_gas_limit: 2000,
+            min_calibrated_block_gas_limit: 50000,
         }
     }
 }
@@ -233,16 +253,17 @@ impl Default for ConsensusConfig {
             max_pruned_blocks_in_mem: 100,
             mempool_executed_txn_timeout_ms: 1000,
             mempool_txn_pull_timeout_ms: 1000,
-            round_initial_timeout_ms: 1000,
-            // 1.2^6 ~= 3
-            // Timeout goes from initial_timeout to initial_timeout*3 in 6 steps
+            round_initial_timeout_ms: 500,
+            // 1.2^10 ~= 6.2
+            // Timeout grows to ~6.2x initial in 10 steps, preserving the previous
+            // max backed-off timeout of ~3000ms despite halving the initial timeout.
             round_timeout_backoff_exponent_base: 1.2,
-            round_timeout_backoff_max_exponent: 6,
+            round_timeout_backoff_max_exponent: 10,
             safety_rules: SafetyRulesConfig::default(),
             sync_only: false,
             internal_per_key_channel_size: 10,
             quorum_store_pull_timeout_ms: 400,
-            quorum_store_poll_time_ms: 300,
+            quorum_store_poll_time_ms: 200,
             // disable wait_for_full until fully tested
             // We never go above 20-30 pending blocks, so this disables it
             wait_for_full_blocks_above_pending_blocks: 100,
@@ -256,6 +277,8 @@ impl Default for ConsensusConfig {
             // Considering block gas limit and pipeline backpressure should keep number of blocks
             // in the pipline very low, we can keep this limit pretty low, too.
             vote_back_pressure_limit: 12,
+            max_commit_gap: 60,
+            skip_sync_small_gap_rounds: Some(20),
             min_max_txns_in_block_after_filtering_from_backpressure: MIN_BLOCK_TXNS_AFTER_FILTERING,
             execution_backpressure: Some(ExecutionBackpressureConfig {
                 txn_limit: Some(ExecutionBackpressureTxnLimitConfig::default()),
@@ -272,40 +295,40 @@ impl Default for ConsensusConfig {
                     max_sending_block_txns_after_filtering_override:
                         MAX_SENDING_BLOCK_TXNS_AFTER_FILTERING,
                     max_sending_block_bytes_override: 5 * 1024 * 1024,
-                    backpressure_proposal_delay_ms: 50,
+                    backpressure_proposal_delay_ms: 25,
                 },
                 PipelineBackpressureValues {
                     back_pressure_pipeline_latency_limit_ms: 1500,
                     max_sending_block_txns_after_filtering_override:
                         MAX_SENDING_BLOCK_TXNS_AFTER_FILTERING,
                     max_sending_block_bytes_override: 5 * 1024 * 1024,
-                    backpressure_proposal_delay_ms: 100,
+                    backpressure_proposal_delay_ms: 50,
                 },
                 PipelineBackpressureValues {
                     back_pressure_pipeline_latency_limit_ms: 1900,
                     max_sending_block_txns_after_filtering_override:
                         MAX_SENDING_BLOCK_TXNS_AFTER_FILTERING,
                     max_sending_block_bytes_override: 5 * 1024 * 1024,
-                    backpressure_proposal_delay_ms: 200,
+                    backpressure_proposal_delay_ms: 100,
                 },
                 // with execution backpressure, only later start reducing block size
                 PipelineBackpressureValues {
                     back_pressure_pipeline_latency_limit_ms: 2500,
                     max_sending_block_txns_after_filtering_override: 1000,
                     max_sending_block_bytes_override: MIN_BLOCK_BYTES_OVERRIDE,
-                    backpressure_proposal_delay_ms: 300,
+                    backpressure_proposal_delay_ms: 150,
                 },
                 PipelineBackpressureValues {
                     back_pressure_pipeline_latency_limit_ms: 3500,
                     max_sending_block_txns_after_filtering_override: 200,
                     max_sending_block_bytes_override: MIN_BLOCK_BYTES_OVERRIDE,
-                    backpressure_proposal_delay_ms: 300,
+                    backpressure_proposal_delay_ms: 150,
                 },
                 PipelineBackpressureValues {
                     back_pressure_pipeline_latency_limit_ms: 4500,
                     max_sending_block_txns_after_filtering_override: 30,
                     max_sending_block_bytes_override: MIN_BLOCK_BYTES_OVERRIDE,
-                    backpressure_proposal_delay_ms: 300,
+                    backpressure_proposal_delay_ms: 150,
                 },
                 PipelineBackpressureValues {
                     back_pressure_pipeline_latency_limit_ms: 6000,
@@ -315,7 +338,7 @@ impl Default for ConsensusConfig {
                     // instead rely on max gas per block to limit latency.
                     max_sending_block_txns_after_filtering_override: 5,
                     max_sending_block_bytes_override: MIN_BLOCK_BYTES_OVERRIDE,
-                    backpressure_proposal_delay_ms: 300,
+                    backpressure_proposal_delay_ms: 150,
                 },
             ],
             window_for_chain_health: 100,
@@ -325,31 +348,31 @@ impl Default for ConsensusConfig {
                     max_sending_block_txns_after_filtering_override:
                         MAX_SENDING_BLOCK_TXNS_AFTER_FILTERING,
                     max_sending_block_bytes_override: 5 * 1024 * 1024,
-                    backoff_proposal_delay_ms: 150,
+                    backoff_proposal_delay_ms: 75,
                 },
                 ChainHealthBackoffValues {
                     backoff_if_below_participating_voting_power_percentage: 78,
                     max_sending_block_txns_after_filtering_override: 2000,
                     max_sending_block_bytes_override: MIN_BLOCK_BYTES_OVERRIDE,
-                    backoff_proposal_delay_ms: 300,
+                    backoff_proposal_delay_ms: 150,
                 },
                 ChainHealthBackoffValues {
                     backoff_if_below_participating_voting_power_percentage: 76,
                     max_sending_block_txns_after_filtering_override: 500,
                     max_sending_block_bytes_override: MIN_BLOCK_BYTES_OVERRIDE,
-                    backoff_proposal_delay_ms: 300,
+                    backoff_proposal_delay_ms: 150,
                 },
                 ChainHealthBackoffValues {
                     backoff_if_below_participating_voting_power_percentage: 74,
                     max_sending_block_txns_after_filtering_override: 100,
                     max_sending_block_bytes_override: MIN_BLOCK_BYTES_OVERRIDE,
-                    backoff_proposal_delay_ms: 300,
+                    backoff_proposal_delay_ms: 150,
                 },
                 ChainHealthBackoffValues {
                     backoff_if_below_participating_voting_power_percentage: 72,
                     max_sending_block_txns_after_filtering_override: 25,
                     max_sending_block_bytes_override: MIN_BLOCK_BYTES_OVERRIDE,
-                    backoff_proposal_delay_ms: 300,
+                    backoff_proposal_delay_ms: 150,
                 },
                 ChainHealthBackoffValues {
                     backoff_if_below_participating_voting_power_percentage: 70,
@@ -359,7 +382,7 @@ impl Default for ConsensusConfig {
                     // instead rely on max gas per block to limit latency.
                     max_sending_block_txns_after_filtering_override: 5,
                     max_sending_block_bytes_override: MIN_BLOCK_BYTES_OVERRIDE,
-                    backoff_proposal_delay_ms: 300,
+                    backoff_proposal_delay_ms: 150,
                 },
             ],
             qc_aggregator_type: QcAggregatorType::default(),
@@ -377,13 +400,25 @@ impl Default for ConsensusConfig {
                 backoff_policy_max_delay_ms: 10000,
                 rpc_timeout_ms: 10000,
             },
+            secret_share_rb_config: ReliableBroadcastConfig {
+                backoff_policy_base_ms: 2,
+                backoff_policy_factor: 100,
+                backoff_policy_max_delay_ms: 10000,
+                rpc_timeout_ms: 10000,
+            },
+            secret_share_request_delay_ms: 300,
+            digest_key_blob_path: None,
+            public_parameters_blob_path: None,
             num_bounded_executor_tasks: 16,
             enable_pre_commit: true,
             max_pending_rounds_in_commit_vote_cache: 100,
             optimistic_sig_verification: true,
+            optimistic_rand_share_verification: true,
+            optimistic_secret_share_verification: true,
             enable_round_timeout_msg: true,
             enable_optimistic_proposal_rx: true,
             enable_optimistic_proposal_tx: true,
+            num_tokio_worker_threads: 0,
         }
     }
 }

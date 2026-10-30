@@ -9,6 +9,13 @@ license = "Apache-2.0"
 publish = false
 edition = { workspace = true }
 
+[[bin]]
+name = "move-unit-test"
+path = "src/main.rs"
+
+[features]
+table-extension = ["move-vm-test-utils/table-extension"]
+
 [dependencies]
 anyhow = { workspace = true }
 better_any = { workspace = true }
@@ -22,6 +29,7 @@ move-bytecode-utils = { workspace = true }
 move-command-line-common = { workspace = true }
 move-compiler-v2 = { workspace = true }
 move-core-types = { workspace = true }
+move-coverage = { workspace = true }
 move-ir-types = { workspace = true }
 move-model = { workspace = true }
 move-package = { workspace = true }
@@ -29,7 +37,7 @@ move-resource-viewer = { workspace = true }
 move-stdlib = { path = "../../move-stdlib", features = ["testing"] }
 move-symbol-pool = { workspace = true }
 move-table-extension = { path = "../../extensions/move-table-extension" }
-move-vm-runtime = { workspace = true, features = ["stacktrace"] }
+move-vm-runtime = { workspace = true }
 move-vm-test-utils = { workspace = true }
 move-vm-types = { workspace = true }
 once_cell = { workspace = true }
@@ -40,21 +48,10 @@ thiserror = { workspace = true }
 [dev-dependencies]
 datatest-stable = { workspace = true }
 difference = { workspace = true }
-move-cli = { path = "../move-cli" }
 move-model = { path = "../../move-model" }
 move-package = { path = "../move-package" }
 tempfile = { workspace = true }
 
-[[bin]]
-name = "move-unit-test"
-path = "src/main.rs"
-
 [[test]]
 name = "move_unit_test_testsuite"
 harness = false
-
-[features]
-table-extension = [
-    "move-vm-test-utils/table-extension"
-]
-debugging = ["move-vm-runtime/debugging"]

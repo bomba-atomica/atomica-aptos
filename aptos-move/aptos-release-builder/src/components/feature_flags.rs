@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{components::get_signer_arg, utils::*};
 use anyhow::Result;
@@ -156,6 +156,28 @@ pub enum FeatureFlag {
     VMBinaryFormatV9,
     EnableFrameworkForOption,
     SessionContinuation,
+    EnableFunctionReflection,
+    VMBinaryFormatV10,
+    SlhDsaSha2_128sSignature,
+    EncryptedTransactions,
+    PublicStructEnumArgs,
+    MultisigScript,
+    TransactionLimits,
+    VersionedTransactionValidation,
+    StorageSlotNatives,
+    AllowFriendEntryVisibilityDowngrade,
+    HotnessInEpilogue,
+    TransactionInfoV1,
+    TradingNative,
+    NativePosition,
+    NativeOrderbook,
+    NativeCollateral,
+    ComputeTradingNativeStateRoots,
+    HotStateRootInTxnInfo,
+    GasRefundFaMint,
+    FunctionValueDispatch,
+    DisableClosureBcsSerialization,
+    LazyModuleInitialization,
 }
 
 fn generate_features_blob(writer: &CodeWriter, data: &[u64]) {
@@ -306,6 +328,7 @@ impl From<FeatureFlag> for AptosFeatureFlag {
             },
             FeatureFlag::Bn254Structures => AptosFeatureFlag::BN254_STRUCTURES,
             FeatureFlag::WebAuthnSignature => AptosFeatureFlag::WEBAUTHN_SIGNATURE,
+            FeatureFlag::SlhDsaSha2_128sSignature => AptosFeatureFlag::SLH_DSA_SHA2_128S_SIGNATURE,
             FeatureFlag::ReconfigureWithDkg => AptosFeatureFlag::_DEPRECATED_RECONFIGURE_WITH_DKG,
             FeatureFlag::KeylessAccounts => AptosFeatureFlag::KEYLESS_ACCOUNTS,
             FeatureFlag::KeylessButZklessAccounts => AptosFeatureFlag::KEYLESS_BUT_ZKLESS_ACCOUNTS,
@@ -336,7 +359,7 @@ impl From<FeatureFlag> for AptosFeatureFlag {
                 AptosFeatureFlag::PRIMARY_APT_FUNGIBLE_STORE_AT_USER_ADDRESS
             },
             FeatureFlag::ObjectNativeDerivedAddress => {
-                AptosFeatureFlag::OBJECT_NATIVE_DERIVED_ADDRESS
+                AptosFeatureFlag::_OBJECT_NATIVE_DERIVED_ADDRESS
             },
             FeatureFlag::DispatchableFungibleAsset => AptosFeatureFlag::DISPATCHABLE_FUNGIBLE_ASSET,
             FeatureFlag::NewAccountsDefaultToFaAptStore => {
@@ -346,7 +369,7 @@ impl From<FeatureFlag> for AptosFeatureFlag {
                 AptosFeatureFlag::OPERATIONS_DEFAULT_TO_FA_APT_STORE
             },
             FeatureFlag::AggregatorV2IsAtLeastApi => {
-                AptosFeatureFlag::AGGREGATOR_V2_IS_AT_LEAST_API
+                AptosFeatureFlag::_AGGREGATOR_V2_IS_AT_LEAST_API
             },
             FeatureFlag::ConcurrentFungibleBalance => AptosFeatureFlag::CONCURRENT_FUNGIBLE_BALANCE,
             FeatureFlag::DefaultToConcurrentFungibleBalance => {
@@ -365,7 +388,7 @@ impl From<FeatureFlag> for AptosFeatureFlag {
             },
             FeatureFlag::EnableEnumTypes => AptosFeatureFlag::ENABLE_ENUM_TYPES,
             FeatureFlag::EnableResourceAccessControl => {
-                AptosFeatureFlag::ENABLE_RESOURCE_ACCESS_CONTROL
+                AptosFeatureFlag::_DEPRECATED_ENABLE_RESOURCE_ACCESS_CONTROL
             },
             FeatureFlag::RejectUnstableBytecodeForScript => {
                 AptosFeatureFlag::_REJECT_UNSTABLE_BYTECODE_FOR_SCRIPT
@@ -375,7 +398,7 @@ impl From<FeatureFlag> for AptosFeatureFlag {
                 AptosFeatureFlag::TRANSACTION_SIMULATION_ENHANCEMENT
             },
             FeatureFlag::CollectionOwner => AptosFeatureFlag::COLLECTION_OWNER,
-            FeatureFlag::NativeMemoryOperations => AptosFeatureFlag::NATIVE_MEMORY_OPERATIONS,
+            FeatureFlag::NativeMemoryOperations => AptosFeatureFlag::_NATIVE_MEMORY_OPERATIONS,
             FeatureFlag::EnableLoaderV2 => AptosFeatureFlag::_ENABLE_LOADER_V2,
             FeatureFlag::DisallowInitModuleToPublishModules => {
                 AptosFeatureFlag::_DISALLOW_INIT_MODULE_TO_PUBLISH_MODULES
@@ -383,7 +406,7 @@ impl From<FeatureFlag> for AptosFeatureFlag {
             FeatureFlag::EnableCallTreeAndInstructionVMCache => {
                 AptosFeatureFlag::ENABLE_CALL_TREE_AND_INSTRUCTION_VM_CACHE
             },
-            FeatureFlag::PermissionedSigner => AptosFeatureFlag::PERMISSIONED_SIGNER,
+            FeatureFlag::PermissionedSigner => AptosFeatureFlag::_DEPRECATED_PERMISSIONED_SIGNER,
             FeatureFlag::AccountAbstraction => AptosFeatureFlag::ACCOUNT_ABSTRACTION,
             FeatureFlag::BulletproofsBatchNatives => AptosFeatureFlag::BULLETPROOFS_BATCH_NATIVES,
             FeatureFlag::DerivableAccountAbstraction => {
@@ -405,12 +428,41 @@ impl From<FeatureFlag> for AptosFeatureFlag {
             FeatureFlag::MonotonicallyIncreasingCounter => {
                 AptosFeatureFlag::MONOTONICALLY_INCREASING_COUNTER
             },
-            FeatureFlag::EnableCaptureOption => AptosFeatureFlag::ENABLE_CAPTURE_OPTION,
+            FeatureFlag::EnableCaptureOption => AptosFeatureFlag::_ENABLE_CAPTURE_OPTION,
             FeatureFlag::EnableTrustedCode => AptosFeatureFlag::ENABLE_TRUSTED_CODE,
             FeatureFlag::EnableEnumOption => AptosFeatureFlag::ENABLE_ENUM_OPTION,
             FeatureFlag::VMBinaryFormatV9 => AptosFeatureFlag::VM_BINARY_FORMAT_V9,
             FeatureFlag::EnableFrameworkForOption => AptosFeatureFlag::ENABLE_FRAMEWORK_FOR_OPTION,
             FeatureFlag::SessionContinuation => AptosFeatureFlag::SESSION_CONTINUATION,
+            FeatureFlag::EnableFunctionReflection => AptosFeatureFlag::ENABLE_FUNCTION_REFLECTION,
+            FeatureFlag::VMBinaryFormatV10 => AptosFeatureFlag::VM_BINARY_FORMAT_V10,
+            FeatureFlag::EncryptedTransactions => AptosFeatureFlag::ENCRYPTED_TRANSACTIONS,
+            FeatureFlag::PublicStructEnumArgs => AptosFeatureFlag::PUBLIC_STRUCT_ENUM_ARGS,
+            FeatureFlag::MultisigScript => AptosFeatureFlag::MULTISIG_SCRIPT,
+            FeatureFlag::TransactionLimits => AptosFeatureFlag::TRANSACTION_LIMITS,
+            FeatureFlag::VersionedTransactionValidation => {
+                AptosFeatureFlag::VERSIONED_TRANSACTION_VALIDATION
+            },
+            FeatureFlag::StorageSlotNatives => AptosFeatureFlag::STORAGE_SLOT_NATIVES,
+            FeatureFlag::AllowFriendEntryVisibilityDowngrade => {
+                AptosFeatureFlag::ALLOW_FRIEND_ENTRY_VISIBILITY_DOWNGRADE
+            },
+            FeatureFlag::HotnessInEpilogue => AptosFeatureFlag::HOTNESS_IN_EPILOGUE,
+            FeatureFlag::TransactionInfoV1 => AptosFeatureFlag::TRANSACTION_INFO_V1,
+            FeatureFlag::TradingNative => AptosFeatureFlag::TRADING_NATIVE,
+            FeatureFlag::NativePosition => AptosFeatureFlag::NATIVE_POSITION,
+            FeatureFlag::NativeOrderbook => AptosFeatureFlag::NATIVE_ORDERBOOK,
+            FeatureFlag::NativeCollateral => AptosFeatureFlag::NATIVE_COLLATERAL,
+            FeatureFlag::ComputeTradingNativeStateRoots => {
+                AptosFeatureFlag::COMPUTE_TRADING_NATIVE_STATE_ROOTS
+            },
+            FeatureFlag::HotStateRootInTxnInfo => AptosFeatureFlag::HOT_STATE_ROOT_IN_TXN_INFO,
+            FeatureFlag::GasRefundFaMint => AptosFeatureFlag::GAS_REFUND_FA_MINT,
+            FeatureFlag::FunctionValueDispatch => AptosFeatureFlag::FUNCTION_VALUE_DISPATCH,
+            FeatureFlag::DisableClosureBcsSerialization => {
+                AptosFeatureFlag::DISABLE_CLOSURE_BCS_SERIALIZATION
+            },
+            FeatureFlag::LazyModuleInitialization => AptosFeatureFlag::LAZY_MODULE_INITIALIZATION,
         }
     }
 }
@@ -488,6 +540,7 @@ impl From<AptosFeatureFlag> for FeatureFlag {
             },
             AptosFeatureFlag::BN254_STRUCTURES => FeatureFlag::Bn254Structures,
             AptosFeatureFlag::WEBAUTHN_SIGNATURE => FeatureFlag::WebAuthnSignature,
+            AptosFeatureFlag::SLH_DSA_SHA2_128S_SIGNATURE => FeatureFlag::SlhDsaSha2_128sSignature,
             AptosFeatureFlag::_DEPRECATED_RECONFIGURE_WITH_DKG => FeatureFlag::ReconfigureWithDkg,
             AptosFeatureFlag::KEYLESS_ACCOUNTS => FeatureFlag::KeylessAccounts,
             AptosFeatureFlag::KEYLESS_BUT_ZKLESS_ACCOUNTS => FeatureFlag::KeylessButZklessAccounts,
@@ -517,7 +570,7 @@ impl From<AptosFeatureFlag> for FeatureFlag {
             AptosFeatureFlag::PRIMARY_APT_FUNGIBLE_STORE_AT_USER_ADDRESS => {
                 FeatureFlag::PrimaryAPTFungibleStoreAtUserAddress
             },
-            AptosFeatureFlag::OBJECT_NATIVE_DERIVED_ADDRESS => {
+            AptosFeatureFlag::_OBJECT_NATIVE_DERIVED_ADDRESS => {
                 FeatureFlag::ObjectNativeDerivedAddress
             },
             AptosFeatureFlag::DISPATCHABLE_FUNGIBLE_ASSET => FeatureFlag::DispatchableFungibleAsset,
@@ -527,7 +580,7 @@ impl From<AptosFeatureFlag> for FeatureFlag {
             AptosFeatureFlag::OPERATIONS_DEFAULT_TO_FA_APT_STORE => {
                 FeatureFlag::OperationsDefaultToFaAptStore
             },
-            AptosFeatureFlag::AGGREGATOR_V2_IS_AT_LEAST_API => {
+            AptosFeatureFlag::_AGGREGATOR_V2_IS_AT_LEAST_API => {
                 FeatureFlag::AggregatorV2IsAtLeastApi
             },
             AptosFeatureFlag::CONCURRENT_FUNGIBLE_BALANCE => FeatureFlag::ConcurrentFungibleBalance,
@@ -546,7 +599,7 @@ impl From<AptosFeatureFlag> for FeatureFlag {
                 FeatureFlag::UseCompatibilityCheckerV2
             },
             AptosFeatureFlag::ENABLE_ENUM_TYPES => FeatureFlag::EnableEnumTypes,
-            AptosFeatureFlag::ENABLE_RESOURCE_ACCESS_CONTROL => {
+            AptosFeatureFlag::_DEPRECATED_ENABLE_RESOURCE_ACCESS_CONTROL => {
                 FeatureFlag::EnableResourceAccessControl
             },
             AptosFeatureFlag::_REJECT_UNSTABLE_BYTECODE_FOR_SCRIPT => {
@@ -557,7 +610,7 @@ impl From<AptosFeatureFlag> for FeatureFlag {
                 FeatureFlag::TransactionSimulationEnhancement
             },
             AptosFeatureFlag::COLLECTION_OWNER => FeatureFlag::CollectionOwner,
-            AptosFeatureFlag::NATIVE_MEMORY_OPERATIONS => FeatureFlag::NativeMemoryOperations,
+            AptosFeatureFlag::_NATIVE_MEMORY_OPERATIONS => FeatureFlag::NativeMemoryOperations,
             AptosFeatureFlag::_ENABLE_LOADER_V2 => FeatureFlag::EnableLoaderV2,
             AptosFeatureFlag::_DISALLOW_INIT_MODULE_TO_PUBLISH_MODULES => {
                 FeatureFlag::DisallowInitModuleToPublishModules
@@ -565,7 +618,7 @@ impl From<AptosFeatureFlag> for FeatureFlag {
             AptosFeatureFlag::ENABLE_CALL_TREE_AND_INSTRUCTION_VM_CACHE => {
                 FeatureFlag::EnableCallTreeAndInstructionVMCache
             },
-            AptosFeatureFlag::PERMISSIONED_SIGNER => FeatureFlag::PermissionedSigner,
+            AptosFeatureFlag::_DEPRECATED_PERMISSIONED_SIGNER => FeatureFlag::PermissionedSigner,
             AptosFeatureFlag::ACCOUNT_ABSTRACTION => FeatureFlag::AccountAbstraction,
             AptosFeatureFlag::BULLETPROOFS_BATCH_NATIVES => FeatureFlag::BulletproofsBatchNatives,
             AptosFeatureFlag::DERIVABLE_ACCOUNT_ABSTRACTION => {
@@ -587,12 +640,41 @@ impl From<AptosFeatureFlag> for FeatureFlag {
             AptosFeatureFlag::MONOTONICALLY_INCREASING_COUNTER => {
                 FeatureFlag::MonotonicallyIncreasingCounter
             },
-            AptosFeatureFlag::ENABLE_CAPTURE_OPTION => FeatureFlag::EnableCaptureOption,
+            AptosFeatureFlag::_ENABLE_CAPTURE_OPTION => FeatureFlag::EnableCaptureOption,
             AptosFeatureFlag::ENABLE_TRUSTED_CODE => FeatureFlag::EnableTrustedCode,
             AptosFeatureFlag::ENABLE_ENUM_OPTION => FeatureFlag::EnableEnumOption,
             AptosFeatureFlag::VM_BINARY_FORMAT_V9 => FeatureFlag::VMBinaryFormatV9,
             AptosFeatureFlag::ENABLE_FRAMEWORK_FOR_OPTION => FeatureFlag::EnableFrameworkForOption,
             AptosFeatureFlag::SESSION_CONTINUATION => FeatureFlag::SessionContinuation,
+            AptosFeatureFlag::ENABLE_FUNCTION_REFLECTION => FeatureFlag::EnableFunctionReflection,
+            AptosFeatureFlag::VM_BINARY_FORMAT_V10 => FeatureFlag::VMBinaryFormatV10,
+            AptosFeatureFlag::ENCRYPTED_TRANSACTIONS => FeatureFlag::EncryptedTransactions,
+            AptosFeatureFlag::PUBLIC_STRUCT_ENUM_ARGS => FeatureFlag::PublicStructEnumArgs,
+            AptosFeatureFlag::MULTISIG_SCRIPT => FeatureFlag::MultisigScript,
+            AptosFeatureFlag::TRANSACTION_LIMITS => FeatureFlag::TransactionLimits,
+            AptosFeatureFlag::VERSIONED_TRANSACTION_VALIDATION => {
+                FeatureFlag::VersionedTransactionValidation
+            },
+            AptosFeatureFlag::STORAGE_SLOT_NATIVES => FeatureFlag::StorageSlotNatives,
+            AptosFeatureFlag::ALLOW_FRIEND_ENTRY_VISIBILITY_DOWNGRADE => {
+                FeatureFlag::AllowFriendEntryVisibilityDowngrade
+            },
+            AptosFeatureFlag::HOTNESS_IN_EPILOGUE => FeatureFlag::HotnessInEpilogue,
+            AptosFeatureFlag::TRANSACTION_INFO_V1 => FeatureFlag::TransactionInfoV1,
+            AptosFeatureFlag::TRADING_NATIVE => FeatureFlag::TradingNative,
+            AptosFeatureFlag::NATIVE_POSITION => FeatureFlag::NativePosition,
+            AptosFeatureFlag::NATIVE_ORDERBOOK => FeatureFlag::NativeOrderbook,
+            AptosFeatureFlag::NATIVE_COLLATERAL => FeatureFlag::NativeCollateral,
+            AptosFeatureFlag::COMPUTE_TRADING_NATIVE_STATE_ROOTS => {
+                FeatureFlag::ComputeTradingNativeStateRoots
+            },
+            AptosFeatureFlag::HOT_STATE_ROOT_IN_TXN_INFO => FeatureFlag::HotStateRootInTxnInfo,
+            AptosFeatureFlag::GAS_REFUND_FA_MINT => FeatureFlag::GasRefundFaMint,
+            AptosFeatureFlag::FUNCTION_VALUE_DISPATCH => FeatureFlag::FunctionValueDispatch,
+            AptosFeatureFlag::DISABLE_CLOSURE_BCS_SERIALIZATION => {
+                FeatureFlag::DisableClosureBcsSerialization
+            },
+            AptosFeatureFlag::LAZY_MODULE_INITIALIZATION => FeatureFlag::LazyModuleInitialization,
         }
     }
 }

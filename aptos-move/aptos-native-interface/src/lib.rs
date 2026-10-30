@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This crate defines interfaces that enable the extension of the Aptos VM with native functions.
 //!
@@ -13,6 +13,7 @@ mod builder;
 mod context;
 mod errors;
 mod native;
+mod rayon_pool;
 
 #[macro_use]
 mod helpers;
@@ -24,3 +25,4 @@ pub use builder::SafeNativeBuilder;
 pub use context::SafeNativeContext;
 pub use errors::{SafeNativeError, SafeNativeResult};
 pub use native::RawSafeNative;
+pub use rayon_pool::{init_native_rayon_pool, with_native_rayon};

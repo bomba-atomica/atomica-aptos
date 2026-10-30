@@ -9,6 +9,14 @@ license = "Apache-2.0"
 publish = false
 edition = { workspace = true }
 
+[features]
+default = ["inline-vm-casts", "inline-locals"]
+testing = []
+fuzzing = ["proptest", "move-binary-format/fuzzing"]
+force-inline = []
+inline-vm-casts = []
+inline-locals = []
+
 [dependencies]
 ambassador = { workspace = true }
 bcs = { workspace = true }
@@ -31,19 +39,13 @@ triomphe = { workspace = true }
 
 [dev-dependencies]
 claims = { workspace = true }
+criterion = { workspace = true }
 mockall = { workspace = true }
 move-binary-format = { workspace = true, features = ["fuzzing"] }
 once_cell = { workspace = true }
 proptest = { workspace = true }
 rand = { workspace = true }
 
-[features]
-default = [
-    "inline-vm-casts",
-    "inline-locals"
-]
-testing = []
-fuzzing = ["proptest", "move-binary-format/fuzzing"]
-force-inline = []
-inline-vm-casts = []
-inline-locals = []
+[[bench]]
+name = "drop_bench"
+harness = false

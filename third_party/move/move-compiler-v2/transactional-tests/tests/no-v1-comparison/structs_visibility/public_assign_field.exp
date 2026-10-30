@@ -1,0 +1,17 @@
+processed 9 tasks
+task 0 lines 2-19:  publish [module 0x42::test {]
+task 1 lines 21-131:  publish [module 0x42::test_assign_field {]
+task 2 lines 133-133:  run --verbose -- 0x42::test_assign_field::test_simple
+return values: { 42, true }
+task 3 lines 135-135:  run --verbose -- 0x42::test_assign_field::test_simple_ref
+return values: { 42, true }
+task 4 lines 137-137:  run --verbose -- 0x42::test_assign_field::test_assign0
+return values: { 0, false }
+task 5 lines 139-139:  run --verbose -- 0x42::test_assign_field::test_assign1
+return values: 4
+task 6 lines 141-141:  run --verbose -- 0x42::test_assign_field::test_assign_chained
+return values: { { { 0 }, 42 }, { 1 }, { { 2 }, 42 } }
+task 7 lines 143-143:  run --verbose -- 0x42::test_assign_field::test_assign_enum_1
+return values: true
+task 8 lines 145-145:  run --verbose -- 0x42::test_assign_field::test_assign_enum_2
+return values: true

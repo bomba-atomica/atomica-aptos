@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::Result;
 use aptos_schemadb::{
@@ -111,7 +110,7 @@ impl TestDB {
         let mut db_opts = rocksdb::Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
-        let db = DB::open(tmpdir.path(), "test", column_families, &db_opts).unwrap();
+        let db = DB::open(tmpdir.path(), "test", column_families, db_opts).unwrap();
 
         db.put::<TestSchema>(&TestKey(1, 0, 0), &TestValue(100))
             .unwrap();
@@ -300,7 +299,7 @@ impl TestDBWithPrefixExtractor {
         let mut db_opts = rocksdb::Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
-        let db = DB::open_cf(&db_opts, tmpdir.path(), "test_with_prefix", vec![
+        let db = DB::open_cf(db_opts, tmpdir.path(), "test_with_prefix", vec![
             ColumnFamilyDescriptor::new(DEFAULT_COLUMN_FAMILY_NAME, rocksdb::Options::default()),
             ColumnFamilyDescriptor::new(TestSchema::COLUMN_FAMILY_NAME, {
                 let mut opts = rocksdb::Options::default();

@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 #![allow(clippy::arithmetic_side_effects)]
 
 use crate::{
@@ -43,7 +42,7 @@ prop_compose! {
         parent_qc in Just(parent_qc)
     ) -> Block {
         Block::new_proposal(
-            Payload::empty(false, true),
+            Payload::empty(false),
             round,
             aptos_infallible::duration_since_epoch().as_micros() as u64,
             parent_qc,

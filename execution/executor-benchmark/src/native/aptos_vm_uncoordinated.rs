@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::native_config::NATIVE_EXECUTOR_POOL;
 use aptos_block_executor::{
@@ -13,9 +13,8 @@ use aptos_types::{
     state_store::StateView,
     transaction::{
         block_epilogue::BlockEndInfo, signature_verified_transaction::SignatureVerifiedTransaction,
-        AuxiliaryInfo, BlockOutput, Transaction, TransactionOutput,
+        AuxiliaryInfo, BlockError, BlockOutput, Transaction, TransactionOutput,
     },
-    vm_status::VMStatus,
 };
 use aptos_vm::{AptosVM, VMBlockExecutor};
 use aptos_vm_environment::environment::AptosEnvironment;
@@ -36,13 +35,13 @@ impl VMBlockExecutor for AptosVMParallelUncoordinatedBlockExecutor {
         state_view: &(impl StateView + Sync),
         _onchain_config: BlockExecutorConfigFromOnchain,
         transaction_slice_metadata: TransactionSliceMetadata,
-    ) -> Result<BlockOutput<SignatureVerifiedTransaction, TransactionOutput>, VMStatus> {
+    ) -> Result<BlockOutput<SignatureVerifiedTransaction, TransactionOutput>, BlockError> {
         let _timer = BLOCK_EXECUTOR_INNER_EXECUTE_BLOCK.start_timer();
 
         // let features = Features::fetch_config(&state_view).unwrap_or_default();
 
         let env = AptosEnvironment::new(state_view);
-        let vm = AptosVM::new(&env, state_view);
+        let vm = AptosVM::new(&env);
 
         let block_epilogue_txn = Transaction::block_epilogue_v0(
             transaction_slice_metadata
@@ -51,31 +50,29 @@ impl VMBlockExecutor for AptosVMParallelUncoordinatedBlockExecutor {
             BlockEndInfo::new_empty(),
         );
 
-        let transaction_outputs = NATIVE_EXECUTOR_POOL.install(|| {
-            txn_provider
-                .get_txns()
-                .par_iter()
-                .chain(vec![block_epilogue_txn.clone().into()].par_iter())
-                .enumerate()
-                .map(|(txn_idx, txn)| {
-                    let log_context = AdapterLogSchema::new(state_view.id(), txn_idx);
-                    let code_storage = state_view.as_aptos_code_storage(&env);
+        let transaction_outputs = NATIVE_EXECUTOR_POOL
+            .install(|| {
+                txn_provider
+                    .get_txns()
+                    .par_iter()
+                    .chain(vec![block_epilogue_txn.clone().into()].par_iter())
+                    .enumerate()
+                    .map(|(txn_idx, txn)| {
+                        let log_context = AdapterLogSchema::new(state_view.id(), txn_idx);
+                        let code_storage = state_view.as_aptos_code_storage(&env);
 
-                    vm.execute_single_transaction(
-                        txn,
-                        &vm.as_move_resolver(state_view),
-                        &code_storage,
-                        &log_context,
-                        &AuxiliaryInfo::default(),
-                    )
-                    .map(|(_vm_status, vm_output)| {
-                        vm_output
-                            .try_materialize_into_transaction_output(state_view)
-                            .unwrap()
+                        vm.execute_single_transaction(
+                            txn,
+                            &vm.as_move_resolver(state_view),
+                            &code_storage,
+                            &log_context,
+                            &AuxiliaryInfo::default(),
+                        )
+                        .map(|(_vm_status, vm_output)| vm_output.into_transaction_output().unwrap())
                     })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })?;
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .map_err(|status| BlockError::new(status.to_string()))?;
 
         Ok(BlockOutput::new(
             transaction_outputs,

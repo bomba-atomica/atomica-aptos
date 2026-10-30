@@ -1,27 +1,26 @@
-// Copyright (c) Aptos Foundation
-// Parts of the project are originally copyright (c) Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use codespan::Span;
 use codespan_reporting::{
     diagnostic::Severity,
     term::termcolor::{Buffer, WriteColor},
 };
 use move_binary_format::{file_format::CompiledScript, module_script_conversion, CompiledModule};
 use move_bytecode_source_map::source_map::SourceMap;
-use move_command_line_common::files::FileHash;
 use move_model::{
     metadata::LanguageVersion,
-    model::{GlobalEnv, Loc, ModuleId},
+    model::{GlobalEnv, ModuleId},
     sourcifier::Sourcifier,
 };
 use move_stackless_bytecode::{
     astifier,
     function_target_pipeline::{FunctionTargetsHolder, FunctionVariant},
 };
-use std::{collections::BTreeMap, fs, io::Write, mem, path::Path, rc::Rc, vec};
+use std::{fs, io::Write, mem, path::Path, vec};
 
 #[derive(Parser, Clone, Debug, Default)]
 #[clap(author, version, about)]
@@ -227,9 +226,15 @@ impl Decompiler {
         module_id: ModuleId,
         targets: &mut FunctionTargetsHolder,
     ) {
-        // Create FunctionTargetsHolder with stackless bytecode for all functions in the module,
+        // Create FunctionTargetsHolder with stackless bytecode for all functions in the module.
+        // Skip auto-generated struct API wrappers (pack$S, unpack$S, …) – they are
+        // reconstructed by the compiler for public structs and must not appear as regular
+        // function bodies in the decompiled output.
         let module_env = self.env.get_module(module_id);
         for func_env in module_env.get_functions() {
+            if func_env.is_struct_api() {
+                continue;
+            }
             targets.add_target(&func_env)
         }
     }
@@ -297,15 +302,6 @@ impl Decompiler {
     /// information to create new locations (related to differences in Loc representation
     /// with legacy code).
     pub fn empty_source_map(&mut self, name: &str, unique_bytes: &[u8]) -> SourceMap {
-        let file_id = self.env.add_source(
-            FileHash::new_from_bytes(unique_bytes),
-            Rc::new(BTreeMap::new()),
-            name,
-            "",
-            true,
-            true,
-        );
-        let loc = Loc::new(file_id, Span::new(0, 0));
-        SourceMap::new(self.env.to_ir_loc(&loc), None)
+        self.env.empty_source_map(name, unique_bytes)
     }
 }

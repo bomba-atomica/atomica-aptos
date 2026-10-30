@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -270,7 +272,7 @@ fn apply_ratio_round_up(val: u64, nominator: u64, denominator: u64) -> u64 {
     let n = val as u128 * nominator as u128;
     let d = denominator as u128;
 
-    let res = n / d + if n % d == 0 { 0 } else { 1 };
+    let res = n / d + if n.is_multiple_of(d) { 0 } else { 1 };
     if res > u64::MAX as u128 {
         u64::MAX
     } else {

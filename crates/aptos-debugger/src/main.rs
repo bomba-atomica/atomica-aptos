@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::Result;
 use aptos_debugger::Cmd;
@@ -8,8 +8,7 @@ use aptos_push_metrics::MetricsPusher;
 use clap::Parser;
 
 #[cfg(unix)]
-#[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+aptos_jemalloc::setup_jemalloc_for_tools!();
 
 #[tokio::main]
 async fn main() -> Result<()> {

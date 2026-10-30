@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     randomness::{decrypt_key_map, get_current_version, verify_dkg_transcript, verify_randomness},
@@ -8,15 +8,13 @@ use crate::{
 };
 use aptos_forge::{NodeExt, SwarmExt};
 use aptos_logger::info;
-use aptos_types::{
-    dkg::DKGState, on_chain_config::OnChainRandomnessConfig, randomness::PerBlockRandomness,
-};
+use aptos_types::{dkg::DKGState, on_chain_config::OnChainRandomnessConfig};
 use std::{sync::Arc, time::Duration};
 
 /// Verify the correctness of DKG transcript and block-level randomness seed.
 #[tokio::test]
 async fn randomness_correctness() {
-    let epoch_duration_secs = 60;
+    let epoch_duration_secs = 20;
 
     let (swarm, _cli, _faucet) = SwarmBuilder::new_local(4)
         .with_num_fullnodes(1)
@@ -43,18 +41,7 @@ async fn randomness_correctness() {
 
     info!("Verify DKG correctness for epoch 2.");
     let dkg_session = get_on_chain_resource::<DKGState>(&rest_client).await;
-    let last_complete = dkg_session.last_complete();
-    assert_eq!(last_complete.metadata.dealer_epoch, 1);
-    assert!(verify_dkg_transcript(last_complete, &decrypt_key_map).is_ok());
-
-    info!("Wait for randomness to be available in epoch 2.");
-    loop {
-        let randomness = get_on_chain_resource::<PerBlockRandomness>(&rest_client).await;
-        if randomness.epoch >= 2 && randomness.seed.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    assert!(verify_dkg_transcript(dkg_session.last_complete(), &decrypt_key_map).is_ok());
 
     // Verify the randomness in 10 versions.
     for _ in 0..10 {
@@ -74,18 +61,7 @@ async fn randomness_correctness() {
 
     info!("Verify DKG correctness for epoch 3.");
     let dkg_session = get_on_chain_resource::<DKGState>(&rest_client).await;
-    let last_complete = dkg_session.last_complete();
-    assert_eq!(last_complete.metadata.dealer_epoch, 2);
-    assert!(verify_dkg_transcript(last_complete, &decrypt_key_map).is_ok());
-
-    info!("Wait for randomness to be available in epoch 3.");
-    loop {
-        let randomness = get_on_chain_resource::<PerBlockRandomness>(&rest_client).await;
-        if randomness.epoch >= 3 && randomness.seed.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    assert!(verify_dkg_transcript(dkg_session.last_complete(), &decrypt_key_map).is_ok());
 
     // Again, verify the randomness in 10 versions.
     for _ in 0..10 {

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     agg_trx_producer::TAggTranscriptProducer,
@@ -28,8 +28,9 @@ use move_core_types::account_address::AccountAddress;
 use rand::{prelude::StdRng, thread_rng, SeedableRng};
 use std::{sync::Arc, time::Duration};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 enum InnerState {
+    #[default]
     NotStarted,
     InProgress {
         start_time: Duration,
@@ -44,14 +45,9 @@ enum InnerState {
     },
 }
 
-impl Default for InnerState {
-    fn default() -> Self {
-        Self::NotStarted
-    }
-}
-
 pub struct DKGManager<DKG: DKGTrait> {
     dealer_sk: Arc<DKG::DealerPrivateKey>,
+    dealer_pk: Arc<DKG::DealerPublicKey>,
     my_index: usize,
     my_addr: AccountAddress,
     epoch_state: Arc<EpochState>,
@@ -91,6 +87,7 @@ impl InnerState {
 impl<DKG: DKGTrait> DKGManager<DKG> {
     pub fn new(
         dealer_sk: Arc<DKG::DealerPrivateKey>,
+        dealer_pk: Arc<DKG::DealerPublicKey>,
         my_index: usize,
         my_addr: AccountAddress,
         epoch_state: Arc<EpochState>,
@@ -101,6 +98,7 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
             aptos_channel::new(QueueStyle::KLAST, 1, None);
         Self {
             dealer_sk,
+            dealer_pk,
             my_addr,
             my_index,
             epoch_state,
@@ -332,6 +330,7 @@ impl<DKG: DKGTrait> DKGManager<DKG> {
             &input_secret,
             self.my_index as u64,
             &self.dealer_sk,
+            &self.dealer_pk,
         );
 
         let my_transcript = DKGTranscript::new(

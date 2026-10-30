@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Mempool is used to track transactions which have been submitted but not yet
 //! agreed upon.
@@ -38,6 +37,10 @@ pub struct Mempool {
     pub(crate) transactions: TransactionStore,
 
     pub system_transaction_timeout: Duration,
+
+    // Timestamp of the most recently committed block we've observed, used to
+    // compute the `commit_accepted_prev_block` latency for the next commit.
+    prev_commit_block_timestamp: Option<Duration>,
 }
 
 impl Mempool {
@@ -47,6 +50,20 @@ impl Mempool {
             system_transaction_timeout: Duration::from_secs(
                 config.mempool.system_transaction_timeout_secs,
             ),
+            prev_commit_block_timestamp: None,
+        }
+    }
+
+    pub(crate) fn prev_commit_block_timestamp(&self) -> Option<Duration> {
+        self.prev_commit_block_timestamp
+    }
+
+    pub(crate) fn set_prev_commit_block_timestamp(&mut self, block_timestamp: Duration) {
+        if self
+            .prev_commit_block_timestamp
+            .is_none_or(|prev| block_timestamp > prev)
+        {
+            self.prev_commit_block_timestamp = Some(block_timestamp);
         }
     }
 
@@ -66,12 +83,19 @@ impl Mempool {
         replay_protector: ReplayProtector,
         tracked_use_case: Option<(UseCaseKey, &String)>,
         block_timestamp: Duration,
+        prev_block_timestamp: Option<Duration>,
     ) {
         trace!(
             LogSchema::new(LogEntry::RemoveTxn).txns(TxnsLog::new_txn(*sender, replay_protector)),
             is_rejected = false
         );
-        self.log_commit_latency(*sender, replay_protector, tracked_use_case, block_timestamp);
+        self.log_commit_latency(
+            *sender,
+            replay_protector,
+            tracked_use_case,
+            block_timestamp,
+            prev_block_timestamp,
+        );
         if let Some(ranking_score) = self
             .transactions
             .get_ranking_score(sender, replay_protector)
@@ -146,6 +170,9 @@ impl Mempool {
                 bucket,
                 time_delta,
                 priority,
+                insertion_info
+                    .consensus_pulled_counter
+                    .load(Ordering::Relaxed),
             );
         }
     }
@@ -194,6 +221,9 @@ impl Mempool {
         priority: &str,
         tracked_use_case: Option<(UseCaseKey, &String)>,
     ) {
+        let pull_count = insertion_info
+            .consensus_pulled_counter
+            .load(Ordering::Relaxed);
         let parked_duration = if let Some(park_time) = insertion_info.park_time {
             let parked_duration = insertion_info
                 .ready_time
@@ -205,6 +235,7 @@ impl Mempool {
                 bucket,
                 parked_duration,
                 priority,
+                pull_count,
             );
             parked_duration
         } else {
@@ -222,6 +253,7 @@ impl Mempool {
                 bucket,
                 commit_minus_parked,
                 priority,
+                pull_count,
             );
 
             if insertion_info.park_time.is_none() {
@@ -248,6 +280,7 @@ impl Mempool {
         replay_protector: ReplayProtector,
         tracked_use_case: Option<(UseCaseKey, &String)>,
         block_timestamp: Duration,
+        prev_block_timestamp: Option<Duration>,
     ) {
         if let Some((insertion_info, bucket, priority)) = self
             .transactions
@@ -268,14 +301,31 @@ impl Mempool {
 
             let insertion_timestamp =
                 aptos_infallible::duration_since_epoch_at(&insertion_info.insertion_time);
-            if let Some(insertion_to_block) = block_timestamp.checked_sub(insertion_timestamp) {
-                counters::core_mempool_txn_commit_latency(
+            let pull_count = insertion_info
+                .consensus_pulled_counter
+                .load(Ordering::Relaxed);
+            let submitted_by = insertion_info.submitted_by_label();
+            let priority_str = priority.to_string();
+            for (stage, latency) in [
+                (
                     counters::COMMIT_ACCEPTED_BLOCK_LABEL,
-                    insertion_info.submitted_by_label(),
-                    bucket.as_str(),
-                    insertion_to_block,
-                    priority.to_string().as_str(),
-                );
+                    block_timestamp.checked_sub(insertion_timestamp),
+                ),
+                (
+                    counters::COMMIT_ACCEPTED_PREV_BLOCK_LABEL,
+                    prev_block_timestamp.and_then(|prev| prev.checked_sub(insertion_timestamp)),
+                ),
+            ] {
+                if let Some(latency) = latency {
+                    counters::core_mempool_txn_commit_latency(
+                        stage,
+                        submitted_by,
+                        bucket.as_str(),
+                        latency,
+                        priority_str.as_str(),
+                        pull_count,
+                    );
+                }
             }
         }
     }
@@ -350,6 +400,11 @@ impl Mempool {
         let now = aptos_infallible::duration_since_epoch().as_millis() as u64;
 
         if status.code == MempoolStatusCode::Accepted {
+            aptos_transaction_tracing::store::TransactionTraceStore::global().maybe_start_trace(
+                txn.committed_hash(),
+                sender,
+                aptos_infallible::duration_since_epoch().as_micros() as u64,
+            );
             counters::SENDER_BUCKET_FREQUENCIES
                 .with_label_values(&[sender_bucket(
                     &sender,
@@ -368,6 +423,7 @@ impl Mempool {
                     priority
                         .map_or_else(|| "Unknown".to_string(), |priority| priority.to_string())
                         .as_str(),
+                    0,
                 );
             }
         }

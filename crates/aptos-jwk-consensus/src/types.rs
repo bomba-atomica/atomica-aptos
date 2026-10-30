@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_crypto::bls12381::Signature;
 use aptos_enum_conversion_derive::EnumConversion;
@@ -100,8 +100,9 @@ impl Drop for QuorumCertProcessGuard {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ConsensusState<T: Debug + Clone + Eq + PartialEq> {
+    #[default]
     NotStarted,
     InProgress {
         my_proposal: T,
@@ -161,11 +162,5 @@ impl<T: Debug + Clone + Eq + PartialEq> ConsensusState<T> {
             | ConsensusState::Finished { my_proposal, .. } => my_proposal.clone(),
             _ => panic!("my_proposal unavailable"),
         }
-    }
-}
-
-impl<T: Debug + Clone + Eq + PartialEq> Default for ConsensusState<T> {
-    fn default() -> Self {
-        Self::NotStarted
     }
 }

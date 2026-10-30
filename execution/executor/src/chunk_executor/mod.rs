@@ -1,12 +1,14 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
 use crate::{
     logging::{LogEntry, LogSchema},
-    metrics::{APPLY_CHUNK, CHUNK_OTHER_TIMERS, COMMIT_CHUNK, CONCURRENCY_GAUGE, EXECUTE_CHUNK},
+    metrics::{
+        APPLY_CHUNK, CHUNK_EXECUTOR_REQUEST_REJECTED, CHUNK_OTHER_TIMERS, COMMIT_CHUNK,
+        CONCURRENCY_GAUGE, EXECUTE_CHUNK,
+    },
     types::{
         executed_chunk::ExecutedChunk, partial_state_compute_result::PartialStateComputeResult,
     },
@@ -15,17 +17,18 @@ use crate::{
         do_state_checkpoint::DoStateCheckpoint,
     },
 };
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use aptos_executor_types::{
     ChunkCommitNotification, ChunkExecutorTrait, TransactionReplayer, VerifyExecutionMode,
 };
 use aptos_experimental_runtimes::thread_manager::THREAD_MANAGER;
 use aptos_infallible::{Mutex, RwLock};
 use aptos_logger::prelude::*;
-use aptos_metrics_core::{IntGaugeVecHelper, TimerHelper};
+use aptos_metrics_core::{IntCounterVecHelper, IntGaugeVecHelper, TimerHelper};
 use aptos_storage_interface::{
     state_store::{
-        state::State, state_summary::ProvableStateSummary,
+        state::State,
+        state_summary::{ProvablePositionStateSummary, ProvableStateSummary},
         state_view::cached_state_view::CachedStateView,
     },
     DbReaderWriter,
@@ -37,6 +40,7 @@ use aptos_types::{
     },
     contract_event::ContractEvent,
     ledger_info::LedgerInfoWithSignatures,
+    on_chain_config::{Features, OnChainConfig},
     state_store::StateViewId,
     transaction::{
         signature_verified_transaction::SignatureVerifiedTransaction, AuxiliaryInfo,
@@ -67,32 +71,117 @@ pub mod chunk_commit_queue;
 pub mod chunk_result_verifier;
 pub mod transaction_chunk;
 
+/// `BlockExecutorConfigFromOnchain` for executing a chunk against the given
+/// parent state.
+///
+/// Chunks don't cross epoch boundaries, so the parent state's features
+/// determine the write-set and `TransactionInfo` formats that match the
+/// committed proofs.
+///
+/// When the `Features` resource is absent in the parent state — pre-genesis
+/// replay, or test setups whose genesis doesn't write it — fall back to
+/// `new_no_block_limit()`'s defaults, matching `db_bootstrapper`.
+fn chunk_onchain_config(state_view: &CachedStateView) -> Result<BlockExecutorConfigFromOnchain> {
+    // State sync executor shouldn't have block gas limit.
+    let base = BlockExecutorConfigFromOnchain::new_no_block_limit();
+    Ok(match Features::fetch_config(state_view)? {
+        Some(features) => base.with_features(&features),
+        None => {
+            info!(
+                next_version = state_view.next_version(),
+                "No `Features` resource in parent state; chunk executes with no on-chain features applied."
+            );
+            base
+        },
+    })
+}
+
+enum ChunkExecutorState<V> {
+    Uninitialized,
+    Active(ChunkExecutorInner<V>),
+    Finished,
+}
+
+impl<V> ChunkExecutorState<V> {
+    fn rejection_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Uninitialized => Some("uninitialized"),
+            Self::Active(_) => None,
+            Self::Finished => Some("finished"),
+        }
+    }
+}
+
 pub struct ChunkExecutor<V> {
     db: DbReaderWriter,
-    inner: RwLock<Option<ChunkExecutorInner<V>>>,
+    state: RwLock<ChunkExecutorState<V>>,
 }
 
 impl<V: VMBlockExecutor> ChunkExecutor<V> {
     pub fn new(db: DbReaderWriter) -> Self {
         Self {
             db,
-            inner: RwLock::new(None),
+            state: RwLock::new(ChunkExecutorState::Uninitialized),
         }
     }
 
-    fn maybe_initialize(&self) -> Result<()> {
-        if self.inner.read().is_none() {
-            self.reset()?;
+    fn maybe_initialize(&self, entry_point: &'static str) -> Result<()> {
+        {
+            let state = self.state.read();
+            match &*state {
+                ChunkExecutorState::Uninitialized => {},
+                ChunkExecutorState::Active(_) => return Ok(()),
+                ChunkExecutorState::Finished => {
+                    CHUNK_EXECUTOR_REQUEST_REJECTED.inc_with(&[entry_point, "finished"]);
+                    bail!(
+                        "Chunk executor has been finished, rejecting {} request",
+                        entry_point
+                    );
+                },
+            }
         }
-        Ok(())
+
+        let mut state = self.state.write();
+        match &*state {
+            ChunkExecutorState::Uninitialized => {
+                *state = ChunkExecutorState::Active(ChunkExecutorInner::new(self.db.clone())?);
+                Ok(())
+            },
+            ChunkExecutorState::Active(_) => Ok(()),
+            ChunkExecutorState::Finished => {
+                CHUNK_EXECUTOR_REQUEST_REJECTED.inc_with(&[entry_point, "finished"]);
+                Err(anyhow!(
+                    "Chunk executor has been finished, rejecting {} request",
+                    entry_point
+                ))
+            },
+        }
     }
 
-    fn with_inner<F, T>(&self, f: F) -> Result<T>
+    /// Runs `f` against the initialized inner executor.
+    ///
+    /// Errors out if there is no active executor. This protects handoff from late
+    /// requests after state sync calls `finish()`; the next owner resets from the
+    /// committed version.
+    fn with_inner<F, T>(&self, entry_point: &'static str, f: F) -> Result<T>
     where
         F: FnOnce(&ChunkExecutorInner<V>) -> Result<T>,
     {
-        let locked = self.inner.read();
-        let inner = locked.as_ref().expect("not reset");
+        let state = self.state.read();
+        let inner = match &*state {
+            ChunkExecutorState::Active(inner) => inner,
+            state => {
+                let reason = state
+                    .rejection_reason()
+                    .expect("The active state was handled above");
+                CHUNK_EXECUTOR_REQUEST_REJECTED.inc_with(&[entry_point, reason]);
+                return Err(anyhow!(
+                    "Chunk executor is {}, rejecting {} request",
+                    reason,
+                    entry_point
+                ));
+            },
+        };
 
         let has_pending_pre_commit = inner.has_pending_pre_commit.load(Ordering::Acquire);
         f(inner).map_err(|error| {
@@ -107,7 +196,10 @@ impl<V: VMBlockExecutor> ChunkExecutor<V> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.with_inner(|inner| Ok(inner.is_empty())).unwrap()
+        match &*self.state.read() {
+            ChunkExecutorState::Active(inner) => inner.is_empty(),
+            ChunkExecutorState::Uninitialized | ChunkExecutorState::Finished => true,
+        }
     }
 }
 
@@ -121,7 +213,7 @@ impl<V: VMBlockExecutor> ChunkExecutorTrait for ChunkExecutor<V> {
         let _guard = CONCURRENCY_GAUGE.concurrency_with(&["chunk", "enqueue_by_execution"]);
         let _timer = EXECUTE_CHUNK.start_timer();
 
-        self.maybe_initialize()?;
+        self.maybe_initialize("enqueue_by_execution")?;
 
         // Verify input data.
         // In consensus-only mode, txn_list_with_proof is fake.
@@ -153,7 +245,9 @@ impl<V: VMBlockExecutor> ChunkExecutorTrait for ChunkExecutor<V> {
         });
 
         // Call the shared implementation.
-        self.with_inner(|inner| inner.enqueue_chunk(chunk, chunk_verifier, "execute"))
+        self.with_inner("enqueue_by_execution", |inner| {
+            inner.enqueue_chunk(chunk, chunk_verifier, "execute")
+        })
     }
 
     fn enqueue_chunk_by_transaction_outputs(
@@ -164,6 +258,8 @@ impl<V: VMBlockExecutor> ChunkExecutorTrait for ChunkExecutor<V> {
     ) -> Result<()> {
         let _guard = CONCURRENCY_GAUGE.concurrency_with(&["chunk", "enqueue_by_outputs"]);
         let _timer = APPLY_CHUNK.start_timer();
+
+        self.maybe_initialize("enqueue_by_outputs")?;
 
         // Verify input data.
         THREAD_MANAGER.get_exe_cpu_pool().install(|| {
@@ -197,32 +293,34 @@ impl<V: VMBlockExecutor> ChunkExecutorTrait for ChunkExecutor<V> {
         });
 
         // Call the shared implementation.
-        self.with_inner(|inner| inner.enqueue_chunk(chunk, chunk_verifier, "apply"))
+        self.with_inner("enqueue_by_outputs", |inner| {
+            inner.enqueue_chunk(chunk, chunk_verifier, "apply")
+        })
     }
 
     fn update_ledger(&self) -> Result<()> {
         let _guard = CONCURRENCY_GAUGE.concurrency_with(&["chunk", "update_ledger"]);
 
-        self.with_inner(|inner| inner.update_ledger())
+        self.with_inner("update_ledger", |inner| inner.update_ledger())
     }
 
     fn commit_chunk(&self) -> Result<ChunkCommitNotification> {
         let _guard = CONCURRENCY_GAUGE.concurrency_with(&["chunk", "commit_chunk"]);
 
-        self.with_inner(|inner| inner.commit_chunk())
+        self.with_inner("commit_chunk", |inner| inner.commit_chunk())
     }
 
     fn reset(&self) -> Result<()> {
         let _guard = CONCURRENCY_GAUGE.concurrency_with(&["chunk", "reset"]);
 
-        *self.inner.write() = Some(ChunkExecutorInner::new(self.db.clone())?);
+        *self.state.write() = ChunkExecutorState::Active(ChunkExecutorInner::new(self.db.clone())?);
         Ok(())
     }
 
     fn finish(&self) {
         let _guard = CONCURRENCY_GAUGE.concurrency_with(&["chunk", "finish"]);
 
-        *self.inner.write() = None;
+        *self.state.write() = ChunkExecutorState::Finished;
     }
 }
 
@@ -337,25 +435,54 @@ impl<V: VMBlockExecutor> ChunkExecutorInner<V> {
     pub fn update_ledger(&self) -> Result<()> {
         let _timer = CHUNK_OTHER_TIMERS.timer_with(&["chunk_update_ledger_total"]);
 
-        let (parent_state_summary, parent_accumulator, chunk) =
+        let (parent_state_summary, parent_position_state_summary, parent_accumulator, chunk) =
             self.commit_queue.lock().next_chunk_to_update_ledger()?;
         let ChunkToUpdateLedger {
             output,
             chunk_verifier,
         } = chunk;
 
-        let state_checkpoint_output = DoStateCheckpoint::run(
-            &output.execution_output,
-            &parent_state_summary,
-            &ProvableStateSummary::new_persisted(self.db.reader.as_ref())?,
-            Some(
-                chunk_verifier
-                    .transaction_infos()
+        let txn_infos = chunk_verifier.transaction_infos();
+        let known_state_checkpoints = Some(
+            txn_infos
+                .iter()
+                .map(|t| t.state_checkpoint_hash())
+                .collect_vec(),
+        );
+        let known_hot_state_checkpoints =
+            output.execution_output.hot_state_root_in_txn_info.then(|| {
+                txn_infos
                     .iter()
-                    .map(|t| t.state_checkpoint_hash())
-                    .collect_vec(),
-            ),
-        )?;
+                    .map(|t| t.hot_state_checkpoint_hash())
+                    .collect_vec()
+            });
+        let compute_trading_native_state_roots =
+            output.execution_output.compute_trading_native_state_roots;
+        let known_position_state_checkpoints = compute_trading_native_state_roots.then(|| {
+            txn_infos
+                .iter()
+                .map(|t| t.position_state_checkpoint_hash())
+                .collect_vec()
+        });
+        let position_persisted = compute_trading_native_state_roots
+            .then(|| ProvablePositionStateSummary::new_persisted(self.db.reader.as_ref()))
+            .transpose()?;
+        let state_checkpoint_output = DoStateCheckpoint::run()
+            .execution_output(&output.execution_output)
+            .parent_state_summary(&parent_state_summary)
+            .persisted_state_summary(&ProvableStateSummary::new_persisted(
+                self.db.reader.as_ref(),
+            )?)
+            .maybe_known_state_checkpoints(known_state_checkpoints)
+            .maybe_known_hot_state_checkpoints(known_hot_state_checkpoints)
+            // Parent position summary is chained across chunks by the commit
+            // queue (seeded from the pre-committed position tip); the persisted
+            // base supplies cold-key proofs. The known-hash check validates the
+            // computed root against the committed TransactionInfos.
+            .maybe_parent_position_state_summary(parent_position_state_summary.as_ref())
+            .maybe_persisted_position_state_summary(position_persisted.as_ref())
+            .maybe_known_position_state_checkpoints(known_position_state_checkpoints)
+            .build()?;
 
         let ledger_update_output = DoLedgerUpdate::run(
             &output.execution_output,
@@ -422,12 +549,9 @@ impl<V: VMBlockExecutor> TransactionReplayer for ChunkExecutor<V> {
     ) -> Result<usize> {
         let _guard = CONCURRENCY_GAUGE.concurrency_with(&["replayer", "replay"]);
 
-        self.maybe_initialize()?;
-        self.inner
-            .read()
-            .as_ref()
-            .expect("not reset")
-            .enqueue_chunks(
+        self.maybe_initialize("replayer_enqueue")?;
+        self.with_inner("replayer_enqueue", |inner| {
+            inner.enqueue_chunks(
                 transactions,
                 persisted_aux_info,
                 transaction_infos,
@@ -435,12 +559,13 @@ impl<V: VMBlockExecutor> TransactionReplayer for ChunkExecutor<V> {
                 event_vecs,
                 verify_execution_mode,
             )
+        })
     }
 
     fn commit(&self) -> Result<Version> {
         let _guard = CONCURRENCY_GAUGE.concurrency_with(&["replayer", "commit"]);
 
-        self.inner.read().as_ref().expect("not reset").commit()
+        self.with_inner("replayer_commit", |inner| inner.commit())
     }
 }
 
@@ -616,14 +741,14 @@ impl<V: VMBlockExecutor> ChunkExecutorInner<V> {
             .take((end_version - begin_version) as usize)
             .map(|persisted_aux_info| AuxiliaryInfo::new(*persisted_aux_info, None))
             .collect::<Vec<_>>();
-        // State sync executor shouldn't have block gas limit.
+        let onchain_config = chunk_onchain_config(&state_view)?;
         let execution_output = DoGetExecutionOutput::by_transaction_execution::<V>(
             &V::new(),
             txns.into(),
             auxiliary_info,
             &parent_state,
             state_view,
-            BlockExecutorConfigFromOnchain::new_no_block_limit(),
+            onchain_config,
             TransactionSliceMetadata::chunk(begin_version, end_version),
         )?;
         // not `zip_eq`, deliberately

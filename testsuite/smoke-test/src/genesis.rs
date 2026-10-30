@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     smoke_test_environment::SwarmBuilder,
@@ -23,7 +22,9 @@ use aptos_forge::{
     wait_for_all_nodes_to_catchup, LocalNode, LocalSwarm, Node, NodeExt, SwarmExt, Validator,
 };
 use aptos_temppath::TempPath;
-use aptos_types::{transaction::Transaction, waypoint::Waypoint};
+use aptos_types::{
+    on_chain_config::OnChainChunkyDKGConfig, transaction::Transaction, waypoint::Waypoint,
+};
 use move_core_types::language_storage::CORE_CODE_ADDRESS;
 use regex::Regex;
 use reqwest::Client;
@@ -51,7 +52,7 @@ use std::{
 /// 7. Verify that the VFNs are able to sync with the rest of the network.
 async fn test_fullnode_genesis_transaction_flow() {
     println!("0. Building the Aptos CLI and debugger!");
-    let aptos_debugger = workspace_builder::get_bin("aptos-debugger");
+    workspace_builder::get_bin("aptos-debugger");
     let aptos_cli = workspace_builder::get_bin("aptos");
 
     println!("1. Starting a 4 node validator network with 2 VFNs!");
@@ -60,6 +61,11 @@ async fn test_fullnode_genesis_transaction_flow() {
     let (mut swarm, cli_test_framework, _) = SwarmBuilder::new_local(num_validators)
         .with_num_fullnodes(num_fullnodes)
         .with_aptos()
+        .with_init_genesis_config(std::sync::Arc::new(|conf| {
+            // Chunky DKG churns reconfigs which races with the sync_only halt/
+            // restart flow this test exercises; keep it off.
+            conf.chunky_dkg_config_override = Some(OnChainChunkyDKGConfig::default_disabled());
+        }))
         .build_with_cli(0)
         .await;
 
@@ -97,7 +103,7 @@ async fn test_fullnode_genesis_transaction_flow() {
     println!("6. Applying the genesis transaction to the first validator!");
     let first_validator_config = swarm.validators_mut().next().unwrap().config().clone();
     let first_validator_storage_dir = first_validator_config.storage.dir();
-    let output = Command::new(aptos_debugger.as_path())
+    let output = workspace_builder::get_aptos_debugger_command()
         .current_dir(workspace_root())
         .args(vec![
             "aptos-db",
@@ -196,13 +202,18 @@ async fn test_fullnode_genesis_transaction_flow() {
 /// 7. Verify that a failed validator node is able to db-restore and rejoin the network.
 async fn test_validator_genesis_transaction_and_db_restore_flow() {
     println!("0. Building the Aptos CLI and debugger!");
-    let aptos_debugger = workspace_builder::get_bin("aptos-debugger");
+    workspace_builder::get_bin("aptos-debugger");
     let aptos_cli = workspace_builder::get_bin("aptos");
 
     println!("1. Starting a 5 node validator network!");
     let num_validators = 5;
     let (mut swarm, cli_test_framework, _) = SwarmBuilder::new_local(num_validators)
         .with_aptos()
+        .with_init_genesis_config(std::sync::Arc::new(|conf| {
+            // Chunky DKG churns reconfigs which races with the sync_only halt/
+            // db-wipe/restart flow this test exercises; keep it off.
+            conf.chunky_dkg_config_override = Some(OnChainChunkyDKGConfig::default_disabled());
+        }))
         .build_with_cli(0)
         .await;
 
@@ -234,7 +245,7 @@ async fn test_validator_genesis_transaction_and_db_restore_flow() {
     println!("7. Applying the genesis transaction to the first validator!");
     let first_validator_config = swarm.validators_mut().next().unwrap().config().clone();
     let first_validator_storage_dir = first_validator_config.storage.dir();
-    let output = Command::new(aptos_debugger.as_path())
+    let output = workspace_builder::get_aptos_debugger_command()
         .current_dir(workspace_root())
         .args(vec![
             "aptos-db",

@@ -1,18 +1,16 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::counters::GLOBAL_LAYOUT_CACHE_MISSES;
 use aptos_mvhashmap::types::TxnIndex;
 use aptos_types::{
-    error::PanicError, transaction::BlockExecutableTransaction, vm::modules::AptosModuleExtension,
-    write_set::TransactionWrite,
+    error::PanicError, state_store::state_value::StateValue, vm::modules::AptosModuleExtension,
 };
-use aptos_vm_types::module_write_set::ModuleWrite;
 use dashmap::DashMap;
-use hashbrown::HashMap;
+use hashbrown::{Equivalent, HashMap};
 use move_binary_format::{errors::PartialVMResult, CompiledModule};
 use move_core_types::language_storage::ModuleId;
-use move_vm_runtime::{LayoutCacheEntry, Module, RuntimeEnvironment, StructKey};
+use move_vm_runtime::{LayoutCacheEntry, LayoutCacheKey, Module, RuntimeEnvironment};
 use move_vm_types::code::{ModuleCache, ModuleCode, WithSize};
 use std::{
     hash::Hash,
@@ -93,7 +91,7 @@ pub struct GlobalModuleCache<K, D, V, E> {
     size: usize,
     /// Cached layouts of structs or enums. This cache stores roots only and is invalidated when
     /// modules are published.
-    struct_layouts: DashMap<StructKey, LayoutCacheEntry>,
+    struct_layouts: DashMap<LayoutCacheKey, LayoutCacheEntry>,
 }
 
 impl<K, D, V, E> GlobalModuleCache<K, D, V, E>
@@ -129,7 +127,10 @@ where
 
     /// Returns the module stored in cache. If the module has not been cached, or it exists but is
     /// overridden, [None] is returned.
-    pub fn get(&self, key: &K) -> Option<Arc<ModuleCode<D, V, E>>> {
+    pub fn get<Q>(&self, key: &Q) -> Option<Arc<ModuleCode<D, V, E>>>
+    where
+        Q: Hash + Equivalent<K>,
+    {
         self.module_cache.get(key).and_then(|entry| {
             entry
                 .is_not_overridden()
@@ -153,22 +154,20 @@ where
     }
 
     /// Flushes all caches.
-    pub fn flush(&mut self) {
+    pub fn flush_all_caches(&mut self) {
         self.module_cache.clear();
         self.size = 0;
         self.struct_layouts.clear();
     }
 
-    /// Flushes only layout caches.
+    /// Flushes only layout caches. Used for memory management only (flush when
+    /// cache size gets too large).
     pub fn flush_layout_cache(&self) {
-        // TODO(layouts):
-        //   Flushing is only needed because of enums. Once we refactor layouts to store a single
-        //   variant instead, this can be removed.
         self.struct_layouts.clear();
     }
 
     /// Returns layout entry if it exists in global cache.
-    pub(crate) fn get_struct_layout_entry(&self, key: &StructKey) -> Option<LayoutCacheEntry> {
+    pub(crate) fn get_struct_layout_entry(&self, key: &LayoutCacheKey) -> Option<LayoutCacheEntry> {
         match self.struct_layouts.get(key) {
             None => {
                 GLOBAL_LAYOUT_CACHE_MISSES.inc();
@@ -180,13 +179,17 @@ where
 
     pub(crate) fn store_struct_layout_entry(
         &self,
-        key: &StructKey,
+        key: &LayoutCacheKey,
         entry: LayoutCacheEntry,
     ) -> PartialVMResult<()> {
         if let dashmap::Entry::Vacant(e) = self.struct_layouts.entry(*key) {
             e.insert(entry);
         }
         Ok(())
+    }
+
+    pub(crate) fn remove_struct_layout_entry(&self, key: &LayoutCacheKey) {
+        self.struct_layouts.remove(key);
     }
 
     /// Inserts modules into the cache.
@@ -268,9 +271,11 @@ where
     }
 }
 
-/// Converts module write into cached module representation, and adds it to the module cache.
-pub(crate) fn add_module_write_to_module_cache<T: BlockExecutableTransaction>(
-    write: &ModuleWrite<T::Value>,
+/// Converts a published module's state value into the cached module representation, and adds it
+/// to the module cache.
+pub(crate) fn add_module_write_to_module_cache(
+    module_id: &ModuleId,
+    state_value: StateValue,
     txn_idx: TxnIndex,
     runtime_environment: &RuntimeEnvironment,
     global_module_cache: &GlobalModuleCache<ModuleId, CompiledModule, Module, AptosModuleExtension>,
@@ -282,11 +287,6 @@ pub(crate) fn add_module_write_to_module_cache<T: BlockExecutableTransaction>(
         Version = Option<TxnIndex>,
     >,
 ) -> Result<(), PanicError> {
-    let state_value = write
-        .write_op()
-        .as_state_value()
-        .ok_or_else(|| PanicError::CodeInvariantError("Modules cannot be deleted".to_string()))?;
-
     // Since we have successfully serialized the module when converting into this transaction
     // write, the deserialization should never fail.
     let compiled_module = runtime_environment
@@ -298,23 +298,15 @@ pub(crate) fn add_module_write_to_module_cache<T: BlockExecutableTransaction>(
     let extension = Arc::new(AptosModuleExtension::new(state_value));
 
     per_block_module_cache
-        .insert_deserialized_module(
-            write.module_id().clone(),
-            compiled_module,
-            extension,
-            Some(txn_idx),
-        )
+        .insert_deserialized_module(module_id.clone(), compiled_module, extension, Some(txn_idx))
         .map_err(|err| {
             let msg = format!(
-                "Failed to insert code for module {}::{} at version {} to module cache: {:?}",
-                write.module_address(),
-                write.module_name(),
-                txn_idx,
-                err
+                "Failed to insert code for module {} at version {} to module cache: {:?}",
+                module_id, txn_idx, err
             );
             PanicError::CodeInvariantError(msg)
         })?;
-    global_module_cache.mark_overridden(write.module_id());
+    global_module_cache.mark_overridden(module_id);
     Ok(())
 }
 
@@ -375,7 +367,7 @@ mod test {
         assert_eq!(cache.num_modules(), 2);
         assert_eq!(cache.size_in_bytes(), 24);
 
-        cache.flush();
+        cache.flush_all_caches();
         assert_eq!(cache.num_modules(), 0);
         assert_eq!(cache.size_in_bytes(), 0);
     }

@@ -1,10 +1,9 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_consensus_types::common::Round;
 use aptos_types::{
-    on_chain_config::{OnChainJWKConsensusConfig, OnChainRandomnessConfig},
+    on_chain_config::{OnChainChunkyDKGConfig, OnChainJWKConsensusConfig, OnChainRandomnessConfig},
     validator_txn::ValidatorTransaction,
 };
 
@@ -16,12 +15,13 @@ pub mod time_service;
 pub fn is_vtxn_expected(
     randomness_config: &OnChainRandomnessConfig,
     jwk_consensus_config: &OnChainJWKConsensusConfig,
+    chunky_dkg_config: &OnChainChunkyDKGConfig,
     vtxn: &ValidatorTransaction,
 ) -> bool {
     match vtxn {
         ValidatorTransaction::DKGResult(_) => randomness_config.randomness_enabled(),
         ValidatorTransaction::ObservedJWKUpdate(_) => jwk_consensus_config.jwk_consensus_enabled(),
-        ValidatorTransaction::TimelockShare(_) => randomness_config.randomness_enabled(),
+        ValidatorTransaction::ChunkyDKGResult(_) => chunky_dkg_config.chunky_dkg_enabled(),
     }
 }
 

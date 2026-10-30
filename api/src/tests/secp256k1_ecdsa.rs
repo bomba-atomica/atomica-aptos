@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::new_test_context_with_orderless_flags;
 use aptos_api_test_context::current_function_name;
@@ -49,18 +48,21 @@ async fn test_multi_secp256k1_ecdsa(
     )
     .account_address();
 
-    // Set a dummy key
+    // NOTE: LocalAccount requires a private key, but we use a dummy Ed25519 key here as a
+    // placeholder. This key is never used for actual authentication because:
+    // 1. create_user_account() and mint_user_account() are signed by the root/faucet account
+    // 2. The transfer transaction will be re-signed below with the actual secp256k1 key
     let key_bytes =
         hex::decode("a38ba78b1a0fbfc55e2c5dfdedf48d1172283d0f7c59fd64c02d811130a2f4b2").unwrap();
     let ed25519_private_key: Ed25519PrivateKey = (&key_bytes[..]).try_into().unwrap();
     let mut account = LocalAccount::new(address, ed25519_private_key, 0);
 
     let txn0 = context.create_user_account(&account).await;
-    context.commit_block(&vec![txn0]).await;
+    context.commit_block(&[txn0]).await;
     let txn1 = context.mint_user_account(&account).await;
-    context.commit_block(&vec![txn1]).await;
+    context.commit_block(&[txn1]).await;
     let txn2 = context.create_user_account(&other).await;
-    context.commit_block(&vec![txn2]).await;
+    context.commit_block(&[txn2]).await;
 
     let current_ledger_version = u64::from(context.get_latest_ledger_info().ledger_version);
     let ed22519_txn = context.account_transfer(&mut account, &other, 5);
@@ -124,18 +126,21 @@ async fn test_secp256k1_ecdsa(
     let address = AuthenticationKey::any_key(AnyPublicKey::secp256k1_ecdsa(public_key.clone()))
         .account_address();
 
-    // Set a dummy key
+    // NOTE: LocalAccount requires a private key, but we use a dummy Ed25519 key here as a
+    // placeholder. This key is never used for actual authentication because:
+    // 1. create_user_account() and mint_user_account() are signed by the root/faucet account
+    // 2. The transfer transaction will be re-signed below with the actual secp256k1 key
     let key_bytes =
         hex::decode("a38ba78b1a0fbfc55e2c5dfdedf48d1172283d0f7c59fd64c02d811130a2f4b2").unwrap();
     let ed25519_private_key: Ed25519PrivateKey = (&key_bytes[..]).try_into().unwrap();
     let mut account = LocalAccount::new(address, ed25519_private_key, 0);
 
     let txn0 = context.create_user_account(&account).await;
-    context.commit_block(&vec![txn0]).await;
+    context.commit_block(&[txn0]).await;
     let txn1 = context.mint_user_account(&account).await;
-    context.commit_block(&vec![txn1]).await;
+    context.commit_block(&[txn1]).await;
     let txn2 = context.create_user_account(&other).await;
-    context.commit_block(&vec![txn2]).await;
+    context.commit_block(&[txn2]).await;
 
     let current_ledger_version = u64::from(context.get_latest_ledger_info().ledger_version);
     let ed22519_txn = context.account_transfer(&mut account, &other, 5);

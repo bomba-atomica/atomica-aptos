@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -9,6 +8,8 @@
 //! This crate contains helpers for executing tests against the Aptos VM.
 
 use aptos_types::{transaction::TransactionStatus, vm_status::KeptVMStatus};
+// Re-export SerializedReturnValues for use in e2e tests that call private functions
+pub use move_vm_runtime::move_vm::SerializedReturnValues;
 
 pub mod account;
 pub mod account_universe;

@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -40,13 +41,16 @@ pub mod constant_folder;
 pub mod exp_builder;
 pub mod exp_generator;
 pub mod exp_rewriter;
+pub mod exp_simplifier;
 pub mod intrinsics;
+pub mod memory_labels;
 pub mod metadata;
 pub mod model;
 pub mod options;
 pub mod pragmas;
 pub mod pureness_checker;
 pub mod sourcifier;
+pub mod spec_derivation;
 pub mod spec_translator;
 pub mod symbol;
 pub mod ty;
@@ -77,8 +81,6 @@ pub fn run_model_builder_in_compiler_mode(
     skip_attribute_checks: bool,
     known_attributes: &BTreeSet<String>,
     language_version: LanguageVersion,
-    warn_of_deprecation_use: bool,
-    warn_of_deprecation_use_in_aptos_libs: bool,
     compile_test_code: bool,
     compile_verify_code: bool,
 ) -> anyhow::Result<GlobalEnv> {
@@ -97,11 +99,8 @@ pub fn run_model_builder_in_compiler_mode(
         ModelBuilderOptions {
             language_version,
             compile_for_testing: compile_test_code,
-            ..ModelBuilderOptions::default()
         },
         Flags::model_compilation()
-            .set_warn_of_deprecation_use(warn_of_deprecation_use)
-            .set_warn_of_deprecation_use_in_aptos_libs(warn_of_deprecation_use_in_aptos_libs)
             .set_skip_attribute_checks(skip_attribute_checks)
             .set_verify(compile_verify_code)
             .set_keep_testing_functions(compile_test_code)
@@ -259,34 +258,21 @@ pub fn run_model_builder_with_options_and_compilation_flags<
 
     // Extract the module/script dependency closure
     let mut visited_modules = BTreeSet::new();
-    // Extract the module dependency closure for the vector module
-    let mut vector_and_its_dependencies = BTreeSet::new();
-    // Extract the module dependency closure for the std::cmp module
-    let mut cmp_and_its_dependencies = BTreeSet::new();
-    let mut seen_vector = false;
-    let mut seen_cmp = false;
+    // Extract the module dependency closures for the implicit modules.
+    let mut implicit_modules = [
+        ImplicitModuleDeps::new(well_known::VECTOR_MODULE),
+        ImplicitModuleDeps::new(well_known::CMP_MODULE),
+        ImplicitModuleDeps::new(well_known::STRING_MODULE),
+        ImplicitModuleDeps::new(well_known::STRING_UTILS_MODULE),
+        ImplicitModuleDeps::new(well_known::SIGNER_MODULE),
+    ];
     for (_, mident, mdef) in &expansion_ast.modules {
         let src_file_hash = mdef.loc.file_hash();
         if !dep_files.contains(&src_file_hash) {
             collect_related_modules_recursive(mident, &expansion_ast.modules, &mut visited_modules);
         }
-        if !seen_vector && is_vector(*mident) {
-            seen_vector = true;
-            // Collect the vector module and its dependencies.
-            collect_related_modules_recursive(
-                mident,
-                &expansion_ast.modules,
-                &mut vector_and_its_dependencies,
-            );
-        }
-        if !seen_cmp && is_cmp(*mident) {
-            seen_cmp = true;
-            // Collect the cmp module and its dependencies.
-            collect_related_modules_recursive(
-                mident,
-                &expansion_ast.modules,
-                &mut cmp_and_its_dependencies,
-            );
+        for implicit_module in &mut implicit_modules {
+            implicit_module.process(mident, &expansion_ast.modules);
         }
     }
     for sdef in expansion_ast.scripts.values() {
@@ -306,14 +292,14 @@ pub fn run_model_builder_with_options_and_compilation_flags<
     let expansion_ast = {
         let E::Program { modules, scripts } = expansion_ast;
         let modules = modules.filter_map(|mident, mut mdef| {
-            // For compiler v2, we need to always include the `vector` module and any of its dependencies,
+            // For compiler v2, we need to always include the implicit modules and any of their dependencies,
             // to handle cases of implicit usage.
             // E.g., index operation on a vector results in a call to `vector::borrow`.
-            // TODO(#15483): consider refactoring code to avoid this special case.
-            (vector_and_its_dependencies.contains(&mident.value)
-                // We also need to always include the `cmp` module and its dependencies,
-                // so that we can use interfaces offered by `cmp` to support comparison, Lt/Le/Gt/Ge, over non-integer types.
-                || cmp_and_its_dependencies.contains(&mident.value)
+            // E.g., comparison, Lt/Le/Gt/Ge, over non-integer types.
+            // E.g., the built-in macros may result in calls to `string` or `string_utils` functions.
+            (implicit_modules
+                .iter()
+                .any(|implicit_module| implicit_module.contains(&mident.value))
                 || visited_modules.contains(&mident.value))
             .then(|| {
                 mdef.is_source_module = true;
@@ -328,26 +314,44 @@ pub fn run_model_builder_with_options_and_compilation_flags<
     Ok(env)
 }
 
-/// Is `module_ident` the `vector` module?
-fn is_vector(module_ident: ModuleIdent_) -> bool {
-    module_ident.address.into_addr_bytes().into_inner() == AccountAddress::ONE
-        && module_ident.module.0.value.as_str() == "vector"
-}
-
-/// Is `module_ident` the `0x1::cmp` module?
-fn is_cmp(module_ident: ModuleIdent_) -> bool {
-    module_ident.address.into_addr_bytes().into_inner() == AccountAddress::ONE
-        && module_ident.module.0.value.as_str() == well_known::CMP_MODULE
+/// Pre-register lemma declarations for all modules so that cross-module lemma references
+/// resolve regardless of module processing order (spec-only imports don't affect
+/// `dependency_order`). This populates `lemma_decl_table` and `fun_table` with lemma
+/// entries for all modules before any definition analysis runs.
+fn pre_register_lemma_decls(
+    builder: &mut ModelBuilder<'_>,
+    sorted_modules: &[(usize, (ModuleIdent, E::ModuleDefinition))],
+) {
+    for &(module_count, (ref module_id, ref module_def)) in sorted_modules {
+        let loc = builder.to_loc(&module_def.loc);
+        let addr_bytes = builder.resolve_address(&loc, &module_id.value.address);
+        let module_name = ModuleName::from_address_bytes_and_name(
+            addr_bytes,
+            builder
+                .env
+                .symbol_pool()
+                .make(&module_id.value.module.0.value),
+        );
+        let mid = ModuleId::new(module_count);
+        let mut module_translator = ModuleBuilder::new(builder, mid, module_name);
+        module_translator.pre_register_lemma_decls(module_def);
+    }
 }
 
 fn run_move_checker(env: &mut GlobalEnv, program: E::Program) {
     let mut builder = ModelBuilder::new(env);
-    for (module_count, (module_id, module_def)) in program
+    let sorted_modules: Vec<_> = program
         .modules
         .into_iter()
         .sorted_by_key(|(_, def)| def.dependency_order)
         .enumerate()
-    {
+        .collect();
+
+    // Pre-register lemma declarations so cross-module lemma references resolve
+    // regardless of module processing order (spec-only imports don't affect dependency_order).
+    pre_register_lemma_decls(&mut builder, &sorted_modules);
+
+    for (module_count, (module_id, module_def)) in sorted_modules {
         let loc = builder.to_loc(&module_def.loc);
         let addr_bytes = builder.resolve_address(&loc, &module_id.value.address);
         let module_name = ModuleName::from_address_bytes_and_name(
@@ -379,6 +383,16 @@ fn run_move_checker(env: &mut GlobalEnv, program: E::Program) {
     // After all specs have been processed, warn about any unused schemas.
     builder.warn_unused_schemas();
 
+    // Sync cross-module constant users into GlobalEnv. Each module is finalized as it is
+    // translated, before later modules' function bodies run. Users added by
+    // track_constant_usage for cross-module references therefore arrive after the defining
+    // module is already stored. This pass propagates them into the env.
+    builder.sync_const_users();
+
+    // Must run after populate_env() (all modules and constants are registered).
+    // Must run before add_friend_decl_for_package_visibility() and check_and_update_friend_info()
+    // so that const$NAME functions are visible when friend/package deps are computed.
+    builder.inject_const_accessor_functions();
     builder.add_friend_decl_for_package_visibility();
 
     // Perform any remaining friend-declaration checks and update friend module id information.
@@ -462,6 +476,47 @@ fn check_and_update_friend_info(mut builder: ModelBuilder) {
                 friend_mod_name.display_full(env)
             ),
         );
+    }
+}
+
+/// Helper struct to collect the dependency closure of an implicit module
+struct ImplicitModuleDeps<'a> {
+    target_module_name: &'a str,
+    seen: bool,
+    dep_closure: BTreeSet<ModuleIdent_>,
+}
+
+impl<'a> ImplicitModuleDeps<'a> {
+    fn new(target_module_name: &'a str) -> Self {
+        Self {
+            target_module_name,
+            seen: false,
+            dep_closure: BTreeSet::new(),
+        }
+    }
+
+    /// Check if the given module is in the dependency closure of the target module.
+    fn contains(&self, module_ident: &ModuleIdent_) -> bool {
+        self.dep_closure.contains(module_ident)
+    }
+
+    /// Check if the given module matches the target module.
+    fn is_target_module(&self, module_ident: ModuleIdent_) -> bool {
+        module_ident.address.into_addr_bytes().into_inner() == AccountAddress::ONE
+            && module_ident.module.0.value.as_str() == self.target_module_name
+    }
+
+    /// Process a module, and if it matches the target module, collect its dependencies recursively.
+    fn process(
+        &mut self,
+        mident: &ModuleIdent_,
+        modules: &UniqueMap<ModuleIdent, E::ModuleDefinition>,
+    ) {
+        if !self.seen && self.is_target_module(*mident) {
+            self.seen = true;
+            // Collect the module and its dependencies.
+            collect_related_modules_recursive(mident, modules, &mut self.dep_closure);
+        }
     }
 }
 

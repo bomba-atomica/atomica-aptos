@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     backup_types::{
@@ -9,14 +8,14 @@ use crate::{
         transaction::restore::TransactionRestoreBatchController,
     },
     metadata,
-    metadata::{cache::MetadataCacheOpt, TransactionBackupMeta},
+    metadata::cache::MetadataCacheOpt,
     metrics::restore::{
         COORDINATOR_FAIL_TS, COORDINATOR_START_TS, COORDINATOR_SUCC_TS, COORDINATOR_TARGET_VERSION,
     },
     storage::BackupStorage,
     utils::{unix_timestamp_sec, GlobalRestoreOptions},
 };
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{anyhow, ensure, Result};
 use aptos_db::state_restore::StateSnapshotRestoreMode;
 use aptos_executor_types::VerifyExecutionMode;
 use aptos_logger::prelude::*;
@@ -384,25 +383,5 @@ impl RestoreCoordinator {
     fn ledger_history_start_version(&self) -> Version {
         self.ledger_history_start_version
             .unwrap_or_else(|| self.target_version())
-    }
-
-    #[allow(dead_code)]
-    fn get_actual_target_version(
-        &self,
-        transaction_backups: &[TransactionBackupMeta],
-    ) -> Result<Version> {
-        if let Some(b) = transaction_backups.last() {
-            if b.last_version > self.target_version() {
-                Ok(self.target_version())
-            } else {
-                warn!(
-                    "Can't find transaction backup containing the target version, \
-                    will restore as much as possible"
-                );
-                Ok(b.last_version)
-            }
-        } else {
-            bail!("No transaction backup found.")
-        }
     }
 }

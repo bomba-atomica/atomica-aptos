@@ -96,6 +96,20 @@ module std::vector {
         ensures result == vec(e);
     }
 
+    /// Returns a reference to last element in the vector, or aborts if the vector is empty.
+    public fun last<Element>(self: &vector<Element>): &Element {
+        assert!(self.length() > 0, EINDEX_OUT_OF_BOUNDS);
+
+        &self[self.length() - 1]
+    }
+
+    /// Returns a mutable reference to the last element in the vector, or aborts if the vector is empty.
+    public fun last_mut<Element>(self: &mut vector<Element>): &mut Element {
+        assert!(self.length() > 0, EINDEX_OUT_OF_BOUNDS);
+        let len = self.length();
+        &mut self[len - 1]
+    }
+
     /// Reverses the order of the elements in the vector `self` in place.
     public fun reverse<Element>(self: &mut vector<Element>) {
         let len = self.length();
@@ -240,8 +254,8 @@ module std::vector {
         while ({
             spec {
                 invariant i <= len;
-                invariant forall j: num where j >= 0 && j < i: !f(self[j]);
-                invariant find ==> i < len && f(self[i]);
+                invariant forall j: num where j >= 0 && j < i: !result_of<f>(self[j]);
+                invariant find ==> i < len && result_of<f>(self[i]);
             };
             i < len
             }) {
@@ -254,7 +268,7 @@ module std::vector {
             i += 1;
         };
         spec {
-            assert !find <==> (forall j: num where j >= 0 && j < len: !f(self[j]));
+            assert !find <==> (forall j: num where j >= 0 && j < len: !result_of<f>(self[j]));
         };
         (find, found_index)
     }

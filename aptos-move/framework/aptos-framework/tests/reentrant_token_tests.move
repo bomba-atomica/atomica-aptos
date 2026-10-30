@@ -1,19 +1,20 @@
 #[test_only]
-module 0xcafe::reentrant_token_tests {
+module aptos_framework::reentrant_token_tests {
     use aptos_framework::fungible_asset::{Self, Metadata, TestToken};
     use aptos_framework::dispatchable_fungible_asset;
-    use 0xcafe::reentrant_token;
-    use aptos_framework::object;
+    use aptos_framework::reentrant_token;
+    use std::features;
     use std::option;
 
-    #[test(creator = @0xcafe)]
+    #[test(creator = @aptos_framework)]
     #[expected_failure(major_status=4037, location=aptos_framework::dispatchable_fungible_asset)]
     fun test_reentrant_deposit(
         creator: &signer,
     ) {
+        features::change_feature_flags_for_testing(creator, vector[features::get_function_value_dispatch_feature()], vector[]);
         let (creator_ref, token_object) = fungible_asset::create_test_token(creator);
         let (mint, _, _, _) = fungible_asset::init_test_metadata(&creator_ref);
-        let metadata = object::convert<TestToken, Metadata>(token_object);
+        let metadata = token_object.convert<TestToken, Metadata>();
 
         let creator_store = fungible_asset::create_test_store(creator, metadata);
 
@@ -21,7 +22,7 @@ module 0xcafe::reentrant_token_tests {
 
         assert!(fungible_asset::supply(metadata) == option::some(0), 1);
         // Mint
-        let fa = fungible_asset::mint(&mint, 100);
+        let fa = mint.mint(100);
         assert!(fungible_asset::supply(metadata) == option::some(100), 2);
         // Deposit will cause an re-entrant call into dispatchable_fungible_asset
         dispatchable_fungible_asset::deposit(creator_store, fa);

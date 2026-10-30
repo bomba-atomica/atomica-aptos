@@ -24,11 +24,17 @@ module admin::transaction_context_test {
         type_arg_names: vector<String>,
         args: vector<vector<u8>>,
         multisig_address: address,
+        is_encrypted_txn: bool,
+        is_orderless_txn: bool,
+        seq_num_proof_checked: bool,
         // Fields for monotonically increasing counter tests
         counter_values: vector<u128>,
         counter_timestamps: vector<u64>,
         counter_call_count: u64,
     }
+
+    /// A sequence-number-based proof was attempted on an orderless transaction.
+    const ESEQ_NUM_PROOF_ON_ORDERLESS_TXN: u64 = 200;
 
     /// Called when the module is first deployed at address `signer`, which is supposed to be @admin (= 0x1).
     fun init_module(sender: &signer) {
@@ -48,6 +54,9 @@ module admin::transaction_context_test {
                 args: vector[],
                 type_arg_names: vector[],
                 multisig_address: @0x0,
+                is_encrypted_txn: false,
+                is_orderless_txn: false,
+                seq_num_proof_checked: false,
                 counter_values: vector[],
                 counter_timestamps: vector[],
                 counter_call_count: 0,
@@ -154,6 +163,25 @@ module admin::transaction_context_test {
         multisig_account::create_transaction(s, multisig_account, payload);
 
         store.multisig_address = multisig_account;
+    }
+
+    public entry fun store_is_encrypted_txn(_s: &signer) acquires TransactionContextStore {
+        let store = borrow_global_mut<TransactionContextStore>(@admin);
+        store.is_encrypted_txn = transaction_context::is_encrypted_txn();
+    }
+
+    public entry fun store_is_orderless_txn(_s: &signer) acquires TransactionContextStore {
+        let store = borrow_global_mut<TransactionContextStore>(@admin);
+        store.is_orderless_txn = transaction_context::is_orderless_txn();
+    }
+
+    /// Simulates a sequence-number-based proof check: such proofs are only meaningful for
+    /// transactions replay-protected by a sequence number, so this aborts when the current
+    /// transaction is orderless (nonce-based).
+    public entry fun check_seq_num_based_proof(_s: &signer) acquires TransactionContextStore {
+        assert!(!transaction_context::is_orderless_txn(), ESEQ_NUM_PROOF_ON_ORDERLESS_TXN);
+        let store = borrow_global_mut<TransactionContextStore>(@admin);
+        store.seq_num_proof_checked = true;
     }
 
     // ===== Monotonically Increasing Counter Tests =====

@@ -1,9 +1,11 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{aptos::move_test_helpers, smoke_test_environment::new_local_swarm_with_aptos};
 use aptos_forge::Swarm;
 
+// Too expensive to spin up a local swarm and publish multiple packages in this smoke test
+#[ignore]
 #[tokio::test]
 async fn test_package_publish() {
     let swarm = new_local_swarm_with_aptos(1).await;

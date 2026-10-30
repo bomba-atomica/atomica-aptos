@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     smoke_test_environment::{new_local_swarm_with_aptos, SwarmBuilder},
@@ -51,6 +50,7 @@ async fn test_fullnode_output_sync_epoch_changes() {
 }
 
 #[tokio::test]
+#[ignore] // Ignored as compression is now the default
 async fn test_fullnode_output_sync_no_compression() {
     // Create a validator swarm of 1 validator node
     let mut swarm = new_local_swarm_with_aptos(1).await;
@@ -171,6 +171,7 @@ async fn test_fullnode_execution_sync_epoch_changes() {
 }
 
 #[tokio::test]
+#[ignore] // Ignore this test because it is a subset of test_fullnode_output_sync_epoch_changes
 async fn test_fullnode_output_sync_no_epoch_changes() {
     // Create a validator swarm of 1 validator node
     let mut swarm = new_local_swarm_with_aptos(1).await;
@@ -188,6 +189,7 @@ async fn test_fullnode_output_sync_no_epoch_changes() {
 }
 
 #[tokio::test]
+#[ignore] // Ignore this test because it is a subset of test_fullnode_execution_sync_epoch_changes
 async fn test_fullnode_execution_sync_no_epoch_changes() {
     // Create a validator swarm of 1 validator node
     let mut swarm = new_local_swarm_with_aptos(1).await;
@@ -267,6 +269,7 @@ async fn test_validator_sync_and_participate_epoch_changes() {
 }
 
 #[tokio::test]
+#[ignore] // Ignore this test because it is a subset of test_validator_sync_and_participate_epoch_changes
 async fn test_validator_sync_and_participate_no_epoch_changes() {
     // Test the default syncing method without epoch changes
     test_validator_sync_and_participate(false, false).await;
@@ -279,6 +282,7 @@ async fn test_validator_fast_sync_and_participate_epoch_changes() {
 }
 
 #[tokio::test]
+#[ignore] // Ignore this test because it is a subset of test_validator_fast_sync_and_participate_epoch_changes
 async fn test_validator_fast_sync_and_participate_no_epoch_changes() {
     // Test fast syncing without epoch changes
     test_validator_sync_and_participate(true, false).await;
@@ -326,6 +330,7 @@ async fn test_validator_output_sync_unrealistic_network_limit() {
 }
 
 #[tokio::test]
+#[ignore] // Ignored as compression is now the default
 async fn test_validator_fast_sync_no_compression() {
     // Create a swarm of 4 validators using fast syncing and no compression
     let mut swarm = SwarmBuilder::new_local(4)
@@ -392,6 +397,7 @@ async fn test_validator_fast_sync_exponential_backoff_epoch_changes() {
 }
 
 #[tokio::test]
+#[ignore] // Ignore this test because it is a subset of test_validator_fast_sync_exponential_backoff_epoch_changes
 async fn test_validator_fast_sync_exponential_backoff_no_epoch_changes() {
     // Test fast syncing without exponential backoff and no epoch changes
     test_validator_sync_exponential_backoff(false).await;
@@ -500,6 +506,7 @@ async fn test_validator_output_sync_exponential_backoff() {
 }
 
 #[tokio::test]
+#[ignore] // Ignored as compression is now the default
 async fn test_validator_execution_sync_no_compression() {
     // Create a swarm of 4 validators using transaction syncing and no compression
     let mut swarm = SwarmBuilder::new_local(4)

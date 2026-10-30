@@ -85,7 +85,7 @@ module 0x42::m {
     fun test(s: &mut S, issuer: vector<u8>) {
         let x = 0x1::vector::length<T>(&s.entries);
         let (_found,_index) = {
-            let (v) = (&s.entries);
+            let v = &s.entries;
             let find = false;
             let found_index = 0;
             let i = 0;
@@ -99,22 +99,16 @@ module 0x42::m {
                 };
                 i = i + x';
             };
-
-            /* spec {
-              assert Implies(find, m::$inline___lambda__1_inline_1_956__test($t1, x, Index(v, found_index)));
-            }
-             */
-            ;
+            spec {
+                assert find ==> inline___lambda__1_inline_1_956__test(issuer, x, v[found_index]);
+            };
             (find, found_index)
         };
     }
     fun lambda__1_inline_1_956__test(issuer: vector<u8>, x: u64, obj: &T): bool {
-
-        /* spec {
-          assume Gt(Len<u8>($t0), 0);
-        }
-         */
-        ;
+        spec {
+            assume len(issuer) > 0;
+        };
         obj.issuer == issuer && x > 0
     }
 }
@@ -992,7 +986,7 @@ fun m::__lambda__1_inline_1_956__test($t0: vector<u8>, $t1: u64, $t2: &0x42::m::
      # live vars: $t0, $t1, $t5
   3: $t4 := ==($t5, $t0)
      # live vars: $t1, $t4
-  4: if ($t4) goto 5 else goto 11
+  4: if ($t4) goto 5 else goto 10
      # live vars: $t1
   5: label L0
      # live vars: $t1
@@ -1002,20 +996,18 @@ fun m::__lambda__1_inline_1_956__test($t0: vector<u8>, $t1: u64, $t2: &0x42::m::
      # live vars: $t7, $t8
   8: $t4 := >($t7, $t8)
      # live vars: $t4
-  9: label L2
-     # live vars: $t4
- 10: return $t4
+  9: return $t4
      # live vars: $t1
- 11: label L1
+ 10: label L1
      # live vars:
- 12: $t4 := false
+ 11: $t4 := false
      # live vars: $t4
- 13: goto 9
+ 12: return $t4
 }
 
 
 ============ disassembled file-format ==================
-// Bytecode version v9
+// Bytecode version v10
 module 0x42::m
 struct T has copy + drop + store
   issuer: vector<u8>
@@ -1091,7 +1083,6 @@ l2: move_loc l6
 
 // Function definition at index 1
 fun __lambda__1_inline_1_956__test(l0: vector<u8>, l1: u64, l2: &T): bool
-    local l3: bool
     nop
     move_loc l2
     borrow_field T, issuer
@@ -1104,13 +1095,9 @@ fun __lambda__1_inline_1_956__test(l0: vector<u8>, l1: u64, l2: &T): bool
     ld_u64 0
     gt
     // @10
-    st_loc l3
-l1: move_loc l3
     ret
 l0: ld_false
-    st_loc l3
-    // @15
-    branch l1
+    ret
 
 
 ============ bytecode verification succeeded ========

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 /// Like `pop_arg!` but for safe natives that return `SafeNativeResult<T>`. Will return a
 /// `SafeNativeError::InvariantViolation(UNKNOWN_INVARIANT_VIOLATION_ERROR)` when there aren't
@@ -13,6 +13,17 @@ macro_rules! safely_pop_arg {
                 Ok(v) => v,
                 Err(e) => return Err($crate::SafeNativeError::InvariantViolation(e)),
             },
+            None => {
+                return Err($crate::SafeNativeError::InvariantViolation(
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR),
+                ))
+            },
+        }
+    }};
+    ($args:ident) => {{
+        use $crate::reexports::move_vm_types::natives::function::{PartialVMError, StatusCode};
+        match $args.pop_back() {
+            Some(val) => val,
             None => {
                 return Err($crate::SafeNativeError::InvariantViolation(
                     PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR),
@@ -55,26 +66,6 @@ macro_rules! safely_assert_eq {
                         PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR),
                     ));
                 }
-            },
-        }
-    }};
-}
-
-/// Pops a `Type` argument off the type argument stack inside a safe native. Returns a
-/// `SafeNativeError::InvariantViolation(UNKNOWN_INVARIANT_VIOLATION_ERROR)` in case there are not
-/// enough arguments on the stack.
-///
-/// NOTE: Expects as its argument an object that has a `fn pop(&self) -> Option<_>` method (e.g., a `Vec<_>`)
-#[macro_export]
-macro_rules! safely_pop_type_arg {
-    ($ty_args:ident) => {{
-        use $crate::reexports::move_vm_types::natives::function::{PartialVMError, StatusCode};
-        match $ty_args.pop() {
-            Some(ty) => ty,
-            None => {
-                return Err($crate::SafeNativeError::InvariantViolation(
-                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR),
-                ))
             },
         }
     }};

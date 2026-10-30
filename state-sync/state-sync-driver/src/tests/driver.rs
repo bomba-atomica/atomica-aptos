@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     driver_factory::DriverFactory,
@@ -393,7 +392,7 @@ async fn create_driver_for_tests(
     // Create and spawn the driver
     let (driver_factory, commit_notification_sender) =
         DriverFactory::create_and_spawn_driver_internal(
-            false,
+            None,
             &node_config,
             waypoint,
             db_rw,

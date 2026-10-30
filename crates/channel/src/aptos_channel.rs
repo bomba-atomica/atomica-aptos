@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! aptos_channel provides an mpsc channel which has two ends `aptos_channel::Receiver`
 //! and `aptos_channel::Sender` similar to existing mpsc data structures.
@@ -85,6 +84,20 @@ impl<K: Eq + Hash + Clone, M> Sender<K, M> {
     /// synchronous call.
     pub fn push(&self, key: K, message: M) -> Result<()> {
         self.push_with_feedback(key, message, None)
+    }
+
+    /// Same as `push`, but returns an error if the newly pushed message is dropped immediately
+    /// due to the per-key queue already being full.
+    ///
+    /// Note: under queue styles that evict older messages (e.g. LIFO / KLAST), this still returns
+    /// `Ok(())` if the new message was accepted and an older message was dropped instead.
+    pub fn push_expect_enqueued(&self, key: K, message: M) -> Result<()> {
+        let (status_tx, mut status_rx) = oneshot::channel();
+        self.push_with_feedback(key, message, Some(status_tx))?;
+        if let Ok(Some(ElementStatus::Dropped(_))) = status_rx.try_recv() {
+            anyhow::bail!("Channel queue is full");
+        }
+        Ok(())
     }
 
     /// Same as `push`, but this function also accepts a oneshot::Sender over which the sender can

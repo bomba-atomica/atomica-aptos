@@ -1,11 +1,13 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     traits::{AptosGasMeter, GasAlgebra},
     CacheValueSizes,
 };
-use aptos_gas_algebra::{AbstractValueSize, Fee, FeePerGasUnit, NumTypeNodes};
+use aptos_gas_algebra::{
+    AbstractValueSize, Fee, FeePerGasUnit, InternalGasPerAbstractValueUnit, NumTypeNodes,
+};
 use aptos_gas_schedule::{
     gas_feature_versions::*,
     gas_params::{instr::*, txn::*},
@@ -29,19 +31,33 @@ use move_vm_types::{
     views::{TypeView, ValueView},
 };
 
+// Charges for traversing the value graph produced when a resource is loaded and
+// deserialized by the interpreter. Mirrors the serialize-side `bcs` traversal
+// pricing (3x `cmp::compare`'s base and per-abstract-value-unit costs).
+// TODO: add these to 1.50 schedule.
+const LOAD_RESOURCE_PER_VALUE_TRAVERSAL_BASE: InternalGas = InternalGas::new(11010);
+const LOAD_RESOURCE_PER_VALUE_TRAVERSAL_PER_ABS_VAL_UNIT: InternalGasPerAbstractValueUnit =
+    InternalGasPerAbstractValueUnit::new(420);
+
 /// The official gas meter used inside the Aptos VM.
 /// It maintains an internal gas counter, measured in internal gas units, and carries an environment
 /// consisting all the gas parameters, which it can lookup when performing gas calculations.
 pub struct StandardGasMeter<A> {
     algebra: A,
+    /// Whether to charge execution gas for the value graph produced on a
+    /// resource load.
+    meter_value_nodes_on_deserialize: bool,
 }
 
 impl<A> StandardGasMeter<A>
 where
     A: GasAlgebra,
 {
-    pub fn new(algebra: A) -> Self {
-        Self { algebra }
+    pub fn new(algebra: A, meter_value_nodes_on_deserialize: bool) -> Self {
+        Self {
+            algebra,
+            meter_value_nodes_on_deserialize,
+        }
     }
 
     pub fn feature_version(&self) -> u64 {
@@ -235,6 +251,26 @@ where
         if self.feature_version() <= 8 && val.is_none() && bytes_loaded != 0.into() {
             return Err(PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message("in legacy versions, number of bytes loaded must be zero when the resource does not exist ".to_string()));
         }
+
+        // The interpreter only calls this on a cache miss, i.e., a real load
+        // and deserialize, so each loaded value is charged exactly once. The
+        // IO charge below reflects only the stored blob length, but a value
+        // can amplify into a graph orders of magnitude larger; charge the
+        // execution gas proportional to that graph.
+        if self.meter_value_nodes_on_deserialize
+            && let Some(val) = &val
+        {
+            let size = self
+                .vm_gas_params()
+                .misc
+                .abs_val
+                .abstract_value_size(val, self.feature_version())?;
+            self.algebra.charge_execution(
+                LOAD_RESOURCE_PER_VALUE_TRAVERSAL_BASE
+                    + LOAD_RESOURCE_PER_VALUE_TRAVERSAL_PER_ABS_VAL_UNIT * size,
+            )?;
+        }
+
         let cost = self
             .io_pricing()
             .calculate_read_gas(val.is_some(), bytes_loaded);
@@ -547,6 +583,12 @@ where
 
         self.algebra.charge_execution(cost)
     }
+
+    fn charge_abort_message(&mut self, bytes: &[u8]) -> PartialVMResult<()> {
+        let num_bytes = NumBytes::new(bytes.len() as u64);
+        let cost = ABORT_MSG_BASE + ABORT_MSG_PER_BYTE * num_bytes;
+        self.algebra.charge_execution(cost)
+    }
 }
 
 impl<A> AptosGasMeter for StandardGasMeter<A>
@@ -615,6 +657,26 @@ where
 
         self.algebra
             .charge_execution(KEYLESS_BASE_COST)
+            .map_err(|e| e.finish(Location::Undefined))
+    }
+
+    fn charge_slh_dsa_sha2_128s(&mut self) -> VMResult<()> {
+        if self.feature_version() < RELEASE_V1_41 {
+            return Ok(());
+        }
+
+        self.algebra
+            .charge_execution(SLH_DSA_SHA2_128S_BASE_COST)
+            .map_err(|e| e.finish(Location::Undefined))
+    }
+
+    fn charge_encrypted_txn_decryption(&mut self) -> VMResult<()> {
+        if self.feature_version() < RELEASE_V1_45 {
+            return Ok(());
+        }
+
+        self.algebra
+            .charge_execution(ENCRYPTED_TXN_DECRYPTION_BASE_COST)
             .map_err(|e| e.finish(Location::Undefined))
     }
 }

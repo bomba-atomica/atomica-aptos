@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{counters::DKG_STAGE_SECONDS, types::DKGTranscriptRequest, DKGMessage};
 use anyhow::{anyhow, ensure, Context};
@@ -85,6 +85,15 @@ impl<S: DKGTrait> BroadcastStatus<DKGMessage> for Arc<TranscriptAggregationState
             metadata.author == sender,
             "[DKG] adding peer transcript failed with node author mismatch"
         );
+
+        let session_max = S::expected_max_transcript_size(&self.dkg_pub_params);
+        ensure!(
+            transcript_bytes.len() <= session_max,
+            "[DKG] adding peer transcript failed: transcript size {} exceeds max {}",
+            transcript_bytes.len(),
+            session_max,
+        );
+
         let transcript = bcs::from_bytes(transcript_bytes.as_slice()).map_err(|e| {
             anyhow!("[DKG] adding peer transcript failed with trx deserialization error: {e}")
         })?;

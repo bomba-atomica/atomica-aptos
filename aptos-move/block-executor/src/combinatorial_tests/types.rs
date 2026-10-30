@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::types::delayed_field_mock_serialization::serialize_delayed_field_tuple;
 use aptos_aggregator::delta_change_set::{delta_add, delta_sub, serialize, DeltaOp};
@@ -398,7 +397,6 @@ impl<K, E> MockIncarnation<K, E> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeltaTestKind {
     DelayedFields,
-    AggregatorV1,
     None,
 }
 
@@ -420,6 +418,9 @@ pub(crate) enum MockTransaction<K, E> {
         incarnation_behaviors: Vec<MockIncarnation<K, E>>,
         /// If we are testing with deltas, are we testing delayed_fields? (or AggregatorV1).
         delta_test_kind: DeltaTestKind,
+        /// Keys and values that pre_write_values() should return. Used for testing pre-write
+        /// optimization where the executor pre-populates MVHashMap before execution.
+        pre_writes: Vec<(K, ValueType)>,
     },
     /// Skip the execution of trailing transactions.
     SkipRest(u64),
@@ -434,6 +435,7 @@ impl<K, E> MockTransaction<K, E> {
             incarnation_counter: Arc::new(AtomicUsize::new(0)),
             incarnation_behaviors: vec![behavior],
             delta_test_kind: DeltaTestKind::None,
+            pre_writes: vec![],
         }
     }
 
@@ -442,6 +444,7 @@ impl<K, E> MockTransaction<K, E> {
             incarnation_counter: Arc::new(AtomicUsize::new(0)),
             incarnation_behaviors: behaviors,
             delta_test_kind: DeltaTestKind::None,
+            pre_writes: vec![],
         }
     }
 
@@ -455,12 +458,9 @@ impl<K, E> MockTransaction<K, E> {
         self
     }
 
-    pub(crate) fn with_aggregator_v1_testing(mut self) -> Self {
-        if let Self::Write {
-            delta_test_kind, ..
-        } = &mut self
-        {
-            *delta_test_kind = DeltaTestKind::AggregatorV1;
+    pub(crate) fn with_pre_writes(mut self, new_pre_writes: Vec<(K, ValueType)>) -> Self {
+        if let Self::Write { pre_writes, .. } = &mut self {
+            *pre_writes = new_pre_writes;
         }
         self
     }
@@ -576,7 +576,7 @@ impl<V: Into<Vec<u8>> + Arbitrary + Clone + Debug + Eq + Sync + Send> Transactio
                 .unwrap();
 
             // Not all values become deltas - some remain as normal writes
-            if val_u128 % 10 != 0 {
+            if !val_u128.is_multiple_of(10) {
                 let delta = if val_u128 % 10 < 5 {
                     delta_sub(val_u128 % 100, u128::MAX)
                 } else {
@@ -591,7 +591,7 @@ impl<V: Into<Vec<u8>> + Arbitrary + Clone + Debug + Eq + Sync + Send> Transactio
             .as_u128()
             .unwrap()
             .unwrap();
-        let is_deletion = allow_deletes && val_u128 % 23 == 0;
+        let is_deletion = allow_deletes && val_u128.is_multiple_of(23);
         let mut write_value = ValueType::from_value(value.clone(), !is_deletion);
         write_value.metadata = raw_metadata((val_u128 >> 64) as u64);
 
@@ -931,27 +931,13 @@ impl<V: Into<Vec<u8>> + Arbitrary + Clone + Debug + Eq + Sync + Send> Transactio
             MockTransaction::from_behaviors(behaviors)
         }
     }
-
-    pub(crate) fn materialize_with_deltas<
-        K: Clone + Hash + Debug + Eq + Ord,
-        E: Send + Sync + Debug + Clone + TransactionEvent,
-    >(
-        self,
-        universe: &[K],
-        delta_threshold: usize,
-        allow_deletes: bool,
-    ) -> MockTransaction<KeyType<K>, E> {
-        // Enable delta generation for this specific method
-        self.new_mock_write_txn(universe, allow_deletes, Some(delta_threshold))
-            .with_aggregator_v1_testing()
-    }
 }
 
 pub(crate) fn raw_metadata(v: u64) -> StateValueMetadata {
     StateValueMetadata::legacy(v, &CurrentTimeMicroseconds { microseconds: v })
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum GroupSizeOrMetadata {
     Size(u64),
     Metadata(Option<StateValueMetadata>),

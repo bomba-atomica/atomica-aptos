@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::TestDetails;
 use anyhow::{bail, Result};
@@ -175,5 +174,10 @@ impl TestSummary {
 
     pub fn is_soft_failure(&self) -> bool {
         !self.soft_failure.is_empty() && self.failed.is_empty()
+    }
+
+    /// Returns the number of hard failures.
+    pub fn failed_count(&self) -> usize {
+        self.failed.len()
     }
 }

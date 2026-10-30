@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     aptos_vm::get_system_transaction_output,
@@ -79,7 +79,11 @@ impl AptosVM {
                 // Pretend we are inside Move, and expected failures are like Move aborts.
                 debug!("Processing dkg transaction expected failure: {:?}", failure);
                 Ok((
-                    VMStatus::MoveAbort(AbortLocation::Script, failure as u64),
+                    VMStatus::MoveAbort {
+                        location: AbortLocation::Script,
+                        code: failure as u64,
+                        message: None,
+                    },
                     VMOutput::empty_with_status(TransactionStatus::Discard(StatusCode::ABORTED)),
                 ))
             },
@@ -102,10 +106,14 @@ impl AptosVM {
         update: jwks::QuorumCertifiedUpdate,
     ) -> Result<(VMStatus, VMOutput), ExecutionFailure> {
         // Load resources.
-        let validator_set =
-            ValidatorSet::fetch_config(resolver).ok_or(Expected(MissingResourceValidatorSet))?;
-        let observed_jwks =
-            ObservedJWKs::fetch_config(resolver).ok_or(Expected(MissingResourceObservedJWKs))?;
+        let validator_set = ValidatorSet::fetch_config(resolver)
+            .ok()
+            .flatten()
+            .ok_or(Expected(MissingResourceValidatorSet))?;
+        let observed_jwks = ObservedJWKs::fetch_config(resolver)
+            .ok()
+            .flatten()
+            .ok_or(Expected(MissingResourceObservedJWKs))?;
 
         let mut jwks_by_issuer: HashMap<Issuer, ProviderJWKs> =
             observed_jwks.into_providers_jwks().into();

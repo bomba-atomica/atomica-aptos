@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     transcript_aggregation::TranscriptAggregationState, types::DKGTranscriptRequest, DKGMessage,
@@ -35,10 +35,8 @@ pub struct AggTranscriptProducer {
 }
 
 impl AggTranscriptProducer {
-    pub fn new(reliable_broadcast: ReliableBroadcast<DKGMessage, ExponentialBackoff>) -> Self {
-        Self {
-            reliable_broadcast: Arc::new(reliable_broadcast),
-        }
+    pub fn new(reliable_broadcast: Arc<ReliableBroadcast<DKGMessage, ExponentialBackoff>>) -> Self {
+        Self { reliable_broadcast }
     }
 }
 

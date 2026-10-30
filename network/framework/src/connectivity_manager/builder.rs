@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     application::storage::PeersAndMetadata,
@@ -8,7 +7,10 @@ use crate::{
     counters,
     peer_manager::{conn_notifs_channel, ConnectionRequestSender},
 };
-use aptos_config::{config::PeerSet, network_id::NetworkContext};
+use aptos_config::{
+    config::{AccessControlPolicy, PeerSet},
+    network_id::NetworkContext,
+};
 use aptos_time_service::TimeService;
 use std::{sync::Arc, time::Duration};
 use tokio::runtime::Handle;
@@ -22,6 +24,7 @@ pub struct ConnectivityManagerBuilder {
 }
 
 impl ConnectivityManagerBuilder {
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         network_context: NetworkContext,
         time_service: TimeService,
@@ -36,6 +39,9 @@ impl ConnectivityManagerBuilder {
         outbound_connection_limit: Option<usize>,
         mutual_authentication: bool,
         enable_latency_aware_dialing: bool,
+        access_control_policy: Option<Arc<AccessControlPolicy>>,
+        num_dials_before_backoff: usize,
+        max_parallel_peer_latency_pings: usize,
     ) -> Self {
         let (conn_mgr_reqs_tx, conn_mgr_reqs_rx) = aptos_channels::new(
             channel_size,
@@ -58,6 +64,9 @@ impl ConnectivityManagerBuilder {
                 outbound_connection_limit,
                 mutual_authentication,
                 enable_latency_aware_dialing,
+                access_control_policy,
+                num_dials_before_backoff,
+                max_parallel_peer_latency_pings,
             )),
         }
     }

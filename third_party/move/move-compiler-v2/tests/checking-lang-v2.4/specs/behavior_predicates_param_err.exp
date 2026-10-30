@@ -1,0 +1,7 @@
+
+Diagnostics:
+error: expected 1 argument(s) for ensures_of but 2 were provided
+   ┌─ tests/checking-lang-v2.4/specs/behavior_predicates_param_err.move:15:17
+   │
+15 │         ensures ensures_of<f>(addr, 42);
+   │                 ^^^^^^^^^^^^^^^^^^^^^^^

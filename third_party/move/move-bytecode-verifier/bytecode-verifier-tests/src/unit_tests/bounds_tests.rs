@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use move_binary_format::{
     check_bounds::BoundsChecker, file_format::*, file_format_common,
@@ -307,7 +308,7 @@ fn invalid_signature_for_vector_operation() {
 
     let skeleton = basic_test_module();
     let sig_index = SignatureIndex(skeleton.signatures.len() as u16);
-    for bytecode in vec![
+    for bytecode in [
         VecPack(sig_index, 0),
         VecLen(sig_index),
         VecImmBorrow(sig_index),
@@ -336,7 +337,7 @@ fn invalid_struct_for_vector_operation() {
         .signatures
         .push(Signature(vec![Struct(StructHandleIndex::new(3))]));
     let sig_index = SignatureIndex((skeleton.signatures.len() - 1) as u16);
-    for bytecode in vec![
+    for bytecode in [
         VecPack(sig_index, 0),
         VecLen(sig_index),
         VecImmBorrow(sig_index),
@@ -363,7 +364,7 @@ fn invalid_type_param_for_vector_operation() {
     let mut skeleton = basic_test_module();
     skeleton.signatures.push(Signature(vec![TypeParameter(0)]));
     let sig_index = SignatureIndex((skeleton.signatures.len() - 1) as u16);
-    for bytecode in vec![
+    for bytecode in [
         VecPack(sig_index, 0),
         VecLen(sig_index),
         VecImmBorrow(sig_index),
@@ -380,6 +381,35 @@ fn invalid_type_param_for_vector_operation() {
             StatusCode::INDEX_OUT_OF_BOUNDS
         );
     }
+}
+
+#[test]
+fn branch_offset_out_of_bounds() {
+    use Bytecode::*;
+
+    // Test Branch instruction with offset > code size
+    let mut s = basic_test_script();
+    s.code.code = vec![Branch(10), Ret]; // Branch to offset 10, but code size is only 2
+    assert_eq!(
+        BoundsChecker::verify_script(&s).unwrap_err().major_status(),
+        StatusCode::INDEX_OUT_OF_BOUNDS
+    );
+
+    // Test BrTrue instruction with offset > code size
+    let mut s = basic_test_script();
+    s.code.code = vec![LdTrue, BrTrue(100), Ret]; // Branch to offset 100, but code size is only 3
+    assert_eq!(
+        BoundsChecker::verify_script(&s).unwrap_err().major_status(),
+        StatusCode::INDEX_OUT_OF_BOUNDS
+    );
+
+    // Test BrFalse instruction with offset > code size
+    let mut s = basic_test_script();
+    s.code.code = vec![LdFalse, BrFalse(50), Ret]; // Branch to offset 50, but code size is only 3
+    assert_eq!(
+        BoundsChecker::verify_script(&s).unwrap_err().major_status(),
+        StatusCode::INDEX_OUT_OF_BOUNDS
+    );
 }
 
 proptest! {

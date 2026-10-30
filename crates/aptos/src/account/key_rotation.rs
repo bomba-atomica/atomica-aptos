@@ -1,11 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::common::types::{
     account_address_from_auth_key, account_address_from_public_key, AuthenticationKeyInputOptions,
     CliCommand, CliConfig, CliError, CliTypedResult, ConfigSearchMode, EncodingOptions,
     ExtractEd25519PublicKey, HardwareWalletOptions, ParseEd25519PrivateKey, ProfileConfig,
-    ProfileOptions, PublicKeyInputOptions, RestOptions, TransactionOptions, TransactionSummary,
+    ProfileOptions, PublicKeyInputOptions, RestOptions, TransactionOptions, TransactionOptionsExt,
+    TransactionSummary,
 };
 use aptos_cached_packages::aptos_stdlib;
 use aptos_crypto::{

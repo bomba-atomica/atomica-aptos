@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     data_notification::DataNotification,
@@ -15,6 +14,7 @@ use crate::{
     },
     tests::utils::{create_ledger_info, initialize_logger},
 };
+use aptos_storage_interface::StateKind;
 use claims::assert_ok;
 use futures::{channel::mpsc, executor::block_on, FutureExt, StreamExt};
 use std::thread::JoinHandle;
@@ -46,13 +46,18 @@ fn test_get_all_states() {
     let expected_request = StreamRequest::GetAllStates(GetAllStatesRequest {
         version: request_version,
         start_index: 0,
+        state_kind: StateKind::MainState,
     });
 
     // Spawn a new server thread to handle any stream requests
     let _handler = spawn_service_and_expect_request(streaming_service_listener, expected_request);
 
     // Send a state value stream request and verify we get a data stream listener
-    let response = block_on(streaming_service_client.get_all_state_values(request_version, None));
+    let response = block_on(streaming_service_client.get_all_state_values(
+        request_version,
+        None,
+        StateKind::MainState,
+    ));
     assert_ok!(response);
 }
 

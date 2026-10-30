@@ -1,12 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Notes: Unlike PVSS, we do NOT want to use a generic unweighted-to-weighted VUF transformation,
 //! since we have a more optimized transformation for some VRF schemes (e.g., BLS and [GJM+21e]).
 //!
 //! As a result, we only define weighted VUF traits here.
 
-use crate::pvss::{Player, WeightedConfig};
+use crate::pvss::{Player, WeightedConfigBlstrs};
 use rayon::ThreadPool;
 use serde::Serialize;
 use std::fmt::Debug;
@@ -56,7 +56,7 @@ pub trait WeightedVUF {
     ) -> anyhow::Result<()>;
 
     fn aggregate_shares(
-        wc: &WeightedConfig,
+        wc: &WeightedConfigBlstrs,
         apks_and_proofs: &[(Player, Self::AugmentedPubKeyShare, Self::ProofShare)],
     ) -> Self::Proof;
 
@@ -64,7 +64,7 @@ pub trait WeightedVUF {
     fn eval(sk: &Self::SecretKey, msg: &[u8]) -> Self::Evaluation;
 
     fn derive_eval(
-        wc: &WeightedConfig,
+        wc: &WeightedConfigBlstrs,
         pp: &Self::PublicParameters,
         msg: &[u8],
         apks: &[Option<Self::AugmentedPubKeyShare>],
@@ -82,5 +82,6 @@ pub trait WeightedVUF {
         apks: &[Option<Self::AugmentedPubKeyShare>],
         msg: &[u8],
         proof: &Self::Proof,
+        thread_pool: &ThreadPool,
     ) -> anyhow::Result<()>;
 }

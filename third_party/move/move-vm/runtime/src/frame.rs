@@ -1,9 +1,10 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     config::VMConfig,
     frame_type_cache::FrameTypeCache,
+    interpreter::Stack,
     loader::{FunctionHandle, LoadedFunctionOwner, StructVariantInfo, VariantFieldInfo},
     module_traversal::TraversalContext,
     reentrancy_checker::CallType,
@@ -16,22 +17,20 @@ use move_binary_format::{
     errors::{PartialVMError, PartialVMResult},
     file_format::{
         Constant, ConstantPoolIndex, FieldHandleIndex, FieldInstantiationIndex,
-        FunctionHandleIndex, FunctionInstantiationIndex, LocalIndex, SignatureIndex,
+        FunctionHandleIndex, FunctionInstantiationIndex, SignatureIndex,
         StructDefInstantiationIndex, StructDefinitionIndex, StructVariantHandleIndex,
         StructVariantInstantiationIndex, VariantFieldHandleIndex, VariantFieldInstantiationIndex,
         VariantIndex,
     },
 };
 use move_core_types::{
-    ability::Ability, account_address::AccountAddress, gas_algebra::NumTypeNodes,
-    identifier::IdentStr, language_storage::ModuleId, vm_status::StatusCode,
+    ability::Ability, gas_algebra::NumTypeNodes, identifier::IdentStr, language_storage::ModuleId,
+    vm_status::StatusCode,
 };
+use move_vm_profiler::FnGuard;
 use move_vm_types::{
     gas::GasMeter,
-    loaded_data::{
-        runtime_access_specifier::{AccessSpecifierEnv, AddressSpecifierFunction},
-        runtime_types::{AbilityInfo, StructType, Type, TypeBuilder},
-    },
+    loaded_data::runtime_types::{AbilityInfo, StructType, Type, TypeBuilder},
     ty_interner::{InternedTypePool, TypeVecId},
     values::Locals,
 };
@@ -56,6 +55,10 @@ pub(crate) struct Frame {
     pub(crate) ty_builder: TypeBuilder,
     // Currently being executed function.
     pub(crate) function: Rc<LoadedFunction>,
+    // Guard used to profile the execution of this function.
+    // Note that this is only stored to keep it alive for the lifetime of the frame.
+    // It is an option so we can pass `None` during the runtime type checks.
+    pub(crate) _guard: Option<FnGuard>,
     // How this frame was established.
     pub(crate) call_type: CallType,
     // Locals for this execution context and their instantiated types.
@@ -64,16 +67,10 @@ pub(crate) struct Frame {
     // Cache of types accessed in this frame, to improve performance when accessing
     // and constructing types.
     pub(crate) frame_cache: Rc<RefCell<FrameTypeCache>>,
-}
-
-impl AccessSpecifierEnv for Frame {
-    fn eval_address_specifier_function(
-        &self,
-        fun: AddressSpecifierFunction,
-        local: LocalIndex,
-    ) -> PartialVMResult<AccountAddress> {
-        fun.eval(self.locals.copy_loc(local as usize)?)
-    }
+    // Saved value stack size of the caller that created this frame.
+    pub(crate) caller_value_stack_size: u32,
+    // Saved type stack size of the caller that created this frame.
+    pub(crate) caller_type_stack_size: u32,
 }
 
 macro_rules! build_loaded_function {
@@ -154,8 +151,10 @@ impl Frame {
         call_type: CallType,
         vm_config: &VMConfig,
         function: Rc<LoadedFunction>,
+        guard: Option<FnGuard>,
         locals: Locals,
         frame_cache: Rc<RefCell<FrameTypeCache>>,
+        stack: &Stack,
     ) -> PartialVMResult<Frame> {
         let ty_args = function.ty_args();
 
@@ -183,8 +182,17 @@ impl Frame {
                 let local_tys = function.local_tys();
                 let mut local_ty_counts = Vec::with_capacity(local_tys.len());
                 for ty in local_tys {
-                    let cnt = NumTypeNodes::new(ty.num_nodes_in_subst(ty_args)? as u64);
+                    let (num_nodes, depth) = ty.num_nodes_in_subst(ty_args)?;
+                    let cnt = NumTypeNodes::new(num_nodes as u64);
                     gas_meter.charge_create_ty(cnt)?;
+
+                    // We must check depth here because async runtime checks will create
+                    // types (which may fail because types are too deep). This check ensures
+                    // runtime checks never fail because of limits.
+                    if vm_config.check_depth_on_type_counts {
+                        ty_builder.check_final_size_and_depth(num_nodes as u64, depth as u64)?;
+                    }
+
                     local_ty_counts.push(cnt);
                 }
                 cache_borrow.instantiated_local_ty_counts = Some(Rc::from(local_ty_counts));
@@ -213,9 +221,12 @@ impl Frame {
             ty_builder,
             locals,
             function,
+            _guard: guard,
             call_type,
             local_tys,
             frame_cache,
+            caller_value_stack_size: stack.value.len() as u32,
+            caller_type_stack_size: stack.types.len() as u32,
         })
     }
 
@@ -442,7 +453,8 @@ impl Frame {
             .collect::<PartialVMResult<Vec<_>>>()
     }
 
-    fn single_type_at(&self, idx: SignatureIndex) -> &Type {
+    /// Returns possibly non-instantiated signature type.
+    pub(crate) fn single_type_at(&self, idx: SignatureIndex) -> &Type {
         use LoadedFunctionOwner::*;
         match self.function.owner() {
             Module(module) => module.single_type_at(idx),
@@ -558,8 +570,11 @@ impl Frame {
         let ty_args = self.function.ty_args();
         if let Some(gas_meter) = gas_meter {
             for ty in instantiation {
-                gas_meter
-                    .charge_create_ty(NumTypeNodes::new(ty.num_nodes_in_subst(ty_args)? as u64))?;
+                // Note: no need to check depth here: construction of types below will
+                // bound types to maximum depth in any case; this saves us some unnecessary
+                // feature-gating.
+                let (num_nodes, _depth) = ty.num_nodes_in_subst(ty_args)?;
+                gas_meter.charge_create_ty(NumTypeNodes::new(num_nodes as u64))?;
             }
         }
 
@@ -589,6 +604,11 @@ impl Frame {
         let (module, function) = loader
             .load_function_definition(gas_meter, traversal_context, module_id, function_name)
             .map_err(|err| err.to_partial())?;
+
+        // Lazy loading resolves the callee dynamically, so re-validate the caller's type
+        // arguments against the callee actually resolved here.
+        Type::verify_ty_arg_abilities(function.ty_param_abilities(), &verified_ty_args)?;
+
         Ok(LoadedFunction {
             owner: LoadedFunctionOwner::Module(module),
             ty_args: verified_ty_args,

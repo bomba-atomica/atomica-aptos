@@ -1,18 +1,19 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::{DagConsensusConfig, IndexerTableInfoConfig};
 use crate::{
     config::{
         consensus_observer_config::ConsensusObserverConfig, dkg_config::DKGConfig,
         internal_indexer_db_config::InternalIndexerDBConfig,
-        jwk_consensus_config::JWKConsensusConfig, netbench_config::NetbenchConfig,
-        node_config_loader::NodeConfigLoader, node_startup_config::NodeStartupConfig,
-        persistable_config::PersistableConfig,
-        transaction_filters_config::TransactionFiltersConfig, utils::RootPath, AdminServiceConfig,
-        ApiConfig, BaseConfig, ConsensusConfig, Error, ExecutionConfig, IndexerConfig,
-        IndexerGrpcConfig, InspectionServiceConfig, LoggerConfig, MempoolConfig, NetworkConfig,
+        jwk_consensus_config::JWKConsensusConfig, node_config_loader::NodeConfigLoader,
+        node_startup_config::NodeStartupConfig, persistable_config::PersistableConfig,
+        transaction_filters_config::TransactionFiltersConfig,
+        transaction_tracing_config::TransactionTracingConfig, utils::RootPath, AdminServiceConfig,
+        ApiConfig, BaseConfig, ConsensusConfig, Error, ExecutionConfig, IndexerGrpcConfig,
+        InspectionServiceConfig, LoggerConfig, MempoolConfig, NetworkConfig,
         PeerMonitoringServiceConfig, SafetyRulesTestConfig, StateSyncConfig, StorageConfig,
+        TelemetryServiceConfig,
     },
     network_id::NetworkId,
 };
@@ -31,7 +32,7 @@ use std::{
 /// The node configuration defines the configuration for a single Aptos
 /// node (i.e., validator or fullnode). It is composed of module
 /// configurations for each of the modules that the node uses (e.g.,
-/// the API, indexer, mempool, state sync, etc.).
+/// the API, mempool, state sync, etc.).
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeConfig {
@@ -56,8 +57,6 @@ pub struct NodeConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub full_node_networks: Vec<NetworkConfig>,
     #[serde(default)]
-    pub indexer: IndexerConfig,
-    #[serde(default)]
     pub indexer_grpc: IndexerGrpcConfig,
     #[serde(default)]
     pub indexer_table_info: IndexerTableInfoConfig,
@@ -70,8 +69,6 @@ pub struct NodeConfig {
     #[serde(default)]
     pub mempool: MempoolConfig,
     #[serde(default)]
-    pub netbench: Option<NetbenchConfig>,
-    #[serde(default)]
     pub node_startup: NodeStartupConfig,
     #[serde(default)]
     pub peer_monitoring_service: PeerMonitoringServiceConfig,
@@ -79,12 +76,22 @@ pub struct NodeConfig {
     /// Once enough nodes restarted with the new value, the chain should unblock with randomness disabled.
     #[serde(default)]
     pub randomness_override_seq_num: u64,
+    /// In a ChunkyDKG stall, set this to be on-chain `ChunkyDKGConfigSeqNum` + 1.
+    /// Once enough nodes have restarted, the chain should unblock with ChunkyDKG disabled.
+    /// To re-enable ChunkyDKG: submit a governance proposal bumping the on-chain
+    /// `ChunkyDKGConfigSeqNum` past this local override value, then clear this field.
+    #[serde(default)]
+    pub chunky_dkg_override_seq_num: u64,
     #[serde(default)]
     pub state_sync: StateSyncConfig,
     #[serde(default)]
     pub storage: StorageConfig,
     #[serde(default)]
+    pub telemetry_service: TelemetryServiceConfig,
+    #[serde(default)]
     pub transaction_filters: TransactionFiltersConfig,
+    #[serde(default)]
+    pub transaction_tracing: TransactionTracingConfig,
     #[serde(default)]
     pub validator_network: Option<NetworkConfig>,
     #[serde(default)]

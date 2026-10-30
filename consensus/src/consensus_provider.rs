@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     consensus_observer::{
@@ -18,7 +17,7 @@ use crate::{
     persistent_liveness_storage::StorageWriteProxy,
     pipeline::execution_client::{DummyExecutionClient, ExecutionProxyClient, TExecutionClient},
     quorum_store::quorum_store_db::QuorumStoreDB,
-    rand::rand_gen::storage::db::RandDb,
+    rand::{rand_gen::storage::db::RandDb, secret_sharing::storage::SecretShareDb},
     state_computer::ExecutionProxy,
     txn_notifier::MempoolNotifier,
     util::time_service::ClockTimeService,
@@ -53,8 +52,9 @@ pub fn start_consensus(
     reconfig_events: ReconfigNotificationListener<DbBackedOnChainConfig>,
     vtxn_pool: VTxnPoolState,
     consensus_publisher: Option<Arc<ConsensusPublisher>>,
+    num_worker_threads: usize,
 ) -> (Runtime, Arc<StorageWriteProxy>, Arc<QuorumStoreDB>) {
-    let runtime = aptos_runtimes::spawn_named_runtime("consensus".into(), None);
+    let runtime = aptos_runtimes::spawn_named_runtime("consensus".into(), Some(num_worker_threads));
     let storage = Arc::new(StorageWriteProxy::new(node_config, aptos_db.reader.clone()));
     let quorum_store_db = Arc::new(QuorumStoreDB::new(node_config.storage.dir()));
 
@@ -83,6 +83,7 @@ pub fn start_consensus(
         runtime.handle().clone(),
     );
     let rand_storage = Arc::new(RandDb::new(node_config.storage.dir()));
+    let secret_share_storage = Arc::new(SecretShareDb::new(node_config.storage.dir()));
 
     let execution_client = Arc::new(ExecutionProxyClient::new(
         node_config.consensus.clone(),
@@ -92,6 +93,7 @@ pub fn start_consensus(
         consensus_network_client.clone(),
         bounded_executor.clone(),
         rand_storage.clone(),
+        secret_share_storage,
         node_config.consensus_observer,
         consensus_publisher.clone(),
     ));
@@ -167,6 +169,7 @@ pub fn start_consensus_observer(
         let bounded_executor =
             BoundedExecutor::new(32, consensus_observer_runtime.handle().clone());
         let rand_storage = Arc::new(RandDb::new(node_config.storage.dir()));
+        let secret_share_storage = Arc::new(SecretShareDb::new(node_config.storage.dir()));
         let execution_proxy_client = Arc::new(ExecutionProxyClient::new(
             node_config.consensus.clone(),
             Arc::new(execution_proxy),
@@ -175,6 +178,7 @@ pub fn start_consensus_observer(
             consensus_network_client,
             bounded_executor,
             rand_storage.clone(),
+            secret_share_storage,
             node_config.consensus_observer,
             consensus_publisher.clone(),
         ));

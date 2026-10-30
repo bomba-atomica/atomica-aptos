@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use move_binary_format::{
     errors::{offset_out_of_bounds, PartialVMError},
@@ -484,7 +485,7 @@ impl<'a> ApplyCodeUnitBoundsContext<'a> {
                     | LdI256(_) | CastI8 | CastI16 | CastI32 | CastI64 | CastI128 | CastI256
                     | LdTrue | LdFalse | ReadRef | WriteRef | Add | Sub | Mul | Mod | Div
                     | Negate | BitOr | BitAnd | Xor | Shl | Shr | Or | And | Not | Eq | Neq
-                    | Lt | Gt | Le | Ge | Abort | Nop => {
+                    | Lt | Gt | Le | Ge | Abort | AbortMsg | Nop => {
                         panic!("Bytecode has no internal index: {:?}", code[bytecode_idx])
                     },
                     PackVariant(_)
@@ -563,7 +564,7 @@ fn is_interesting(bytecode: &Bytecode) -> bool {
         | LdI16(_) | LdI32(_) | LdI64(_) | LdI128(_) | LdI256(_) | CastI8 | CastI16 | CastI32
         | CastI64 | CastI128 | CastI256 | LdTrue | LdFalse | ReadRef | WriteRef | Add | Sub
         | Mul | Mod | Div | Negate | BitOr | BitAnd | Xor | Shl | Shr | Or | And | Not | Eq
-        | Neq | Lt | Gt | Le | Ge | Abort | Nop => false,
+        | Neq | Lt | Gt | Le | Ge | Abort | AbortMsg | Nop => false,
 
         PackClosure(..)
         | PackClosureGeneric(..)

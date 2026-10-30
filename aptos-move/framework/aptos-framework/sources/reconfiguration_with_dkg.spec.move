@@ -7,15 +7,42 @@ spec aptos_framework::reconfiguration_with_dkg {
         use aptos_framework::chain_status;
         use aptos_framework::staking_config;
         use aptos_framework::reconfiguration;
+        use aptos_framework::reconfiguration_state;
         pragma verify_duration_estimate = 120;
         requires exists<reconfiguration::Configuration>(@aptos_framework);
         requires chain_status::is_operating();
         include stake::ResourceRequirement;
         include stake::GetReconfigStartTimeRequirement;
-        include features::spec_periodical_reward_rate_decrease_enabled(
-        ) ==> staking_config::StakingRewardsConfigEnabledRequirement;
+        include features::spec_periodical_reward_rate_decrease_enabled() ==>
+            staking_config::StakingRewardsConfigEnabledRequirement;
         aborts_if false;
         pragma verify_duration_estimate = 600; // TODO: set because of timeout (property proved).
+        // I2: a call that actually starts a reconfig (not a no-op replay)
+        // must fill the cache.
+        ensures !old(reconfiguration_state::spec_is_in_progress()) ==>
+            exists<stake::PrecomputedValidatorSet>(@aptos_framework);
+    }
+
+    spec try_start_with_chunky_dkg() {
+        use aptos_framework::chain_status;
+        use aptos_framework::staking_config;
+        use aptos_framework::reconfiguration;
+        use aptos_framework::reconfiguration_state;
+        use aptos_framework::chunky_dkg;
+        use aptos_framework::timestamp;
+        pragma verify_duration_estimate = 600;
+        requires exists<reconfiguration::Configuration>(@aptos_framework);
+        requires chain_status::is_operating();
+        requires exists<chunky_dkg::ChunkyDKGState>(@aptos_framework);
+        requires exists<timestamp::CurrentTimeMicroseconds>(@aptos_framework);
+        include stake::ResourceRequirement;
+        include stake::GetReconfigStartTimeRequirement;
+        include features::spec_periodical_reward_rate_decrease_enabled() ==>
+            staking_config::StakingRewardsConfigEnabledRequirement;
+        aborts_if false;
+        // I2: same as try_start.
+        ensures !old(reconfiguration_state::spec_is_in_progress()) ==>
+            exists<stake::PrecomputedValidatorSet>(@aptos_framework);
     }
 
     spec finish(framework: &signer) {
@@ -52,6 +79,7 @@ spec aptos_framework::reconfiguration_with_dkg {
         include config_buffer::OnNewEpochRequirement<jwks::SupportedOIDCProviders>;
         include config_buffer::OnNewEpochRequirement<randomness_config::RandomnessConfig>;
         include config_buffer::OnNewEpochRequirement<randomness_config_seqnum::RandomnessConfigSeqNum>;
+        include config_buffer::OnNewEpochRequirement<epoch_timeout_config::EpochTimeoutConfig>;
         include config_buffer::OnNewEpochRequirement<randomness_api_v0_config::AllowCustomMaxGasFlag>;
         include config_buffer::OnNewEpochRequirement<randomness_api_v0_config::RequiredGasDeposit>;
         include config_buffer::OnNewEpochRequirement<jwk_consensus_config::JWKConsensusConfig>;
@@ -59,13 +87,23 @@ spec aptos_framework::reconfiguration_with_dkg {
         include config_buffer::OnNewEpochRequirement<keyless_account::Groth16VerificationKey>;
     }
 
-    spec finish_with_dkg_result(account: &signer, dkg_result: vector<u8>, mpk: vector<u8>) {
+    spec try_finalize_reconfig(account: &signer) {
+        pragma verify = false;
+    }
+
+    spec finish_with_dkg_result(account: &signer, dkg_result: vector<u8>) {
         use aptos_framework::dkg;
         pragma verify_duration_estimate = 1500;
-        include FinishRequirement {
-            framework: account
-        };
+        include FinishRequirement { framework: account };
         requires dkg::has_incomplete_session();
         aborts_if false;
+    }
+
+    spec finish_with_chunky_dkg_result(account: &signer, chunky_dkg_result: vector<u8>, encryption_key: vector<u8>) {
+        pragma verify = false;
+    }
+
+    spec try_advance_reconfig() {
+        pragma verify = false;
     }
 }

@@ -12,6 +12,12 @@ export enum MoveTypes {
   MOVE_TYPES_U64 = 3,
   MOVE_TYPES_U128 = 4,
   MOVE_TYPES_U256 = 14,
+  MOVE_TYPES_I8 = 15,
+  MOVE_TYPES_I16 = 16,
+  MOVE_TYPES_I32 = 17,
+  MOVE_TYPES_I64 = 18,
+  MOVE_TYPES_I128 = 19,
+  MOVE_TYPES_I256 = 20,
   MOVE_TYPES_ADDRESS = 5,
   MOVE_TYPES_SIGNER = 6,
   /** MOVE_TYPES_VECTOR - `{ items: Box<MoveType> }`, */
@@ -53,6 +59,24 @@ export function moveTypesFromJSON(object: any): MoveTypes {
     case 14:
     case "MOVE_TYPES_U256":
       return MoveTypes.MOVE_TYPES_U256;
+    case 15:
+    case "MOVE_TYPES_I8":
+      return MoveTypes.MOVE_TYPES_I8;
+    case 16:
+    case "MOVE_TYPES_I16":
+      return MoveTypes.MOVE_TYPES_I16;
+    case 17:
+    case "MOVE_TYPES_I32":
+      return MoveTypes.MOVE_TYPES_I32;
+    case 18:
+    case "MOVE_TYPES_I64":
+      return MoveTypes.MOVE_TYPES_I64;
+    case 19:
+    case "MOVE_TYPES_I128":
+      return MoveTypes.MOVE_TYPES_I128;
+    case 20:
+    case "MOVE_TYPES_I256":
+      return MoveTypes.MOVE_TYPES_I256;
     case 5:
     case "MOVE_TYPES_ADDRESS":
       return MoveTypes.MOVE_TYPES_ADDRESS;
@@ -99,6 +123,18 @@ export function moveTypesToJSON(object: MoveTypes): string {
       return "MOVE_TYPES_U128";
     case MoveTypes.MOVE_TYPES_U256:
       return "MOVE_TYPES_U256";
+    case MoveTypes.MOVE_TYPES_I8:
+      return "MOVE_TYPES_I8";
+    case MoveTypes.MOVE_TYPES_I16:
+      return "MOVE_TYPES_I16";
+    case MoveTypes.MOVE_TYPES_I32:
+      return "MOVE_TYPES_I32";
+    case MoveTypes.MOVE_TYPES_I64:
+      return "MOVE_TYPES_I64";
+    case MoveTypes.MOVE_TYPES_I128:
+      return "MOVE_TYPES_I128";
+    case MoveTypes.MOVE_TYPES_I256:
+      return "MOVE_TYPES_I256";
     case MoveTypes.MOVE_TYPES_ADDRESS:
       return "MOVE_TYPES_ADDRESS";
     case MoveTypes.MOVE_TYPES_SIGNER:
@@ -809,6 +845,7 @@ export interface MoveStruct {
   abilities?: MoveAbility[] | undefined;
   genericTypeParams?: MoveStructGenericTypeParam[] | undefined;
   fields?: MoveStructField[] | undefined;
+  variants?: MoveStructVariant[] | undefined;
 }
 
 export interface MoveStructGenericTypeParam {
@@ -819,6 +856,11 @@ export interface MoveStructGenericTypeParam {
 export interface MoveStructField {
   name?: string | undefined;
   type?: MoveType | undefined;
+}
+
+export interface MoveStructVariant {
+  name?: string | undefined;
+  fields?: MoveStructField[] | undefined;
 }
 
 export interface MoveFunctionGenericTypeParam {
@@ -967,6 +1009,7 @@ export enum AnyPublicKey_Type {
   TYPE_SECP256R1_ECDSA = 3,
   TYPE_KEYLESS = 4,
   TYPE_FEDERATED_KEYLESS = 5,
+  TYPE_SLH_DSA_SHA2_128S = 6,
   UNRECOGNIZED = -1,
 }
 
@@ -990,6 +1033,9 @@ export function anyPublicKey_TypeFromJSON(object: any): AnyPublicKey_Type {
     case 5:
     case "TYPE_FEDERATED_KEYLESS":
       return AnyPublicKey_Type.TYPE_FEDERATED_KEYLESS;
+    case 6:
+    case "TYPE_SLH_DSA_SHA2_128S":
+      return AnyPublicKey_Type.TYPE_SLH_DSA_SHA2_128S;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -1011,6 +1057,8 @@ export function anyPublicKey_TypeToJSON(object: AnyPublicKey_Type): string {
       return "TYPE_KEYLESS";
     case AnyPublicKey_Type.TYPE_FEDERATED_KEYLESS:
       return "TYPE_FEDERATED_KEYLESS";
+    case AnyPublicKey_Type.TYPE_SLH_DSA_SHA2_128S:
+      return "TYPE_SLH_DSA_SHA2_128S";
     case AnyPublicKey_Type.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -1032,6 +1080,7 @@ export interface AnySignature {
   secp256k1Ecdsa?: Secp256k1Ecdsa | undefined;
   webauthn?: WebAuthn | undefined;
   keyless?: Keyless | undefined;
+  slhDsaSha2128s?: SlhDsaSha2128s | undefined;
 }
 
 export enum AnySignature_Type {
@@ -1040,6 +1089,7 @@ export enum AnySignature_Type {
   TYPE_SECP256K1_ECDSA = 2,
   TYPE_WEBAUTHN = 3,
   TYPE_KEYLESS = 4,
+  TYPE_SLH_DSA_SHA2_128S = 5,
   UNRECOGNIZED = -1,
 }
 
@@ -1060,6 +1110,9 @@ export function anySignature_TypeFromJSON(object: any): AnySignature_Type {
     case 4:
     case "TYPE_KEYLESS":
       return AnySignature_Type.TYPE_KEYLESS;
+    case 5:
+    case "TYPE_SLH_DSA_SHA2_128S":
+      return AnySignature_Type.TYPE_SLH_DSA_SHA2_128S;
     case -1:
     case "UNRECOGNIZED":
     default:
@@ -1079,6 +1132,8 @@ export function anySignature_TypeToJSON(object: AnySignature_Type): string {
       return "TYPE_WEBAUTHN";
     case AnySignature_Type.TYPE_KEYLESS:
       return "TYPE_KEYLESS";
+    case AnySignature_Type.TYPE_SLH_DSA_SHA2_128S:
+      return "TYPE_SLH_DSA_SHA2_128S";
     case AnySignature_Type.UNRECOGNIZED:
     default:
       return "UNRECOGNIZED";
@@ -1098,6 +1153,10 @@ export interface WebAuthn {
 }
 
 export interface Keyless {
+  signature?: Uint8Array | undefined;
+}
+
+export interface SlhDsaSha2128s {
   signature?: Uint8Array | undefined;
 }
 
@@ -7398,7 +7457,16 @@ export const MoveFunction = {
 };
 
 function createBaseMoveStruct(): MoveStruct {
-  return { name: "", isNative: false, isEvent: false, isEnum: false, abilities: [], genericTypeParams: [], fields: [] };
+  return {
+    name: "",
+    isNative: false,
+    isEvent: false,
+    isEnum: false,
+    abilities: [],
+    genericTypeParams: [],
+    fields: [],
+    variants: [],
+  };
 }
 
 export const MoveStruct = {
@@ -7430,6 +7498,11 @@ export const MoveStruct = {
     if (message.fields !== undefined && message.fields.length !== 0) {
       for (const v of message.fields) {
         MoveStructField.encode(v!, writer.uint32(42).fork()).ldelim();
+      }
+    }
+    if (message.variants !== undefined && message.variants.length !== 0) {
+      for (const v of message.variants) {
+        MoveStructVariant.encode(v!, writer.uint32(66).fork()).ldelim();
       }
     }
     return writer;
@@ -7501,6 +7574,13 @@ export const MoveStruct = {
 
           message.fields!.push(MoveStructField.decode(reader, reader.uint32()));
           continue;
+        case 8:
+          if (tag !== 66) {
+            break;
+          }
+
+          message.variants!.push(MoveStructVariant.decode(reader, reader.uint32()));
+          continue;
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -7557,6 +7637,9 @@ export const MoveStruct = {
       fields: globalThis.Array.isArray(object?.fields)
         ? object.fields.map((e: any) => MoveStructField.fromJSON(e))
         : [],
+      variants: globalThis.Array.isArray(object?.variants)
+        ? object.variants.map((e: any) => MoveStructVariant.fromJSON(e))
+        : [],
     };
   },
 
@@ -7583,6 +7666,9 @@ export const MoveStruct = {
     if (message.fields?.length) {
       obj.fields = message.fields.map((e) => MoveStructField.toJSON(e));
     }
+    if (message.variants?.length) {
+      obj.variants = message.variants.map((e) => MoveStructVariant.toJSON(e));
+    }
     return obj;
   },
 
@@ -7598,6 +7684,7 @@ export const MoveStruct = {
     message.abilities = object.abilities?.map((e) => e) || [];
     message.genericTypeParams = object.genericTypeParams?.map((e) => MoveStructGenericTypeParam.fromPartial(e)) || [];
     message.fields = object.fields?.map((e) => MoveStructField.fromPartial(e)) || [];
+    message.variants = object.variants?.map((e) => MoveStructVariant.fromPartial(e)) || [];
     return message;
   },
 };
@@ -7828,6 +7915,116 @@ export const MoveStructField = {
     const message = createBaseMoveStructField();
     message.name = object.name ?? "";
     message.type = (object.type !== undefined && object.type !== null) ? MoveType.fromPartial(object.type) : undefined;
+    return message;
+  },
+};
+
+function createBaseMoveStructVariant(): MoveStructVariant {
+  return { name: "", fields: [] };
+}
+
+export const MoveStructVariant = {
+  encode(message: MoveStructVariant, writer: _m0.Writer = _m0.Writer.create()): _m0.Writer {
+    if (message.name !== undefined && message.name !== "") {
+      writer.uint32(10).string(message.name);
+    }
+    if (message.fields !== undefined && message.fields.length !== 0) {
+      for (const v of message.fields) {
+        MoveStructField.encode(v!, writer.uint32(18).fork()).ldelim();
+      }
+    }
+    return writer;
+  },
+
+  decode(input: _m0.Reader | Uint8Array, length?: number): MoveStructVariant {
+    const reader = input instanceof _m0.Reader ? input : _m0.Reader.create(input);
+    let end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseMoveStructVariant();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1:
+          if (tag !== 10) {
+            break;
+          }
+
+          message.name = reader.string();
+          continue;
+        case 2:
+          if (tag !== 18) {
+            break;
+          }
+
+          message.fields!.push(MoveStructField.decode(reader, reader.uint32()));
+          continue;
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skipType(tag & 7);
+    }
+    return message;
+  },
+
+  // encodeTransform encodes a source of message objects.
+  // Transform<MoveStructVariant, Uint8Array>
+  async *encodeTransform(
+    source: AsyncIterable<MoveStructVariant | MoveStructVariant[]> | Iterable<MoveStructVariant | MoveStructVariant[]>,
+  ): AsyncIterable<Uint8Array> {
+    for await (const pkt of source) {
+      if (globalThis.Array.isArray(pkt)) {
+        for (const p of (pkt as any)) {
+          yield* [MoveStructVariant.encode(p).finish()];
+        }
+      } else {
+        yield* [MoveStructVariant.encode(pkt as any).finish()];
+      }
+    }
+  },
+
+  // decodeTransform decodes a source of encoded messages.
+  // Transform<Uint8Array, MoveStructVariant>
+  async *decodeTransform(
+    source: AsyncIterable<Uint8Array | Uint8Array[]> | Iterable<Uint8Array | Uint8Array[]>,
+  ): AsyncIterable<MoveStructVariant> {
+    for await (const pkt of source) {
+      if (globalThis.Array.isArray(pkt)) {
+        for (const p of (pkt as any)) {
+          yield* [MoveStructVariant.decode(p)];
+        }
+      } else {
+        yield* [MoveStructVariant.decode(pkt as any)];
+      }
+    }
+  },
+
+  fromJSON(object: any): MoveStructVariant {
+    return {
+      name: isSet(object.name) ? globalThis.String(object.name) : "",
+      fields: globalThis.Array.isArray(object?.fields)
+        ? object.fields.map((e: any) => MoveStructField.fromJSON(e))
+        : [],
+    };
+  },
+
+  toJSON(message: MoveStructVariant): unknown {
+    const obj: any = {};
+    if (message.name !== undefined && message.name !== "") {
+      obj.name = message.name;
+    }
+    if (message.fields?.length) {
+      obj.fields = message.fields.map((e) => MoveStructField.toJSON(e));
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<MoveStructVariant>): MoveStructVariant {
+    return MoveStructVariant.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<MoveStructVariant>): MoveStructVariant {
+    const message = createBaseMoveStructVariant();
+    message.name = object.name ?? "";
+    message.fields = object.fields?.map((e) => MoveStructField.fromPartial(e)) || [];
     return message;
   },
 };
@@ -9542,6 +9739,7 @@ function createBaseAnySignature(): AnySignature {
     secp256k1Ecdsa: undefined,
     webauthn: undefined,
     keyless: undefined,
+    slhDsaSha2128s: undefined,
   };
 }
 
@@ -9564,6 +9762,9 @@ export const AnySignature = {
     }
     if (message.keyless !== undefined) {
       Keyless.encode(message.keyless, writer.uint32(50).fork()).ldelim();
+    }
+    if (message.slhDsaSha2128s !== undefined) {
+      SlhDsaSha2128s.encode(message.slhDsaSha2128s, writer.uint32(58).fork()).ldelim();
     }
     return writer;
   },
@@ -9617,6 +9818,13 @@ export const AnySignature = {
 
           message.keyless = Keyless.decode(reader, reader.uint32());
           continue;
+        case 7:
+          if (tag !== 58) {
+            break;
+          }
+
+          message.slhDsaSha2128s = SlhDsaSha2128s.decode(reader, reader.uint32());
+          continue;
       }
       if ((tag & 7) === 4 || tag === 0) {
         break;
@@ -9666,6 +9874,7 @@ export const AnySignature = {
       secp256k1Ecdsa: isSet(object.secp256k1Ecdsa) ? Secp256k1Ecdsa.fromJSON(object.secp256k1Ecdsa) : undefined,
       webauthn: isSet(object.webauthn) ? WebAuthn.fromJSON(object.webauthn) : undefined,
       keyless: isSet(object.keyless) ? Keyless.fromJSON(object.keyless) : undefined,
+      slhDsaSha2128s: isSet(object.slhDsaSha2128s) ? SlhDsaSha2128s.fromJSON(object.slhDsaSha2128s) : undefined,
     };
   },
 
@@ -9689,6 +9898,9 @@ export const AnySignature = {
     if (message.keyless !== undefined) {
       obj.keyless = Keyless.toJSON(message.keyless);
     }
+    if (message.slhDsaSha2128s !== undefined) {
+      obj.slhDsaSha2128s = SlhDsaSha2128s.toJSON(message.slhDsaSha2128s);
+    }
     return obj;
   },
 
@@ -9710,6 +9922,9 @@ export const AnySignature = {
       : undefined;
     message.keyless = (object.keyless !== undefined && object.keyless !== null)
       ? Keyless.fromPartial(object.keyless)
+      : undefined;
+    message.slhDsaSha2128s = (object.slhDsaSha2128s !== undefined && object.slhDsaSha2128s !== null)
+      ? SlhDsaSha2128s.fromPartial(object.slhDsaSha2128s)
       : undefined;
     return message;
   },
@@ -10066,6 +10281,95 @@ export const Keyless = {
   },
   fromPartial(object: DeepPartial<Keyless>): Keyless {
     const message = createBaseKeyless();
+    message.signature = object.signature ?? new Uint8Array(0);
+    return message;
+  },
+};
+
+function createBaseSlhDsaSha2128s(): SlhDsaSha2128s {
+  return { signature: new Uint8Array(0) };
+}
+
+export const SlhDsaSha2128s = {
+  encode(message: SlhDsaSha2128s, writer: _m0.Writer = _m0.Writer.create()): _m0.Writer {
+    if (message.signature !== undefined && message.signature.length !== 0) {
+      writer.uint32(10).bytes(message.signature);
+    }
+    return writer;
+  },
+
+  decode(input: _m0.Reader | Uint8Array, length?: number): SlhDsaSha2128s {
+    const reader = input instanceof _m0.Reader ? input : _m0.Reader.create(input);
+    let end = length === undefined ? reader.len : reader.pos + length;
+    const message = createBaseSlhDsaSha2128s();
+    while (reader.pos < end) {
+      const tag = reader.uint32();
+      switch (tag >>> 3) {
+        case 1:
+          if (tag !== 10) {
+            break;
+          }
+
+          message.signature = reader.bytes();
+          continue;
+      }
+      if ((tag & 7) === 4 || tag === 0) {
+        break;
+      }
+      reader.skipType(tag & 7);
+    }
+    return message;
+  },
+
+  // encodeTransform encodes a source of message objects.
+  // Transform<SlhDsaSha2128s, Uint8Array>
+  async *encodeTransform(
+    source: AsyncIterable<SlhDsaSha2128s | SlhDsaSha2128s[]> | Iterable<SlhDsaSha2128s | SlhDsaSha2128s[]>,
+  ): AsyncIterable<Uint8Array> {
+    for await (const pkt of source) {
+      if (globalThis.Array.isArray(pkt)) {
+        for (const p of (pkt as any)) {
+          yield* [SlhDsaSha2128s.encode(p).finish()];
+        }
+      } else {
+        yield* [SlhDsaSha2128s.encode(pkt as any).finish()];
+      }
+    }
+  },
+
+  // decodeTransform decodes a source of encoded messages.
+  // Transform<Uint8Array, SlhDsaSha2128s>
+  async *decodeTransform(
+    source: AsyncIterable<Uint8Array | Uint8Array[]> | Iterable<Uint8Array | Uint8Array[]>,
+  ): AsyncIterable<SlhDsaSha2128s> {
+    for await (const pkt of source) {
+      if (globalThis.Array.isArray(pkt)) {
+        for (const p of (pkt as any)) {
+          yield* [SlhDsaSha2128s.decode(p)];
+        }
+      } else {
+        yield* [SlhDsaSha2128s.decode(pkt as any)];
+      }
+    }
+  },
+
+  fromJSON(object: any): SlhDsaSha2128s {
+    return { signature: isSet(object.signature) ? bytesFromBase64(object.signature) : new Uint8Array(0) };
+  },
+
+  toJSON(message: SlhDsaSha2128s): unknown {
+    const obj: any = {};
+    if (message.signature !== undefined && message.signature.length !== 0) {
+      obj.signature = base64FromBytes(message.signature);
+    }
+    return obj;
+  },
+
+  create(base?: DeepPartial<SlhDsaSha2128s>): SlhDsaSha2128s {
+    return SlhDsaSha2128s.fromPartial(base ?? {});
+  },
+  fromPartial(object: DeepPartial<SlhDsaSha2128s>): SlhDsaSha2128s {
+    const message = createBaseSlhDsaSha2128s();
     message.signature = object.signature ?? new Uint8Array(0);
     return message;
   },

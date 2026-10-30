@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     constants,
@@ -108,6 +107,7 @@ pub fn fuzz(data: &[u8]) {
         constants::MAX_CONCURRENT_OUTBOUND_RPCS,
         constants::MAX_FRAME_SIZE,
         constants::MAX_MESSAGE_SIZE,
+        None, /* inbound_rate_limiter */
     );
     executor.spawn(peer.start());
 

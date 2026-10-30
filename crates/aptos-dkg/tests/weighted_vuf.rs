@@ -1,17 +1,16 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::ptr_arg)]
 #![allow(clippy::needless_borrow)]
 
-use aptos_crypto::blstrs::random_scalar;
+use aptos_crypto::{blstrs::random_scalar, traits::TSecretSharingConfig as _};
 use aptos_dkg::{
-    pvss,
     pvss::{
-        test_utils,
-        test_utils::{DealingArgs, NoAux},
-        traits::{SecretSharingConfig, Transcript},
-        Player, WeightedConfig,
+        self,
+        test_utils::{self, DealingArgs, NoAux},
+        traits::{AggregatableTranscript, Transcript},
+        Player, WeightedConfigBlstrs,
     },
     weighted_vuf::{pinkas::PinkasWUF, traits::WeightedVUF},
 };
@@ -26,7 +25,7 @@ fn test_wvuf_basic_viability() {
 }
 
 fn weighted_wvuf_bvt<
-    T: Transcript<SecretSharingConfig = WeightedConfig>,
+    T,
     WVUF: WeightedVUF<
         SecretKey = T::DealtSecretKey,
         PubKey = T::DealtPubKey,
@@ -35,6 +34,7 @@ fn weighted_wvuf_bvt<
     >,
 >()
 where
+    T: AggregatableTranscript + Transcript<SecretSharingConfig = WeightedConfigBlstrs>,
     WVUF::PublicParameters: for<'a> From<&'a T::PublicParameters>,
 {
     let mut rng = thread_rng();
@@ -52,17 +52,19 @@ where
     );
 }
 
-fn weighted_pvss<T: Transcript<SecretSharingConfig = WeightedConfig>>(
-    rng: &mut StdRng,
-) -> (WeightedConfig, DealingArgs<T>, T) {
-    let wc = WeightedConfig::new(10, vec![3, 5, 3, 4, 2, 1, 1, 7]).unwrap();
+fn weighted_pvss<T>(rng: &mut StdRng) -> (WeightedConfigBlstrs, DealingArgs<T>, T)
+where
+    T: AggregatableTranscript + Transcript<SecretSharingConfig = WeightedConfigBlstrs>,
+{
+    let wc = WeightedConfigBlstrs::new(10, vec![3, 5, 3, 4, 2, 1, 1, 7]).unwrap();
 
-    let d = test_utils::setup_dealing::<T, StdRng>(&wc, rng);
+    let d = test_utils::setup_dealing::<T, StdRng>(&wc, None, rng);
 
     let trx = T::deal(
         &wc,
         &d.pp,
         &d.ssks[0],
+        &d.spks[0],
         &d.eks,
         &d.s,
         &NoAux,
@@ -71,7 +73,7 @@ fn weighted_pvss<T: Transcript<SecretSharingConfig = WeightedConfig>>(
     );
 
     // Make sure the PVSS dealt correctly
-    trx.verify(&wc, &d.pp, &vec![d.spks[0].clone()], &d.eks, &vec![NoAux])
+    trx.verify(&wc, &d.pp, &[d.spks[0].clone()], &d.eks, &[NoAux])
         .expect("PVSS transcript failed verification");
 
     (wc, d, trx)
@@ -83,7 +85,7 @@ fn weighted_pvss<T: Transcript<SecretSharingConfig = WeightedConfig>>(
 ///
 /// `T` is a (non-weighted) `pvss::traits::Transcript` type.
 fn wvuf_randomly_aggregate_verify_and_derive_eval<
-    T: Transcript<SecretSharingConfig = WeightedConfig>,
+    T: Transcript<SecretSharingConfig = WeightedConfigBlstrs>,
     WVUF: WeightedVUF<
         SecretKey = T::DealtSecretKey,
         PubKey = T::DealtPubKey,
@@ -92,10 +94,10 @@ fn wvuf_randomly_aggregate_verify_and_derive_eval<
     >,
     R: rand_core::RngCore + rand_core::CryptoRng,
 >(
-    wc: &WeightedConfig,
+    wc: &WeightedConfigBlstrs,
     sk: &T::DealtSecretKey,
     pk: &T::DealtPubKey,
-    dks: &Vec<T::DecryptPrivKey>,
+    dks: &[T::DecryptPrivKey],
     pvss_pp: &T::PublicParameters,
     trx: &T,
     rng: &mut R,
@@ -111,9 +113,7 @@ fn wvuf_randomly_aggregate_verify_and_derive_eval<
     let (mut sks, pks): (Vec<WVUF::SecretKeyShare>, Vec<WVUF::PubKeyShare>) = (0..wc
         .get_total_num_players())
         .map(|p| {
-            let (sk, pk) = trx
-                .decrypt_own_share(&wc, &wc.get_player(p), &dks[p], pvss_pp)
-                .expect("decrypt_own_share should not fail for valid transcript");
+            let (sk, pk) = trx.decrypt_own_share(&wc, &wc.get_player(p), &dks[p], pvss_pp);
             (sk, pk)
         })
         .collect::<Vec<(WVUF::SecretKeyShare, WVUF::PubKeyShare)>>()
@@ -162,7 +162,8 @@ fn wvuf_randomly_aggregate_verify_and_derive_eval<
     let proof = WVUF::aggregate_shares(&wc, &apks_and_proofs);
 
     // Make sure the aggregated proof is valid
-    WVUF::verify_proof(&vuf_pp, pk, &apks[..], msg, &proof)
+    let verify_pool = spawn_rayon_thread_pool("t-wvuf-vfy".to_string(), Some(4));
+    WVUF::verify_proof(&vuf_pp, pk, &apks[..], msg, &proof, &verify_pool)
         .expect("WVUF aggregated proof should verify");
 
     // Derive the VUF evaluation

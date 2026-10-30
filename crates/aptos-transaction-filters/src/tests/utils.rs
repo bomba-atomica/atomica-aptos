@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::tests::utils;
 use aptos_crypto::{
@@ -10,8 +10,12 @@ use aptos_types::{
     chain_id::ChainId,
     move_utils::MemberId,
     quorum_store::BatchId,
+    secret_sharing::{Ciphertext, EvalProof},
     transaction::{
         authenticator::{AccountAuthenticator, AnyPublicKey, TransactionAuthenticator},
+        encrypted_payload::{
+            DecryptedPlaintext, DecryptionFailureReason, EncryptedInner, EncryptedPayload,
+        },
         EntryFunction, Multisig, MultisigTransactionPayload, RawTransaction, Script,
         SignedTransaction, TransactionExecutable, TransactionExecutableRef, TransactionExtraConfig,
         TransactionPayload, TransactionPayloadInner,
@@ -27,6 +31,87 @@ pub fn create_account_authenticator(public_key: Ed25519PublicKey) -> AccountAuth
         public_key,
         signature: Ed25519Signature::dummy_signature(),
     }
+}
+
+/// Creates and returns a list of transactions (3 encrypted and 5 plaintext)
+#[cfg(test)]
+pub fn create_encrypted_and_plaintext_transactions() -> Vec<SignedTransaction> {
+    let mut transactions = vec![];
+
+    // Create 3 encrypted transactions (all in different states)
+    transactions.push(create_encrypted_transaction());
+    transactions.push(create_encrypted_transaction_failed_state());
+    transactions.push(create_encrypted_transaction_plaintext_state());
+
+    // Create 5 plaintext transactions
+    for _ in 0..5 {
+        let transaction = create_fee_payer_transaction();
+        transactions.push(transaction)
+    }
+
+    transactions
+}
+
+/// Creates and returns an encrypted transaction
+#[cfg(test)]
+pub fn create_encrypted_transaction() -> SignedTransaction {
+    let encrypted_payload = EncryptedPayload::Encrypted(EncryptedInner {
+        ciphertext: Ciphertext::random(),
+        extra_config: TransactionExtraConfig::V1 {
+            multisig_address: None,
+            replay_protection_nonce: None,
+        },
+        payload_hash: HashValue::random(),
+        encryption_epoch: 1,
+        claimed_entry_fun: None,
+    });
+
+    let transaction_payload = TransactionPayload::EncryptedPayload(encrypted_payload);
+    create_signed_transaction(transaction_payload, false)
+}
+
+/// Creates and returns an encrypted transaction in a failed decryption state
+#[cfg(test)]
+pub fn create_encrypted_transaction_failed_state() -> SignedTransaction {
+    let encrypted_payload = EncryptedPayload::FailedDecryption {
+        original: EncryptedInner {
+            ciphertext: Ciphertext::random(),
+            extra_config: TransactionExtraConfig::V1 {
+                multisig_address: None,
+                replay_protection_nonce: None,
+            },
+            payload_hash: HashValue::random(),
+            encryption_epoch: 1,
+            claimed_entry_fun: None,
+        },
+        eval_proof: Some(EvalProof::random()),
+        reason: DecryptionFailureReason::CryptoFailure,
+    };
+
+    let transaction_payload = TransactionPayload::EncryptedPayload(encrypted_payload);
+    create_signed_transaction(transaction_payload, false)
+}
+
+/// Creates and returns an encrypted transaction in a plaintext state
+#[cfg(test)]
+pub fn create_encrypted_transaction_plaintext_state() -> SignedTransaction {
+    let encrypted_payload = EncryptedPayload::Decrypted {
+        original: EncryptedInner {
+            ciphertext: Ciphertext::random(),
+            extra_config: TransactionExtraConfig::V1 {
+                multisig_address: None,
+                replay_protection_nonce: None,
+            },
+            payload_hash: HashValue::random(),
+            encryption_epoch: 1,
+            claimed_entry_fun: None,
+        },
+        eval_proof: EvalProof::random(),
+        decrypted: DecryptedPlaintext::new(TransactionExecutable::Empty, [0; 16]),
+    };
+
+    let transaction_payload = TransactionPayload::EncryptedPayload(encrypted_payload);
+    create_signed_transaction(transaction_payload, false)
 }
 
 /// Creates and returns an entry function with the given member ID
@@ -298,13 +383,11 @@ pub fn get_module_name(txn: &SignedTransaction) -> String {
 pub fn get_multisig_address(txn: &SignedTransaction) -> AccountAddress {
     match txn.payload() {
         TransactionPayload::Multisig(multisig) => multisig.multisig_address,
-        TransactionPayload::Payload(TransactionPayloadInner::V1 {
-            extra_config:
-                TransactionExtraConfig::V1 {
-                    multisig_address, ..
-                },
-            ..
-        }) => multisig_address.expect("Expected multisig address!"),
+        TransactionPayload::Payload(TransactionPayloadInner::V1 { extra_config, .. }) => {
+            extra_config
+                .multisig_address()
+                .expect("Expected multisig address!")
+        },
         payload => panic!("Unexpected transaction payload: {:?}", payload),
     }
 }

@@ -1,16 +1,15 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     error::StateSyncError,
-    network::{IncomingCommitRequest, IncomingRandGenRequest},
+    network::{IncomingCommitRequest, IncomingRandGenRequest, IncomingSecretShareRequest},
     payload_manager::{DirectMempoolPayloadManager, TPayloadManager},
     pipeline::{
         buffer_manager::OrderedBlocks, execution_client::TExecutionClient,
         pipeline_builder::PipelineBuilder, signing_phase::CommitSignerProvider,
     },
-    rand::rand_gen::types::RandConfig,
+    rand::{rand_gen::types::RandConfig, secret_sharing::verifier::SecretShareVerifier},
     test_utils::mock_storage::MockStorage,
 };
 use anyhow::{anyhow, format_err, Result};
@@ -28,7 +27,10 @@ use aptos_logger::prelude::*;
 use aptos_types::{
     epoch_state::EpochState,
     ledger_info::LedgerInfoWithSignatures,
-    on_chain_config::{OnChainConsensusConfig, OnChainExecutionConfig, OnChainRandomnessConfig},
+    on_chain_config::{
+        Features, OnChainChunkyDKGConfig, OnChainConsensusConfig, OnChainExecutionConfig,
+        OnChainRandomnessConfig,
+    },
     transaction::SignedTransaction,
     validator_signer::ValidatorSigner,
 };
@@ -118,9 +120,12 @@ impl TExecutionClient for MockExecutionClient {
         _onchain_consensus_config: &OnChainConsensusConfig,
         _onchain_execution_config: &OnChainExecutionConfig,
         _onchain_randomness_config: &OnChainRandomnessConfig,
+        _onchain_chunky_dkg_config: &OnChainChunkyDKGConfig,
+        _features: &Features,
         _rand_config: Option<RandConfig>,
-        _fast_rand_config: Option<RandConfig>,
+        _secret_share_verifier: Option<Arc<SecretShareVerifier>>,
         _rand_msg_rx: aptos_channel::Receiver<AccountAddress, IncomingRandGenRequest>,
+        _secret_sharing_msg_rx: aptos_channel::Receiver<AccountAddress, IncomingSecretShareRequest>,
         _highest_committed_round: Round,
     ) {
     }
@@ -143,10 +148,7 @@ impl TExecutionClient for MockExecutionClient {
         for block in &blocks {
             self.block_cache.lock().insert(
                 block.id(),
-                block
-                    .payload()
-                    .unwrap_or(&Payload::empty(false, true))
-                    .clone(),
+                block.payload().unwrap_or(&Payload::empty(false)).clone(),
             );
         }
 

@@ -1,10 +1,10 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::ensure;
 use aptos_consensus_types::{
     common::{BatchPayload, TxnSummaryWithExpiration},
-    proof_of_store::BatchInfo,
+    proof_of_store::{BatchInfo, BatchInfoExt, BatchKind, TBatchInfo},
 };
 use aptos_crypto::{hash::CryptoHash, HashValue};
 use aptos_types::{
@@ -12,14 +12,15 @@ use aptos_types::{
     validator_verifier::ValidatorVerifier, PeerId,
 };
 use serde::{Deserialize, Serialize};
+use serde_name::{DeserializeNameAdapter, SerializeNameAdapter};
 use std::{
     fmt::{Display, Formatter},
     ops::Deref,
 };
 
 #[derive(Clone, Eq, Deserialize, Serialize, PartialEq, Debug)]
-pub struct PersistedValue {
-    info: BatchInfo,
+pub struct PersistedValue<T> {
+    info: T,
     maybe_payload: Option<Vec<SignedTransaction>>,
 }
 
@@ -29,8 +30,8 @@ pub(crate) enum StorageMode {
     MemoryAndPersisted,
 }
 
-impl PersistedValue {
-    pub(crate) fn new(info: BatchInfo, maybe_payload: Option<Vec<SignedTransaction>>) -> Self {
+impl<T: TBatchInfo> PersistedValue<T> {
+    pub(crate) fn new(info: T, maybe_payload: Option<Vec<SignedTransaction>>) -> Self {
         Self {
             info,
             maybe_payload,
@@ -53,7 +54,7 @@ impl PersistedValue {
         self.maybe_payload = None;
     }
 
-    pub fn batch_info(&self) -> &BatchInfo {
+    pub fn batch_info(&self) -> &T {
         &self.info
     }
 
@@ -78,23 +79,23 @@ impl PersistedValue {
         vec![]
     }
 
-    pub fn unpack(self) -> (BatchInfo, Option<Vec<SignedTransaction>>) {
+    pub fn unpack(self) -> (T, Option<Vec<SignedTransaction>>) {
         (self.info, self.maybe_payload)
     }
 }
 
-impl Deref for PersistedValue {
-    type Target = BatchInfo;
+impl<T: TBatchInfo> Deref for PersistedValue<T> {
+    type Target = T;
 
     fn deref(&self) -> &Self::Target {
         &self.info
     }
 }
 
-impl TryFrom<PersistedValue> for Batch {
+impl<T: TBatchInfo> TryFrom<PersistedValue<T>> for Batch<T> {
     type Error = anyhow::Error;
 
-    fn try_from(value: PersistedValue) -> Result<Self, Self::Error> {
+    fn try_from(value: PersistedValue<T>) -> Result<Self, Self::Error> {
         let author = value.author();
         Ok(Batch {
             batch_info: value.info,
@@ -105,6 +106,23 @@ impl TryFrom<PersistedValue> for Batch {
                     .ok_or_else(|| anyhow::anyhow!("Payload not exist"))?,
             ),
         })
+    }
+}
+
+impl From<PersistedValue<BatchInfo>> for PersistedValue<BatchInfoExt> {
+    fn from(value: PersistedValue<BatchInfo>) -> Self {
+        let (batch_info, payload) = value.unpack();
+        PersistedValue::new(batch_info.into(), payload)
+    }
+}
+
+impl TryFrom<PersistedValue<BatchInfoExt>> for PersistedValue<BatchInfo> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: PersistedValue<BatchInfoExt>) -> Result<Self, Self::Error> {
+        let (batch_info, payload) = value.unpack();
+        ensure!(!batch_info.is_v2(), "Expected Batch Info V1");
+        Ok(PersistedValue::new(batch_info.unpack_info(), payload))
     }
 }
 
@@ -122,15 +140,74 @@ mod tests {
             config::BATCH_PADDING_BYTES
         );
     }
+
+    #[test]
+    fn verify_v2_rejects_v1_batch_in_batch_msg_v2() {
+        use super::*;
+        use aptos_consensus_types::proof_of_store::BatchKind;
+        use aptos_types::quorum_store::BatchId;
+
+        let author = PeerId::random();
+        let v1 = Batch::<BatchInfoExt>::new_v1(BatchId::new_for_test(1), vec![], 1, 1, author, 0);
+        let v2 = Batch::<BatchInfoExt>::new_v2(
+            BatchId::new_for_test(2),
+            vec![],
+            1,
+            u64::MAX,
+            author,
+            0,
+            BatchKind::Normal,
+        );
+        // Mirrors the disclosed crafted message: V1 first, V2 second.
+        let msg = BatchMsg::new(vec![v1, v2]);
+        let err = msg
+            .verify_v2(author, 10, &ValidatorVerifier::new(vec![]))
+            .expect_err("must reject V1 entry in BatchMsgV2");
+        assert!(
+            err.to_string().contains("Non-V2 batch in BatchMsgV2"),
+            "unexpected error: {err}"
+        );
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Batch {
-    batch_info: BatchInfo,
+#[serde(remote = "Batch")]
+pub struct Batch<T: TBatchInfo> {
+    batch_info: T,
     payload: BatchPayload,
 }
 
-impl Batch {
+impl<'de, T> Deserialize<'de> for Batch<T>
+where
+    T: Deserialize<'de> + TBatchInfo,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        Batch::deserialize(DeserializeNameAdapter::new(
+            deserializer,
+            std::any::type_name::<Self>(),
+        ))
+    }
+}
+
+impl<T> Serialize for Batch<T>
+where
+    T: Serialize + TBatchInfo,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        Batch::serialize(
+            self,
+            SerializeNameAdapter::new(serializer, std::any::type_name::<Self>()),
+        )
+    }
+}
+
+impl Batch<BatchInfo> {
     pub fn new(
         batch_id: BatchId,
         payload: Vec<SignedTransaction>,
@@ -150,6 +227,60 @@ impl Batch {
             payload.num_bytes() as u64,
             gas_bucket_start,
         );
+        Self::new_generic(batch_info, payload)
+    }
+}
+
+impl Batch<BatchInfoExt> {
+    pub fn new_v2(
+        batch_id: BatchId,
+        payload: Vec<SignedTransaction>,
+        epoch: u64,
+        expiration: u64,
+        batch_author: PeerId,
+        gas_bucket_start: u64,
+        batch_kind: BatchKind,
+    ) -> Self {
+        let payload = BatchPayload::new(batch_author, payload);
+        let batch_info = BatchInfoExt::new_v2(
+            batch_author,
+            batch_id,
+            epoch,
+            expiration,
+            payload.hash(),
+            payload.num_txns() as u64,
+            payload.num_bytes() as u64,
+            gas_bucket_start,
+            batch_kind,
+        );
+        Self::new_generic(batch_info, payload)
+    }
+
+    pub fn new_v1(
+        batch_id: BatchId,
+        payload: Vec<SignedTransaction>,
+        epoch: u64,
+        expiration: u64,
+        batch_author: PeerId,
+        gas_bucket_start: u64,
+    ) -> Self {
+        let payload = BatchPayload::new(batch_author, payload);
+        let batch_info = BatchInfoExt::new_v1(
+            batch_author,
+            batch_id,
+            epoch,
+            expiration,
+            payload.hash(),
+            payload.num_txns() as u64,
+            payload.num_bytes() as u64,
+            gas_bucket_start,
+        );
+        Self::new_generic(batch_info, payload)
+    }
+}
+
+impl<T: TBatchInfo> Batch<T> {
+    pub fn new_generic(batch_info: T, payload: BatchPayload) -> Self {
         Self {
             batch_info,
             payload,
@@ -166,6 +297,10 @@ impl Batch {
             "Payload hash doesn't match the digest"
         );
         ensure!(
+            self.payload.num_txns() >= 1,
+            "Batch must contain at least one transaction, got 0",
+        );
+        ensure!(
             self.payload.num_txns() as u64 == self.num_txns(),
             "Payload num txns doesn't match batch info"
         );
@@ -177,8 +312,14 @@ impl Batch {
             ensure!(
                 txn.gas_unit_price() >= self.gas_bucket_start(),
                 "Payload gas unit price doesn't match batch info"
-            )
+            );
         }
+
+        aptos_consensus_types::common::verify_batch_kind_transactions(
+            self.batch_info.batch_kind(),
+            self.payload.txns(),
+        )?;
+
         Ok(())
     }
 
@@ -200,16 +341,48 @@ impl Batch {
         self.payload.txns()
     }
 
-    pub fn batch_info(&self) -> &BatchInfo {
+    pub fn batch_info(&self) -> &T {
         &self.batch_info
     }
 }
 
-impl Deref for Batch {
-    type Target = BatchInfo;
+impl<T: TBatchInfo> Deref for Batch<T> {
+    type Target = T;
 
     fn deref(&self) -> &Self::Target {
         &self.batch_info
+    }
+}
+
+impl From<Batch<BatchInfo>> for Batch<BatchInfoExt> {
+    fn from(batch: Batch<BatchInfo>) -> Self {
+        let Batch {
+            batch_info,
+            payload,
+        } = batch;
+        Self {
+            batch_info: batch_info.into(),
+            payload,
+        }
+    }
+}
+
+impl TryFrom<Batch<BatchInfoExt>> for Batch<BatchInfo> {
+    type Error = anyhow::Error;
+
+    fn try_from(batch: Batch<BatchInfoExt>) -> Result<Self, Self::Error> {
+        ensure!(
+            matches!(batch.batch_info(), &BatchInfoExt::V1 { .. }),
+            "Batch must be V1 type"
+        );
+        let Batch {
+            batch_info,
+            payload,
+        } = batch;
+        Ok(Self {
+            batch_info: batch_info.unpack_info(),
+            payload,
+        })
     }
 }
 
@@ -264,8 +437,8 @@ impl BatchRequest {
     }
 }
 
-impl From<Batch> for PersistedValue {
-    fn from(value: Batch) -> Self {
+impl<T: TBatchInfo> From<Batch<T>> for PersistedValue<T> {
+    fn from(value: Batch<T>) -> Self {
         let Batch {
             batch_info,
             payload,
@@ -276,21 +449,24 @@ impl From<Batch> for PersistedValue {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum BatchResponse {
-    Batch(Batch),
+    Batch(Batch<BatchInfo>),
     NotFound(LedgerInfoWithSignatures),
+    BatchV2(Batch<BatchInfoExt>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct BatchMsg {
-    batches: Vec<Batch>,
+pub struct BatchMsg<T: TBatchInfo> {
+    batches: Vec<Batch<T>>,
 }
 
-impl BatchMsg {
-    pub fn new(batches: Vec<Batch>) -> Self {
+impl<T: TBatchInfo> BatchMsg<T> {
+    pub fn new(batches: Vec<Batch<T>>) -> Self {
         Self { batches }
     }
 
-    pub fn verify(
+    /// Per-batch verification shared by V1 (`verify`) and V2 (`verify_v2`).
+    /// Variant-specific gating is layered on by the concrete impls.
+    fn verify_inner(
         &self,
         peer_id: PeerId,
         max_num_batches: usize,
@@ -320,6 +496,12 @@ impl BatchMsg {
         Ok(())
     }
 
+    pub fn has_encrypted_batches(&self) -> bool {
+        self.batches
+            .iter()
+            .any(|b| b.batch_info().batch_kind() == Some(BatchKind::Encrypted))
+    }
+
     pub fn epoch(&self) -> anyhow::Result<u64> {
         ensure!(!self.batches.is_empty(), "Empty message");
         let epoch = self.batches[0].epoch();
@@ -338,7 +520,40 @@ impl BatchMsg {
         self.batches.first().map(|batch| batch.author())
     }
 
-    pub fn take(self) -> Vec<Batch> {
+    pub fn take(self) -> Vec<Batch<T>> {
         self.batches
+    }
+}
+
+impl BatchMsg<BatchInfo> {
+    pub fn verify(
+        &self,
+        peer_id: PeerId,
+        max_num_batches: usize,
+        verifier: &ValidatorVerifier,
+    ) -> anyhow::Result<()> {
+        self.verify_inner(peer_id, max_num_batches, verifier)
+    }
+}
+
+impl BatchMsg<BatchInfoExt> {
+    pub fn verify_v2(
+        &self,
+        peer_id: PeerId,
+        max_num_batches: usize,
+        verifier: &ValidatorVerifier,
+    ) -> anyhow::Result<()> {
+        for batch in self.batches.iter() {
+            ensure!(batch.batch_info().is_v2(), "Non-V2 batch in BatchMsgV2");
+        }
+        self.verify_inner(peer_id, max_num_batches, verifier)
+    }
+}
+
+impl From<BatchMsg<BatchInfo>> for BatchMsg<BatchInfoExt> {
+    fn from(msg: BatchMsg<BatchInfo>) -> Self {
+        Self {
+            batches: msg.batches.into_iter().map(|b| b.into()).collect(),
+        }
     }
 }

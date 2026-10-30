@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{ledger_db::transaction_db::TransactionDb, AptosDB};
 use aptos_crypto::hash::CryptoHash;
@@ -31,7 +31,7 @@ proptest! {
 
         let num_txns = txns.len();
         for (version, txn) in txns.into_iter().enumerate() {
-            let hash = txn.hash();
+            let hash = txn.committed_hash();
             prop_assert_eq!(transaction_db.get_transaction(version as Version).unwrap(), txn);
             prop_assert_eq!(transaction_db.get_transaction_version_by_hash(&hash, num_txns as Version).unwrap(), Some(version as Version));
             if version > 0 {

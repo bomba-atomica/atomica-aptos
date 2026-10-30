@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     move_vm_ext::{
@@ -9,7 +9,7 @@ use crate::{
                 SystemSessionChangeSet, UserSessionChangeSet,
             },
         },
-        AptosMoveResolver, SessionId,
+        AptosMoveResolver,
     },
     transaction_metadata::TransactionMetadata,
     AptosVM,
@@ -79,7 +79,7 @@ impl<'r> EpilogueSession<'r> {
         module_write_set: ModuleWriteSet,
         storage_refund: Fee,
     ) -> Self {
-        let session_id = SessionId::epilogue_meta(txn_meta);
+        let session_id = txn_meta.epilogue_session_id();
         let session = RespawnedSession::spawn(
             vm,
             session_id,

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::tests::{mock, mock::MockClient, utils};
 use aptos_config::config::StorageServiceConfig;
@@ -190,8 +190,8 @@ async fn test_cachable_requests_eviction() {
     db_reader
         .expect_get_state_item_count()
         .times(max_lru_cache_size as usize)
-        .with(always())
-        .returning(move |_| Ok(165));
+        .with(always(), always())
+        .returning(move |_, _| Ok(165));
     for _ in 0..2 {
         let state_value_chunk_with_proof_clone = state_value_chunk_with_proof.clone();
         db_reader
@@ -201,8 +201,9 @@ async fn test_cachable_requests_eviction() {
                 eq(version),
                 eq(start_index as usize),
                 eq((end_index - start_index + 1) as usize),
+                always(),
             )
-            .return_once(move |_, _, _| Ok(state_value_chunk_with_proof_clone))
+            .return_once(move |_, _, _, _| Ok(state_value_chunk_with_proof_clone))
             .in_sequence(&mut expectation_sequence);
     }
 

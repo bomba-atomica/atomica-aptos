@@ -1,21 +1,23 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     algebra::polynomials::shamir_secret_share,
-    pvss,
     pvss::{
-        das, encryption_dlog, traits,
-        traits::{transcript::MalleableTranscript, Convert, SecretSharingConfig},
+        self, das, encryption_dlog,
+        traits::{self, transcript::MalleableTranscript, AggregatableTranscript, Convert},
         Player, ThresholdConfigBlstrs,
     },
+    traits::transcript::{Aggregatable, Aggregated},
     utils::{
         random::{insecure_random_g2_points, random_scalars},
         HasMultiExp,
     },
 };
 use anyhow::bail;
-use aptos_crypto::{bls12381, CryptoMaterialError, ValidCryptoMaterial};
+use aptos_crypto::{
+    bls12381, traits::TSecretSharingConfig as _, CryptoMaterialError, ValidCryptoMaterial,
+};
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
 use blstrs::{G2Projective, Scalar};
 use rand::thread_rng;
@@ -54,16 +56,41 @@ impl Convert<Scalar, das::PublicParameters> for pvss::input_secret::InputSecret 
     }
 }
 
-impl traits::Transcript for Transcript {
+impl traits::TranscriptCore for Transcript {
     type DealtPubKey = pvss::dealt_pub_key::g2::DealtPubKey;
     type DealtPubKeyShare = pvss::dealt_pub_key_share::g2::DealtPubKeyShare;
     type DealtSecretKey = Scalar;
     type DealtSecretKeyShare = Scalar;
     type DecryptPrivKey = encryption_dlog::g1::DecryptPrivKey;
     type EncryptPubKey = encryption_dlog::g1::EncryptPubKey;
-    type InputSecret = pvss::input_secret::InputSecret;
     type PublicParameters = das::PublicParameters;
     type SecretSharingConfig = ThresholdConfigBlstrs;
+
+    fn get_public_key_share(
+        &self,
+        _sc: &Self::SecretSharingConfig,
+        player: &Player,
+    ) -> Self::DealtPubKeyShare {
+        Self::DealtPubKeyShare::new(Self::DealtPubKey::new(self.V[player.id]))
+    }
+
+    fn get_dealt_public_key(&self) -> Self::DealtPubKey {
+        Self::DealtPubKey::new(*self.V.last().unwrap())
+    }
+
+    fn decrypt_own_share(
+        &self,
+        sc: &Self::SecretSharingConfig,
+        player: &Player,
+        _dk: &Self::DecryptPrivKey,
+        _pp: &Self::PublicParameters,
+    ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
+        (self.C[player.id], self.get_public_key_share(sc, player))
+    }
+}
+
+impl traits::Transcript for Transcript {
+    type InputSecret = pvss::input_secret::InputSecret;
     type SigningPubKey = bls12381::PublicKey;
     type SigningSecretKey = bls12381::PrivateKey;
 
@@ -80,7 +107,8 @@ impl traits::Transcript for Transcript {
         sc: &Self::SecretSharingConfig,
         pp: &Self::PublicParameters,
         _ssk: &Self::SigningSecretKey,
-        eks: &Vec<Self::EncryptPubKey>,
+        _spk: &Self::SigningPubKey,
+        eks: &[Self::EncryptPubKey],
         s: &Self::InputSecret,
         _aux: &A,
         dealer: &Player,
@@ -107,13 +135,35 @@ impl traits::Transcript for Transcript {
         }
     }
 
+    fn get_dealers(&self) -> Vec<Player> {
+        self.dealers.clone()
+    }
+
+    #[allow(non_snake_case)]
+    fn generate<R>(
+        sc: &Self::SecretSharingConfig,
+        _pp: &Self::PublicParameters,
+        rng: &mut R,
+    ) -> Self
+    where
+        R: rand_core::RngCore + rand_core::CryptoRng,
+    {
+        Transcript {
+            dealers: vec![sc.get_player(0)],
+            V: insecure_random_g2_points(sc.n + 1, rng),
+            C: random_scalars(sc.n, rng),
+        }
+    }
+}
+
+impl AggregatableTranscript for Transcript {
     fn verify<A: Serialize + Clone>(
         &self,
-        sc: &Self::SecretSharingConfig,
+        sc: &<Self as traits::TranscriptCore>::SecretSharingConfig,
         pp: &Self::PublicParameters,
-        _spks: &Vec<Self::SigningPubKey>,
-        eks: &Vec<Self::EncryptPubKey>,
-        _aux: &Vec<A>,
+        _spks: &[Self::SigningPubKey],
+        eks: &[Self::EncryptPubKey],
+        _aux: &[A],
     ) -> anyhow::Result<()> {
         if eks.len() != sc.n {
             bail!("Expected {} encryption keys, but got {}", sc.n, eks.len());
@@ -149,12 +199,23 @@ impl traits::Transcript for Transcript {
 
         return Ok(());
     }
+}
 
-    fn get_dealers(&self) -> Vec<Player> {
-        self.dealers.clone()
+impl Aggregatable for Transcript {
+    type Aggregated = Self;
+    type SecretSharingConfig = ThresholdConfigBlstrs;
+
+    fn to_aggregated(&self) -> Self::Aggregated {
+        self.clone()
     }
+}
 
-    fn aggregate_with(&mut self, sc: &Self::SecretSharingConfig, other: &Transcript) {
+impl Aggregated<Transcript> for Transcript {
+    fn aggregate_with(
+        &mut self,
+        sc: &ThresholdConfigBlstrs,
+        other: &Transcript,
+    ) -> anyhow::Result<()> {
         debug_assert_eq!(self.C.len(), sc.n);
         debug_assert_eq!(self.V.len(), sc.n + 1);
 
@@ -167,40 +228,12 @@ impl traits::Transcript for Transcript {
 
         debug_assert_eq!(self.C.len(), other.C.len());
         debug_assert_eq!(self.V.len(), other.V.len());
+
+        Ok(())
     }
 
-    fn get_public_key_share(
-        &self,
-        _sc: &Self::SecretSharingConfig,
-        player: &Player,
-    ) -> Self::DealtPubKeyShare {
-        Self::DealtPubKeyShare::new(Self::DealtPubKey::new(self.V[player.id]))
-    }
-
-    fn get_dealt_public_key(&self) -> Self::DealtPubKey {
-        Self::DealtPubKey::new(*self.V.last().unwrap())
-    }
-
-    fn decrypt_own_share(
-        &self,
-        sc: &Self::SecretSharingConfig,
-        player: &Player,
-        _dk: &Self::DecryptPrivKey,
-        _pp: &Self::PublicParameters,
-    ) -> anyhow::Result<(Self::DealtSecretKeyShare, Self::DealtPubKeyShare)> {
-        Ok((self.C[player.id], self.get_public_key_share(sc, player)))
-    }
-
-    #[allow(non_snake_case)]
-    fn generate<R>(sc: &Self::SecretSharingConfig, rng: &mut R) -> Self
-    where
-        R: rand_core::RngCore + rand_core::CryptoRng,
-    {
-        Transcript {
-            dealers: vec![sc.get_player(0)],
-            V: insecure_random_g2_points(sc.n + 1, rng),
-            C: random_scalars(sc.n, rng),
-        }
+    fn normalize(self) -> Transcript {
+        self
     }
 }
 

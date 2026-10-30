@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     counters,
@@ -283,7 +282,7 @@ impl RoundState {
                 prev_round_votes,
                 prev_round_timeout_votes,
             };
-            info!(round = new_round, "Starting new round: {}", new_round_event);
+            info!(round = new_round, reason = %new_round_event.reason, timeout_ms = new_round_event.timeout.as_millis() as u64, "new_round");
             return Some(new_round_event);
         }
         None

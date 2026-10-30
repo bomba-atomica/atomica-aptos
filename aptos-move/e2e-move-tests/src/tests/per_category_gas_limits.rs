@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     assert_out_of_gas, assert_success, assert_vm_status, enable_golden, tests::common, MoveHarness,
@@ -13,13 +13,7 @@ use aptos_types::{
     vm_status::StatusCode,
 };
 use move_core_types::gas_algebra::{InternalGas, NumBytes};
-use serde::{Deserialize, Serialize};
-
-/// Mimics `0xcafe::test::ModuleData`
-#[derive(Serialize, Deserialize)]
-struct ModuleData {
-    state: Vec<u8>,
-}
+use serde::Serialize;
 
 #[test]
 fn execution_limit_reached() {
@@ -27,7 +21,7 @@ fn execution_limit_reached() {
 
     // Publish the infinite loop module.
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xbeef").unwrap());
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("infinite_loop.data/empty_loop"),
     ));
@@ -178,7 +172,7 @@ fn setup() -> (MoveHarness, Account) {
     let mut h = MoveHarness::new();
     // Publish the test module.
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xbeef").unwrap());
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("per_category_gas_limits.data/test"),
     ));

@@ -1,13 +1,14 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::anyhow;
 use itertools::Itertools;
 use move_command_line_common::env::{read_bool_env_var, read_env_var};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::process::Command;
+use std::{process::Command, time::Duration};
 
 /// Default flags passed to boogie. Additional flags will be added to this via the -B option.
 const DEFAULT_BOOGIE_FLAGS: &[&str] = &[
@@ -21,20 +22,31 @@ const MOD_SET_ANALYSIS_LEGACY_FLAG: &str = "-doModSetAnalysis";
 
 const MOD_SET_ANALYSIS_NEW_FLAG_SINCE_3_5_1: &str = "-inferModifies";
 
+fn parse_seed_handoff_ratio(value: &str) -> Result<f64, String> {
+    let ratio = value
+        .parse::<f64>()
+        .map_err(|_| "seed handoff ratio must be a number".to_string())?;
+    if !ratio.is_finite() || !(0.0..=1.0).contains(&ratio) {
+        return Err("seed handoff ratio must be between 0 and 1".to_string());
+    }
+    Ok(ratio)
+}
+
 /// Versions for boogie, z3, and cvc5. The upgrade of boogie and z3 is mostly backward compatible,
 /// but not always. Setting the max version allows Prover to warn users for the higher version of
 /// boogie and z3 because those may be incompatible.
 pub const MIN_BOOGIE_VERSION: Option<&str> = Some("3.0.1.0");
-pub const MAX_BOOGIE_VERSION: Option<&str> = Some("3.5.1.0");
+pub const MAX_BOOGIE_VERSION: Option<&str> = Some("3.5.6.0");
 pub const MIN_BOOGIE_VERSION_NEW_MOD_SET_ANALYSIS: Option<&str> = Some("3.5.1.0");
 
-pub const MIN_Z3_VERSION: Option<&str> = Some("4.11.2");
-pub const MAX_Z3_VERSION: Option<&str> = Some("4.11.2");
+pub const MIN_Z3_VERSION: Option<&str> = Some("4.13.0");
+pub const MAX_Z3_VERSION: Option<&str> = Some("4.13.0");
 
 pub const MIN_CVC5_VERSION: Option<&str> = Some("0.0.3");
 pub const MAX_CVC5_VERSION: Option<&str> = None;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, clap::ValueEnum)]
+#[clap(rename_all = "PascalCase")]
 pub enum VectorTheory {
     BoogieArray,
     BoogieArrayIntern,
@@ -101,88 +113,122 @@ impl BorrowAggregate {
 }
 
 /// Boogie options.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
 #[serde(default, deny_unknown_fields)]
 pub struct BoogieOptions {
     /// Path to the boogie executable.
+    #[arg(skip)]
     pub boogie_exe: String,
     /// Use experimental boogie exe found via env var EXP_BOOGIE_EXE.
+    #[arg(long)]
     pub use_exp_boogie: bool,
     /// Path to the z3 executable.
+    #[arg(skip)]
     pub z3_exe: String,
     /// Whether to use cvc5.
+    #[arg(long)]
     pub use_cvc5: bool,
     /// Path to the cvc5 executable.
+    #[arg(skip)]
     pub cvc5_exe: String,
-    /// Whether to generate debug trace code.
-    pub debug_trace: bool,
     /// List of flags to pass on to boogie.
+    #[arg(skip)]
     pub boogie_flags: Vec<String>,
     /// Whether to use native array theory.
+    #[arg(skip)]
     pub use_smt_array_theory: bool,
     /// Whether to produce an SMT file for each verification problem.
+    #[arg(long)]
     pub generate_smt: bool,
     /// Whether native instead of stratified equality should be used.
+    #[arg(skip)]
     pub native_equality: bool,
-    /// A string determining the type of requires used for parameter type checks. Can be
-    /// `"requires"` or `"free requires`".
-    pub type_requires: String,
-    /// The depth until which stratified functions are expanded.
-    pub stratification_depth: usize,
-    /// A string to be used to inline a function of medium size. Can be empty or `{:inline}`.
-    pub aggressive_func_inline: String,
-    /// A string to be used to inline a function of small size. Can be empty or `{:inline}`.
-    pub func_inline: String,
     /// A bound to apply to the length of serialization results.
+    #[arg(skip)]
     pub serialize_bound: usize,
     /// How many times to call the prover backend for the verification problem. This is used for
     /// benchmarking.
+    #[arg(long, default_value_t = 1)]
     pub bench_repeat: usize,
-    /// Whether to use the sequence theory as the internal representation for $Vector type.
-    pub vector_using_sequences: bool,
     /// A seed for the prover.
+    #[arg(short = 'S', long = "seed", default_value_t = 1)]
     pub random_seed: usize,
-    /// The number of cores to use for parallel processing of verification conditions.
+    /// The maximum number of Boogie processes to run concurrently. Can also be set with
+    /// `MVP_PROC_CORES`.
+    #[arg(long = "cores", default_value_t = 4, env = "MVP_PROC_CORES")]
     pub proc_cores: usize,
-    /// The number of shards to split the verification problem into.
-    pub shards: usize,
-    /// If there are shards, specifies to only run the given shard. Shards are numbered
-    /// starting at 1.
-    pub only_shard: Option<usize>,
     /// A (soft) timeout for the solver, per verification condition, in seconds.
+    #[arg(short = 'T', long = "timeout", default_value_t = 40)]
     pub vc_timeout: usize,
     /// Whether allow local timeout overwrites the global one
+    #[arg(skip)]
     pub global_timeout_overwrite: bool,
     /// Whether Boogie output and log should be saved.
+    #[arg(short = 'k', long = "keep")]
     pub keep_artifacts: bool,
     /// Eager threshold for quantifier instantiation.
+    #[arg(long, default_value_t = 100)]
     pub eager_threshold: usize,
     /// Lazy threshold for quantifier instantiation.
+    #[arg(long, default_value_t = 100)]
     pub lazy_threshold: usize,
     /// Whether to use the new Boogie `{:debug ..}` attribute for tracking debug values.
+    #[arg(long)]
     pub stable_test_output: bool,
     /// Number of Boogie instances to be run concurrently.
+    #[arg(long, default_value_t = 1)]
     pub num_instances: usize,
     /// Whether to run Boogie instances sequentially.
+    #[arg(skip)]
     pub sequential_task: bool,
+    /// Fraction of a VC's soft timeout after which to start the implicit fallback seed.
+    /// Zero disables the early fallback.
+    #[arg(long, default_value_t = 2.0 / 3.0, value_parser = parse_seed_handoff_ratio)]
+    pub seed_handoff_ratio: f64,
     /// A hard timeout for boogie execution; if the process does not terminate within
     /// this time frame, it will be killed. Zero for no timeout.
+    #[arg(skip)]
     pub hard_timeout_secs: u64,
+    /// A deadline for the entire verification request. This is an embedding-only
+    /// safeguard; zero leaves package verification unbounded.
+    #[arg(skip)]
+    pub package_timeout_secs: u64,
     /// Whether to skip verification of type instantiations of functions. This may miss
     /// some verification conditions if different type instantiations can create
     /// different behavior via type reflection or storage access, but can speed up
     /// verification.
+    #[arg(skip)]
     pub skip_instance_check: bool,
     /// What vector theory to use.
+    #[arg(long, value_enum, default_value = "BoogieArray")]
     pub vector_theory: VectorTheory,
     /// Whether to generate a z3 trace file and where to put it.
+    #[arg(skip)]
     pub z3_trace_file: Option<String>,
     /// Options to define user-custom native funs.
+    #[arg(skip)]
     pub custom_natives: Option<CustomNativeOptions>,
     /// Number of iterations to unroll loops.
+    #[arg(skip)]
     pub loop_unroll: Option<u64>,
     /// Optional aggregate function names for native methods implementing mutable borrow semantics
+    #[arg(skip)]
     pub borrow_aggregates: Vec<BorrowAggregate>,
+    /// Generate an independent verification condition for each assertion in a
+    /// function instead of a single combined condition. Can help the prover
+    /// when a function contains both provable-but-hard asserts and asserts
+    /// that produce counterexamples; useful for diagnosing per-function
+    /// timeouts.
+    #[arg(long)]
+    pub split_vcs_by_assert: bool,
+    /// Maximum number of counterexamples reported per verification
+    /// condition.
+    #[arg(long, default_value_t = 5)]
+    pub error_limit: usize,
+    /// Maximum verifier errors retained for an entire package. Zero disables
+    /// this embedding-only safeguard.
+    #[arg(skip)]
+    pub package_error_limit: usize,
 }
 
 impl Default for BoogieOptions {
@@ -196,20 +242,12 @@ impl Default for BoogieOptions {
             use_cvc5: false,
             cvc5_exe: read_env_var("CVC5_EXE"),
             boogie_flags: vec![],
-            debug_trace: false,
             use_smt_array_theory: false,
             generate_smt: false,
             native_equality: false,
-            type_requires: "free requires".to_owned(),
-            stratification_depth: 6,
-            aggressive_func_inline: "".to_owned(),
-            func_inline: "{:inline}".to_owned(),
             serialize_bound: 0,
-            vector_using_sequences: false,
             random_seed: 1,
             proc_cores: 4,
-            shards: 1,
-            only_shard: None,
             vc_timeout: 40,
             global_timeout_overwrite: true,
             keep_artifacts: false,
@@ -218,18 +256,29 @@ impl Default for BoogieOptions {
             stable_test_output: false,
             num_instances: 1,
             sequential_task: false,
+            seed_handoff_ratio: 2.0 / 3.0,
             hard_timeout_secs: 0,
+            package_timeout_secs: 0,
             vector_theory: VectorTheory::BoogieArray,
             z3_trace_file: None,
             custom_natives: None,
             loop_unroll: None,
             borrow_aggregates: vec![],
             skip_instance_check: false,
+            split_vcs_by_assert: false,
+            error_limit: 5,
+            package_error_limit: 0,
         }
     }
 }
 
 impl BoogieOptions {
+    /// The derived process timeout is a watchdog for a wedged Boogie process,
+    /// not another VC timeout. It includes parsing, type checking, inlining,
+    /// and VC construction, none of which is covered by Boogie's `timeLimit`.
+    const MIN_PROCESS_TIMEOUT_SECS: u64 = 300;
+    const PROCESS_TIMEOUT_FACTOR: u64 = 4;
+
     /// Derive options based on other set options.
     pub fn derive_options(&mut self) {
         use VectorTheory::*;
@@ -282,6 +331,10 @@ impl BoogieOptions {
         if let Some(iters) = self.loop_unroll {
             add(&[&format!("-loopUnroll:{}", iters)]);
         }
+        if self.split_vcs_by_assert {
+            add(&["-vcsSplitOnEveryAssert"]);
+        }
+        add(&[&format!("-errorLimit:{}", self.error_limit)]);
         add(&[&format!(
             "-vcsCores:{}",
             if self.stable_test_output {
@@ -329,6 +382,27 @@ impl BoogieOptions {
         } else {
             time
         }
+    }
+
+    /// Return the watchdog deadline for a BPL containing one verification
+    /// root. An explicit hard timeout takes precedence. Otherwise, use a
+    /// generous deadline independent of Boogie's solver-only soft timeout.
+    pub fn process_timeout_secs(&self, root_timeout_secs: usize) -> u64 {
+        if self.hard_timeout_secs > 0 {
+            self.hard_timeout_secs
+        } else if root_timeout_secs == 0 {
+            0
+        } else {
+            (self.adjust_timeout(root_timeout_secs) as u64)
+                .saturating_mul(Self::PROCESS_TIMEOUT_FACTOR)
+                .max(Self::MIN_PROCESS_TIMEOUT_SECS)
+        }
+    }
+
+    /// Return when the implicit fallback seed should begin for this root.
+    pub fn seed_handoff_after(&self, root_timeout_secs: usize) -> Option<Duration> {
+        (self.num_instances == 1 && root_timeout_secs > 0 && self.seed_handoff_ratio > 0.0)
+            .then(|| Duration::from_secs_f64(root_timeout_secs as f64 * self.seed_handoff_ratio))
     }
 
     /// Get the mod set analysis flag based on the boogie version.
@@ -402,7 +476,7 @@ impl BoogieOptions {
                     "cannot execute `{}` to obtain version of `{}`: {}",
                     prog,
                     tool,
-                    msg.to_string()
+                    msg
                 ))
             },
         };
@@ -466,5 +540,47 @@ impl BoogieOptions {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BoogieOptions;
+    use std::time::Duration;
+
+    #[test]
+    fn derives_process_timeout_from_root_timeout() {
+        let mut options = BoogieOptions::default();
+        for root_timeout_secs in [40, 100] {
+            let expected = (options.adjust_timeout(root_timeout_secs) as u64)
+                .saturating_mul(BoogieOptions::PROCESS_TIMEOUT_FACTOR)
+                .max(BoogieOptions::MIN_PROCESS_TIMEOUT_SECS);
+            assert_eq!(options.process_timeout_secs(root_timeout_secs), expected);
+        }
+        assert_eq!(options.process_timeout_secs(0), 0);
+
+        options.hard_timeout_secs = 7;
+        assert_eq!(options.process_timeout_secs(40), 7);
+        assert_eq!(options.process_timeout_secs(0), 7);
+    }
+
+    #[test]
+    fn derives_seed_handoff_from_root_timeout() {
+        let mut options = BoogieOptions::default();
+        assert!(options.seed_handoff_after(0).is_none());
+        assert!((options.seed_handoff_after(60).unwrap().as_secs_f64() - 40.0).abs() < 0.001);
+
+        options.seed_handoff_ratio = 0.0;
+        assert!(options.seed_handoff_after(60).is_none());
+
+        options.seed_handoff_ratio = 1.0;
+        assert_eq!(
+            options.seed_handoff_after(60).unwrap(),
+            Duration::from_secs(60)
+        );
+
+        options.seed_handoff_ratio = 2.0 / 3.0;
+        options.num_instances = 2;
+        assert!(options.seed_handoff_after(60).is_none());
     }
 }

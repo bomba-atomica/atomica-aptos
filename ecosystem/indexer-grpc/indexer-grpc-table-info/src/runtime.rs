@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     backup_restore::gcs::GcsBackupRestoreOperator,
@@ -29,7 +29,10 @@ pub fn bootstrap_internal_indexer_db(
     if !config.indexer_db_config.is_internal_indexer_db_enabled() || internal_indexer_db.is_none() {
         return None;
     }
-    let runtime = aptos_runtimes::spawn_named_runtime("index-db".to_string(), None);
+    let runtime = aptos_runtimes::spawn_named_runtime(
+        "index-db".to_string(),
+        config.indexer_db_config.runtime_threads,
+    );
     // Set up db config and open up the db initially to read metadata
     let mut indexer_service = InternalIndexerDBService::new(
         db_rw.reader,
@@ -72,8 +75,8 @@ pub fn bootstrap(
         .default_root_path()
         .join(INDEX_ASYNC_V2_DB_NAME);
     let rocksdb_config = node_config.storage.rocksdb_configs.index_db_config;
-    let db =
-        open_db(db_path, &rocksdb_config).expect("Failed to open up indexer async v2 db initially");
+    let db = open_db(db_path, &rocksdb_config, /*readonly=*/ false)
+        .expect("Failed to open up indexer async v2 db initially");
 
     let indexer_async_v2 =
         Arc::new(IndexerAsyncV2::new(db).expect("Failed to initialize indexer async v2"));
@@ -97,7 +100,7 @@ pub fn bootstrap(
             _ => None,
         };
 
-        let mut parser = TableInfoService::new(
+        let parser = TableInfoService::new(
             context,
             indexer_async_v2_clone.next_version(),
             node_config.indexer_table_info.parser_task_count,

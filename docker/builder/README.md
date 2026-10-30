@@ -42,7 +42,7 @@ Using a builder step allows us to cache the build artifacts and reuse them acros
 
 > Note: If your requirements don't fit into the instructions below, please reach out to the team for help.
 
-1. Modify the `cargo build` step in `build-tools-with-cli-profile.sh` to include the new binary.
+1. Modify the `cargo build` step in `build-tools.sh` to include the new binary.
 2. Create a new Dockerfile by cloning an existing target Dockerfile (e.g. `validator.Dockerfile`). When you use a `RUN` instruction, try to use a mount cache as they can improve build times by caching the output of the command.
 3. Add the following `FROM` statements to the new Dockerfile depending on whether you need to copy from the `aptos-node-builder`, `indexer-builder`, `tools-builder`. This ensures that your image references the required builder images to copy the binaries from. These image references are injected as build contexts at build time. This is defined in the `contexts` field in `_common` target in [docker-bake-rust-all.hcl](docker-bake-rust-all.hcl).
 

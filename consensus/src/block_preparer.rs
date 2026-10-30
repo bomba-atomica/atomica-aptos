@@ -1,8 +1,11 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
-    counters::{self, MAX_TXNS_FROM_BLOCK_TO_EXECUTE, TXN_SHUFFLE_SECONDS},
+    counters::{
+        self, MAX_TXNS_FROM_BLOCK_TO_EXECUTE, TXNS_CUT_BY_BLOCK_PREPARER, TXNS_IN_BLOCK,
+        TXN_SHUFFLE_SECONDS,
+    },
     payload_manager::TPayloadManager,
     transaction_deduper::TransactionDeduper,
     transaction_shuffler::TransactionShuffler,
@@ -39,19 +42,18 @@ impl BlockPreparer {
         }
     }
 
-    pub async fn prepare_block(
+    pub async fn materialize_block(
         &self,
         block: &Block,
         block_qc_fut: Shared<impl Future<Output = Option<Arc<QuorumCert>>>>,
-    ) -> ExecutorResult<(Vec<SignedTransaction>, Option<u64>)> {
+    ) -> ExecutorResult<(Vec<SignedTransaction>, Option<u64>, Option<u64>)> {
         fail_point!("consensus::prepare_block", |_| {
             use aptos_executor_types::ExecutorError;
             use std::{thread, time::Duration};
             thread::sleep(Duration::from_millis(10));
             Err(ExecutorError::CouldNotGetData)
         });
-        let start_time = Instant::now();
-
+        //TODO(ibalajiarun): measure latency
         let (txns, max_txns_from_block_to_execute, block_gas_limit) = tokio::select! {
                 // Poll the block qc future until a QC is received. Ignore None outcomes.
                 Some(qc) = block_qc_fut => {
@@ -62,6 +64,21 @@ impl BlockPreparer {
                    result
                 }
         }?;
+        TXNS_IN_BLOCK
+            .with_label_values(&["before_filter"])
+            .observe(txns.len() as f64);
+
+        Ok((txns, max_txns_from_block_to_execute, block_gas_limit))
+    }
+
+    pub async fn prepare_block(
+        &self,
+        block: &Block,
+        txns: Vec<SignedTransaction>,
+        max_txns_from_block_to_execute: Option<u64>,
+        block_gas_limit: Option<u64>,
+    ) -> (Vec<SignedTransaction>, Option<u64>) {
+        let start_time = Instant::now();
 
         let txn_filter_config = self.txn_filter_config.clone();
         let txn_deduper = self.txn_deduper.clone();
@@ -74,6 +91,7 @@ impl BlockPreparer {
 
         // Transaction filtering, deduplication and shuffling are CPU intensive tasks, so we run them in a blocking task.
         let result = tokio::task::spawn_blocking(move || {
+            let txns_in = txns.len();
             let filtered_txns = filter_block_transactions(
                 txn_filter_config,
                 block_id,
@@ -82,23 +100,40 @@ impl BlockPreparer {
                 block_timestamp_usecs,
                 txns,
             );
+            TXNS_CUT_BY_BLOCK_PREPARER
+                .with_label_values(&["filter"])
+                .observe(txns_in.saturating_sub(filtered_txns.len()) as f64);
+
+            let filtered_len = filtered_txns.len();
             let deduped_txns = txn_deduper.dedup(filtered_txns);
+            TXNS_CUT_BY_BLOCK_PREPARER
+                .with_label_values(&["dedup"])
+                .observe(filtered_len.saturating_sub(deduped_txns.len()) as f64);
+
             let mut shuffled_txns = {
                 let _timer = TXN_SHUFFLE_SECONDS.start_timer();
 
                 txn_shuffler.shuffle(deduped_txns)
             };
 
+            let pre_truncate_len = shuffled_txns.len();
             if let Some(max_txns_from_block_to_execute) = max_txns_from_block_to_execute {
                 shuffled_txns.truncate(max_txns_from_block_to_execute as usize);
             }
+            TXNS_CUT_BY_BLOCK_PREPARER
+                .with_label_values(&["truncate"])
+                .observe(pre_truncate_len.saturating_sub(shuffled_txns.len()) as f64);
+
+            TXNS_IN_BLOCK
+                .with_label_values(&["after_filter"])
+                .observe(shuffled_txns.len() as f64);
             MAX_TXNS_FROM_BLOCK_TO_EXECUTE.observe(shuffled_txns.len() as f64);
-            Ok(shuffled_txns)
+            shuffled_txns
         })
         .await
         .expect("Failed to spawn blocking task for transaction generation");
         counters::BLOCK_PREPARER_LATENCY.observe_duration(start_time.elapsed());
-        result.map(|result| (result, block_gas_limit))
+        (result, block_gas_limit)
     }
 }
 

@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block_storage::tracing::{observe_block, BlockStage},
@@ -77,6 +76,7 @@ pub struct ResetRequest {
     pub signal: ResetSignal,
 }
 
+#[derive(Clone)]
 pub struct OrderedBlocks {
     pub ordered_blocks: Vec<Arc<PipelinedBlock>>,
     pub ordered_proof: LedgerInfoWithSignatures,
@@ -225,6 +225,7 @@ impl BufferManager {
             signing_phase_rx,
 
             reliable_broadcast: ReliableBroadcast::new(
+                "buffer_manager",
                 author,
                 epoch_state.verifier.get_ordered_account_addresses(),
                 commit_msg_tx.clone(),
@@ -394,16 +395,23 @@ impl BufferManager {
             self.buffer.len() + 1,
         );
 
+        // Record BlockOrdered stage. BlockProposed + register_block are done
+        // earlier in round_manager::process_proposal (before execution starts).
+        {
+            let store = aptos_transaction_tracing::store::TransactionTraceStore::global();
+            if store.is_enabled() {
+                for block in &ordered_blocks {
+                    store.record_block_stage(
+                        &block.id(),
+                        aptos_transaction_tracing::types::TransactionStage::BlockOrdered,
+                    );
+                }
+            }
+        }
+
         let request = self.create_new_request(ExecutionRequest {
             ordered_blocks: ordered_blocks.clone(),
         });
-        if let Some(consensus_publisher) = &self.consensus_publisher {
-            let message = ConsensusObserverMessage::new_ordered_block_message(
-                ordered_blocks.clone(),
-                ordered_proof.clone(),
-            );
-            consensus_publisher.publish_message(message);
-        }
         self.execution_schedule_phase_tx
             .send(request)
             .await
@@ -508,6 +516,16 @@ impl BufferManager {
                     .expect("executed_blocks should be not empty")
                     .block();
                 observe_block(block.timestamp_usecs(), BlockStage::COMMIT_CERTIFIED);
+                // Record Certified tracing stage — uses block_txns mapping (no payload iteration)
+                if aptos_transaction_tracing::store::TransactionTraceStore::global().is_enabled() {
+                    let store = aptos_transaction_tracing::store::TransactionTraceStore::global();
+                    for eb in &aggregated_item.executed_blocks {
+                        store.record_block_stage(
+                            &eb.id(),
+                            aptos_transaction_tracing::types::TransactionStage::Certified,
+                        );
+                    }
+                }
                 // As all the validators broadcast commit votes directly to all other validators,
                 // the proposer do not have to broadcast commit decision again.
                 let commit_proof = aggregated_item.commit_proof.clone();
@@ -921,7 +939,7 @@ impl BufferManager {
                 let tx = verified_commit_msg_tx.clone();
                 let epoch_state_clone = epoch_state.clone();
                 bounded_executor
-                    .spawn(async move {
+                    .spawn_blocking(move || {
                         match commit_msg.req.verify(sender, &epoch_state_clone.verifier) {
                             Ok(_) => {
                                 let _ = tx.unbounded_send(commit_msg);

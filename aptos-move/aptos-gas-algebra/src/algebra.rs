@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub use move_core_types::gas_algebra::*;
 
@@ -15,6 +15,17 @@ pub type AbstractValueSize = GasQuantity<AbstractValueUnit>;
 pub type InternalGasPerAbstractValueUnit = GasQuantity<UnitDiv<InternalGasUnit, AbstractValueUnit>>;
 
 pub type AbstractValueSizePerArg = GasQuantity<UnitDiv<AbstractValueUnit, Arg>>;
+
+/// Unit of type tag pseudo gas -- an internal budget bounding how large a type tag may get, not
+/// part of the transaction's gas. See `ty_tag_pseudo_gas_cost` in the Move VM for the formula.
+pub enum TypeTagPseudoGasUnit {}
+
+/// Pseudo gas cost of a type tag, i.e. a measure of its size.
+pub type NumTypeTagPseudoGasUnits = GasQuantity<TypeTagPseudoGasUnit>;
+
+/// Rate converting a type tag's pseudo gas cost into abstract value units.
+pub type AbstractValueSizePerTypeTagPseudoGasUnit =
+    GasQuantity<UnitDiv<AbstractValueUnit, TypeTagPseudoGasUnit>>;
 
 /// Unit of (external) gas.
 pub enum GasUnit {}

@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::views::{TypeView, ValueView};
 use ambassador::delegatable_trait;
@@ -387,6 +389,8 @@ pub trait GasMeter: NativeGasMeter {
     ) -> PartialVMResult<()>;
 
     fn charge_create_ty(&mut self, num_nodes: NumTypeNodes) -> PartialVMResult<()>;
+
+    fn charge_abort_message(&mut self, bytes: &[u8]) -> PartialVMResult<()>;
 }
 
 /// A dummy gas meter that does not meter anything.
@@ -639,6 +643,10 @@ impl GasMeter for UnmeteredGasMeter {
     }
 
     fn charge_create_ty(&mut self, _num_nodes: NumTypeNodes) -> PartialVMResult<()> {
+        Ok(())
+    }
+
+    fn charge_abort_message(&mut self, _bytes: &[u8]) -> PartialVMResult<()> {
         Ok(())
     }
 }

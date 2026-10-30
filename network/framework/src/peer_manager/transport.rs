@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 use crate::{
     counters::{self, FAILED_LABEL, SUCCEEDED_LABEL},
     logging::*,
@@ -336,28 +335,34 @@ where
         addr: &NetworkAddress,
         elapsed_time: f64,
     ) {
-        let metadata = connection.metadata.clone();
+        // Log and record metrics using references before moving the connection
         debug!(
             NetworkSchema::new(&self.network_context)
-                .connection_metadata_with_address(&metadata)
+                .connection_metadata_with_address(&connection.metadata)
                 .network_address(addr),
             "{} {} connection from {} at {} successfully upgraded after {:.3} secs",
             self.network_context,
-            metadata.origin,
-            metadata.remote_peer_id.short_str(),
-            metadata.addr,
+            connection.metadata.origin,
+            connection.metadata.remote_peer_id.short_str(),
+            connection.metadata.addr,
             elapsed_time,
         );
 
-        counters::connection_upgrade_time(&self.network_context, metadata.origin, SUCCEEDED_LABEL)
-            .observe(elapsed_time);
+        counters::connection_upgrade_time(
+            &self.network_context,
+            connection.metadata.origin,
+            SUCCEEDED_LABEL,
+        )
+        .observe(elapsed_time);
 
-        // Send the new connection to PeerManager
+        // Clone metadata before moving the connection, so we can log it on error.
+        // The clone cost is justified to preserve diagnostic context.
+        let metadata_for_error = connection.metadata.clone();
         let event = TransportNotification::NewConnection(connection);
         if let Err(err) = self.transport_notifs_tx.send(event).await {
             error!(
                 NetworkSchema::new(&self.network_context)
-                    .connection_metadata_with_address(&metadata),
+                    .connection_metadata_with_address(&metadata_for_error),
                 error = %err,
                 "Failed to notify PeerManager of new connection"
             );

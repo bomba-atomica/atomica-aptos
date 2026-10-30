@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // Copyright (c) The Diem Core Contributors
 // Copyright (c) The Move Contributors
@@ -10,7 +10,8 @@
 //! See [`Table.move`](../sources/Table.move) for language use.
 //! See [`README.md`](../README.md) for integration into an adapter.
 
-use aptos_gas_schedule::gas_params::natives::table::*;
+use aptos_gas_algebra::AbstractValueSize;
+use aptos_gas_schedule::{gas_params::natives::table::*, AbstractValueSizeGasParameters};
 use aptos_native_interface::{
     safely_pop_arg, RawSafeNative, SafeNativeBuilder, SafeNativeContext, SafeNativeError,
     SafeNativeResult,
@@ -25,7 +26,7 @@ use move_core_types::{
 };
 pub use move_table_extension::{TableHandle, TableInfo, TableResolver};
 use move_vm_runtime::{
-    native_extensions::SessionListener,
+    native_extensions::{NativeRuntimeRefCheckModelsCompleted, SessionListener},
     native_functions::{LoaderContext, NativeFunctionTable},
 };
 use move_vm_types::{
@@ -41,7 +42,6 @@ use std::{
     mem::drop,
 };
 use triomphe::Arc as TriompheArc;
-
 // ===========================================================================================
 // Public Data Structures and Constants
 
@@ -123,6 +123,11 @@ impl<'a> SessionListener for NativeTableContext<'a> {
     fn abort(&mut self) {
         // TODO(sessions): implement
     }
+}
+
+impl<'a> NativeRuntimeRefCheckModelsCompleted for NativeTableContext<'a> {
+    // We have added runtime ref check models for native table functions that
+    // return references.
 }
 
 impl<'a> NativeTableContext<'a> {
@@ -317,10 +322,46 @@ pub fn table_natives(
     })
 }
 
+/// Computes the heap memory usage and, when value-node traversal metering is enabled,
+/// the abstract value size of a just-loaded table entry. Returns `None` when memory
+/// double counting is fixed and nothing was loaded (the value is already accounted for
+/// elsewhere). The value size is only `Some` when `charge_value_traversal` is set.
+fn compute_mem_usage(
+    gv: &GlobalValue,
+    abs_val_gas_params: &AbstractValueSizeGasParameters,
+    gas_feature_version: u64,
+    fix_memory_double_counting: bool,
+    loaded: Option<Option<NumBytes>>,
+    charge_value_traversal: bool,
+) -> PartialVMResult<Option<(u64, Option<AbstractValueSize>)>> {
+    if !fix_memory_double_counting || loaded.is_some() {
+        gv.view()
+            .map(|val| {
+                let (heap_size, val_size) =
+                    abs_val_gas_params.abstract_heap_and_value_size(&val, gas_feature_version)?;
+                Ok::<_, PartialVMError>((
+                    u64::from(heap_size),
+                    charge_value_traversal.then_some(val_size),
+                ))
+            })
+            .transpose()
+    } else {
+        Ok(None)
+    }
+}
+
 fn charge_load_cost(
     context: &mut SafeNativeContext,
     loaded: Option<Option<NumBytes>>,
+    mem_usage: Option<(u64, Option<AbstractValueSize>)>,
 ) -> SafeNativeResult<()> {
+    if let Some((amount, val_size)) = mem_usage {
+        context.use_heap_memory(amount)?;
+        if let Some(val_size) = val_size {
+            context.charge_value_traversal(val_size)?;
+        }
+    }
+
     context.charge(COMMON_LOAD_BASE_LEGACY)?;
 
     match loaded {
@@ -347,7 +388,7 @@ fn charge_load_cost(
 
 fn native_new_table_handle(
     context: &mut SafeNativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     args: VecDeque<Value>,
 ) -> SafeNativeResult<SmallVec<[Value; 1]>> {
     assert_eq!(ty_args.len(), 2);
@@ -380,7 +421,7 @@ fn native_new_table_handle(
 
 fn native_add_box(
     context: &mut SafeNativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> SafeNativeResult<SmallVec<[Value; 1]>> {
     assert_eq!(ty_args.len(), 3);
@@ -389,6 +430,11 @@ fn native_add_box(
     context.charge(ADD_BOX_BASE)?;
     let fix_memory_double_counting =
         context.timed_feature_enabled(TimedFeatureFlag::FixTableNativesMemoryDoubleCounting);
+    let closure_serialization_disabled = context
+        .get_feature_flags()
+        .is_closure_bcs_serialization_disabled();
+    let charge_value_traversal =
+        context.timed_feature_enabled(TimedFeatureFlag::MeterValueNodesOnDeserialize);
 
     let (extensions, mut loader_context, abs_val_gas_params, gas_feature_version) =
         context.extensions_with_loader_context_and_gas_params();
@@ -403,45 +449,42 @@ fn native_add_box(
         table_data.get_or_create_table(&mut loader_context, handle, &ty_args[0], &ty_args[2])?;
 
     let function_value_extension = loader_context.function_value_extension();
-    let key_bytes = serialize_key(&function_value_extension, &table.key_layout, &key)?;
+    let key_bytes = serialize_key(
+        &function_value_extension,
+        &table.key_layout,
+        &key,
+        closure_serialization_disabled,
+    )?;
     let key_cost = ADD_BOX_PER_BYTE_SERIALIZED * NumBytes::new(key_bytes.len() as u64);
 
     let (gv, loaded) =
         table.get_or_create_global_value(&function_value_extension, table_context, key_bytes)?;
-    let mem_usage = if !fix_memory_double_counting || loaded.is_some() {
-        gv.view()
-            .map(|val| {
-                abs_val_gas_params
-                    .abstract_heap_size(&val, gas_feature_version)
-                    .map(u64::from)
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let mem_usage = compute_mem_usage(
+        gv,
+        abs_val_gas_params,
+        gas_feature_version,
+        fix_memory_double_counting,
+        loaded,
+        charge_value_traversal,
+    )?;
 
     let res = match gv.move_to(val) {
         Ok(_) => Ok(smallvec![]),
-        Err(_) => Err(SafeNativeError::Abort {
-            abort_code: ALREADY_EXISTS,
-        }),
+        Err(_) => Err(SafeNativeError::abort(ALREADY_EXISTS)),
     };
 
     drop(table_data);
 
     // TODO(Gas): Figure out a way to charge this earlier.
     context.charge(key_cost)?;
-    if let Some(amount) = mem_usage {
-        context.use_heap_memory(amount)?;
-    }
-    charge_load_cost(context, loaded)?;
+    charge_load_cost(context, loaded, mem_usage)?;
 
     res
 }
 
 fn native_borrow_box(
     context: &mut SafeNativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> SafeNativeResult<SmallVec<[Value; 1]>> {
     assert_eq!(ty_args.len(), 3);
@@ -450,6 +493,11 @@ fn native_borrow_box(
     context.charge(BORROW_BOX_BASE)?;
     let fix_memory_double_counting =
         context.timed_feature_enabled(TimedFeatureFlag::FixTableNativesMemoryDoubleCounting);
+    let closure_serialization_disabled = context
+        .get_feature_flags()
+        .is_closure_bcs_serialization_disabled();
+    let charge_value_traversal =
+        context.timed_feature_enabled(TimedFeatureFlag::MeterValueNodesOnDeserialize);
 
     let (extensions, mut loader_context, abs_val_gas_params, gas_feature_version) =
         context.extensions_with_loader_context_and_gas_params();
@@ -463,45 +511,42 @@ fn native_borrow_box(
         table_data.get_or_create_table(&mut loader_context, handle, &ty_args[0], &ty_args[2])?;
 
     let function_value_extension = loader_context.function_value_extension();
-    let key_bytes = serialize_key(&function_value_extension, &table.key_layout, &key)?;
+    let key_bytes = serialize_key(
+        &function_value_extension,
+        &table.key_layout,
+        &key,
+        closure_serialization_disabled,
+    )?;
     let key_cost = BORROW_BOX_PER_BYTE_SERIALIZED * NumBytes::new(key_bytes.len() as u64);
 
     let (gv, loaded) =
         table.get_or_create_global_value(&function_value_extension, table_context, key_bytes)?;
-    let mem_usage = if !fix_memory_double_counting || loaded.is_some() {
-        gv.view()
-            .map(|val| {
-                abs_val_gas_params
-                    .abstract_heap_size(&val, gas_feature_version)
-                    .map(u64::from)
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let mem_usage = compute_mem_usage(
+        gv,
+        abs_val_gas_params,
+        gas_feature_version,
+        fix_memory_double_counting,
+        loaded,
+        charge_value_traversal,
+    )?;
 
     let res = match gv.borrow_global() {
         Ok(ref_val) => Ok(smallvec![ref_val]),
-        Err(_) => Err(SafeNativeError::Abort {
-            abort_code: NOT_FOUND,
-        }),
+        Err(_) => Err(SafeNativeError::abort(NOT_FOUND)),
     };
 
     drop(table_data);
 
     // TODO(Gas): Figure out a way to charge this earlier.
     context.charge(key_cost)?;
-    if let Some(amount) = mem_usage {
-        context.use_heap_memory(amount)?;
-    }
-    charge_load_cost(context, loaded)?;
+    charge_load_cost(context, loaded, mem_usage)?;
 
     res
 }
 
 fn native_contains_box(
     context: &mut SafeNativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> SafeNativeResult<SmallVec<[Value; 1]>> {
     assert_eq!(ty_args.len(), 3);
@@ -510,6 +555,11 @@ fn native_contains_box(
     context.charge(CONTAINS_BOX_BASE)?;
     let fix_memory_double_counting =
         context.timed_feature_enabled(TimedFeatureFlag::FixTableNativesMemoryDoubleCounting);
+    let closure_serialization_disabled = context
+        .get_feature_flags()
+        .is_closure_bcs_serialization_disabled();
+    let charge_value_traversal =
+        context.timed_feature_enabled(TimedFeatureFlag::MeterValueNodesOnDeserialize);
 
     let (extensions, mut loader_context, abs_val_gas_params, gas_feature_version) =
         context.extensions_with_loader_context_and_gas_params();
@@ -523,39 +573,38 @@ fn native_contains_box(
         table_data.get_or_create_table(&mut loader_context, handle, &ty_args[0], &ty_args[2])?;
 
     let function_value_extension = loader_context.function_value_extension();
-    let key_bytes = serialize_key(&function_value_extension, &table.key_layout, &key)?;
+    let key_bytes = serialize_key(
+        &function_value_extension,
+        &table.key_layout,
+        &key,
+        closure_serialization_disabled,
+    )?;
     let key_cost = CONTAINS_BOX_PER_BYTE_SERIALIZED * NumBytes::new(key_bytes.len() as u64);
 
     let (gv, loaded) =
         table.get_or_create_global_value(&function_value_extension, table_context, key_bytes)?;
-    let mem_usage = if !fix_memory_double_counting || loaded.is_some() {
-        gv.view()
-            .map(|val| {
-                abs_val_gas_params
-                    .abstract_heap_size(&val, gas_feature_version)
-                    .map(u64::from)
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let mem_usage = compute_mem_usage(
+        gv,
+        abs_val_gas_params,
+        gas_feature_version,
+        fix_memory_double_counting,
+        loaded,
+        charge_value_traversal,
+    )?;
     let exists = Value::bool(gv.exists());
 
     drop(table_data);
 
     // TODO(Gas): Figure out a way to charge this earlier.
     context.charge(key_cost)?;
-    if let Some(amount) = mem_usage {
-        context.use_heap_memory(amount)?;
-    }
-    charge_load_cost(context, loaded)?;
+    charge_load_cost(context, loaded, mem_usage)?;
 
     Ok(smallvec![exists])
 }
 
 fn native_remove_box(
     context: &mut SafeNativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> SafeNativeResult<SmallVec<[Value; 1]>> {
     assert_eq!(ty_args.len(), 3);
@@ -564,6 +613,11 @@ fn native_remove_box(
     context.charge(REMOVE_BOX_BASE)?;
     let fix_memory_double_counting =
         context.timed_feature_enabled(TimedFeatureFlag::FixTableNativesMemoryDoubleCounting);
+    let closure_serialization_disabled = context
+        .get_feature_flags()
+        .is_closure_bcs_serialization_disabled();
+    let charge_value_traversal =
+        context.timed_feature_enabled(TimedFeatureFlag::MeterValueNodesOnDeserialize);
 
     let (extensions, mut loader_context, abs_val_gas_params, gas_feature_version) =
         context.extensions_with_loader_context_and_gas_params();
@@ -577,45 +631,42 @@ fn native_remove_box(
         table_data.get_or_create_table(&mut loader_context, handle, &ty_args[0], &ty_args[2])?;
 
     let function_value_extension = loader_context.function_value_extension();
-    let key_bytes = serialize_key(&function_value_extension, &table.key_layout, &key)?;
+    let key_bytes = serialize_key(
+        &function_value_extension,
+        &table.key_layout,
+        &key,
+        closure_serialization_disabled,
+    )?;
     let key_cost = REMOVE_BOX_PER_BYTE_SERIALIZED * NumBytes::new(key_bytes.len() as u64);
 
     let (gv, loaded) =
         table.get_or_create_global_value(&function_value_extension, table_context, key_bytes)?;
-    let mem_usage = if !fix_memory_double_counting || loaded.is_some() {
-        gv.view()
-            .map(|val| {
-                abs_val_gas_params
-                    .abstract_heap_size(&val, gas_feature_version)
-                    .map(u64::from)
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let mem_usage = compute_mem_usage(
+        gv,
+        abs_val_gas_params,
+        gas_feature_version,
+        fix_memory_double_counting,
+        loaded,
+        charge_value_traversal,
+    )?;
 
     let res = match gv.move_from() {
         Ok(val) => Ok(smallvec![val]),
-        Err(_) => Err(SafeNativeError::Abort {
-            abort_code: NOT_FOUND,
-        }),
+        Err(_) => Err(SafeNativeError::abort(NOT_FOUND)),
     };
 
     drop(table_data);
 
     // TODO(Gas): Figure out a way to charge this earlier.
     context.charge(key_cost)?;
-    if let Some(amount) = mem_usage {
-        context.use_heap_memory(amount)?;
-    }
-    charge_load_cost(context, loaded)?;
+    charge_load_cost(context, loaded, mem_usage)?;
 
     res
 }
 
 fn native_destroy_empty_box(
     context: &mut SafeNativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> SafeNativeResult<SmallVec<[Value; 1]>> {
     assert_eq!(ty_args.len(), 3);
@@ -638,7 +689,7 @@ fn native_destroy_empty_box(
 
 fn native_drop_unchecked_box(
     context: &mut SafeNativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     args: VecDeque<Value>,
 ) -> SafeNativeResult<SmallVec<[Value; 1]>> {
     assert_eq!(ty_args.len(), 3);
@@ -665,9 +716,11 @@ fn serialize_key(
     function_value_extension: &dyn FunctionValueExtension,
     layout: &MoveTypeLayout,
     key: &Value,
+    closure_serialization_disabled: bool,
 ) -> PartialVMResult<Vec<u8>> {
     ValueSerDeContext::new(function_value_extension.max_value_nest_depth())
         .with_func_args_deserialization(function_value_extension)
+        .with_closure_serialization_disabled(closure_serialization_disabled)
         .serialize(key, layout)?
         .ok_or_else(|| partial_extension_error("cannot serialize table key"))
 }

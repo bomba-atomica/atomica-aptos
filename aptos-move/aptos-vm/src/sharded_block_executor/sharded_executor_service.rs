@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block_executor::AptosVMBlockExecutorWrapper,
@@ -142,8 +142,7 @@ impl<S: StateView + Sync + Send + 'static> ShardedExecutorService<S> {
             s.spawn(move |_| {
                 let txn_provider =
                     DefaultTxnProvider::new_without_info(signature_verified_transactions);
-                let ret = AptosVMBlockExecutorWrapper::execute_block_on_thread_pool(
-                    executor_thread_pool,
+                let ret = AptosVMBlockExecutorWrapper::execute_block(
                     &txn_provider,
                     aggr_overridden_state_view.as_ref(),
                     // Since we execute blocks in parallel, we cannot share module caches, so each
@@ -154,6 +153,17 @@ impl<S: StateView + Sync + Send + 'static> ShardedExecutorService<S> {
                     cross_shard_commit_sender,
                 )
                 .map(BlockOutput::into_transaction_outputs_forced);
+                let ret = match ret {
+                    Ok(ret) => Ok(ret),
+                    Err(err) => {
+                        // Sharded execution is not enabled in production, so a
+                        // block-level error here is unreachable on the production
+                        // path. Rather than plumbing BlockError through the whole
+                        // sharded stack, we panic.
+                        // TODO: figure out what to do with failed blocks.
+                        unimplemented!("unsupported sharded block execution error: {}", err)
+                    },
+                };
                 if let Some(shard_id) = shard_id {
                     trace!(
                         "executed sub block for shard {} and round {}",

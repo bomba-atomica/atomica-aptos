@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Forge is a framework for writing and running end-to-end tests in Aptos
 
@@ -31,7 +30,9 @@ pub use slack::*;
 
 pub mod success_criteria;
 
+pub mod metrics;
+
 pub mod test_utils;
 
 pub mod config;
-pub use config::ForgeConfig;
+pub use config::{ForgeConfig, PfnDeployment};

@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Provides pragmas and properties of the specification language.
 
@@ -80,6 +81,11 @@ pub const DELEGATE_INVARIANTS_TO_CALLER_PRAGMA: &str = "delegate_invariants_to_c
 /// to a certain depth *when there are no invariants specified*
 pub const UNROLL_PRAGMA: &str = "unroll";
 
+/// Pragma controlling which spec conditions are inferred.
+/// Values: `none` (skip inference), `only_ensures` (skip aborts_if), `only_aborts` (skip ensures).
+/// Default (unset): infer both ensures and aborts_if.
+pub const INFERENCE_PRAGMA: &str = "inference";
+
 /// # Pragmas for intrinsic table declaration
 
 /// The intrinsic type for `Map<K, V>`
@@ -89,9 +95,36 @@ pub const INTRINSIC_TYPE_MAP: &str = "map";
 /// `[move] fun map_new<K, V>(): Map<K, V>`
 pub const INTRINSIC_FUN_MAP_NEW: &str = "map_new";
 
+/// Create a new empty table with degree configuration (BigOrderedMap-style). Aborts
+/// when a nonzero degree is outside its valid range. Size-validation aborts of the
+/// implementation are assumed not to fire.
+/// `[move] fun map_new_with_config<K, V>(inner_max_degree: u16, leaf_max_degree: u16, reuse_slots: bool): Map<K, V>`
+pub const INTRINSIC_FUN_MAP_NEW_WITH_CONFIG: &str = "map_new_with_config";
+
 /// Create a new table with an empty content (the spec version)
 /// `[spec] fun map_new<K, V>(): Map<K, V>`
 pub const INTRINSIC_FUN_MAP_SPEC_NEW: &str = "map_spec_new";
+
+/// Iterator validity predicates: `(iterator_enum, map): bool`, true iff the
+/// iterator's hidden validity slot matches the map's — i.e. the iterator was
+/// created from the map's current version. Binding one of these gives the map
+/// a backend-synthesized validity slot (havoced by structural mutations) and
+/// the predicate's iterator enum a matching slot; neither is visible to or
+/// nameable from user specs. Two role names so a map can cover both a keyed
+/// iterator and a key-agnostic (leaf/node) walker.
+pub const INTRINSIC_FUN_MAP_SPEC_ITER_VALID: &str = "map_spec_iter_valid";
+pub const INTRINSIC_FUN_MAP_SPEC_LEAF_ITER_VALID: &str = "map_spec_leaf_iter_valid";
+/// Validity-preservation predicate: `(map_new, map_old): bool`, true iff the
+/// two map states share a validity version (no structural mutation between
+/// them) — the frame promise for operations that keep iterators valid.
+pub const INTRINSIC_FUN_MAP_SPEC_ITER_PRESERVED: &str = "map_spec_iter_preserved";
+
+/// Position of a leaf/node walker in the enumeration: the number of keys held
+/// before it. Uninterpreted — the map's own spec states where it starts, how
+/// it advances, and that it reaches the map's length when the walk ends, which
+/// is what lets a leaf walk carry a position-indexed invariant.
+/// `[spec] fun map_spec_leaf_offset<K, V>(leaf: LeafIter, m: Map<K, V>): num`
+pub const INTRINSIC_FUN_MAP_SPEC_LEAF_OFFSET: &str = "map_spec_leaf_offset";
 
 /// Get the value associated with key `k`.
 /// The behavior is undefined if `k` does not exist in the map
@@ -114,6 +147,15 @@ pub const INTRINSIC_FUN_MAP_SPEC_LEN: &str = "map_spec_len";
 /// Check whether the map is empty (the spec version)
 /// `[move] fun map_is_empty<K, V>(m: Map<K, V>): bool`
 pub const INTRINSIC_FUN_MAP_SPEC_IS_EMPTY: &str = "map_spec_is_empty";
+
+/// The i-th smallest key under `cmp::compare`, for `0 <= i < len`
+/// `[spec] fun map_key_at<K, V>(m: Map<K, V>, i: num): K`
+pub const INTRINSIC_FUN_MAP_SPEC_KEY_AT: &str = "map_spec_key_at";
+
+/// The position of contained key `k` in `cmp::compare` order; the inverse
+/// of `map_spec_key_at`
+/// `[spec] fun map_rank<K, V>(m: Map<K, V>, k: K): num`
+pub const INTRINSIC_FUN_MAP_SPEC_RANK: &str = "map_spec_rank";
 
 /// Get the number of entries in the map
 /// `[move] fun map_len<K, V>(m: &Map<K, V>): u64`
@@ -143,6 +185,109 @@ pub const INTRINSIC_FUN_MAP_ADD_NO_OVERRIDE: &str = "map_add_no_override";
 /// `[move] fun map_add_override_if_exists<K, V>(m: &mut Map<K, V>, k: K, v: V)`
 pub const INTRINSIC_FUN_MAP_ADD_OVERRIDE_IF_EXISTS: &str = "map_add_override_if_exists";
 
+/// Insert or update, returning the displaced value wrapped in `Option<V>` (None on
+/// insert, Some(prev) on update). Never aborts.
+/// `[move] fun map_upsert<K, V>(m: &mut Map<K, V>, k: K, v: V): Option<V>`
+pub const INTRINSIC_FUN_MAP_UPSERT: &str = "map_upsert";
+
+/// Remove the entry at the given key if present, returning the displaced value wrapped
+/// in `Option<V>` (Some(prev) on hit, None on miss). Never aborts.
+/// `[move] fun map_remove_or_none<K, V>(m: &mut Map<K, V>, k: K): Option<V>`
+pub const INTRINSIC_FUN_MAP_REMOVE_OR_NONE: &str = "map_remove_or_none";
+
+/// Read-only lookup: returns the value at the given key wrapped in `Option<V>` (Some
+/// on hit, None on miss). Never aborts. Requires `V: copy`.
+/// `[move] fun map_get<K, V>(m: &Map<K, V>, k: K): Option<V>`
+pub const INTRINSIC_FUN_MAP_GET: &str = "map_get";
+
+/// Read-only access to the smallest key (and its value) under `cmp::compare` ordering.
+/// Aborts when the map is empty.
+/// `[move] fun map_borrow_front<K, V>(m: &Map<K, V>): (&K, &V)`
+pub const INTRINSIC_FUN_MAP_BORROW_FRONT: &str = "map_borrow_front";
+
+/// Read-only access to the largest key (and its value) under `cmp::compare` ordering.
+/// Aborts when the map is empty.
+/// `[move] fun map_borrow_back<K, V>(m: &Map<K, V>): (&K, &V)`
+pub const INTRINSIC_FUN_MAP_BORROW_BACK: &str = "map_borrow_back";
+
+/// Remove and return the smallest entry (key, value) under `cmp::compare` ordering.
+/// Aborts when the map is empty.
+/// `[move] fun map_pop_front<K, V>(m: &mut Map<K, V>): (K, V)`
+pub const INTRINSIC_FUN_MAP_POP_FRONT: &str = "map_pop_front";
+
+/// Remove and return the largest entry (key, value) under `cmp::compare` ordering.
+/// Aborts when the map is empty.
+/// `[move] fun map_pop_back<K, V>(m: &mut Map<K, V>): (K, V)`
+pub const INTRINSIC_FUN_MAP_POP_BACK: &str = "map_pop_back";
+
+/// Return the smallest key under `cmp::compare` ordering. Aborts when the map is empty.
+/// `[move] fun map_front_key<K, V>(m: &Map<K, V>): K`
+pub const INTRINSIC_FUN_MAP_FRONT_KEY: &str = "map_front_key";
+
+/// Return the largest key under `cmp::compare` ordering. Aborts when the map is empty.
+/// `[move] fun map_back_key<K, V>(m: &Map<K, V>): K`
+pub const INTRINSIC_FUN_MAP_BACK_KEY: &str = "map_back_key";
+
+/// Return the largest key strictly less than the given key under `cmp::compare`,
+/// wrapped in `Option<K>` (None when no such key exists). Never aborts.
+/// `[move] fun map_prev_key<K, V>(m: &Map<K, V>, k: &K): Option<K>`
+pub const INTRINSIC_FUN_MAP_PREV_KEY: &str = "map_prev_key";
+
+/// Return the smallest key strictly greater than the given key under `cmp::compare`,
+/// wrapped in `Option<K>` (None when no such key exists). Never aborts.
+/// `[move] fun map_next_key<K, V>(m: &Map<K, V>, k: &K): Option<K>`
+pub const INTRINSIC_FUN_MAP_NEXT_KEY: &str = "map_next_key";
+
+/// Return all keys in the map as a `vector<K>`. Never aborts.
+/// `[move] fun map_keys<K, V>(m: &Map<K, V>): vector<K>`
+pub const INTRINSIC_FUN_MAP_KEYS: &str = "map_keys";
+
+/// Convert to another intrinsic-map type with identical contents. Never aborts.
+/// Both map types share the abstract table representation, so this is the identity
+/// at the backend level.
+/// `[move] fun map_to_ordered_map<K, V>(m: &Map<K, V>): OrderedMap<K, V>`
+pub const INTRINSIC_FUN_MAP_TO_ORDERED_MAP: &str = "map_to_ordered_map";
+
+/// Return all values in the map as a `vector<V>`. Never aborts.
+/// `[move] fun map_values<K, V>(m: &Map<K, V>): vector<V>`
+pub const INTRINSIC_FUN_MAP_VALUES: &str = "map_values";
+
+/// Consume the map, returning the keys and values as parallel vectors. Never aborts.
+/// `[move] fun map_to_vec_pair<K, V>(m: Map<K, V>): (vector<K>, vector<V>)`
+pub const INTRINSIC_FUN_MAP_TO_VEC_PAIR: &str = "map_to_vec_pair";
+
+/// Build a map from parallel key/value vectors. Aborts when the lengths differ
+/// or any key appears more than once.
+/// `[move] fun map_new_from<K, V>(keys: vector<K>, values: vector<V>): Map<K, V>`
+pub const INTRINSIC_FUN_MAP_NEW_FROM: &str = "map_new_from";
+
+/// Add multiple key/value pairs. Aborts if lengths differ, any key already
+/// exists in the map, or input keys contain duplicates.
+/// `[move] fun map_add_all<K, V>(m: &mut Map<K, V>, keys: vector<K>, values: vector<V>)`
+pub const INTRINSIC_FUN_MAP_ADD_ALL: &str = "map_add_all";
+
+/// Upsert multiple key/value pairs (overwriting existing). Aborts on length mismatch.
+/// `[move] fun map_upsert_all<K, V>(m: &mut Map<K, V>, keys: vector<K>, values: vector<V>)`
+pub const INTRINSIC_FUN_MAP_UPSERT_ALL: &str = "map_upsert_all";
+
+/// Merge `other` into `self`, overwriting overlapping keys. Never aborts.
+/// `[move] fun map_append<K, V>(m: &mut Map<K, V>, other: Map<K, V>)`
+pub const INTRINSIC_FUN_MAP_APPEND: &str = "map_append";
+
+/// Merge `other` into `self`. Aborts if any key in `other` is already in `self`.
+/// `[move] fun map_append_disjoint<K, V>(m: &mut Map<K, V>, other: Map<K, V>)`
+pub const INTRINSIC_FUN_MAP_APPEND_DISJOINT: &str = "map_append_disjoint";
+
+/// Split the map at index `at`: retain [0, at) in self, return [at, len).
+/// Aborts if `at > len(self)`.
+/// `[move] fun map_trim<K, V>(m: &mut Map<K, V>, at: u64): Map<K, V>`
+pub const INTRINSIC_FUN_MAP_TRIM: &str = "map_trim";
+
+/// Rename a key while preserving its position in `cmp::compare` order.
+/// Aborts if old key not present or new key violates the surrounding order.
+/// `[move] fun map_replace_key_inplace<K, V>(m: &mut Map<K, V>, old_key: &K, new_key: K)`
+pub const INTRINSIC_FUN_MAP_REPLACE_KEY_INPLACE: &str = "map_replace_key_inplace";
+
 /// Remove an entry from the map, aborts if the key does not exists
 /// `[move] fun map_del_must_exist<K, V>(m: &mut Map<K, V>, k: K): V`
 pub const INTRINSIC_FUN_MAP_DEL_MUST_EXIST: &str = "map_del_must_exist";
@@ -167,30 +312,352 @@ pub const INTRINSIC_FUN_MAP_BORROW_MUT_WITH_DEFAULT: &str = "map_borrow_mut_with
 /// `[move] fun map_borrow_with_default<K, V>(m: &Map<K, V>, k: K, default: V): &V`
 pub const INTRINSIC_FUN_MAP_BORROW_WITH_DEFAULT: &str = "map_borrow_with_default";
 
-/// All intrinsic functions associated with the map type
-pub static INTRINSIC_TYPE_MAP_ASSOC_FUNCTIONS: Lazy<BTreeMap<&'static str, bool>> =
+/// Mutable borrow of the value at an iterator's position. The first parameter must be
+/// an enum with exactly one variant carrying a field of the key type (the iterator's
+/// key); the map is the second parameter. Aborts if the iterator is the end iterator
+/// or its key is not in the map.
+/// `[move] fun map_iter_borrow_mut<K, V>(self: Iter<K>, m: &mut Map<K, V>): &mut V`
+pub const INTRINSIC_FUN_MAP_ITER_BORROW_MUT: &str = "map_iter_borrow_mut";
+
+/// Abort condition for map_iter_borrow_mut
+/// `[spec] fun map_spec_aborts_iter_borrow_mut<K, V>(self: Iter<K>, m: Map<K, V>): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_ITER_BORROW_MUT: &str = "map_spec_aborts_iter_borrow_mut";
+
+/// Abort condition for map_destroy_empty: true when the map is non-empty
+/// `[spec] fun map_spec_aborts_destroy_empty<K, V>(m: Map<K, V>): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_DESTROY_EMPTY: &str = "map_spec_aborts_destroy_empty";
+
+/// Abort condition for map_add_no_override: true when the key already exists
+/// `[spec] fun map_spec_aborts_add<K, V>(m: Map<K, V>, k: K, v: V): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_ADD: &str = "map_spec_aborts_add";
+
+/// Abort condition for map_del_must_exist / map_del_return_key: true when key not found
+/// `[spec] fun map_spec_aborts_del<K, V>(m: Map<K, V>, k: K): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_DEL: &str = "map_spec_aborts_del";
+
+/// Abort condition for map_borrow / map_borrow_mut: true when key not found
+/// `[spec] fun map_spec_aborts_borrow<K, V>(m: Map<K, V>, k: K): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_BORROW: &str = "map_spec_aborts_borrow";
+
+/// Abort condition for ordering roles that fail on an empty map
+/// (`map_borrow_front`, `map_borrow_back`, `map_pop_front`, `map_pop_back`)
+/// `[spec] fun map_spec_aborts_empty<K, V>(m: Map<K, V>): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_EMPTY: &str = "map_spec_aborts_empty";
+
+/// Abort condition for `map_add_all`: length mismatch, any input key already present,
+/// or duplicates among input keys.
+/// `[spec] fun map_spec_aborts_add_all<K, V>(m: Map<K, V>, keys: vector<K>, values: vector<V>): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_ADD_ALL: &str = "map_spec_aborts_add_all";
+
+/// Abort condition for `map_new_from`: length mismatch or duplicates among input keys.
+/// `[spec] fun map_spec_aborts_new_from<K, V>(keys: vector<K>, values: vector<V>): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_NEW_FROM: &str = "map_spec_aborts_new_from";
+
+/// Abort condition for `map_append_disjoint`: any key in `other` already present in `self`.
+/// `[spec] fun map_spec_aborts_append_disjoint<K, V>(m: Map<K, V>, other: Map<K, V>): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_APPEND_DISJOINT: &str = "map_spec_aborts_append_disjoint";
+
+/// Abort condition for `map_trim`: `at` exceeds map length.
+/// `[spec] fun map_spec_aborts_trim<K, V>(m: Map<K, V>, at: u64): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_TRIM: &str = "map_spec_aborts_trim";
+
+/// Abort condition for `map_upsert_all`: input vector lengths differ.
+/// `[spec] fun map_spec_aborts_upsert_all<K, V>(m: Map<K, V>, keys: vector<K>, values: vector<V>): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_UPSERT_ALL: &str = "map_spec_aborts_upsert_all";
+
+/// Abort condition for `map_new_with_config`: a nonzero degree outside its valid range.
+/// `[spec] fun map_spec_aborts_new_with_config<K, V>(inner_max_degree: u16, leaf_max_degree: u16, reuse_slots: bool): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_NEW_WITH_CONFIG: &str = "map_spec_aborts_new_with_config";
+
+/// Abort condition for `map_replace_key_inplace`: `old_key` absent, or `old_key`
+/// differs from `new_key` (over-approximates the cmp-order-violation abort path,
+/// which the template models nondeterministically).
+/// `[spec] fun map_spec_aborts_replace_key_inplace<K, V>(m: Map<K, V>, old_key: K, new_key: K): bool`
+pub const INTRINSIC_FUN_MAP_SPEC_ABORTS_REPLACE_KEY_INPLACE: &str =
+    "map_spec_aborts_replace_key_inplace";
+
+/// Definition of an intrinsic function associated with an intrinsic type.
+///
+/// For Move functions, `spec_fun` and `abort_spec_fun` encode the counterpart spec function names
+/// directly, eliminating the need for separate static lookup tables.
+pub struct IntrinsicFunDef {
+    /// Whether this is a Move-level function (`true`) or a spec-only function (`false`).
+    pub is_move_fun: bool,
+    /// For Move functions only: the name of the spec counterpart used for pure spec calls.
+    pub spec_fun: Option<&'static str>,
+    /// For Move functions only: the name of the abort-condition spec function.
+    pub abort_spec_fun: Option<&'static str>,
+}
+
+impl IntrinsicFunDef {
+    /// Construct a definition for a Move-level intrinsic function.
+    pub fn move_fun(spec: Option<&'static str>, abort: Option<&'static str>) -> Self {
+        Self {
+            is_move_fun: true,
+            spec_fun: spec,
+            abort_spec_fun: abort,
+        }
+    }
+
+    /// Construct a definition for a spec-only intrinsic function.
+    pub fn spec_fun() -> Self {
+        Self {
+            is_move_fun: false,
+            spec_fun: None,
+            abort_spec_fun: None,
+        }
+    }
+}
+
+/// All intrinsic functions associated with the map type.
+///
+/// Each Move function entry encodes its spec counterpart (`spec_fun`) and abort-condition
+/// spec counterpart (`abort_spec_fun`) directly, replacing the former separate static tables
+/// `INTRINSIC_TYPE_MAP_MOVE_TO_SPEC_FUN` and `INTRINSIC_TYPE_MAP_MOVE_TO_ABORT_SPEC_FUN`.
+///
+/// Notes on spec_fun pairings (read-only functions only):
+/// - Mutating functions (e.g. `map_add_no_override`) are excluded from spec_fun because their
+///   `&mut` params already cause `try_as_pure_spec_call` to return `None` at check 1.
+pub static INTRINSIC_TYPE_MAP_ASSOC_FUNCTIONS: Lazy<BTreeMap<&'static str, IntrinsicFunDef>> =
     Lazy::new(|| {
         BTreeMap::from([
-            (INTRINSIC_FUN_MAP_NEW, true),
-            (INTRINSIC_FUN_MAP_SPEC_NEW, false),
-            (INTRINSIC_FUN_MAP_SPEC_GET, false),
-            (INTRINSIC_FUN_MAP_SPEC_SET, false),
-            (INTRINSIC_FUN_MAP_SPEC_DEL, false),
-            (INTRINSIC_FUN_MAP_SPEC_LEN, false),
-            (INTRINSIC_FUN_MAP_SPEC_IS_EMPTY, false),
-            (INTRINSIC_FUN_MAP_SPEC_HAS_KEY, false),
-            (INTRINSIC_FUN_MAP_LEN, true),
-            (INTRINSIC_FUN_MAP_IS_EMPTY, true),
-            (INTRINSIC_FUN_MAP_HAS_KEY, true),
-            (INTRINSIC_FUN_MAP_DESTROY_EMPTY, true),
-            (INTRINSIC_FUN_MAP_ADD_NO_OVERRIDE, true),
-            (INTRINSIC_FUN_MAP_ADD_OVERRIDE_IF_EXISTS, true),
-            (INTRINSIC_FUN_MAP_DEL_MUST_EXIST, true),
-            (INTRINSIC_FUN_MAP_DEL_RETURN_KEY, true),
-            (INTRINSIC_FUN_MAP_BORROW, true),
-            (INTRINSIC_FUN_MAP_BORROW_MUT, true),
-            (INTRINSIC_FUN_MAP_BORROW_MUT_WITH_DEFAULT, true),
-            (INTRINSIC_FUN_MAP_BORROW_WITH_DEFAULT, true),
+            (
+                INTRINSIC_FUN_MAP_NEW,
+                IntrinsicFunDef::move_fun(Some(INTRINSIC_FUN_MAP_SPEC_NEW), None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_NEW_WITH_CONFIG,
+                IntrinsicFunDef::move_fun(
+                    None,
+                    Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_NEW_WITH_CONFIG),
+                ),
+            ),
+            (INTRINSIC_FUN_MAP_SPEC_NEW, IntrinsicFunDef::spec_fun()),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ITER_VALID,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_LEAF_ITER_VALID,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_LEAF_OFFSET,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ITER_PRESERVED,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (INTRINSIC_FUN_MAP_SPEC_GET, IntrinsicFunDef::spec_fun()),
+            (INTRINSIC_FUN_MAP_SPEC_SET, IntrinsicFunDef::spec_fun()),
+            (INTRINSIC_FUN_MAP_SPEC_DEL, IntrinsicFunDef::spec_fun()),
+            (INTRINSIC_FUN_MAP_SPEC_LEN, IntrinsicFunDef::spec_fun()),
+            (INTRINSIC_FUN_MAP_SPEC_IS_EMPTY, IntrinsicFunDef::spec_fun()),
+            (INTRINSIC_FUN_MAP_SPEC_HAS_KEY, IntrinsicFunDef::spec_fun()),
+            (INTRINSIC_FUN_MAP_SPEC_KEY_AT, IntrinsicFunDef::spec_fun()),
+            (INTRINSIC_FUN_MAP_SPEC_RANK, IntrinsicFunDef::spec_fun()),
+            (
+                INTRINSIC_FUN_MAP_LEN,
+                IntrinsicFunDef::move_fun(Some(INTRINSIC_FUN_MAP_SPEC_LEN), None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_IS_EMPTY,
+                IntrinsicFunDef::move_fun(Some(INTRINSIC_FUN_MAP_SPEC_IS_EMPTY), None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_HAS_KEY,
+                IntrinsicFunDef::move_fun(Some(INTRINSIC_FUN_MAP_SPEC_HAS_KEY), None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_DESTROY_EMPTY,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_DESTROY_EMPTY)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_ADD_NO_OVERRIDE,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_ADD)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_ADD_OVERRIDE_IF_EXISTS,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_UPSERT,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_REMOVE_OR_NONE,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (INTRINSIC_FUN_MAP_GET, IntrinsicFunDef::move_fun(None, None)),
+            (
+                INTRINSIC_FUN_MAP_BORROW_FRONT,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_EMPTY)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_BORROW_BACK,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_EMPTY)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_POP_FRONT,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_EMPTY)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_POP_BACK,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_EMPTY)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_FRONT_KEY,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_EMPTY)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_BACK_KEY,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_EMPTY)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_PREV_KEY,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_NEXT_KEY,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_KEYS,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_TO_ORDERED_MAP,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_VALUES,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_TO_VEC_PAIR,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_NEW_FROM,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_NEW_FROM)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_ADD_ALL,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_ADD_ALL)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_UPSERT_ALL,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_UPSERT_ALL)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_APPEND,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_APPEND_DISJOINT,
+                IntrinsicFunDef::move_fun(
+                    None,
+                    Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_APPEND_DISJOINT),
+                ),
+            ),
+            (
+                INTRINSIC_FUN_MAP_TRIM,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_TRIM)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_REPLACE_KEY_INPLACE,
+                IntrinsicFunDef::move_fun(
+                    None,
+                    Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_REPLACE_KEY_INPLACE),
+                ),
+            ),
+            (
+                INTRINSIC_FUN_MAP_DEL_MUST_EXIST,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_DEL)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_DEL_RETURN_KEY,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_DEL)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_BORROW,
+                IntrinsicFunDef::move_fun(
+                    Some(INTRINSIC_FUN_MAP_SPEC_GET),
+                    Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_BORROW),
+                ),
+            ),
+            (
+                INTRINSIC_FUN_MAP_BORROW_MUT,
+                IntrinsicFunDef::move_fun(None, Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_BORROW)),
+            ),
+            (
+                INTRINSIC_FUN_MAP_BORROW_MUT_WITH_DEFAULT,
+                IntrinsicFunDef::move_fun(None, None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_BORROW_WITH_DEFAULT,
+                IntrinsicFunDef::move_fun(Some(INTRINSIC_FUN_MAP_SPEC_GET), None),
+            ),
+            (
+                INTRINSIC_FUN_MAP_ITER_BORROW_MUT,
+                IntrinsicFunDef::move_fun(
+                    None,
+                    Some(INTRINSIC_FUN_MAP_SPEC_ABORTS_ITER_BORROW_MUT),
+                ),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_ITER_BORROW_MUT,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_DESTROY_EMPTY,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_ADD,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_DEL,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_BORROW,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_EMPTY,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_ADD_ALL,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_NEW_FROM,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_APPEND_DISJOINT,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_TRIM,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_UPSERT_ALL,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_REPLACE_KEY_INPLACE,
+                IntrinsicFunDef::spec_fun(),
+            ),
+            (
+                INTRINSIC_FUN_MAP_SPEC_ABORTS_NEW_WITH_CONFIG,
+                IntrinsicFunDef::spec_fun(),
+            ),
         ])
     });
 
@@ -212,6 +679,7 @@ pub fn is_pragma_valid_for_block(
                 | ABORTS_IF_IS_PARTIAL_PRAGMA
                 | INTRINSIC_PRAGMA
                 | UNROLL_PRAGMA
+                | INFERENCE_PRAGMA
         ),
         Function(..) | FunctionCodeV2(.., Some(..)) => matches!(
             pragma,
@@ -235,7 +703,9 @@ pub fn is_pragma_valid_for_block(
                 | DELEGATE_INVARIANTS_TO_CALLER_PRAGMA
                 | BV_PARAM_PROP
                 | BV_RET_PROP
+                | BV_INTERNAL_PRAGMA
                 | UNROLL_PRAGMA
+                | INFERENCE_PRAGMA
         ),
         Struct(..) => match pragma {
             INTRINSIC_PRAGMA | BV_PARAM_PROP => true,
@@ -295,6 +765,23 @@ pub const CONDITION_ABORT_ASSERT_PROP: &str = "assert";
 /// condition will still be type checked.
 pub const CONDITION_DEACTIVATED_PROP: &str = "deactivated";
 
+/// A property which marks a condition as inferred by the spec inference engine.
+/// Values: `Bool(true)` for normal, `Symbol("vacuous")` for vacuously strong,
+/// `Symbol("sathard")` for hard-to-solve quantifier patterns.
+pub const CONDITION_INFERRED_PROP: &str = "inferred";
+
+/// Symbol value for `inferred` property indicating vacuously strong conditions
+/// (unconstrained quantifier variables).
+pub const CONDITION_INFERRED_VACUOUS: &str = "vacuous";
+
+/// Symbol value for `inferred` property indicating conditions with quantifiers
+/// that are hard for SAT/SMT solvers (exists in aborts_if, forall in ensures).
+pub const CONDITION_INFERRED_SATHARD: &str = "sathard";
+
+/// Symbol value for `inferred` property indicating conditions suggested by an
+/// AI agent (e.g. loop invariants that the WP engine cannot derive).
+pub const CONDITION_INFERRED_AGENT: &str = "agent";
+
 /// A property which can be attached to an aborts_with to indicate that it should act as check
 /// whether the function produces exactly the provided number of error codes.
 pub const CONDITION_CHECK_ABORT_CODES_PROP: &str = "check";
@@ -317,6 +804,11 @@ pub const BV_PARAM_PROP: &str = "bv";
 /// example: bv_ret=b"0,1"
 pub const BV_RET_PROP: &str = "bv_ret";
 
+/// A pragma declaring a function's bitwise representation internal: the body verifies
+/// with bitvectors, while parameters, results and the contract are integers at the
+/// boundary. Requires `pragma opaque`.
+pub const BV_INTERNAL_PRAGMA: &str = "bv_internal";
+
 /// A function which determines whether a property is valid for a given condition kind.
 pub fn is_property_valid_for_condition(kind: &ConditionKind, prop: &str) -> bool {
     if matches!(
@@ -326,6 +818,7 @@ pub fn is_property_valid_for_condition(kind: &ConditionKind, prop: &str) -> bool
             | CONDITION_ABSTRACT_PROP
             | CONDITION_CONCRETE_PROP
             | CONDITION_DEACTIVATED_PROP
+            | CONDITION_INFERRED_PROP
     ) {
         // Applicable everywhere.
         return true;

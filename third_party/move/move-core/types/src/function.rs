@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     ability::AbilitySet,
@@ -233,7 +233,7 @@ mod closure_mask_tests {
 //===========================================================================================
 
 /// Function type layout, with arguments and result types.
-#[derive(Debug, Clone, Hash, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(
     any(test, feature = "fuzzing"),
     derive(arbitrary::Arbitrary, dearbitrary::Dearbitrary)
@@ -367,7 +367,7 @@ mod serialization_tests {
                     MoveValue::Vector(vec![MoveValue::Bool(false)]),
                 ),
                 (
-                    MoveTypeLayout::Struct(MoveStructLayout::Runtime(vec![
+                    MoveTypeLayout::new_struct(MoveStructLayout::Runtime(vec![
                         MoveTypeLayout::Bool,
                         MoveTypeLayout::U8,
                     ])),

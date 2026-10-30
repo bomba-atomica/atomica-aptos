@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     accept_type::AcceptType,
@@ -9,8 +8,8 @@ use crate::{
     failpoint::fail_point_poem,
     page::Page,
     response::{
-        BadRequestError, BasicErrorWith404, BasicResponse, BasicResponseStatus, BasicResultWith404,
-        InternalError,
+        pruned_or_internal_error, BadRequestError, BasicErrorWith404, BasicResponse,
+        BasicResponseStatus, BasicResultWith404, InternalError,
     },
     ApiTags,
 };
@@ -120,6 +119,9 @@ impl EventsApi {
         /// If unspecified, defaults to default page size
         limit: Query<Option<u16>>,
     ) -> BasicResultWith404<Vec<VersionedEvent>> {
+        fail_point_poem("endpoint_get_events_by_event_handle")?;
+        self.context
+            .check_api_output_enabled("Get events by event handle", &accept_type)?;
         event_handle
             .0
             .verify(0)
@@ -132,9 +134,6 @@ impl EventsApi {
             .map_err(|err| {
                 BasicErrorWith404::bad_request_with_code_no_info(err, AptosErrorCode::InvalidInput)
             })?;
-        fail_point_poem("endpoint_get_events_by_event_handle")?;
-        self.context
-            .check_api_output_enabled("Get events by event handle", &accept_type)?;
         let page = Page::new(
             start.0.map(|v| v.0),
             limit.0,
@@ -170,13 +169,7 @@ impl EventsApi {
                 ledger_version,
             )
             .context(format!("Failed to find events by key {}", event_key))
-            .map_err(|err| {
-                BasicErrorWith404::internal_with_code(
-                    err,
-                    AptosErrorCode::InternalError,
-                    &latest_ledger_info,
-                )
-            })?;
+            .map_err(|err| pruned_or_internal_error(err, &latest_ledger_info))?;
 
         match accept_type {
             AcceptType::Json => {

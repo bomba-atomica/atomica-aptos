@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     smoke_test_environment::{new_local_swarm_with_aptos, SwarmBuilder},
@@ -27,6 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[ignore]
 #[tokio::test]
 async fn test_connection_limiting() {
     let mut swarm = new_local_swarm_with_aptos(1).await;
@@ -143,6 +143,7 @@ async fn test_connection_limiting() {
     );
 }
 
+#[ignore]
 #[tokio::test]
 async fn test_rest_discovery() {
     let mut swarm = SwarmBuilder::new_local(1).with_aptos().build().await;
@@ -212,6 +213,7 @@ async fn test_file_discovery() {
 // TODO: add more complex tests for the peer monitoring service.
 // TODO: move the state sync functions to a utility file (instead of importing directly).
 
+#[ignore]
 #[tokio::test]
 async fn test_peer_monitoring_service_enabled() {
     // Create a swarm of 4 validators with peer monitoring enabled

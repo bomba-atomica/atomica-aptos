@@ -1,29 +1,29 @@
 module aptos_framework::transaction_validation {
+    use std::bcs;
     use std::error;
     use std::features;
     use std::option;
     use std::option::Option;
     use std::signer;
-    use std::vector;
-
     use aptos_framework::account;
     use aptos_framework::aptos_account;
     use aptos_framework::account_abstraction;
-    use aptos_framework::aptos_coin::AptosCoin;
     use aptos_framework::chain_id;
-    use aptos_framework::coin;
     use aptos_framework::create_signer;
-    use aptos_framework::permissioned_signer;
     use aptos_framework::system_addresses;
     use aptos_framework::timestamp;
     use aptos_framework::transaction_fee;
+    use aptos_framework::transaction_fee::FeeStatement;
+    use aptos_framework::transaction_limits;
+    use aptos_framework::transaction_limits::UserTxnLimitsRequest;
     use aptos_framework::nonce_validation;
 
     friend aptos_framework::genesis;
 
     // We will advertise to the community that max expiration time for orderless txns is 60 seconds.
-    // Adding a 5 second slack here as the client's time and the blockchain's time may drift.
-    const MAX_EXPIRATION_TIME_SECONDS_FOR_ORDERLESS_TXNS: u64 = 65;
+    // Adding a 40 second slack here as the client's time and the blockchain's time may drift,
+    // and to account for any fallen behind fullnodes that are performing simulation on old blockchain state.
+    const MAX_EXP_TIME_SECONDS_FOR_ORDERLESS_TXNS: u64 = 100;
 
     // We need to ensure that a transaction can't be replayed.
     // There are two ways to prevent replay attacks:
@@ -47,6 +47,7 @@ module aptos_framework::transaction_validation {
         user_epilogue_name: vector<u8>,
     }
 
+    #[deprecated]
     struct GasPermission has copy, drop, store {}
 
     /// MSB is used to indicate a gas payer tx
@@ -54,6 +55,8 @@ module aptos_framework::transaction_validation {
 
     /// Transaction exceeded its allocated max gas
     const EOUT_OF_GAS: u64 = 6;
+    /// The permissioned signer feature has been removed.
+    const EPERMISSIONED_SIGNER_REMOVED: u64 = 7;
 
     /// Prologue errors. These are separated out from the other errors in this
     /// module since they are mapped separately to major VM statuses, and are
@@ -68,29 +71,21 @@ module aptos_framework::transaction_validation {
     const PROLOGUE_ESEQUENCE_NUMBER_TOO_BIG: u64 = 1008;
     const PROLOGUE_ESECONDARY_KEYS_ADDRESSES_COUNT_MISMATCH: u64 = 1009;
     const PROLOGUE_EFEE_PAYER_NOT_ENABLED: u64 = 1010;
-    const PROLOGUE_PERMISSIONED_GAS_LIMIT_INSUFFICIENT: u64 = 1011;
     const PROLOGUE_ENONCE_ALREADY_USED: u64 = 1012;
     const PROLOGUE_ETRANSACTION_EXPIRATION_TOO_FAR_IN_FUTURE: u64 = 1013;
 
-    /// Permission management
-    ///
-    /// Master signer grant permissioned signer ability to consume a given amount of gas in octas.
+    #[deprecated]
     public fun grant_gas_permission(
-        master: &signer,
-        permissioned: &signer,
-        gas_amount: u64
+        _master: &signer,
+        _permissioned: &signer,
+        _gas_amount: u64
     ) {
-        permissioned_signer::authorize_increase(
-            master,
-            permissioned,
-            (gas_amount as u256),
-            GasPermission {}
-        )
+        abort error::unavailable(EPERMISSIONED_SIGNER_REMOVED)
     }
 
-    /// Removing permissions from permissioned signer.
-    public fun revoke_gas_permission(permissioned: &signer) {
-        permissioned_signer::revoke_permission(permissioned, GasPermission {})
+    #[deprecated]
+    public fun revoke_gas_permission(_permissioned: &signer) {
+        abort error::unavailable(EPERMISSIONED_SIGNER_REMOVED)
     }
 
     /// Only called during genesis to initialize system resources for this module.
@@ -132,6 +127,7 @@ module aptos_framework::transaction_validation {
         txn_expiration_time: u64,
         chain_id: u8,
         is_simulation: bool,
+        txn_limits_request: Option<UserTxnLimitsRequest>,
     ) {
         let sender_address = signer::address_of(sender);
         let gas_payer_address = signer::address_of(gas_payer);
@@ -146,17 +142,22 @@ module aptos_framework::transaction_validation {
 
         // Check if the authentication key is valid
         if (!skip_auth_key_check(is_simulation, &txn_authentication_key)) {
-            if (option::is_some(&txn_authentication_key)) {
-                if (
-                    sender_address == gas_payer_address ||
-                    account::exists_at(sender_address) ||
-                    !features::sponsored_automatic_account_creation_enabled()
+            if (txn_authentication_key.is_some()) {
+                let authentication_key = if (
+                    sender_address != gas_payer_address &&
+                        !account::exists_at(sender_address) &&
+                        features::sponsored_automatic_account_creation_enabled()
                 ) {
-                    assert!(
-                        txn_authentication_key == option::some(account::get_authentication_key(sender_address)),
-                        error::invalid_argument(PROLOGUE_EINVALID_ACCOUNT_AUTH_KEY),
-                    );
+                    // This is a sponsored transaction with account that does
+                    // not exist and there is no default account resource.
+                    bcs::to_bytes(&sender_address)
+                } else {
+                    account::get_authentication_key(sender_address)
                 };
+                assert!(
+                    txn_authentication_key.destroy_some() == authentication_key,
+                    error::invalid_argument(PROLOGUE_EINVALID_ACCOUNT_AUTH_KEY),
+                );
             } else {
                 assert!(
                     allow_missing_txn_authentication_key(sender_address),
@@ -183,6 +184,13 @@ module aptos_framework::transaction_validation {
             }
         };
 
+        if (txn_limits_request.is_some()) {
+            transaction_limits::validate_high_txn_limits(
+                gas_payer_address,
+                txn_limits_request.destroy_some(),
+            );
+        };
+
         // Check if the gas payer has enough balance to pay for the transaction
         let max_transaction_fee = txn_gas_price * txn_max_gas_units;
         if (!skip_gas_payment(
@@ -190,24 +198,9 @@ module aptos_framework::transaction_validation {
             gas_payer_address
         )) {
             assert!(
-                permissioned_signer::check_permission_capacity_above(
-                    gas_payer,
-                    (max_transaction_fee as u256),
-                    GasPermission {}
-                ),
-                error::permission_denied(PROLOGUE_PERMISSIONED_GAS_LIMIT_INSUFFICIENT)
+                aptos_account::is_fungible_balance_at_least(gas_payer_address, max_transaction_fee),
+                error::invalid_argument(PROLOGUE_ECANT_PAY_GAS_DEPOSIT)
             );
-            if (features::operations_default_to_fa_apt_store_enabled()) {
-                assert!(
-                    aptos_account::is_fungible_balance_at_least(gas_payer_address, max_transaction_fee),
-                    error::invalid_argument(PROLOGUE_ECANT_PAY_GAS_DEPOSIT)
-                );
-            } else {
-                assert!(
-                    coin::is_balance_at_least<AptosCoin>(gas_payer_address, max_transaction_fee),
-                    error::invalid_argument(PROLOGUE_ECANT_PAY_GAS_DEPOSIT)
-                );
-            }
         };
     }
 
@@ -255,7 +248,7 @@ module aptos_framework::transaction_validation {
     ) {
         // prologue_common already checks that the current_time > txn_expiration_time
         assert!(
-            txn_expiration_time <= timestamp::now_seconds() + MAX_EXPIRATION_TIME_SECONDS_FOR_ORDERLESS_TXNS,
+            txn_expiration_time <= timestamp::now_seconds() + MAX_EXP_TIME_SECONDS_FOR_ORDERLESS_TXNS,
             error::invalid_argument(PROLOGUE_ETRANSACTION_EXPIRATION_TOO_FAR_IN_FUTURE),
         );
         assert!(nonce_validation::check_and_insert_nonce(sender, nonce, txn_expiration_time), error::invalid_argument(PROLOGUE_ENONCE_ALREADY_USED));
@@ -282,6 +275,7 @@ module aptos_framework::transaction_validation {
             txn_expiration_time,
             chain_id,
             false,
+            option::none(),
         )
     }
 
@@ -309,6 +303,7 @@ module aptos_framework::transaction_validation {
             txn_expiration_time,
             chain_id,
             is_simulation,
+            option::none(),
         )
     }
 
@@ -335,10 +330,11 @@ module aptos_framework::transaction_validation {
             txn_expiration_time,
             chain_id,
             false,
+            option::none(),
         );
         multi_agent_common_prologue(
             secondary_signer_addresses,
-            vector::map(secondary_signer_public_key_hashes, |x| option::some(x)),
+            secondary_signer_public_key_hashes.map(|x| option::some(x)),
             false
         );
     }
@@ -368,10 +364,11 @@ module aptos_framework::transaction_validation {
             txn_expiration_time,
             chain_id,
             is_simulation,
+            option::none(),
         );
         multi_agent_common_prologue(
             secondary_signer_addresses,
-            vector::map(secondary_signer_public_key_hashes, |x| option::some(x)),
+            secondary_signer_public_key_hashes.map(|x| option::some(x)),
             is_simulation
         );
     }
@@ -381,9 +378,9 @@ module aptos_framework::transaction_validation {
         secondary_signer_public_key_hashes: vector<Option<vector<u8>>>,
         is_simulation: bool,
     ) {
-        let num_secondary_signers = vector::length(&secondary_signer_addresses);
+        let num_secondary_signers = secondary_signer_addresses.length();
         assert!(
-            vector::length(&secondary_signer_public_key_hashes) == num_secondary_signers,
+            secondary_signer_public_key_hashes.length() == num_secondary_signers,
             error::invalid_argument(PROLOGUE_ESECONDARY_KEYS_ADDRESSES_COUNT_MISMATCH),
         );
 
@@ -415,11 +412,11 @@ module aptos_framework::transaction_validation {
             // };
             (i < num_secondary_signers)
         }) {
-            let secondary_address = *vector::borrow(&secondary_signer_addresses, i);
+            let secondary_address = secondary_signer_addresses[i];
             assert!(account::exists_at(secondary_address), error::invalid_argument(PROLOGUE_EACCOUNT_DOES_NOT_EXIST));
-            let signer_public_key_hash = *vector::borrow(&secondary_signer_public_key_hashes, i);
+            let signer_public_key_hash = secondary_signer_public_key_hashes[i];
             if (!skip_auth_key_check(is_simulation, &signer_public_key_hash)) {
-                if (option::is_some(&signer_public_key_hash)) {
+                if (signer_public_key_hash.is_some()) {
                     assert!(
                         signer_public_key_hash == option::some(account::get_authentication_key(secondary_address)),
                         error::invalid_argument(PROLOGUE_EINVALID_ACCOUNT_AUTH_KEY)
@@ -432,7 +429,7 @@ module aptos_framework::transaction_validation {
                 };
             };
 
-            i = i + 1;
+            i += 1;
         }
     }
 
@@ -449,7 +446,6 @@ module aptos_framework::transaction_validation {
         txn_expiration_time: u64,
         chain_id: u8,
     ) {
-        assert!(features::fee_payer_enabled(), error::invalid_state(PROLOGUE_EFEE_PAYER_NOT_ENABLED));
         // prologue_common and multi_agent_common_prologue with is_simulation set to false behaves identically to the
         // original fee_payer_script_prologue function.
         prologue_common(
@@ -462,10 +458,11 @@ module aptos_framework::transaction_validation {
             txn_expiration_time,
             chain_id,
             false,
+            option::none(),
         );
         multi_agent_common_prologue(
             secondary_signer_addresses,
-            vector::map(secondary_signer_public_key_hashes, |x| option::some(x)),
+            secondary_signer_public_key_hashes.map(|x| option::some(x)),
             false
         );
         assert!(
@@ -491,7 +488,6 @@ module aptos_framework::transaction_validation {
         chain_id: u8,
         is_simulation: bool,
     ) {
-        assert!(features::fee_payer_enabled(), error::invalid_state(PROLOGUE_EFEE_PAYER_NOT_ENABLED));
         prologue_common(
             &sender,
             &create_signer::create_signer(fee_payer_address),
@@ -502,10 +498,11 @@ module aptos_framework::transaction_validation {
             txn_expiration_time,
             chain_id,
             is_simulation,
+            option::none(),
         );
         multi_agent_common_prologue(
             secondary_signer_addresses,
-            vector::map(secondary_signer_public_key_hashes, |x| option::some(x)),
+            secondary_signer_public_key_hashes.map(|x| option::some(x)),
             is_simulation
         );
         if (!skip_auth_key_check(is_simulation, &option::some(fee_payer_public_key_hash))) {
@@ -606,17 +603,10 @@ module aptos_framework::transaction_validation {
         // it's important to maintain the error code consistent with vm
         // to do failed transaction cleanup.
         if (!skip_gas_payment(is_simulation, gas_payer)) {
-            if (features::operations_default_to_fa_apt_store_enabled()) {
-                assert!(
-                    aptos_account::is_fungible_balance_at_least(gas_payer, transaction_fee_amount),
-                    error::out_of_range(PROLOGUE_ECANT_PAY_GAS_DEPOSIT),
-                );
-            } else {
-                assert!(
-                    coin::is_balance_at_least<AptosCoin>(gas_payer, transaction_fee_amount),
-                    error::out_of_range(PROLOGUE_ECANT_PAY_GAS_DEPOSIT),
-                );
-            };
+            assert!(
+                aptos_account::is_fungible_balance_at_least(gas_payer, transaction_fee_amount),
+                error::out_of_range(PROLOGUE_ECANT_PAY_GAS_DEPOSIT),
+            );
 
             if (transaction_fee_amount > storage_fee_refunded) {
                 let burn_amount = transaction_fee_amount - storage_fee_refunded;
@@ -633,7 +623,7 @@ module aptos_framework::transaction_validation {
     }
 
     inline fun skip_auth_key_check(is_simulation: bool, auth_key: &Option<vector<u8>>): bool {
-        is_simulation && (option::is_none(auth_key) || vector::is_empty(option::borrow(auth_key)))
+        is_simulation && (auth_key.is_none() || auth_key.borrow().is_empty())
     }
 
     inline fun skip_gas_payment(is_simulation: bool, gas_payer: address): bool {
@@ -668,7 +658,6 @@ module aptos_framework::transaction_validation {
             txn_expiration_time,
             chain_id,
             is_simulation,
-
         )
     }
 
@@ -753,6 +742,7 @@ module aptos_framework::transaction_validation {
             txn_expiration_time,
             chain_id,
             is_simulation,
+            option::none(),
         );
         multi_agent_common_prologue(secondary_signer_addresses, secondary_signer_public_key_hashes, is_simulation);
     }
@@ -782,11 +772,12 @@ module aptos_framework::transaction_validation {
             txn_expiration_time,
             chain_id,
             is_simulation,
+            option::none(),
         );
         multi_agent_common_prologue(secondary_signer_addresses, secondary_signer_public_key_hashes, is_simulation);
         if (!skip_auth_key_check(is_simulation, &fee_payer_public_key_hash)) {
             let fee_payer_address = signer::address_of(&fee_payer);
-            if (option::is_some(&fee_payer_public_key_hash)) {
+            if (fee_payer_public_key_hash.is_some()) {
                 assert!(
                     fee_payer_public_key_hash == option::some(account::get_authentication_key(fee_payer_address)),
                     error::invalid_argument(PROLOGUE_EINVALID_ACCOUNT_AUTH_KEY)
@@ -826,34 +817,17 @@ module aptos_framework::transaction_validation {
             is_simulation,
             gas_payer_address
         )) {
-            if (features::operations_default_to_fa_apt_store_enabled()) {
-                assert!(
-                    aptos_account::is_fungible_balance_at_least(gas_payer_address, transaction_fee_amount),
-                    error::out_of_range(PROLOGUE_ECANT_PAY_GAS_DEPOSIT),
-                );
-            } else {
-                assert!(
-                    coin::is_balance_at_least<AptosCoin>(gas_payer_address, transaction_fee_amount),
-                    error::out_of_range(PROLOGUE_ECANT_PAY_GAS_DEPOSIT),
-                );
-            };
+            assert!(
+                aptos_account::is_fungible_balance_at_least(gas_payer_address, transaction_fee_amount),
+                error::out_of_range(PROLOGUE_ECANT_PAY_GAS_DEPOSIT),
+            );
 
             if (transaction_fee_amount > storage_fee_refunded) {
                 let burn_amount = transaction_fee_amount - storage_fee_refunded;
                 transaction_fee::burn_fee(gas_payer_address, burn_amount);
-                permissioned_signer::check_permission_consume(
-                    &gas_payer,
-                    (burn_amount as u256),
-                    GasPermission {}
-                );
             } else if (transaction_fee_amount < storage_fee_refunded) {
                 let mint_amount = storage_fee_refunded - transaction_fee_amount;
                 transaction_fee::mint_and_refund(gas_payer_address, mint_amount);
-                permissioned_signer::increase_limit(
-                    &gas_payer,
-                    (mint_amount as u256),
-                    GasPermission {}
-                );
             };
         };
 
@@ -861,6 +835,128 @@ module aptos_framework::transaction_validation {
             // Increment sequence number
             let addr = signer::address_of(&account);
             account::increment_sequence_number(addr);
+        }
+    }
+
+    ///////////////////////////////////////////////////////////
+    /// Versioned enum-based prologue and epilogue
+    ///////////////////////////////////////////////////////////
+
+    /// Arguments for `versioned_prologue`. A new field becomes a new enum variant.
+    ///
+    /// - Old variants are kept for compatibility; their on-chain layout must remain stable.
+    /// - Only the most recent variant needs real handling here — old variants were executed
+    ///   against the framework version that shipped them and are not reached from this code.
+    enum PrologueArgs {
+        V1 {
+            needs_fee_payer_auth_check: bool,
+            txn_sender_public_key: Option<vector<u8>>,
+            fee_payer_public_key_hash: Option<vector<u8>>,
+            replay_protector: ReplayProtector,
+            secondary_signer_addresses: vector<address>,
+            secondary_signer_public_key_hashes: vector<Option<vector<u8>>>,
+            txn_gas_price: u64,
+            txn_max_gas_units: u64,
+            txn_expiration_time: u64,
+            chain_id: u8,
+            is_simulation: bool,
+            txn_limits_request: Option<UserTxnLimitsRequest>,
+        },
+    }
+
+    fun versioned_prologue(sender: signer, fee_payer: signer, args: PrologueArgs) {
+        match (args) {
+            V1 {
+                needs_fee_payer_auth_check,
+                txn_sender_public_key,
+                fee_payer_public_key_hash,
+                replay_protector,
+                secondary_signer_addresses,
+                secondary_signer_public_key_hashes,
+                txn_gas_price,
+                txn_max_gas_units,
+                txn_expiration_time,
+                chain_id,
+                is_simulation,
+                txn_limits_request,
+            } => {
+                prologue_common(
+                    &sender,
+                    &fee_payer,
+                    replay_protector,
+                    txn_sender_public_key,
+                    txn_gas_price,
+                    txn_max_gas_units,
+                    txn_expiration_time,
+                    chain_id,
+                    is_simulation,
+                    txn_limits_request,
+                );
+                multi_agent_common_prologue(
+                    secondary_signer_addresses,
+                    secondary_signer_public_key_hashes,
+                    is_simulation,
+                );
+
+                if (needs_fee_payer_auth_check) {
+                    let fee_payer_address = signer::address_of(&fee_payer);
+                    if (!skip_auth_key_check(is_simulation, &fee_payer_public_key_hash)) {
+                        if (fee_payer_public_key_hash.is_some()) {
+                            let fee_payer_public_key_hash = fee_payer_public_key_hash.destroy_some();
+                            assert!(
+                                fee_payer_public_key_hash == account::get_authentication_key(fee_payer_address),
+                                error::invalid_argument(PROLOGUE_EINVALID_ACCOUNT_AUTH_KEY),
+                            );
+                        } else {
+                            assert!(
+                                allow_missing_txn_authentication_key(fee_payer_address),
+                                error::invalid_argument(PROLOGUE_EINVALID_ACCOUNT_AUTH_KEY),
+                            );
+                        };
+                    };
+                };
+            },
+        }
+    }
+
+    /// Arguments for `versioned_epilogue`. A new field becomes a new enum variant.
+    ///
+    /// - Old variants are kept for compatibility; their on-chain layout must remain stable.
+    /// - Only the most recent variant needs real handling here — old variants were executed
+    ///   against the framework version that shipped them and are not reached from this code.
+    enum EpilogueArgs {
+        V1 {
+            fee_statement: FeeStatement,
+            txn_gas_price: u64,
+            txn_max_gas_units: u64,
+            gas_units_remaining: u64,
+            is_simulation: bool,
+            is_orderless_txn: bool,
+        },
+    }
+
+    fun versioned_epilogue(sender: signer, fee_payer: signer, args: EpilogueArgs) {
+        match (args) {
+            V1 {
+                fee_statement,
+                txn_gas_price,
+                txn_max_gas_units,
+                gas_units_remaining,
+                is_simulation,
+                is_orderless_txn,
+            } => {
+                unified_epilogue_v2(
+                    sender,
+                    fee_payer,
+                    fee_statement.storage_fee_refund_octas(),
+                    txn_gas_price,
+                    txn_max_gas_units,
+                    gas_units_remaining,
+                    is_simulation,
+                    is_orderless_txn,
+                );
+                transaction_fee::emit_fee_statement(fee_statement);
+            },
         }
     }
 }

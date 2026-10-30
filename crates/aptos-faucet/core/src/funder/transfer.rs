@@ -1,15 +1,15 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::{
     common::{
-        submit_transaction, ApiConnectionConfig, GasUnitPriceManager, TransactionSubmissionConfig,
+        submit_transaction, ApiConnectionConfig, AssetConfig, GasUnitPriceManager,
+        TransactionSubmissionConfig, DEFAULT_ASSET_NAME,
     },
     FunderHealthMessage, FunderTrait,
 };
 use crate::{
     endpoints::{AptosTapError, AptosTapErrorCode, RejectionReason, RejectionReasonCode},
-    funder::common::update_sequence_numbers,
     middleware::TRANSFER_FUNDER_ACCOUNT_BALANCE,
 };
 use anyhow::{Context, Result};
@@ -29,7 +29,6 @@ use async_trait::async_trait;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, str::FromStr, time::Duration};
-use tokio::sync::RwLock;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TransferFunderConfig {
@@ -46,12 +45,21 @@ pub struct TransferFunderConfig {
 
     /// The amount of coins to fund the receiver account.
     pub amount_to_fund: AmountToFund,
+
+    /// The assets to transfer.
+    pub assets: HashMap<String, AssetConfig>,
 }
 
 impl TransferFunderConfig {
     pub async fn build_funder(&self) -> Result<TransferFunder> {
         // Read in private key.
-        let key = self.api_connection_config.get_key()?;
+        let apt_asset_config = self.assets.get(DEFAULT_ASSET_NAME).ok_or_else(|| {
+            anyhow::anyhow!(
+                "TransferFunder requires an '{}' asset configuration. Please add it to the assets map.",
+                DEFAULT_ASSET_NAME
+            )
+        })?;
+        let key = apt_asset_config.get_key()?;
 
         // Build account address from private key.
         let account_address = account_address_from_private_key(&key);
@@ -73,8 +81,6 @@ impl TransferFunderConfig {
             self.transaction_submission_config.max_gas_amount,
             self.transaction_submission_config
                 .transaction_expiration_secs,
-            self.transaction_submission_config
-                .wait_for_outstanding_txns_secs,
             self.transaction_submission_config.wait_for_transactions,
         );
 
@@ -83,7 +89,7 @@ impl TransferFunderConfig {
 }
 
 pub struct TransferFunder {
-    faucet_account: RwLock<LocalAccount>,
+    faucet_account: LocalAccount,
 
     transaction_factory: TransactionFactory,
 
@@ -105,13 +111,6 @@ pub struct TransferFunder {
     /// from the gas_unit_price_manager.
     gas_unit_price_override: Option<u64>,
 
-    /// When recovering from being overloaded, this struct ensures we handle
-    /// requests in the order they came in.
-    outstanding_requests: RwLock<Vec<(AccountAddress, u64)>>,
-
-    /// Amount of time we'll wait for the seqnum to catch up before resetting it.
-    wait_for_outstanding_txns_secs: u64,
-
     /// If set, we won't return responses until the transaction is processed.
     wait_for_transactions: bool,
 }
@@ -129,17 +128,21 @@ impl TransferFunder {
         gas_unit_price_override: Option<u64>,
         max_gas_amount: u64,
         transaction_expiration_secs: u64,
-        wait_for_outstanding_txns_secs: u64,
         wait_for_transactions: bool,
     ) -> Self {
-        let gas_unit_price_manager =
-            GasUnitPriceManager::new(node_url.clone(), gas_unit_price_ttl_secs);
+        let gas_unit_price_manager = GasUnitPriceManager::new(
+            node_url.clone(),
+            gas_unit_price_ttl_secs,
+            node_api_key.clone(),
+            node_additional_headers.as_ref(),
+        );
 
         Self {
-            faucet_account: RwLock::new(faucet_account),
+            faucet_account,
             transaction_factory: TransactionFactory::new(chain_id)
                 .with_max_gas_amount(max_gas_amount)
-                .with_transaction_expiration_time(transaction_expiration_secs),
+                .with_transaction_expiration_time(transaction_expiration_secs)
+                .with_use_replay_protection_nonce(true),
             node_url,
             node_api_key,
             node_additional_headers,
@@ -147,8 +150,6 @@ impl TransferFunder {
             amount_to_fund,
             gas_unit_price_manager,
             gas_unit_price_override,
-            outstanding_requests: RwLock::new(vec![]),
-            wait_for_outstanding_txns_secs,
             wait_for_transactions,
         }
     }
@@ -206,18 +207,22 @@ impl TransferFunder {
 
         let signed_transaction = self
             .faucet_account
-            .write()
-            .await
             .sign_with_transaction_builder(transaction_builder);
 
         submit_transaction(
             client,
-            &self.faucet_account,
             signed_transaction,
             receiver_address,
             self.wait_for_transactions,
         )
         .await
+    }
+
+    fn get_amount(&self, amount: Option<u64>) -> u64 {
+        match amount {
+            Some(amount) => std::cmp::min(amount, self.amount_to_fund.0),
+            None => self.amount_to_fund.0,
+        }
     }
 
     async fn is_healthy_as_result(&self) -> Result<(), AptosTapError> {
@@ -253,8 +258,9 @@ impl FunderTrait for TransferFunder {
         &self,
         amount: Option<u64>,
         receiver_address: AccountAddress,
+        _asset: Option<String>,
         check_only: bool,
-        did_bypass_checkers: bool,
+        _did_bypass_checkers: bool,
     ) -> Result<Vec<SignedTransaction>, AptosTapError> {
         // Confirm the funder has sufficient balance, return a 500 if not. This
         // will only happen briefly, soon after we get into this state the LB
@@ -265,22 +271,12 @@ impl FunderTrait for TransferFunder {
         let client = self.get_api_client();
 
         // Determine amount to fund.
-        let amount = self.get_amount(amount, did_bypass_checkers);
+        let amount = self.get_amount(amount);
 
-        // Update the sequence numbers of the accounts.
-        let (_funder_seq_num, receiver_seq_num) = update_sequence_numbers(
-            &client,
-            &self.faucet_account,
-            &self.outstanding_requests,
-            receiver_address,
-            amount,
-            self.wait_for_outstanding_txns_secs,
-        )
-        .await?;
+        // Check if the receiver account already exists.
+        let receiver_exists = client.get_account(receiver_address).await.is_ok();
 
-        // When updating the sequence numbers, we expect that the receiver sequence
-        // number should be None, because the account should not exist yet.
-        if receiver_seq_num.is_some() {
+        if receiver_exists {
             return Err(AptosTapError::new(
                 "Account ineligible".to_string(),
                 AptosTapErrorCode::Rejected,
@@ -316,22 +312,9 @@ impl FunderTrait for TransferFunder {
         Ok(transactions)
     }
 
-    fn get_amount(
-        &self,
-        amount: Option<u64>,
-        // Ignored for now with TransferFunder, since generally we don't use Bypassers
-        // when using the TransferFunder.
-        _did_bypass_checkers: bool,
-    ) -> u64 {
-        match amount {
-            Some(amount) => std::cmp::min(amount, self.amount_to_fund.0),
-            None => self.amount_to_fund.0,
-        }
-    }
-
     /// Assert funder account actually exists and has the minimum funds.
     async fn is_healthy(&self) -> FunderHealthMessage {
-        let account_address = self.faucet_account.read().await.address();
+        let account_address = self.faucet_account.address();
         let funder_balance = match self
             .get_api_client()
             .view_apt_account_balance(account_address)

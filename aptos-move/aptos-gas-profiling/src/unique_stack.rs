@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     log::{CallFrame, Dependency, ExecutionAndIOCosts, ExecutionGasEvent, StorageFees},
@@ -50,6 +50,7 @@ impl TransactionGasLog {
             exec_io: self.exec_io.combine(&other.exec_io),
             storage: self.storage.combine(&other.storage),
             num_txns: self.num_txns + other.num_txns,
+            peak_memory_usage: self.peak_memory_usage.max(other.peak_memory_usage),
         }
     }
 }
@@ -78,9 +79,13 @@ impl ExecutionAndIOCosts {
 
         ExecutionAndIOCosts {
             gas_scaling_factor: self.gas_scaling_factor,
-            total: self.total + other.total,
+            execution_gas: self.execution_gas + other.execution_gas,
+            io_gas: self.io_gas + other.io_gas,
             intrinsic_cost: self.intrinsic_cost + other.intrinsic_cost,
             keyless_cost: self.keyless_cost + other.keyless_cost,
+            slh_dsa_sha2_128s_cost: self.slh_dsa_sha2_128s_cost + other.slh_dsa_sha2_128s_cost,
+            encrypted_txn_decryption_cost: self.encrypted_txn_decryption_cost
+                + other.encrypted_txn_decryption_cost,
             dependencies: dependencies
                 .into_iter()
                 .map(|((kind, id, size), cost)| Dependency {

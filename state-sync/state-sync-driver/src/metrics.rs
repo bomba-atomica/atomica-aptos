@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_metrics_core::{
     exponential_buckets, histogram_opts, register_histogram_vec, register_int_counter_vec,
@@ -34,6 +34,7 @@ pub const STORAGE_SYNCHRONIZER_UPDATE_LEDGER: &str = "update_ledger";
 pub const STORAGE_SYNCHRONIZER_COMMIT_CHUNK: &str = "commit_chunk";
 pub const STORAGE_SYNCHRONIZER_COMMIT_POST_PROCESS: &str = "commit_post_process";
 pub const STORAGE_SYNCHRONIZER_STATE_VALUE_CHUNK: &str = "state_value_chunk";
+pub const STORAGE_SYNCHRONIZER_POSITION_STATE_VALUE_CHUNK: &str = "position_state_value_chunk";
 
 /// Storage synchronizer pipeline channel labels
 pub const STORAGE_SYNCHRONIZER_EXECUTOR: &str = "executor";
@@ -70,6 +71,7 @@ pub enum StorageSynchronizerOperations {
     Synced,                    // The latest synced version (as read from storage)
     SyncedIncremental, // The latest synced version (calculated as the sum of all processed transactions)
     SyncedStates,      // The total number of synced states
+    SyncedPositionStates, // The total number of synced native-position states
     SyncedEpoch,       // The latest synced epoch (as read from storage)
     SyncedEpochIncremental, // The latest synced epoch (calculated as the sum of all processed epochs)
 }
@@ -84,6 +86,7 @@ impl StorageSynchronizerOperations {
             StorageSynchronizerOperations::Synced => "synced",
             StorageSynchronizerOperations::SyncedIncremental => "synced_incremental",
             StorageSynchronizerOperations::SyncedStates => "synced_states",
+            StorageSynchronizerOperations::SyncedPositionStates => "synced_position_states",
             StorageSynchronizerOperations::SyncedEpoch => "synced_epoch",
             StorageSynchronizerOperations::SyncedEpochIncremental => "synced_epoch_incremental",
         }

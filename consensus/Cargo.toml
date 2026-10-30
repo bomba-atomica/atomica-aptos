@@ -12,8 +12,24 @@ publish = { workspace = true }
 repository = { workspace = true }
 rust-version = { workspace = true }
 
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes", "ark-std"]
+
+[features]
+default = []
+fuzzing = [
+    "aptos-consensus-types/fuzzing",
+    "aptos-config/fuzzing",
+    "aptos-crypto/fuzzing",
+    "aptos-mempool/fuzzing",
+    "aptos-types/fuzzing",
+    "aptos-safety-rules/testing",
+]
+failpoints = ["fail/failpoints"]
+
 [dependencies]
 anyhow = { workspace = true }
+aptos-batch-encryption = { workspace = true }
 aptos-bitvec = { workspace = true }
 aptos-bounded-executor = { workspace = true }
 aptos-channels = { workspace = true }
@@ -47,11 +63,14 @@ aptos-storage-interface = { workspace = true }
 aptos-temppath = { workspace = true }
 aptos-time-service = { workspace = true }
 aptos-transaction-filters = { workspace = true }
+aptos-transaction-tracing = { workspace = true }
 aptos-types = { workspace = true }
 aptos-validator-transaction-pool = { workspace = true }
 aptos-vm = { workspace = true }
+ark-std = { workspace = true }
 async-trait = { workspace = true }
 bcs = { workspace = true }
+blstrs = { workspace = true }
 byteorder = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -62,9 +81,9 @@ enum_dispatch = { workspace = true }
 fail = { workspace = true }
 futures = { workspace = true }
 futures-channel = { workspace = true }
+group = { workspace = true }
 hex = { workspace = true }
 itertools = { workspace = true }
-lru = { workspace = true }
 maplit = { workspace = true }
 mini-moka = { workspace = true }
 mirai-annotations = { workspace = true }
@@ -78,6 +97,8 @@ rand = { workspace = true }
 rayon = { workspace = true }
 scopeguard = { workspace = true }
 serde = { workspace = true }
+serde-big-array = { workspace = true }
+serde-name = { workspace = true }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 sha3 = { workspace = true }
@@ -107,21 +128,6 @@ move-core-types = { workspace = true }
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
 tempfile = { workspace = true }
-
-[features]
-default = []
-fuzzing = [
-    "aptos-consensus-types/fuzzing",
-    "aptos-config/fuzzing",
-    "aptos-crypto/fuzzing",
-    "aptos-mempool/fuzzing",
-    "aptos-types/fuzzing",
-    "aptos-safety-rules/testing",
-]
-failpoints = ["fail/failpoints"]
-
-[package.metadata.cargo-machete]
-ignored = ["serde_bytes"]
 
 [lints.clippy]
 unwrap_used = "deny"

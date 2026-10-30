@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module implements the simulation of governance proposals.
 //! Currently, it supports only multi-step proposals.
@@ -22,13 +22,12 @@
 
 use crate::aptos_framework_path;
 use anyhow::{anyhow, bail, Context, Result};
-use aptos::{
-    common::types::PromptOptions, governance::compile_in_temp_dir, move_tool::FrameworkPackageArgs,
-};
+use aptos_cli_common::PromptOptions;
 use aptos_crypto::HashValue;
 use aptos_gas_profiling::GasProfiler;
 use aptos_gas_schedule::{AptosGasParameters, FromOnChainGasSchedule};
 use aptos_language_e2e_tests::account::AccountData;
+use aptos_move_cli::{compile_in_temp_dir, FrameworkPackageArgs};
 use aptos_move_debugger::aptos_debugger::AptosDebugger;
 use aptos_rest_client::{AptosBaseUrl, Client};
 use aptos_transaction_simulation::{DeltaStateStore, SimulationStateStore};
@@ -37,10 +36,7 @@ use aptos_types::{
     account_config::ChainIdResource,
     on_chain_config::{ApprovedExecutionHashes, GasScheduleV2, OnChainConfig},
     state_store::TStateView,
-    transaction::{
-        AuxiliaryInfo, ExecutionStatus, PersistedAuxiliaryInfo, Script, TransactionArgument,
-        TransactionStatus,
-    },
+    transaction::{AuxiliaryInfo, ExecutionStatus, Script, TransactionArgument, TransactionStatus},
 };
 use aptos_vm::{data_cache::AsMoveResolver, move_vm_ext::SessionId, AptosVM};
 use aptos_vm_environment::environment::AptosEnvironment;
@@ -60,6 +56,7 @@ use move_binary_format::{
     CompiledModule,
 };
 use move_core_types::{
+    diag_writer::DiagWriter,
     identifier::{IdentStr, Identifier},
     language_storage::ModuleId,
     value::MoveValue,
@@ -326,12 +323,12 @@ fn add_script_execution_hash(
  **************************************************************************************************/
 fn force_end_epoch(state_view: &impl SimulationStateStore) -> Result<()> {
     let env = AptosEnvironment::new_with_injected_create_signer_for_gov_sim(&state_view);
-    let vm = AptosVM::new(&env, &state_view);
+    let vm = AptosVM::new(&env);
     let resolver = state_view.as_move_resolver();
     let module_storage = state_view.as_aptos_code_storage(&env);
 
     let gas_schedule =
-        GasScheduleV2::fetch_config(&state_view).context("failed to fetch gas schedule v2")?;
+        GasScheduleV2::fetch_config(&state_view)?.context("failed to fetch gas schedule v2")?;
     let gas_feature_version = gas_schedule.feature_version;
 
     let change_set_configs =
@@ -350,9 +347,8 @@ fn force_end_epoch(state_view: &impl SimulationStateStore) -> Result<()> {
         &mut TraversalContext::new(&traversal_storage),
         &module_storage,
     )?;
-    let mut change_set = sess.finish(&change_set_configs, &module_storage)?;
+    let change_set = sess.finish(&change_set_configs, &module_storage)?;
 
-    change_set.try_materialize_aggregator_v1_delta_set(&resolver)?;
     let (write_set, _events) = change_set
         .try_combine_into_storage_change_set(ModuleWriteSet::empty())
         .expect("Failed to convert to storage ChangeSet")
@@ -374,7 +370,7 @@ pub async fn simulate_multistep_proposal(
 
     // Compile all scripts.
     println!("Compiling scripts...");
-    let mut compiled_scripts = vec![];
+    let mut scripts = vec![];
     for path in proposal_scripts {
         let framework_package_args = FrameworkPackageArgs::try_parse_from([
             "dummy_executable_name",
@@ -386,7 +382,8 @@ pub async fn simulate_multistep_proposal(
             "failed to parse framework package args for compiling scripts, this should not happen",
         )?;
 
-        let (blob, hash) = compile_in_temp_dir(
+        let (blob, _hash) = compile_in_temp_dir(
+            &DiagWriter::stderr(),
             "script",
             path,
             &framework_package_args,
@@ -397,9 +394,35 @@ pub async fn simulate_multistep_proposal(
         )
         .with_context(|| format!("failed to compile script {}", path.display()))?;
 
-        compiled_scripts.push((blob, hash));
+        let name = path
+            .file_stem()
+            .with_context(|| format!("script path has no file stem: {}", path.display()))?
+            .to_string_lossy()
+            .into_owned();
+        scripts.push((name, blob));
     }
 
+    simulate_compiled_scripts(
+        remote_url,
+        &proposal_dir.join("gas-profiling"),
+        &scripts,
+        profile_gas,
+        node_api_key,
+    )
+    .await
+}
+
+/// Simulate a multi-step proposal's compiled scripts, in order, against the
+/// remote network state. `scripts` pairs each script's display name with its
+/// bytecode; each script's execution hash is the hash of its bytecode. Gas
+/// profiling reports (if enabled) are written under `gas_report_dir/<name>`.
+pub async fn simulate_compiled_scripts(
+    remote_url: Url,
+    gas_report_dir: &Path,
+    scripts: &[(String, Vec<u8>)],
+    profile_gas: bool,
+    node_api_key: Option<String>,
+) -> Result<()> {
     // Set up the simulation state view.
     let mut client_builder = Client::builder(AptosBaseUrl::Custom(remote_url));
     if let Some(api_key) = node_api_key.clone() {
@@ -417,7 +440,7 @@ pub async fn simulate_multistep_proposal(
     print!("Creating and funding sender account.. ");
     std::io::stdout().flush()?;
     let mut rng = aptos_keygen::KeyGen::from_seed([0; 32]);
-    let balance = 100 * 1_0000_0000; // 100 APT
+    let balance = 1000 * 1_0000_0000; // 1000 APT
     let account = AccountData::new_from_seed(&mut rng, balance, 0);
     state_view.apply_write_set(&account.to_writeset())?;
     // TODO: should update coin info (total supply)
@@ -426,18 +449,17 @@ pub async fn simulate_multistep_proposal(
     // Execute the governance scripts in sorted order.
     println!("Executing governance scripts...");
 
-    for (script_idx, (script_path, (script_blob, script_hash))) in
-        proposal_scripts.iter().zip(compiled_scripts).enumerate()
-    {
+    for (script_idx, (script_name, script_blob)) in scripts.iter().enumerate() {
+        let script_hash = HashValue::sha3_256_of(script_blob);
         // Force-end the epoch so that buffered configuration changes get applied.
         force_end_epoch(&state_view).context("failed to force end epoch")?;
 
         // Fetch the on-chain configs that are needed for the simulation.
         let chain_id =
-            ChainIdResource::fetch_config(&state_view).context("failed to fetch chain id")?;
+            ChainIdResource::fetch_config(&state_view)?.context("failed to fetch chain id")?;
 
         let gas_schedule =
-            GasScheduleV2::fetch_config(&state_view).context("failed to fetch gas schedule v2")?;
+            GasScheduleV2::fetch_config(&state_view)?.context("failed to fetch gas schedule v2")?;
         let gas_feature_version = gas_schedule.feature_version;
         let gas_params = AptosGasParameters::from_on_chain_gas_schedule(
             &gas_schedule.into_btree_map(),
@@ -457,7 +479,7 @@ pub async fn simulate_multistep_proposal(
 
         // If the script is the last step of the proposal, it MUST NOT have a next execution hash.
         // Set the boolean flag to true to use a modified patch to catch this.
-        let forbid_next_execution_hash = script_idx == proposal_scripts.len() - 1;
+        let forbid_next_execution_hash = script_idx == scripts.len() - 1;
         patch_aptos_governance(&state_view, forbid_next_execution_hash)
             .context("failed to patch resolve_multistep_proposal")?;
 
@@ -466,12 +488,11 @@ pub async fn simulate_multistep_proposal(
         add_script_execution_hash(&state_view, script_hash)
             .context("failed to add script execution hash")?;
 
-        let script_name = script_path.file_name().unwrap().to_string_lossy();
         println!("    {}", script_name);
 
         // Create a new VM to ensure the loader is clean.
         let env = AptosEnvironment::new_with_injected_create_signer_for_gov_sim(&state_view);
-        let vm = AptosVM::new(&env, &state_view);
+        let vm = AptosVM::new(&env);
         let log_context = AdapterLogSchema::new(state_view.id(), 0);
 
         let resolver = state_view.as_move_resolver();
@@ -480,13 +501,13 @@ pub async fn simulate_multistep_proposal(
         let txn = account
             .account()
             .transaction()
-            .script(Script::new(script_blob, vec![], vec![
+            .script(Script::new(script_blob.clone(), vec![], vec![
                 TransactionArgument::U64(DUMMY_PROPOSAL_ID), // dummy proposal id, ignored by the patched function
             ]))
             .chain_id(chain_id.chain_id())
             .sequence_number(script_idx as u64)
             .gas_unit_price(gas_params.vm.txn.min_price_per_gas_unit.into())
-            .max_gas_amount(100000)
+            .max_gas_amount(5_000_000) // 5 million gas units => 5 APT max at 100 Octa/gas unit
             .ttl(u64::MAX)
             .sign();
 
@@ -496,12 +517,7 @@ pub async fn simulate_multistep_proposal(
                 &code_storage,
                 &txn,
                 &log_context,
-                &AuxiliaryInfo::new(
-                    PersistedAuxiliaryInfo::V1 {
-                        transaction_index: 0,
-                    },
-                    None,
-                ),
+                &AuxiliaryInfo::new_timestamp_not_yet_assigned(0),
             );
             vm_output
         } else {
@@ -512,18 +528,11 @@ pub async fn simulate_multistep_proposal(
                     &txn,
                     &log_context,
                     GasProfiler::new_script,
-                    &AuxiliaryInfo::new(
-                        PersistedAuxiliaryInfo::V1 {
-                            transaction_index: 0,
-                        },
-                        None,
-                    ),
+                    &AuxiliaryInfo::new_timestamp_not_yet_assigned(0),
                 )?;
 
             let gas_log = gas_profiler.finish();
-            let report_path = proposal_dir
-                .join("gas-profiling")
-                .join(script_path.file_stem().unwrap());
+            let report_path = gas_report_dir.join(script_name);
             gas_log.generate_html_report(&report_path, format!("Gas Report - {}", script_name))?;
 
             println!("        Gas report saved to {}", report_path.display());
@@ -542,7 +551,7 @@ pub async fn simulate_multistep_proposal(
         );
 
         let txn_output = vm_output
-            .try_materialize_into_transaction_output(&resolver)
+            .try_materialize_into_transaction_output()
             .context("failed to materialize transaction output")?;
 
         let txn_status = txn_output.status();

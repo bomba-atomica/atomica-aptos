@@ -1,11 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PeerMonitoringServiceConfig {
+    pub enable_metadata_sanitization: bool, // Whether to sanitize (omit) metadata from responses
     pub enable_peer_monitoring_client: bool, // Whether or not to spawn the monitoring client
     pub latency_monitoring: LatencyMonitoringConfig,
     pub max_concurrent_requests: u64, // Max num of concurrent server tasks
@@ -15,12 +16,14 @@ pub struct PeerMonitoringServiceConfig {
     pub metadata_update_interval_ms: u64, // The interval (ms) between metadata updates
     pub network_monitoring: NetworkMonitoringConfig,
     pub node_monitoring: NodeMonitoringConfig,
+    pub num_threads: Option<usize>, // Number of tokio runtime worker threads
     pub peer_monitor_interval_usec: u64, // The interval (usec) between peer monitor executions
 }
 
 impl Default for PeerMonitoringServiceConfig {
     fn default() -> Self {
         Self {
+            enable_metadata_sanitization: true, // Enabled by default
             enable_peer_monitoring_client: true,
             latency_monitoring: LatencyMonitoringConfig::default(),
             max_concurrent_requests: 1000,
@@ -30,6 +33,7 @@ impl Default for PeerMonitoringServiceConfig {
             metadata_update_interval_ms: 5000,  // 5 seconds
             network_monitoring: NetworkMonitoringConfig::default(),
             node_monitoring: NodeMonitoringConfig::default(),
+            num_threads: Some(4),
             peer_monitor_interval_usec: 1_000_000, // 1 second
         }
     }
@@ -38,6 +42,7 @@ impl Default for PeerMonitoringServiceConfig {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LatencyMonitoringConfig {
+    pub disconnect_from_peers_on_failures: bool, // Whether to disconnect from peers on failures
     pub latency_ping_interval_ms: u64, // The interval (ms) between latency pings for each peer
     pub latency_ping_timeout_ms: u64,  // The timeout (ms) for each latency ping
     pub max_latency_ping_failures: u64, // Max ping failures before the peer connection fails
@@ -47,8 +52,9 @@ pub struct LatencyMonitoringConfig {
 impl Default for LatencyMonitoringConfig {
     fn default() -> Self {
         Self {
-            latency_ping_interval_ms: 30_000, // 30 seconds
-            latency_ping_timeout_ms: 20_000,  // 20 seconds
+            disconnect_from_peers_on_failures: true, // Disconnect from peers on failures by default
+            latency_ping_interval_ms: 20_000,        // 20 seconds
+            latency_ping_timeout_ms: 20_000,         // 20 seconds
             max_latency_ping_failures: 3,
             max_num_latency_pings_to_retain: 10,
         }
@@ -84,5 +90,54 @@ impl Default for NodeMonitoringConfig {
             node_info_request_interval_ms: 15_000, // 15 seconds
             node_info_request_timeout_ms: 10_000,  // 10 seconds
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_peer_monitoring_client_enabled_by_default() {
+        let config = PeerMonitoringServiceConfig::default();
+        assert!(
+            config.enable_peer_monitoring_client,
+            "Peer monitoring client should be enabled by default"
+        );
+    }
+
+    #[test]
+    fn test_peer_monitoring_client_can_be_disabled() {
+        let config = PeerMonitoringServiceConfig {
+            enable_peer_monitoring_client: false,
+            ..Default::default()
+        };
+        assert!(!config.enable_peer_monitoring_client);
+    }
+
+    #[test]
+    fn test_peer_monitoring_config_serialization_roundtrip() {
+        let config = PeerMonitoringServiceConfig {
+            enable_peer_monitoring_client: true,
+            max_concurrent_requests: 500,
+            peer_monitor_interval_usec: 2_000_000,
+            ..Default::default()
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: PeerMonitoringServiceConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config, deserialized);
+    }
+
+    #[test]
+    fn test_latency_monitoring_defaults() {
+        let config = LatencyMonitoringConfig::default();
+        assert!(config.disconnect_from_peers_on_failures);
+        assert_eq!(config.max_latency_ping_failures, 3);
+    }
+
+    #[test]
+    fn test_network_monitoring_defaults() {
+        let config = NetworkMonitoringConfig::default();
+        assert_eq!(config.network_info_request_interval_ms, 60_000);
     }
 }

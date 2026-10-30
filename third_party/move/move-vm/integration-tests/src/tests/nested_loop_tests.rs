@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     compiler::{as_module, as_script, compile_units},
@@ -21,7 +23,7 @@ fn initialize_storage(max_loop_depth: usize) -> InMemoryStorage {
             max_loop_depth: Some(max_loop_depth),
             ..Default::default()
         },
-        ..Default::default()
+        ..VMConfig::default_for_test()
     };
     let runtime_environment = RuntimeEnvironment::new_with_config(vec![], vm_config);
     InMemoryStorage::new_with_runtime_environment(runtime_environment)

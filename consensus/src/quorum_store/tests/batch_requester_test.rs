@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     network::QuorumStoreSender,
@@ -11,7 +11,7 @@ use crate::{
 };
 use aptos_consensus_types::{
     common::Author,
-    proof_of_store::{ProofOfStore, SignedBatchInfo},
+    proof_of_store::{BatchInfo, BatchInfoExt, ProofOfStore, SignedBatchInfo},
 };
 use aptos_crypto::HashValue;
 use aptos_infallible::Mutex;
@@ -56,21 +56,46 @@ impl QuorumStoreSender for MockBatchRequester {
 
     async fn send_signed_batch_info_msg(
         &self,
-        _signed_batch_infos: Vec<SignedBatchInfo>,
+        _signed_batch_infos: Vec<SignedBatchInfo<BatchInfo>>,
         _recipients: Vec<Author>,
     ) {
         unimplemented!()
     }
 
-    async fn broadcast_batch_msg(&mut self, _batches: Vec<Batch>) {
+    async fn send_signed_batch_info_msg_v2(
+        &self,
+        _signed_batch_infos: Vec<SignedBatchInfo<BatchInfoExt>>,
+        _recipients: Vec<Author>,
+    ) {
         unimplemented!()
     }
 
-    async fn broadcast_proof_of_store_msg(&mut self, _proof_of_stores: Vec<ProofOfStore>) {
+    async fn broadcast_batch_msg(&mut self, _batches: Vec<Batch<BatchInfo>>) {
         unimplemented!()
     }
 
-    async fn send_proof_of_store_msg_to_self(&mut self, _proof_of_stores: Vec<ProofOfStore>) {
+    async fn broadcast_batch_msg_v2(&mut self, _batches: Vec<Batch<BatchInfoExt>>) {
+        unimplemented!()
+    }
+
+    async fn broadcast_proof_of_store_msg(
+        &mut self,
+        _proof_of_stores: Vec<ProofOfStore<BatchInfo>>,
+    ) {
+        unimplemented!()
+    }
+
+    async fn broadcast_proof_of_store_msg_v2(
+        &mut self,
+        _proof_of_stores: Vec<ProofOfStore<BatchInfoExt>>,
+    ) {
+        unimplemented!()
+    }
+
+    async fn send_proof_of_store_msg_to_self(
+        &mut self,
+        _proof_of_stores: Vec<ProofOfStore<BatchInfoExt>>,
+    ) {
         unimplemented!()
     }
 }
@@ -101,7 +126,7 @@ async fn test_batch_request_exists() {
             .into(),
     );
 
-    let (_, subscriber_rx) = oneshot::channel();
+    let (_subscriber_tx, subscriber_rx) = oneshot::channel();
     let result = batch_requester
         .request_batch(
             *batch.digest(),
@@ -191,7 +216,7 @@ async fn test_batch_request_not_exists_not_expired() {
     );
 
     let request_start = Instant::now();
-    let (_, subscriber_rx) = oneshot::channel();
+    let (_subscriber_tx, subscriber_rx) = oneshot::channel();
     let result = batch_requester
         .request_batch(
             *batch.digest(),
@@ -236,7 +261,7 @@ async fn test_batch_request_not_exists_expired() {
     );
 
     let request_start = Instant::now();
-    let (_, subscriber_rx) = oneshot::channel();
+    let (_subscriber_tx, subscriber_rx) = oneshot::channel();
     let result = batch_requester
         .request_batch(
             *batch.digest(),

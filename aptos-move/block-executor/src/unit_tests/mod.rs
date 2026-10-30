@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 mod code_cache_tests;
 
@@ -22,11 +21,6 @@ use crate::{
     txn_commit_hook::NoOpTransactionCommitHook,
     txn_provider::default::DefaultTxnProvider,
 };
-use aptos_aggregator::{
-    bounded_math::SignedU128,
-    delta_change_set::{delta_add, delta_sub, DeltaOp},
-    delta_math::DeltaHistory,
-};
 use aptos_mvhashmap::types::TxnIndex;
 use aptos_types::{
     block_executor::{
@@ -47,7 +41,6 @@ use std::{
     fmt::Debug,
     hash::Hash,
     marker::PhantomData,
-    sync::Arc,
 };
 
 #[test]
@@ -57,12 +50,6 @@ fn test_block_epilogue_happy_path() {
     let t_1 = MockTransaction::from_behavior(behaivor);
     let transactions = vec![t_0, t_1];
 
-    let executor_thread_pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .build()
-            .unwrap(),
-    );
     let block_executor = BlockExecutor::<
         MockTransaction<KeyType<u32>, MockEvent>,
         MockTask<KeyType<u32>, MockEvent>,
@@ -72,7 +59,6 @@ fn test_block_epilogue_happy_path() {
         AuxiliaryInfo,
     >::new(
         BlockExecutorConfig::new_no_block_limit(num_cpus::get()),
-        executor_thread_pool,
         None,
     );
     let data_view = MockStateView::empty();
@@ -128,12 +114,6 @@ fn test_block_epilogue_block_gas_limit_reached() {
     let t_1 = MockTransaction::from_behavior(behaivor);
     let transactions = vec![t_0, t_1];
 
-    let executor_thread_pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .build()
-            .unwrap(),
-    );
     let block_executor = BlockExecutor::<
         MockTransaction<KeyType<u32>, MockEvent>,
         MockTask<KeyType<u32>, MockEvent>,
@@ -143,7 +123,6 @@ fn test_block_epilogue_block_gas_limit_reached() {
         AuxiliaryInfo,
     >::new(
         BlockExecutorConfig::new_maybe_block_limit(num_cpus::get(), Some(1)),
-        executor_thread_pool,
         None,
     );
     let data_view = MockStateView::empty();
@@ -223,12 +202,6 @@ fn test_resource_group_deletion() {
         group_keys: HashSet::new(),
         delayed_field_testing: false,
     };
-    let executor_thread_pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .build()
-            .unwrap(),
-    );
     let block_executor = BlockExecutor::<
         MockTransaction<KeyType<u32>, MockEvent>,
         MockTask<KeyType<u32>, MockEvent>,
@@ -238,7 +211,6 @@ fn test_resource_group_deletion() {
         AuxiliaryInfo,
     >::new(
         BlockExecutorConfig::new_no_block_limit(num_cpus::get()),
-        executor_thread_pool,
         None,
     );
 
@@ -302,12 +274,6 @@ fn resource_group_bcs_fallback() {
         group_keys: HashSet::new(),
         delayed_field_testing: false,
     };
-    let executor_thread_pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .build()
-            .unwrap(),
-    );
     let block_executor = BlockExecutor::<
         MockTransaction<KeyType<u32>, MockEvent>,
         MockTask<KeyType<u32>, MockEvent>,
@@ -317,7 +283,6 @@ fn resource_group_bcs_fallback() {
         AuxiliaryInfo,
     >::new(
         BlockExecutorConfig::new_no_block_limit(num_cpus::get()),
-        executor_thread_pool,
         None,
     );
 
@@ -418,12 +383,6 @@ fn interrupt_requested() {
     let mut guard = AptosModuleCacheManagerGuard::none();
 
     let data_view = MockStateView::empty();
-    let executor_thread_pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .build()
-            .unwrap(),
-    );
     let block_executor = BlockExecutor::<
         MockTransaction<KeyType<u32>, MockEvent>,
         MockTask<KeyType<u32>, MockEvent>,
@@ -433,7 +392,6 @@ fn interrupt_requested() {
         AuxiliaryInfo,
     >::new(
         BlockExecutorConfig::new_no_block_limit(num_cpus::get()),
-        executor_thread_pool,
         None,
     );
 
@@ -465,12 +423,6 @@ fn block_output_err_precedence() {
     let txn_provider = DefaultTxnProvider::new_without_info(transactions);
 
     let data_view = MockStateView::empty();
-    let executor_thread_pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .build()
-            .unwrap(),
-    );
     let block_executor = BlockExecutor::<
         MockTransaction<KeyType<u32>, MockEvent>,
         MockTask<KeyType<u32>, MockEvent>,
@@ -480,7 +432,6 @@ fn block_output_err_precedence() {
         AuxiliaryInfo,
     >::new(
         BlockExecutorConfig::new_no_block_limit(num_cpus::get()),
-        executor_thread_pool,
         None,
     );
 
@@ -509,12 +460,6 @@ fn skip_rest_gas_limit() {
     let txn_provider = DefaultTxnProvider::new_without_info(transactions);
 
     let data_view = MockStateView::empty();
-    let executor_thread_pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .build()
-            .unwrap(),
-    );
     let block_executor = BlockExecutor::<
         MockTransaction<KeyType<u32>, MockEvent>,
         MockTask<KeyType<u32>, MockEvent>,
@@ -524,7 +469,6 @@ fn skip_rest_gas_limit() {
         AuxiliaryInfo,
     >::new(
         BlockExecutorConfig::new_maybe_block_limit(num_cpus::get(), Some(5)),
-        executor_thread_pool,
         None,
     );
 
@@ -544,13 +488,6 @@ where
     K: PartialOrd + Ord + Send + Sync + Clone + Hash + Eq + ModulePath + Debug + 'static,
     E: Send + Sync + Debug + Clone + TransactionEvent + 'static,
 {
-    let executor_thread_pool = Arc::new(
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(num_cpus::get())
-            .build()
-            .unwrap(),
-    );
-
     let mut guard = AptosModuleCacheManagerGuard::none();
     let txn_provider = DefaultTxnProvider::new_without_info(transactions);
 
@@ -568,7 +505,6 @@ where
             AuxiliaryInfo,
         >::new(
             BlockExecutorConfig::new_no_block_limit(num_cpus::get()),
-            executor_thread_pool,
             None,
         )
         .execute_transactions_parallel(
@@ -588,7 +524,6 @@ where
             AuxiliaryInfo,
         >::new(
             BlockExecutorConfig::new_no_block_limit(num_cpus::get()),
-            executor_thread_pool,
             None,
         )
         .execute_transactions_parallel(
@@ -605,7 +540,7 @@ where
 
 fn random_value(delete_value: bool) -> ValueType {
     ValueType::from_value(
-        (0..32).map(|_| (random::<u8>())).collect::<Vec<u8>>(),
+        (0..32).map(|_| random::<u8>()).collect::<Vec<u8>>(),
         !delete_value,
     )
 }
@@ -615,104 +550,6 @@ fn empty_block() {
     // This test checks that we do not trigger asserts due to an empty block, e.g. in the
     // scheduler. Instead, parallel execution should gracefully early return empty output.
     run_and_assert::<KeyType<[u8; 32]>, MockEvent>(vec![], false);
-}
-
-#[test]
-fn delta_counters() {
-    // TODO(BlockSTMv2): Adjust these tests to also use V2.
-    let key = KeyType(random::<[u8; 32]>());
-    let mut transactions = vec![MockTransaction::from_behavior(MockIncarnation::<
-        KeyType<[u8; 32]>,
-        MockEvent,
-    >::new(
-        vec![],
-        vec![(key, random_value(false), false)], // writes
-        vec![],
-        vec![],
-        1, // gas
-    ))];
-
-    for _ in 0..50 {
-        transactions.push(
-            MockTransaction::from_behavior(MockIncarnation::<KeyType<[u8; 32]>, MockEvent>::new(
-                vec![(key, false)], // reads
-                vec![],
-                vec![(key, delta_add(5, u128::MAX), None)], // deltas
-                vec![],
-                1, // gas
-            ))
-            .with_aggregator_v1_testing(),
-        );
-    }
-
-    transactions.push(
-        MockTransaction::from_behavior(MockIncarnation::<KeyType<[u8; 32]>, MockEvent>::new(
-            vec![],
-            vec![(key, random_value(false), false)], // writes
-            vec![],
-            vec![],
-            1, // gas
-        ))
-        .with_aggregator_v1_testing(),
-    );
-
-    for _ in 0..50 {
-        transactions.push(
-            MockTransaction::from_behavior(MockIncarnation::<KeyType<[u8; 32]>, MockEvent>::new(
-                vec![(key, false)], // reads
-                vec![],
-                vec![(key, delta_sub(2, u128::MAX), None)], // deltas
-                vec![],
-                1, // gas
-            ))
-            .with_aggregator_v1_testing(),
-        );
-    }
-
-    run_and_assert(transactions, true)
-}
-
-#[test]
-fn delta_chains() {
-    let mut transactions = vec![];
-    // Generate a series of transactions add and subtract from an aggregator.
-
-    let keys: Vec<KeyType<[u8; 32]>> = (0..10).map(|_| KeyType(random::<[u8; 32]>())).collect();
-
-    for i in 0..500 {
-        transactions.push(
-            MockTransaction::<KeyType<[u8; 32]>, MockEvent>::from_behavior(MockIncarnation::new(
-                keys.clone().into_iter().map(|k| (k, true)).collect(), // reads
-                vec![],
-                keys.iter()
-                    .enumerate()
-                    .filter_map(|(j, k)| match (i + j) % 2 == 0 {
-                        true => Some((
-                            *k,
-                            // Deterministic pattern for adds/subtracts.
-                            DeltaOp::new(
-                                if (i % 2 == 0) == (j < 5) {
-                                    SignedU128::Positive(10)
-                                } else {
-                                    SignedU128::Negative(1)
-                                },
-                                // below params irrelevant for this test.
-                                u128::MAX,
-                                DeltaHistory::new(),
-                            ),
-                            None,
-                        )),
-                        false => None,
-                    })
-                    .collect(), // deltas
-                vec![],
-                1, // gas
-            ))
-            .with_aggregator_v1_testing(),
-        );
-    }
-
-    run_and_assert(transactions, true)
 }
 
 const TOTAL_KEY_NUM: u64 = 50;

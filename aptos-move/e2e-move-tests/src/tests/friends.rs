@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{assert_success, tests::common, MoveHarness};
 use aptos_types::{
@@ -15,12 +15,10 @@ fn cannot_publish_cross_package_friends(enable_lazy_loading: bool) {
     let mut h = MoveHarness::new_with_lazy_loading(enable_lazy_loading);
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
 
-    assert_success!(
-        h.publish_package_cache_building(&acc, &common::test_dir_path("friends.data/p1"))
-    );
+    assert_success!(h.publish_package(&acc, &common::test_dir_path("friends.data/p1")));
 
     // Module in p2 declares a module in p1 a friend. With lazy loading this is not allowed.
-    let res = h.publish_package_cache_building(&acc, &common::test_dir_path("friends.data/p2"));
+    let res = h.publish_package(&acc, &common::test_dir_path("friends.data/p2"));
     if enable_lazy_loading {
         assert!(matches!(
             res,

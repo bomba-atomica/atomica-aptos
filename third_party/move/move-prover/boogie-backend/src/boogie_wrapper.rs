@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Wrapper around the boogie program. Allows to call boogie and analyze the output.
 
@@ -35,7 +36,12 @@ use std::{
     fs,
     num::ParseIntError,
     option::Option::None,
+    path::Path,
+    process::Output,
+    sync::Arc,
+    time::{Duration, Instant},
 };
+use tokio::sync::Notify;
 
 /// A type alias for the way how we use crate `pretty`'s document type. `pretty` is a
 /// Wadler-style pretty printer. Our simple usage doesn't require any lifetime management.
@@ -59,6 +65,23 @@ pub struct BoogieOutput {
 
     /// Full output as a string.
     pub all_output: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoogieRunStatus {
+    Ok,
+    Timeout,
+    Errors,
+}
+
+impl BoogieRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Timeout => "timeout",
+            Self::Errors => "errors",
+        }
+    }
 }
 
 /// Kind of boogie error.
@@ -111,32 +134,135 @@ static INCONSISTENCY_DIAG_STARTS: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?m)^inconsistency_detected\((?P<args>[^)]*)\)").unwrap());
 
 impl BoogieWrapper<'_> {
+    fn make_boogie_task(
+        options: &BoogieOptions,
+        boogie_file: String,
+        process_timeout_secs: u64,
+        seed_handoff_after: Option<Duration>,
+        process_deadline: Option<Instant>,
+    ) -> RunBoogieWithSeeds {
+        let mut options = options.clone();
+        options.proc_cores = 1;
+        if options.z3_trace_file.is_some() {
+            options.z3_trace_file = Some(
+                Path::new(&boogie_file)
+                    .with_extension("z3.trace")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        let prefer_primary = options.stable_test_output;
+        RunBoogieWithSeeds {
+            options,
+            boogie_file,
+            prefer_primary,
+            process_timeout_secs,
+            process_deadline,
+            seed_handoff_after,
+            primary_started: Arc::new(Notify::new()),
+        }
+    }
+
+    fn boogie_seed_plan(options: &BoogieOptions) -> (usize, bool) {
+        // A separate Boogie process loses the solver warm state established by
+        // preceding VCs. Retry a soft timeout once with the next seed, but do
+        // not duplicate Boogie's frontend work for successful roots.
+        if options.num_instances == 1 && options.seed_handoff_ratio > 0.0 {
+            (2, false)
+        } else {
+            (options.num_instances, options.sequential_task)
+        }
+    }
+
+    /// Generate bounded Boogie work and consume each result as it completes.
+    pub fn run_boogie_pipeline<M, E, P, C>(
+        options: &BoogieOptions,
+        job_count: usize,
+        mut produce: P,
+        consume: C,
+    ) -> Result<(), E>
+    where
+        P: FnMut(usize) -> Result<(String, u64, Option<Duration>, Option<Instant>, M), E>,
+        C: FnMut(usize, M, usize, std::io::Result<Output>, Duration) -> Result<(), E>,
+    {
+        // Preserve root-ordered diagnostics in snapshot tests.
+        let process_limit = if options.stable_test_output {
+            1
+        } else {
+            options.proc_cores
+        };
+        let (num_instances, sequential) = Self::boogie_seed_plan(options);
+        ProverTaskRunner::run_task_pipeline(
+            job_count,
+            num_instances,
+            sequential,
+            0,
+            process_limit,
+            |index| {
+                let (
+                    boogie_file,
+                    process_timeout_secs,
+                    seed_handoff_after,
+                    process_deadline,
+                    metadata,
+                ) = produce(index)?;
+                Ok((
+                    Self::make_boogie_task(
+                        options,
+                        boogie_file,
+                        process_timeout_secs,
+                        seed_handoff_after,
+                        process_deadline,
+                    ),
+                    metadata,
+                ))
+            },
+            consume,
+        )
+    }
+
     /// Calls boogie on the given file. On success, returns a struct representing the analyzed
     /// output of boogie.
     pub fn call_boogie(&self, boogie_file: &str) -> anyhow::Result<BoogieOutput> {
-        let args = self.options.get_boogie_command(boogie_file)?;
         info!("running solver");
-        debug!("command line: {}", args.iter().join(" "));
         let task = RunBoogieWithSeeds {
             options: self.options.clone(),
             boogie_file: boogie_file.to_string(),
+            prefer_primary: false,
+            process_timeout_secs: 0,
+            process_deadline: None,
+            seed_handoff_after: self.options.seed_handoff_after(self.options.vc_timeout),
+            primary_started: Arc::new(Notify::new()),
         };
         // When running on complicated formulas(especially those with quantifiers), SMT solvers
         // can suffer from the so-called butterfly effect, where minor changes such as using
         // different random seeds cause significant instabilities in verification times.
         // Thus by running multiple instances of Boogie with different random seeds, we can
         // potentially alleviate the instability.
+        let (num_instances, sequential) = Self::boogie_seed_plan(self.options);
         let (seed, output_res) = ProverTaskRunner::run_tasks(
             task,
-            self.options.num_instances,
-            self.options.sequential_task,
+            num_instances,
+            sequential,
             self.options.hard_timeout_secs,
         );
+        self.analyze_boogie_result(boogie_file, seed, output_res)
+    }
+
+    /// Analyze one raw result returned by the bounded process queue.
+    pub fn analyze_boogie_result(
+        &self,
+        boogie_file: &str,
+        seed: usize,
+        output_res: std::io::Result<Output>,
+    ) -> anyhow::Result<BoogieOutput> {
+        let args = self.options.get_boogie_command(boogie_file)?;
+        debug!("command line: {}", args.iter().join(" "));
         let output = match output_res {
             Err(err) => {
                 if err.kind() == std::io::ErrorKind::TimedOut {
                     let err = BoogieError {
-                        kind: BoogieErrorKind::Internal,
+                        kind: BoogieErrorKind::Inconclusive,
                         loc: self.env.unknown_loc(),
                         message: format!(
                             "Boogie execution exceeded hard timeout of {}s",
@@ -220,6 +346,38 @@ impl BoogieWrapper<'_> {
     /// Calls boogie and analyzes output.
     pub fn call_boogie_and_verify_output(&self, boogie_file: &str) -> anyhow::Result<()> {
         let BoogieOutput { errors, all_output } = self.call_boogie(boogie_file)?;
+        self.verify_output(boogie_file, errors, all_output)
+    }
+
+    /// Analyze and report one result returned by the bounded process queue.
+    pub fn analyze_and_verify_output(
+        &self,
+        boogie_file: &str,
+        seed: usize,
+        output_res: std::io::Result<Output>,
+    ) -> anyhow::Result<BoogieRunStatus> {
+        let BoogieOutput { errors, all_output } =
+            self.analyze_boogie_result(boogie_file, seed, output_res)?;
+        let status = if errors
+            .iter()
+            .any(|error| error.kind == BoogieErrorKind::Inconclusive)
+        {
+            BoogieRunStatus::Timeout
+        } else if errors.is_empty() {
+            BoogieRunStatus::Ok
+        } else {
+            BoogieRunStatus::Errors
+        };
+        self.verify_output(boogie_file, errors, all_output)?;
+        Ok(status)
+    }
+
+    fn verify_output(
+        &self,
+        boogie_file: &str,
+        errors: Vec<BoogieError>,
+        all_output: String,
+    ) -> anyhow::Result<()> {
         let boogie_log_file = self.options.get_boogie_log_file(boogie_file);
         let log_file_existed = std::path::Path::new(&boogie_log_file).exists();
         debug!("writing boogie log to {}", boogie_log_file);
@@ -1428,7 +1586,38 @@ impl ModelValue {
             Type::Struct(module_id, struct_id, params) => {
                 let struct_env = wrapper.env.get_struct_qid(module_id.qualified(*struct_id));
                 if struct_env.is_intrinsic_of(INTRINSIC_TYPE_MAP) {
-                    self.pretty_table(wrapper, model, &params[0], &params[1])
+                    // Ghost-bearing intrinsic maps are carrier datatypes:
+                    // unwrap the raw table and render the ghosts after the
+                    // entries.
+                    let ghost_fields = struct_env.get_ghost_fields().collect_vec();
+                    if ghost_fields.is_empty() {
+                        self.pretty_table(wrapper, model, &params[0], &params[1])
+                    } else {
+                        // The value's own constructor name disambiguates the
+                        // bv twin, so try both carrier names.
+                        let carrier_name = boogie_struct_name(&struct_env, params, false);
+                        let carrier_name_bv = boogie_struct_name(&struct_env, params, true);
+                        let args = self
+                            .extract_list(&carrier_name)
+                            .or_else(|| self.extract_list(&format!("|{}|", carrier_name)))
+                            .or_else(|| self.extract_list(&carrier_name_bv))
+                            .or_else(|| self.extract_list(&format!("|{}|", carrier_name_bv)))?;
+                        let mut doc = args
+                            .first()?
+                            .pretty_table(wrapper, model, &params[0], &params[1])?;
+                        for (i, f) in ghost_fields.iter().enumerate() {
+                            let ty = f.get_type().instantiate(params);
+                            let default = ModelValue::error();
+                            let v = args.get(1 + i).unwrap_or(&default);
+                            doc = doc
+                                .append(PrettyDoc::text(format!(
+                                    " ghost {} = ",
+                                    f.get_name().display(struct_env.symbol_pool())
+                                )))
+                                .append(v.pretty_or_raw(wrapper, model, &ty));
+                        }
+                        Some(doc)
+                    }
                 } else {
                     self.pretty_struct(wrapper, model, &struct_env, params)
                 }
@@ -1470,6 +1659,7 @@ impl ModelValue {
             | Type::Primitive(_)
             | Type::TypeDomain(_)
             | Type::ResourceDomain(_, _, _)
+            | Type::StateDomain
             | Type::Error
             | Type::Var(_) => None,
         }
@@ -1538,7 +1728,7 @@ impl ModelValue {
         struct_env: &StructEnv,
         inst: &[Type],
     ) -> Option<PrettyDoc> {
-        let struct_name = &boogie_struct_name(struct_env, inst);
+        let struct_name = &boogie_struct_name(struct_env, inst, false);
         let mut ctor_name = struct_env
             .get_name()
             .display(struct_env.symbol_pool())
@@ -1622,7 +1812,7 @@ impl ModelValue {
         // function table of $EncodeKey and turns into a map from int to encoded ModelValue.
         let encoding_key = format!(
             "$EncodeKey{}",
-            boogie_inst_suffix(wrapper.env, std::slice::from_ref(key_ty))
+            boogie_inst_suffix(wrapper.env, std::slice::from_ref(key_ty), &[])
         );
         let encoding_map = model
             .vars
@@ -1668,7 +1858,12 @@ impl ModelValue {
         let mut entries = vec![];
         for idx in values.values.keys().sorted() {
             let mut p = values.values.get(idx)?.pretty_or_raw(wrapper, model, param);
-            p = PrettyDoc::text(format!("Address({}): ", idx)).append(p);
+            let addr_prefix = if wrapper.options.stable_test_output {
+                "Address(<redacted>): ".to_string()
+            } else {
+                format!("Address({}): ", idx)
+            };
+            p = PrettyDoc::text(addr_prefix).append(p);
             entries.push(p);
         }
         let default = if values.default == ModelValue::error() {
@@ -1828,5 +2023,42 @@ fn index_range_check(max: usize) -> impl FnOnce(usize) -> Result<usize, ModelPar
                 max, idx
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_seed_retry_is_hedged() {
+        assert_eq!(
+            BoogieWrapper::boogie_seed_plan(&BoogieOptions::default()),
+            (2, false)
+        );
+    }
+
+    #[test]
+    fn zero_seed_handoff_disables_fallback() {
+        let options = BoogieOptions {
+            seed_handoff_ratio: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(BoogieWrapper::boogie_seed_plan(&options), (1, false));
+    }
+
+    #[test]
+    fn explicit_seed_configuration_is_preserved() {
+        let concurrent = BoogieOptions {
+            num_instances: 3,
+            ..Default::default()
+        };
+        assert_eq!(BoogieWrapper::boogie_seed_plan(&concurrent), (3, false));
+
+        let sequential = BoogieOptions {
+            sequential_task: true,
+            ..concurrent
+        };
+        assert_eq!(BoogieWrapper::boogie_seed_plan(&sequential), (3, true));
     }
 }

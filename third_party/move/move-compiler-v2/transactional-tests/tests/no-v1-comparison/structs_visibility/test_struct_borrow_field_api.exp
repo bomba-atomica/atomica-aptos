@@ -1,0 +1,9 @@
+processed 8 tasks
+task 0 lines 2-13:  publish [module 0x42::m1 {]
+task 1 lines 15-100:  publish [module 0x42::m2 {]
+task 2 lines 102-102:  run 0x42::m2::try_immut_borrow_fields
+task 3 lines 104-104:  run 0x42::m2::try_immut_from_mut
+task 4 lines 106-106:  run 0x42::m2::try_mut_borrow_seq
+task 5 lines 108-108:  run 0x42::m2::try_immut_and_mut_diff_fields
+task 6 lines 110-110:  run 0x42::m2::try_reborrow_same_field_seq
+task 7 lines 112-112:  run 0x42::m2::try_unpack_mut_ref

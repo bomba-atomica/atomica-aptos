@@ -1,11 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     consensus_observer::{
         common::{
             error::Error,
             logging::{LogEntry, LogSchema},
+            metrics,
         },
         network::observer_message::{BlockPayload, CommitDecision, OrderedBlock},
         observer::{
@@ -25,7 +26,7 @@ use aptos_consensus_types::{
 };
 use aptos_executor_types::state_compute_result::StateComputeResult;
 use aptos_infallible::Mutex;
-use aptos_logger::{info, warn};
+use aptos_logger::{debug, warn};
 use aptos_storage_interface::DbReader;
 use aptos_types::{
     block_info::{BlockInfo, Round},
@@ -180,40 +181,51 @@ impl ObserverBlockData {
 
     /// Handles commited blocks up to the given ledger info
     fn handle_committed_blocks(&mut self, ledger_info: LedgerInfoWithSignatures) {
-        // Remove the committed blocks from the payload and ordered block stores
-        self.block_payload_store.remove_blocks_for_epoch_round(
-            ledger_info.commit_info().epoch(),
-            ledger_info.commit_info().round(),
-        );
-        self.ordered_block_store
-            .remove_blocks_for_commit(&ledger_info);
+        // Get the root commit info, epoch and round
+        let root_commit_info = self.root.commit_info();
+        let root_epoch = root_commit_info.epoch();
+        let root_round = root_commit_info.round();
+
+        // Get the ledger commit info, epoch and round
+        let ledger_commit_info = ledger_info.commit_info();
+        let ledger_epoch = ledger_commit_info.epoch();
+        let ledger_round = ledger_commit_info.round();
 
         // Verify the ledger info is for the same epoch
-        let root_commit_info = self.root.commit_info();
-        if ledger_info.commit_info().epoch() != root_commit_info.epoch() {
+        if ledger_epoch != root_epoch {
             warn!(
                 LogSchema::new(LogEntry::ConsensusObserver).message(&format!(
                     "Received commit callback for a different epoch! Ledger info: {:?}, Root: {:?}",
-                    ledger_info.commit_info(),
-                    root_commit_info
+                    ledger_commit_info, root_commit_info
                 ))
             );
             return;
         }
 
+        // Remove the committed blocks from the payload and ordered block stores
+        self.block_payload_store
+            .remove_blocks_for_epoch_round(ledger_epoch, ledger_round);
+        self.ordered_block_store
+            .remove_blocks_for_commit(&ledger_info);
+
         // Update the root ledger info. Note: we only want to do this if
         // the new ledger info round is greater than the current root
         // round. Otherwise, this can race with the state sync process.
-        if ledger_info.commit_info().round() > root_commit_info.round() {
-            info!(
-            LogSchema::new(LogEntry::ConsensusObserver).message(&format!(
-                "Updating the root ledger info! Old root: (epoch: {:?}, round: {:?}). New root: (epoch: {:?}, round: {:?})",
-                root_commit_info.epoch(),
-                root_commit_info.round(),
-                ledger_info.commit_info().epoch(),
-                ledger_info.commit_info().round(),
-            ))
-        );
+        if ledger_round > root_round {
+            debug!(
+                LogSchema::new(LogEntry::ConsensusObserver).message(&format!(
+                    "Updating the root ledger info! Old root: (epoch: {:?}, round: {:?}). New root: (epoch: {:?}, round: {:?})",
+                    root_epoch,
+                    root_round,
+                    ledger_epoch,
+                    ledger_round,
+                ))
+            );
+            metrics::set_gauge_with_label(
+                &metrics::OBSERVER_ROOT_LEDGER_INFO_ROUND,
+                metrics::COMMITTED_BLOCKS_LABEL,
+                ledger_round,
+            );
             self.root = ledger_info;
         }
     }
@@ -622,6 +634,54 @@ mod test {
         assert_eq!(observer_block_data.get_all_ordered_blocks().len(), 1);
         assert_eq!(observer_block_data.get_block_payloads().lock().len(), 1);
         assert_eq!(observer_block_data.root(), committed_ledger_info);
+    }
+
+    #[test]
+    fn test_handle_committed_blocks_preserves_blocks() {
+        // Create a root ledger info
+        let epoch = 10;
+        let round = 5;
+        let root = create_ledger_info(epoch, round);
+
+        // Create the observer block data
+        let mut observer_block_data =
+            ObserverBlockData::new_with_root(ConsensusObserverConfig::default(), root.clone());
+
+        // Add ordered blocks and their payloads
+        let num_ordered_blocks = 5;
+        let ordered_blocks = create_and_add_ordered_blocks(
+            &mut observer_block_data,
+            num_ordered_blocks,
+            epoch,
+            round,
+        );
+        for ordered_block in &ordered_blocks {
+            create_and_add_payloads_for_ordered_block(&mut observer_block_data, ordered_block);
+        }
+
+        // Verify the blocks and payloads are present
+        assert_eq!(
+            observer_block_data.get_all_ordered_blocks().len(),
+            num_ordered_blocks
+        );
+        assert_eq!(
+            observer_block_data.get_block_payloads().lock().len(),
+            num_ordered_blocks
+        );
+
+        // Fire a commit callback for a different epoch (simulating a stale/orphaned callback)
+        observer_block_data.handle_committed_blocks(create_ledger_info(epoch + 1, round + 3));
+
+        // Verify the blocks and payloads are not deleted and the root is unchanged
+        assert_eq!(
+            observer_block_data.get_all_ordered_blocks().len(),
+            num_ordered_blocks
+        );
+        assert_eq!(
+            observer_block_data.get_block_payloads().lock().len(),
+            num_ordered_blocks
+        );
+        assert_eq!(observer_block_data.root(), root);
     }
 
     #[test]

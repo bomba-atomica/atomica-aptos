@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // ==================================================================================
 // Native object::exists_at
@@ -38,8 +38,6 @@ function {:inline} $IsEqual'$1_cmp_Ordering'(s1: $1_cmp_Ordering, s2: $1_cmp_Ord
     s1 == s2
 }
 
-function $Arbitrary_value_of'$1_cmp_Ordering'(): $1_cmp_Ordering;
-
 function {:inline} $1_cmp_$compare'bool'(s1: bool, s2: bool): $1_cmp_Ordering {
     if s1 == s2 then $1_cmp_Ordering_Equal()
     else if s1 == true then $1_cmp_Ordering_Greater()
@@ -53,15 +51,7 @@ procedure {:inline 1} $1_cmp_compare'bool'(s1: bool, s2: bool) returns ($ret0: $
 }
 
 function {:inline} $1_cmp_$compare'signer'(s1: $signer, s2: $signer): $1_cmp_Ordering {
-    if s1 == s2 then $1_cmp_Ordering_Equal()
-    else if s1 is $signer && s2 is $permissioned_signer then $1_cmp_Ordering_Less()
-    else if s1 is $permissioned_signer && s2 is $signer then $1_cmp_Ordering_Greater()
-    else if s1 is $signer then
-        $compare_int(s1 -> $addr, s2 -> $addr)
-    else if s1 -> $addr == s2 -> $addr then
-        $compare_int(s1 -> $permission_addr, s2 -> $permission_addr)
-    else
-        $compare_int(s1 -> $addr, s2 -> $addr)
+    $compare_int(s1 -> $addr, s2 -> $addr)
 }
 
 procedure {:inline 1} $1_cmp_compare'signer'(s1: $signer, s2: $signer) returns ($ret0: $1_cmp_Ordering)  {
@@ -150,7 +140,7 @@ procedure {:inline 1} $1_cmp_compare'{{S}}'(s1: {{T}}, s2: {{T}}) returns ($ret0
     }
 
     function $compare_vec'{{S}}'(v1: {{T}}, v2: {{T}}): $1_cmp_Ordering;
-    axiom {:ctor "Vec"} (forall v1: {{T}}, v2: {{T}}, res: $1_cmp_Ordering ::
+    axiom (forall v1: {{T}}, v2: {{T}} :: {$compare_vec'{{S}}'(v1, v2)}
         (var res := $compare_vec'{{S}}'(v1, v2);
         if v1 -> l == 0 && v2 -> l != 0 then
             res == $1_cmp_Ordering_Less()
@@ -165,15 +155,12 @@ procedure {:inline 1} $1_cmp_compare'{{S}}'(s1: {{T}}, s2: {{T}}) returns ($ret0
 {%- set S = instance.suffix  -%}
 {%- set T = instance.name -%}
 
-    function {:inline} $1_cmp_$compare'{{S}}'(v1: {{T}}, v2: {{T}}): $1_cmp_Ordering {
-        $Arbitrary_value_of'$1_cmp_Ordering'()
-    }
+    function {:inline} $1_cmp_$compare'{{S}}'(v1: {{T}}, v2: {{T}}): $1_cmp_Ordering;
 
     procedure {:inline 1} $1_cmp_compare'{{S}}'(v1: {{T}}, v2: {{T}}) returns ($ret0: $1_cmp_Ordering) {
         $ret0 := $1_cmp_$compare'{{S}}'(v1, v2);
         return;
     }
-    
 {%- endfor %}
 
 
@@ -392,15 +379,6 @@ function {:inline} $1_aggregator_v2_$read'{{S}}'(s: $1_aggregator_v2_Aggregator'
    function $1_aggregator_v2_$is_at_least_impl'{{S}}'(aggregator: $1_aggregator_v2_Aggregator'{{S}}', min_amount: {{T}}): bool;
 {% endif -%}
 
-function {:inline} $1_cmp_$compare'$1_aggregator_v2_Aggregator'{{S}}''(s1: $1_aggregator_v2_Aggregator'{{S}}', s2: $1_aggregator_v2_Aggregator'{{S}}'): $1_cmp_Ordering {
-    $Arbitrary_value_of'$1_cmp_Ordering'()
-}
-
-procedure {:inline 1} $1_cmp_compare'$1_aggregator_v2_Aggregator'{{S}}''(s1: $1_aggregator_v2_Aggregator'{{S}}', s2: $1_aggregator_v2_Aggregator'{{S}}') returns ($ret0: $1_cmp_Ordering)  {
-    $ret0 := $1_cmp_$compare'$1_aggregator_v2_Aggregator'{{S}}''(s1, s2);
-    return;
-}
-
 {%- endfor %}
 
 // ==================================================================================
@@ -471,16 +449,6 @@ axiom (forall limit: int :: {$1_aggregator_factory_spec_new_aggregator(limit)}
 axiom (forall limit: int :: {$1_aggregator_factory_spec_new_aggregator(limit)}
      (var agg := $1_aggregator_factory_spec_new_aggregator(limit);
      $1_aggregator_spec_aggregator_get_val(agg) == 0));
-
-
-function {:inline} $1_cmp_$compare'$1_aggregator_Aggregator'(s1: $1_aggregator_Aggregator, s2: $1_aggregator_Aggregator): $1_cmp_Ordering {
-    $Arbitrary_value_of'$1_cmp_Ordering'()
-}
-
-procedure {:inline 1} $1_cmp_compare'$1_aggregator_Aggregator'(s1: $1_aggregator_Aggregator, s2: $1_aggregator_Aggregator) returns ($ret0: $1_cmp_Ordering)  {
-    $ret0 := $1_cmp_$compare'$1_aggregator_Aggregator'(s1, s2);
-    return;
-}
 
 
 // ==================================================================================

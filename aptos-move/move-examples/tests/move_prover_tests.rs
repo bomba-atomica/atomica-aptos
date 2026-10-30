@@ -1,11 +1,11 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_framework::extended_checks;
 use aptos_types::account_address::AccountAddress;
-use move_cli::base::prove::run_move_prover;
 use move_model::metadata::{CompilerVersion, LanguageVersion};
 use move_package::CompilerConfig;
+use move_prover::package_prove::run_move_prover;
 use std::{collections::BTreeMap, path::PathBuf};
 use tempfile::tempdir;
 
@@ -25,7 +25,7 @@ pub fn run_prover_for_pkg(
     let pkg_path = path_in_crate(path_to_pkg);
     let config = move_package::BuildConfig {
         additional_named_addresses: named_addr,
-        test_mode: true,
+        test_mode: false,
         install_dir: Some(tempdir().unwrap().path().to_path_buf()),
         compiler_config: CompilerConfig {
             known_attributes: extended_checks::get_all_attribute_names().clone(),

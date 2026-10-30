@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::*;
 use aptos_crypto::HashValue;
@@ -11,9 +11,9 @@ proptest! {
     fn test_encode_decode(
         state_key in any::<HashValue>(),
         version in any::<Version>(),
-        v in any::<Option<HotStateValue>>(),
+        entry in any::<Option<HotStateEntry>>(),
     ) {
-        assert_encode_decode::<HotStateValueByKeyHashSchema>(&(state_key, version), &v);
+        assert_encode_decode::<HotStateValueByKeyHashSchema>(&(state_key, version), &entry);
     }
 }
 

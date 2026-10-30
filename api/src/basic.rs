@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     accept_type::AcceptType,
@@ -10,6 +10,7 @@ use crate::{
 };
 use anyhow::Context as AnyhowContext;
 use aptos_api_types::AptosErrorCode;
+use aptos_config::config::NodeType;
 use poem_openapi::{
     param::Query,
     payload::{Html, Json},
@@ -74,6 +75,17 @@ impl BasicApi {
     )]
     async fn info(&self) -> Json<HashMap<String, serde_json::Value>> {
         let mut info = HashMap::new();
+
+        // Insert chain ID and node type
+        info.insert(
+            "chain_id".to_string(),
+            serde_json::to_value(format!("{:?}", self.context.chain_id())).unwrap(),
+        );
+        let node_type = NodeType::extract_from_config(&self.context.node_config);
+        info.insert(
+            "node_type".to_string(),
+            serde_json::to_value(node_type).unwrap(),
+        );
 
         // Insert state sync configuration information
         info.insert(

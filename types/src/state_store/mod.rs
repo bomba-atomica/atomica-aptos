@@ -1,6 +1,8 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
+#[cfg(any(test, feature = "testing"))]
+use crate::state_store::state_slot::StateSlotKind;
 use crate::{
     account_address::AccountAddress,
     state_store::{
@@ -12,12 +14,14 @@ use crate::{
 use aptos_crypto::HashValue;
 use bytes::Bytes;
 use move_core_types::{language_storage::StructTag, move_resource::MoveResource};
+use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "testing"))]
 use std::hash::Hash;
 use std::ops::Deref;
 
 pub mod errors;
 pub mod hot_state;
+pub mod native_position;
 pub mod state_key;
 pub mod state_slot;
 pub mod state_storage_usage;
@@ -25,6 +29,13 @@ pub mod state_value;
 pub mod table;
 
 pub const NUM_STATE_SHARDS: usize = 16;
+
+/// Identifies which snapshot store an operation targets.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum StateKind {
+    MainState,
+    Position,
+}
 
 pub type StateViewResult<T, E = StateViewError> = std::result::Result<T, E>;
 
@@ -78,39 +89,6 @@ pub trait TStateView {
     fn contains_state_value(&self, state_key: &Self::Key) -> StateViewResult<bool> {
         self.get_state_value(state_key).map(|opt| opt.is_some())
     }
-
-    /// Checks if a state keyed by the given state key exists in the hot state.
-    // TODO(HotState): not used.
-    fn contains_hot_state_value(&self, _state_key: &Self::Key) -> bool {
-        false
-    }
-
-    /// Number of free slots in hot state.
-    // TODO(HotState): not used.
-    fn num_free_hot_slots(&self) -> [usize; NUM_STATE_SHARDS] {
-        [0; NUM_STATE_SHARDS]
-    }
-
-    // TODO(HotState): not used.
-    fn get_shard_id(&self, _state_key: &Self::Key) -> usize {
-        unimplemented!();
-    }
-
-    /// If the input key is `None`, returns the oldest key as `Some(Some(key))`, unless the LRU is
-    /// empty, in which case `Some(None)` is returned.
-    ///
-    /// Otherwise, returns the key that is just a bit newer, i.e. the next candidate for eviction,
-    /// or `Some(None)` if the input key is already the newest.
-    ///
-    /// Returns `None` if the input key does not exist in hot state at all.
-    // TODO(HotState): not used.
-    fn get_next_old_key(
-        &self,
-        _shard_id: usize,
-        _state_key: Option<&Self::Key>,
-    ) -> Option<Option<Self::Key>> {
-        unimplemented!();
-    }
 }
 
 pub trait StateView: TStateView<Key = StateKey> {}
@@ -162,26 +140,6 @@ where
     fn get_state_value(&self, state_key: &K) -> StateViewResult<Option<StateValue>> {
         self.deref().get_state_value(state_key)
     }
-
-    fn contains_hot_state_value(&self, state_key: &Self::Key) -> bool {
-        self.deref().contains_hot_state_value(state_key)
-    }
-
-    fn num_free_hot_slots(&self) -> [usize; NUM_STATE_SHARDS] {
-        self.deref().num_free_hot_slots()
-    }
-
-    fn get_shard_id(&self, state_key: &Self::Key) -> usize {
-        self.deref().get_shard_id(state_key)
-    }
-
-    fn get_next_old_key(
-        &self,
-        shard_id: usize,
-        state_key: Option<&Self::Key>,
-    ) -> Option<Option<Self::Key>> {
-        self.deref().get_next_old_key(shard_id, state_key)
-    }
 }
 
 /// Test-only basic [StateView] implementation with generic keys.
@@ -202,7 +160,15 @@ impl<K: Eq + Hash> MockStateView<K> {
         Self {
             data: data
                 .into_iter()
-                .map(|(k, v)| (k, StateSlot::from_db_get(Some((0, v)))))
+                .map(|(k, v)| {
+                    (
+                        k,
+                        StateSlot::new_without_state_key(StateSlotKind::ColdOccupied {
+                            value_version: 0,
+                            value: v,
+                        }),
+                    )
+                })
                 .collect(),
         }
     }
@@ -221,7 +187,7 @@ impl<K: Clone + Eq + Hash> TStateView for MockStateView<K> {
             .data
             .get(state_key)
             .cloned()
-            .unwrap_or(StateSlot::ColdVacant))
+            .unwrap_or_else(|| StateSlot::new_without_state_key(StateSlotKind::ColdVacant)))
     }
 
     fn get_usage(&self) -> StateViewResult<StateStorageUsage> {

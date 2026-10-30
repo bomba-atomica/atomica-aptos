@@ -1,11 +1,11 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::db::AptosDB;
 #[cfg(test)]
 use crate::state_merkle_db::StateMerkleDb;
 use aptos_config::config::{
-    RocksdbConfigs, StorageDirPaths, BUFFERED_STATE_TARGET_ITEMS_FOR_TEST,
+    HotStateConfig, RocksdbConfigs, StorageDirPaths, BUFFERED_STATE_TARGET_ITEMS_FOR_TEST,
     DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD, NO_OP_STORAGE_PRUNER_CONFIG,
 };
 use aptos_crypto::hash::CryptoHash;
@@ -34,8 +34,6 @@ impl AptosDB {
             false,
             BUFFERED_STATE_TARGET_ITEMS_FOR_TEST,
             DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
-            false, /* indexer */
-            false,
         )
     }
 
@@ -44,48 +42,22 @@ impl AptosDB {
         db_root_path: P,
         max_node_cache: usize,
     ) -> Self {
-        let db_config = RocksdbConfigs {
-            enable_storage_sharding: true,
-            ..Default::default()
-        };
         Self::open(
             StorageDirPaths::from_path(db_root_path),
             false,
             NO_OP_STORAGE_PRUNER_CONFIG, /* pruner */
-            db_config,
-            false, /* indexer */
+            RocksdbConfigs::default(),
             BUFFERED_STATE_TARGET_ITEMS_FOR_TEST,
             max_node_cache,
             None,
+            HotStateConfig::default(),
         )
         .expect("Unable to open AptosDB")
     }
 
     /// This opens db in non-readonly mode, without the pruner and cache.
     pub fn new_for_test_no_cache<P: AsRef<Path> + Clone>(db_root_path: P) -> Self {
-        Self::new_without_pruner(
-            db_root_path,
-            false,
-            BUFFERED_STATE_TARGET_ITEMS_FOR_TEST,
-            0,
-            false,
-            false,
-        )
-    }
-
-    /// This opens db in non-readonly mode, without the pruner, and with the indexer
-    pub fn new_for_test_with_indexer<P: AsRef<Path> + Clone>(
-        db_root_path: P,
-        enable_sharding: bool,
-    ) -> Self {
-        Self::new_without_pruner(
-            db_root_path,
-            false,
-            BUFFERED_STATE_TARGET_ITEMS_FOR_TEST,
-            DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
-            true, /* indexer */
-            enable_sharding,
-        )
+        Self::new_without_pruner(db_root_path, false, BUFFERED_STATE_TARGET_ITEMS_FOR_TEST, 0)
     }
 
     /// This opens db in non-readonly mode, without the pruner.
@@ -98,8 +70,6 @@ impl AptosDB {
             false,
             buffered_state_target_items,
             DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
-            false, /* indexer */
-            false,
         )
     }
 
@@ -110,8 +80,6 @@ impl AptosDB {
             true,
             BUFFERED_STATE_TARGET_ITEMS_FOR_TEST,
             DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
-            false, /* indexer */
-            false,
         )
     }
 
@@ -165,7 +133,7 @@ impl AptosDB {
 
         let current = self.state_store.current_state_locked().clone();
         let (hot_state, persisted_state) = self.state_store.get_persisted_state()?;
-        let (new_state, reads) = current.ledger_state().update_with_db_reader(
+        let (new_state, reads, hot_state_updates) = current.ledger_state().update_with_db_reader(
             &persisted_state,
             hot_state,
             transactions_to_keep.state_update_refs(),
@@ -174,6 +142,7 @@ impl AptosDB {
         let persisted_summary = self.state_store.get_persisted_state_summary()?;
         let new_state_summary = current.ledger_state_summary().update(
             &ProvableStateSummary::new(persisted_summary, self),
+            &hot_state_updates,
             transactions_to_keep.state_update_refs(),
         )?;
 
@@ -187,6 +156,8 @@ impl AptosDB {
             state_summary: &new_state_summary,
             state_update_refs: transactions_to_keep.state_update_refs(),
             state_reads: &reads,
+            hot_state_updates: &hot_state_updates,
+            position_state_summary: None,
             is_reconfig: transactions_to_keep.is_reconfig(),
         };
 

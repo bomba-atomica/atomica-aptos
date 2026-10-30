@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     driver::{DriverConfiguration, StateSyncDriver},
@@ -29,23 +28,24 @@ use futures::{
     executor::block_on,
 };
 use std::sync::Arc;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 
 /// Creates a new state sync driver and client
 pub struct DriverFactory {
     client_notification_sender: mpsc::UnboundedSender<DriverNotification>,
-    _driver_runtime: Option<Runtime>,
 }
 
 impl DriverFactory {
-    /// Creates and spawns a new state sync driver and returns the factory
+    /// Creates and spawns a new state sync driver and returns the factory.
+    /// If `runtime` is `Some`, the driver is spawned on the given handle;
+    /// otherwise it is spawned via `tokio::spawn()` on the current runtime.
     pub fn create_and_spawn_driver<
         ChunkExecutor: ChunkExecutorTrait + 'static,
         MempoolNotifier: MempoolNotificationSender + 'static,
         MetadataStorage: MetadataStorageInterface + Clone + Send + Sync + 'static,
         StorageServiceNotifier: StorageServiceNotificationSender + 'static,
     >(
-        create_runtime: bool,
+        runtime: Option<Handle>,
         node_config: &NodeConfig,
         waypoint: Waypoint,
         storage: DbReaderWriter,
@@ -60,7 +60,7 @@ impl DriverFactory {
         time_service: TimeService,
     ) -> Self {
         let (driver_factory, _) = Self::create_and_spawn_driver_internal(
-            create_runtime,
+            runtime,
             node_config,
             waypoint,
             storage,
@@ -86,7 +86,7 @@ impl DriverFactory {
         MetadataStorage: MetadataStorageInterface + Clone + Send + Sync + 'static,
         StorageServiceNotifier: StorageServiceNotificationSender + 'static,
     >(
-        create_runtime: bool,
+        runtime: Option<Handle>,
         node_config: &NodeConfig,
         waypoint: Waypoint,
         storage: DbReaderWriter,
@@ -133,14 +133,6 @@ impl DriverFactory {
         let storage_service_notification_handler =
             StorageServiceNotificationHandler::new(storage_service_notification_sender);
 
-        // Create a new runtime (if required)
-        let driver_runtime = if create_runtime {
-            let runtime = aptos_runtimes::spawn_named_runtime("sync-driver".into(), None);
-            Some(runtime)
-        } else {
-            None
-        };
-
         // Create the storage synchronizer
         let event_subscription_service = Arc::new(Mutex::new(event_subscription_service));
         let (storage_synchronizer, _) = StorageSynchronizer::new(
@@ -153,7 +145,7 @@ impl DriverFactory {
             storage_service_notification_handler.clone(),
             metadata_storage.clone(),
             storage.clone(),
-            driver_runtime.as_ref(),
+            runtime.clone(),
         );
 
         // Create the driver configuration
@@ -183,8 +175,8 @@ impl DriverFactory {
         );
 
         // Spawn the driver
-        if let Some(driver_runtime) = &driver_runtime {
-            driver_runtime.spawn(state_sync_driver.start_driver());
+        if let Some(runtime) = &runtime {
+            runtime.spawn(state_sync_driver.start_driver());
         } else {
             tokio::spawn(state_sync_driver.start_driver());
         }
@@ -192,7 +184,6 @@ impl DriverFactory {
         // Create the driver factory
         let driver_factory = Self {
             client_notification_sender,
-            _driver_runtime: driver_runtime,
         };
 
         (driver_factory, commit_notification_sender)
@@ -204,28 +195,17 @@ impl DriverFactory {
     }
 }
 
-/// A struct for holding the various runtimes required by state sync v2.
-/// Note: it's useful to maintain separate runtimes because the logger
-/// can prepend all logs with the runtime thread name.
-pub struct StateSyncRuntimes {
-    _aptos_data_client: Runtime,
+/// A struct for holding the shared state sync runtime and driver.
+pub struct StateSyncRuntime {
+    _runtime: Runtime,
     state_sync: DriverFactory,
-    _storage_service: Runtime,
-    _streaming_service: Runtime,
 }
 
-impl StateSyncRuntimes {
-    pub fn new(
-        aptos_data_client: Runtime,
-        state_sync: DriverFactory,
-        storage_service: Runtime,
-        streaming_service: Runtime,
-    ) -> Self {
+impl StateSyncRuntime {
+    pub fn new(runtime: Runtime, state_sync: DriverFactory) -> Self {
         Self {
-            _aptos_data_client: aptos_data_client,
+            _runtime: runtime,
             state_sync,
-            _storage_service: storage_service,
-            _streaming_service: streaming_service,
         }
     }
 

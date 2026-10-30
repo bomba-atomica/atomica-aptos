@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 extern crate core;
 
@@ -11,6 +10,8 @@ mod aptos;
 #[cfg(test)]
 mod aptos_cli;
 #[cfg(test)]
+mod chunky_dkg;
+#[cfg(test)]
 mod client;
 #[cfg(test)]
 mod consensus;
@@ -18,6 +19,8 @@ mod consensus;
 mod consensus_key_rotation;
 #[cfg(test)]
 mod consensus_observer;
+#[cfg(test)]
+mod decryption;
 #[cfg(test)]
 mod execution;
 #[cfg(test)]
@@ -27,9 +30,7 @@ mod fullnode;
 #[cfg(test)]
 mod genesis;
 #[cfg(test)]
-mod ibe;
-#[cfg(test)]
-mod indexer;
+mod hot_state;
 #[cfg(test)]
 mod inspection_service;
 #[cfg(test)]
@@ -39,8 +40,6 @@ mod keyless;
 #[cfg(test)]
 mod network;
 #[cfg(test)]
-mod permissioned_delegation;
-#[cfg(test)]
 mod priority_fee;
 #[cfg(test)]
 mod randomness;
@@ -48,6 +47,8 @@ mod randomness;
 mod rest_api;
 #[cfg(test)]
 mod rosetta;
+#[cfg(test)]
+mod slh_dsa;
 #[cfg(test)]
 mod state_sync;
 #[cfg(test)]
@@ -59,17 +60,15 @@ mod sui_derivable_account;
 #[cfg(test)]
 mod test_smoke_tests;
 #[cfg(test)]
-mod timelock;
-#[cfg(test)]
 mod transaction;
 #[cfg(test)]
 mod transaction_filter;
 #[cfg(test)]
+mod transaction_tracing;
+#[cfg(test)]
 mod txn_broadcast;
 #[cfg(test)]
 mod txn_emitter;
-#[cfg(test)]
-mod upgrade;
 
 #[cfg(test)]
 mod smoke_test_environment;

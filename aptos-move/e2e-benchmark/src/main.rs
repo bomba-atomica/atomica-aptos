@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_language_e2e_tests::{
     account::Account,
@@ -17,7 +17,7 @@ use aptos_vm_environment::prod_configs::set_layout_caches;
 use clap::Parser;
 use rand::{rngs::StdRng, SeedableRng};
 use serde_json::json;
-use std::{collections::HashMap, fs, process::exit};
+use std::{collections::HashMap, process::exit};
 
 // bump after a bigger test or perf change, so you can easily distinguish runs
 // that are on top of this commit
@@ -95,9 +95,7 @@ struct CalibrationInfo {
 }
 
 fn get_parsed_calibration_values() -> HashMap<String, CalibrationInfo> {
-    let calibration_values =
-        fs::read_to_string("aptos-move/e2e-benchmark/data/calibration_values.tsv")
-            .expect("Unable to read file");
+    let calibration_values = include_str!("../data/calibration_values.tsv");
     calibration_values
         .trim()
         .split('\n')
@@ -239,14 +237,6 @@ fn main() {
         (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::EmitEvents {
             count: 1000,
         }),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::APTTransferWithPermissionedSigner,
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::APTTransferWithMasterSigner,
-        ),
         // long vectors with small elements
         (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::VectorTrimAppend {
             // baseline, only vector creation
@@ -397,12 +387,10 @@ fn main() {
             &package,
             publisher.address(),
             &mut executor,
-            if expected_time_micros > 10000.0 {
-                6
-            } else if expected_time_micros > 1000.0 {
-                10
-            } else {
+            if expected_time_micros > 1000.0 {
                 100
+            } else {
+                500
             },
         );
         assert!(

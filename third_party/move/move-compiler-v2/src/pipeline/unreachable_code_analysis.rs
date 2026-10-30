@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Implements a data-flow analysis to determine whether an instruction is reachable or not.
 //! This analysis does not have any prerequisites.
@@ -95,7 +95,6 @@ impl TransferFunctions for UnreachableCodeAnalysis {
     const BACKWARD: bool = false;
 
     fn execute(&self, state: &mut Self::State, instr: &Bytecode, _offset: CodeOffset) {
-        use Bytecode::*;
         // TODO: the precision of this analysis can be improved when constant propagation
         // information is available.
         // For example:
@@ -103,7 +102,7 @@ impl TransferFunctions for UnreachableCodeAnalysis {
         // - if addition of two constants overflows, then code after is definitely not reachable.
         //
         // Cases where the instruction stops the execution path from continuing on.
-        if matches!(instr, Ret(..) | Abort(..)) {
+        if instr.is_return() || instr.is_abort() {
             *state = ReachableState::No;
         } // else: the instruction may not stop the execution path from continuing on.
     }

@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Native Function Support
 //!
@@ -40,6 +41,7 @@ pub enum NativeResult {
     Abort {
         cost: InternalGas,
         abort_code: u64,
+        abort_message: Option<String>,
     },
     OutOfGas {
         partial_cost: InternalGas,
@@ -79,7 +81,11 @@ impl NativeResult {
     /// bytecode instruction
     #[cold]
     pub fn err(cost: InternalGas, abort_code: u64) -> Self {
-        NativeResult::Abort { cost, abort_code }
+        NativeResult::Abort {
+            cost,
+            abort_code,
+            abort_message: None,
+        }
     }
 
     /// A special variant indicating that the native has determined there is not enough
@@ -104,11 +110,13 @@ impl NativeResult {
         let result = match res {
             Ok(val) => NativeResult::ok(cost, smallvec![val]),
             Err(err) if err.major_status() == StatusCode::ABORTED => {
-                let (_, abort_code, _, _, _, _) = err.all_data();
-                NativeResult::err(
+                let (_, abort_code, abort_message, _, _, _) = err.all_data();
+                NativeResult::Abort {
                     cost,
-                    abort_code.unwrap_or(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR as u64),
-                )
+                    abort_code: abort_code
+                        .unwrap_or(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR as u64),
+                    abort_message,
+                }
             },
             Err(err) => {
                 return Err(err);

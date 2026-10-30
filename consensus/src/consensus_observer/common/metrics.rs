@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::unwrap_used)]
 
@@ -44,6 +44,16 @@ pub static OBSERVER_CLEARED_BLOCK_STATE: Lazy<IntCounter> = Lazy::new(|| {
         "consensus_observer_cleared_block_state",
         "Counter for tracking the number of times the block state was cleared by the consensus observer",
     ).unwrap()
+});
+
+/// Counter for tracking ignored (direct send) messages by the consensus observer
+pub static OBSERVER_IGNORED_MESSAGES: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        "consensus_observer_ignored_messages",
+        "Counters related to ignored (direct send) messages by the consensus observer",
+        &["message_type", "network_id"]
+    )
+    .unwrap()
 });
 
 /// Counter for tracking dropped (direct send) messages by the consensus observer
@@ -91,6 +101,26 @@ pub static OBSERVER_NUM_PROCESSED_BLOCKS: Lazy<IntGaugeVec> = Lazy::new(|| {
     register_int_gauge_vec!(
         "consensus_observer_num_processed_blocks",
         "Gauge for tracking the number of processed blocks by the consensus observer",
+        &["processed_type"]
+    )
+    .unwrap()
+});
+
+/// Gauge for tracking the root ledger info round for the consensus observer
+pub static OBSERVER_ROOT_LEDGER_INFO_ROUND: Lazy<IntGaugeVec> = Lazy::new(|| {
+    register_int_gauge_vec!(
+        "consensus_observer_root_ledger_info_round",
+        "Gauge for tracking the root ledger info round for the consensus observer",
+        &["processed_type"]
+    )
+    .unwrap()
+});
+
+/// Gauge for tracking the latest ordered block round forwarded to the execution pipeline
+pub static OBSERVER_FORWARDED_BLOCK_ROUND: Lazy<IntGaugeVec> = Lazy::new(|| {
+    register_int_gauge_vec!(
+        "consensus_observer_forwarded_block_round",
+        "Gauge for tracking the latest ordered block round forwarded to the execution pipeline",
         &["processed_type"]
     )
     .unwrap()

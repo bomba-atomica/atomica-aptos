@@ -32,13 +32,6 @@ spec aptos_framework::aptos_governance {
         pragma aborts_if_is_partial;
     }
 
-    spec schema AbortsIfPermissionedSigner {
-        use aptos_framework::permissioned_signer;
-        s: signer;
-        let perm = GovernancePermission {};
-        aborts_if !permissioned_signer::spec_check_permission_exists(s, perm);
-    }
-
     spec store_signer_cap(
         aptos_framework: &signer,
         signer_address: address,
@@ -192,7 +185,6 @@ spec aptos_framework::aptos_governance {
         metadata_hash: vector<u8>,
     ) {
         use aptos_framework::chain_status;
-        pragma verify_duration_estimate = 60;
         requires chain_status::is_operating();
         include CreateProposalAbortsIf;
     }
@@ -206,7 +198,6 @@ spec aptos_framework::aptos_governance {
         is_multi_step_proposal: bool,
     ) {
         use aptos_framework::chain_status;
-        pragma verify_duration_estimate = 60;
         requires chain_status::is_operating();
         include CreateProposalAbortsIf;
     }
@@ -220,10 +211,8 @@ spec aptos_framework::aptos_governance {
         is_multi_step_proposal: bool,
     ): u64 {
         use aptos_framework::chain_status;
-        pragma verify_duration_estimate = 60;
         requires chain_status::is_operating();
         include CreateProposalAbortsIf;
-        // include AbortsIfPermissionedSigner { s: proposer };
     }
 
     /// `stake_pool` must exist StakePool.
@@ -261,7 +250,7 @@ spec aptos_framework::aptos_governance {
         aborts_if !exists<timestamp::CurrentTimeMicroseconds>(@aptos_framework);
         let current_time = timestamp::spec_now_seconds();
         let proposal_expiration = current_time + governance_config.voting_duration_secs;
-        aborts_if stake_pool_res.locked_until_secs < proposal_expiration;
+        aborts_if stake_pool_res.locked_until_secs <= proposal_expiration;
 
         // verify create_proposal_metadata
         include CreateProposalMetadataAbortsIf;
@@ -269,7 +258,7 @@ spec aptos_framework::aptos_governance {
         let addr = aptos_std::type_info::type_of<AptosCoin>().account_address;
         aborts_if !exists<coin::CoinInfo<AptosCoin>>(addr);
         let maybe_supply = global<coin::CoinInfo<AptosCoin>>(addr).supply;
-        let supply = option::spec_borrow(maybe_supply);
+        let supply = option::borrow(maybe_supply);
         let total_supply = aptos_framework::optional_aggregator::optional_aggregator_value(supply);
         let early_resolution_vote_threshold_value = total_supply / 2 + 1;
 
@@ -310,7 +299,6 @@ spec aptos_framework::aptos_governance {
         should_pass: bool,
     ) {
         use aptos_framework::chain_status;
-        pragma verify_duration_estimate = 60;
 
         requires chain_status::is_operating();
         include VoteAbortIf  {
@@ -330,7 +318,6 @@ spec aptos_framework::aptos_governance {
         should_pass: bool,
     ) {
         use aptos_framework::chain_status;
-        pragma verify_duration_estimate = 60;
 
         requires chain_status::is_operating();
         include VoteAbortIf;
@@ -348,7 +335,6 @@ spec aptos_framework::aptos_governance {
         should_pass: bool,
     ) {
         use aptos_framework::chain_status;
-        pragma verify_duration_estimate = 60;
 
         requires chain_status::is_operating();
         include VoteAbortIf;
@@ -363,10 +349,10 @@ spec aptos_framework::aptos_governance {
 
         include VotingGetDelegatedVoterAbortsIf { sign: voter };
 
-        aborts_if spec_proposal_expiration <= locked_until && !exists<timestamp::CurrentTimeMicroseconds>(@aptos_framework);
+        aborts_if !exists<timestamp::CurrentTimeMicroseconds>(@aptos_framework);
         let spec_proposal_expiration = voting::spec_get_proposal_expiration_secs<GovernanceProposal>(@aptos_framework, proposal_id);
         let locked_until = global<stake::StakePool>(stake_pool).locked_until_secs;
-        let remain_zero_1_cond = (spec_proposal_expiration > locked_until || timestamp::spec_now_seconds() > spec_proposal_expiration);
+        let remain_zero_1_cond = (spec_proposal_expiration >= locked_until || timestamp::spec_now_seconds() >= spec_proposal_expiration);
         let record_key = RecordKey {
             stake_pool,
             proposal_id,
@@ -406,10 +392,10 @@ spec aptos_framework::aptos_governance {
         aborts_if !table::spec_contains(voting_forum.proposals, proposal_id);
         let proposal_expiration = proposal.expiration_secs;
         let locked_until_secs = global<stake::StakePool>(stake_pool).locked_until_secs;
-        aborts_if proposal_expiration > locked_until_secs;
+        aborts_if proposal_expiration >= locked_until_secs;
 
         // verify voting::vote
-        aborts_if timestamp::now_seconds() > proposal_expiration;
+        aborts_if timestamp::now_seconds() >= proposal_expiration;
         aborts_if proposal.is_resolved;
         aborts_if !string::spec_internal_check_utf8(voting::IS_MULTI_STEP_PROPOSAL_IN_EXECUTION_KEY);
         let execution_key = utf8(voting::IS_MULTI_STEP_PROPOSAL_IN_EXECUTION_KEY);
@@ -433,8 +419,8 @@ spec aptos_framework::aptos_governance {
         aborts_if !exists<GovernanceEvents>(@aptos_framework);
 
         // verify voting::get_proposal_state
-        let early_resolution_threshold = option::spec_borrow(proposal.early_resolution_vote_threshold);
-        let is_voting_period_over = timestamp::spec_now_seconds() > proposal_expiration;
+        let early_resolution_threshold = option::borrow(proposal.early_resolution_vote_threshold);
+        let is_voting_period_over = timestamp::spec_now_seconds() >= proposal_expiration;
 
         let new_proposal_yes_votes_0 = proposal.yes_votes + real_voting_power;
         let can_be_resolved_early_0 = option::is_some(proposal.early_resolution_vote_threshold) &&
@@ -517,7 +503,7 @@ spec aptos_framework::aptos_governance {
         let voting_forum = global<voting::VotingForum<GovernanceProposal>>(@aptos_framework);
         let proposal = table::spec_get(voting_forum.proposals, proposal_id);
         aborts_if !table::spec_contains(voting_forum.proposals, proposal_id);
-        let early_resolution_threshold = option::spec_borrow(proposal.early_resolution_vote_threshold);
+        let early_resolution_threshold = option::borrow(proposal.early_resolution_vote_threshold);
         aborts_if timestamp::now_seconds() <= proposal.expiration_secs &&
             (option::is_none(proposal.early_resolution_vote_threshold) ||
             proposal.yes_votes < early_resolution_threshold && proposal.no_votes < early_resolution_threshold);
@@ -645,10 +631,10 @@ spec aptos_framework::aptos_governance {
             voting_forum_address: @aptos_framework
         };
         aborts_if !exists<stake::StakePool>(stake_pool);
-        aborts_if spec_proposal_expiration <= locked_until && !exists<timestamp::CurrentTimeMicroseconds>(@aptos_framework);
+        aborts_if !exists<timestamp::CurrentTimeMicroseconds>(@aptos_framework);
         let spec_proposal_expiration = voting::spec_get_proposal_expiration_secs<GovernanceProposal>(@aptos_framework, proposal_id);
         let locked_until = global<stake::StakePool>(stake_pool).locked_until_secs;
-        let remain_zero_1_cond = (spec_proposal_expiration > locked_until || timestamp::spec_now_seconds() > spec_proposal_expiration);
+        let remain_zero_1_cond = (spec_proposal_expiration >= locked_until || timestamp::spec_now_seconds() >= spec_proposal_expiration);
         ensures remain_zero_1_cond ==> result == 0;
         let record_key = RecordKey {
             stake_pool,
@@ -675,7 +661,7 @@ spec aptos_framework::aptos_governance {
     spec fun spec_get_remaining_voting_power(stake_pool: address, proposal_id: u64): u64 {
         let spec_proposal_expiration = voting::spec_get_proposal_expiration_secs<GovernanceProposal>(@aptos_framework, proposal_id);
         let locked_until = global<stake::StakePool>(stake_pool).locked_until_secs;
-        let remain_zero_1_cond = (spec_proposal_expiration > locked_until || timestamp::spec_now_seconds() > spec_proposal_expiration);
+        let remain_zero_1_cond = (spec_proposal_expiration >= locked_until || timestamp::spec_now_seconds() >= spec_proposal_expiration);
         let staking_config = global<staking_config::StakingConfig>(@aptos_framework);
         let voting_records_v2 = borrow_global<VotingRecordsV2>(@aptos_framework);
         let record_key = RecordKey {
@@ -758,8 +744,6 @@ spec aptos_framework::aptos_governance {
         use aptos_framework::chain_status;
         requires chain_status::is_operating();
 
-        // TODO: These function passed locally however failed in github CI
-        pragma verify_duration_estimate = 120;
         // verify voting::resolve_proposal_v2
         include VotingIsProposalResolvableAbortsif;
 
@@ -812,7 +796,7 @@ spec aptos_framework::aptos_governance {
         let voting_forum = global<voting::VotingForum<GovernanceProposal>>(@aptos_framework);
         let proposal = table::spec_get(voting_forum.proposals, proposal_id);
         aborts_if !table::spec_contains(voting_forum.proposals, proposal_id);
-        let early_resolution_threshold = option::spec_borrow(proposal.early_resolution_vote_threshold);
+        let early_resolution_threshold = option::borrow(proposal.early_resolution_vote_threshold);
         let voting_period_over = timestamp::now_seconds() > proposal.expiration_secs;
         let be_resolved_early = option::is_some(proposal.early_resolution_vote_threshold) &&
                                     (proposal.yes_votes >= early_resolution_threshold ||
@@ -841,9 +825,9 @@ spec aptos_framework::aptos_governance {
         include voting::AbortsIfNotContainProposalID<GovernanceProposal>{voting_forum_address: @aptos_framework};
         let proposal_expiration = voting::spec_get_proposal_expiration_secs<GovernanceProposal>(@aptos_framework, proposal_id);
         aborts_if !stake::stake_pool_exists(stake_pool);
-        aborts_if proposal_expiration > stake::spec_get_lockup_secs(stake_pool);
+        aborts_if proposal_expiration >= stake::spec_get_lockup_secs(stake_pool);
         aborts_if !exists<timestamp::CurrentTimeMicroseconds>(@aptos_framework);
-        aborts_if timestamp::now_seconds() > proposal_expiration;
+        aborts_if timestamp::now_seconds() >= proposal_expiration;
     }
 
     spec force_end_epoch(aptos_framework: &signer) {

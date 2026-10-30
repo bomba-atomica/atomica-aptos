@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module implements functions which allow to add binary modules (`CompiledModule`) and
 //! scripts (`CompiledScript`) to the global env.
@@ -8,8 +7,8 @@
 use crate::{
     ast::{
         AccessSpecifier as ASTAccessSpecifier, AccessSpecifierKind as ASTAccessSpecifierKind,
-        Address, AddressSpecifier as ASTAddressSpecifier, Attribute, ModuleName,
-        ResourceSpecifier as ASTResourceSpecifier,
+        Address, AddressSpecifier as ASTAddressSpecifier, Attribute, AttributeValue, ModuleName,
+        ResourceSpecifier as ASTResourceSpecifier, Value,
     },
     model::{
         FieldData, FieldId, FunId, FunctionData, FunctionKind, GlobalEnv, Loc, ModuleData,
@@ -24,10 +23,9 @@ use itertools::Itertools;
 use move_binary_format::{
     access::ModuleAccess,
     file_format::{
-        AccessKind as FFAccessKind, AddressSpecifier as FFAddressSpecifier, FunctionAttribute,
-        FunctionDefinitionIndex, FunctionHandleIndex, MemberCount,
-        ResourceSpecifier as FFResourceSpecifier, SignatureToken, StructDefinitionIndex,
-        StructHandleIndex, TableIndex, VariantIndex, Visibility,
+        FunctionAttribute, FunctionDefinitionIndex, FunctionHandleIndex, MemberCount,
+        SignatureToken, StructDefinitionIndex, StructHandleIndex, TableIndex, VariantIndex,
+        Visibility,
     },
     internals::ModuleIndex,
     views::{
@@ -37,7 +35,14 @@ use move_binary_format::{
     CompiledModule,
 };
 use move_bytecode_source_map::source_map::{SourceMap, SourceName};
-use move_core_types::{ability::AbilitySet, account_address::AccountAddress, language_storage};
+use move_core_types::{
+    ability::AbilitySet,
+    account_address::AccountAddress,
+    language_storage::{
+        self, BORROW, BORROW_MUT, PACK, PACK_VARIANT, TEST_VARIANT, UNPACK, UNPACK_VARIANT,
+    },
+};
+use num::BigInt;
 use std::collections::BTreeMap;
 
 /// Macro to abort the execution if `with_dep_closure` is specified while dependencies are missing.
@@ -318,6 +323,7 @@ impl<'a> BinaryModuleLoader<'a> {
                 new = true;
                 StructData {
                     abilities: handle_view.abilities(),
+                    is_empty_struct: false, // Default to false when created from a compiled module
                     ..StructData::new(struct_id.symbol(), loc.clone())
                 }
             });
@@ -359,6 +365,8 @@ impl<'a> BinaryModuleLoader<'a> {
             offset,
             variant,
             ty: self.ty(view.signature_token()),
+            is_ghost: false,
+            init: None,
         }
     }
 
@@ -423,23 +431,14 @@ impl<'a> BinaryModuleLoader<'a> {
 
         let result_type = Type::tuple(handle_view.return_().0.iter().map(|s| self.ty(s)).collect());
 
-        // Convert access specifiers from file format to AST format
-        let rw_specifiers = self.rw_specifiers(&handle_view, &params);
-        let acquire_specifiers = if let Some((_, def_view)) = def_view.clone() {
+        // Reconstruct legacy `acquires` specifiers from the function definition. Resource
+        // access control (read/write specifiers) was removed, so any access specifiers
+        // present on the function handle are ignored.
+        let access_specifiers = if let Some((_, def_view)) = def_view.clone() {
             self.acquire_specifiers(&def_view)
         } else {
             None
         };
-        // Combine read/write and acquire specifiers.
-        let access_specifiers = rw_specifiers
-            .clone()
-            .zip(acquire_specifiers.clone())
-            .map(|(mut rw, acquire)| {
-                rw.extend(acquire);
-                rw
-            })
-            .or(rw_specifiers)
-            .or(acquire_specifiers);
 
         let (visibility, is_native, kind) = if let Some((_, def_view)) = def_view {
             (
@@ -459,28 +458,65 @@ impl<'a> BinaryModuleLoader<'a> {
 
         // add attributes to the function
         let mut attributes = vec![];
+        // Helper closure to add an attribute, optionally with a u16 value parameter
+        let mut add_attribute = |well_known_name: &str, value: Option<u16>| {
+            let node_id = self.env.new_node(loc.clone(), Type::Tuple(vec![]));
+            let sym = self.env.symbol_pool().make(well_known_name);
+            if let Some(v) = value {
+                let attribute_value =
+                    AttributeValue::Value(node_id, Value::Number(BigInt::from(v)));
+                attributes.push(Attribute::Assign(node_id, sym, attribute_value));
+            } else {
+                attributes.push(Attribute::Apply(node_id, sym, vec![]));
+            }
+        };
         for attr in handle_view.attributes() {
             match attr {
                 FunctionAttribute::Persistent => {
                     if !visibility.is_public() {
-                        let node_id = self.env.new_node(Loc::default(), Type::Tuple(vec![]));
-                        let sym = self
-                            .env
-                            .symbol_pool()
-                            .make(well_known::PERSISTENT_ATTRIBUTE);
-                        attributes.push(Attribute::Apply(node_id, sym, vec![]));
+                        add_attribute(well_known::PERSISTENT_ATTRIBUTE, None);
                     }
                 },
                 FunctionAttribute::ModuleLock => {
-                    let node_id = self.env.new_node(Loc::default(), Type::Tuple(vec![]));
-                    let sym = self
-                        .env
-                        .symbol_pool()
-                        .make(well_known::MODULE_LOCK_ATTRIBUTE);
-                    attributes.push(Attribute::Apply(node_id, sym, vec![]));
+                    add_attribute(well_known::MODULE_LOCK_ATTRIBUTE, None);
+                },
+                FunctionAttribute::Pack => {
+                    add_attribute(PACK, None);
+                },
+                FunctionAttribute::PackVariant(variant_index) => {
+                    add_attribute(PACK_VARIANT, Some(*variant_index));
+                },
+                FunctionAttribute::Unpack => {
+                    add_attribute(UNPACK, None);
+                },
+                FunctionAttribute::UnpackVariant(variant_index) => {
+                    add_attribute(UNPACK_VARIANT, Some(*variant_index));
+                },
+                FunctionAttribute::TestVariant(variant_index) => {
+                    add_attribute(TEST_VARIANT, Some(*variant_index));
+                },
+                FunctionAttribute::BorrowFieldImmutable(offset) => {
+                    add_attribute(BORROW, Some(*offset));
+                },
+                FunctionAttribute::BorrowFieldMutable(offset) => {
+                    add_attribute(BORROW_MUT, Some(*offset));
                 },
             }
         }
+
+        // Computed before the mutable borrow of fun_data below.
+        let is_struct_api_fn = handle_view.attributes().iter().any(|attr| {
+            matches!(
+                attr,
+                FunctionAttribute::Pack
+                    | FunctionAttribute::Unpack
+                    | FunctionAttribute::PackVariant(_)
+                    | FunctionAttribute::UnpackVariant(_)
+                    | FunctionAttribute::TestVariant(_)
+                    | FunctionAttribute::BorrowFieldImmutable(_)
+                    | FunctionAttribute::BorrowFieldMutable(_)
+            )
+        });
 
         let mut new = false;
         let fun_data = self.env.module_data[module_id.to_usize()]
@@ -491,6 +527,7 @@ impl<'a> BinaryModuleLoader<'a> {
                 FunctionData {
                     visibility,
                     is_native,
+                    is_struct_api: is_struct_api_fn,
                     kind,
                     attributes,
                     ..FunctionData::new(fun_id.symbol(), loc)
@@ -511,6 +548,7 @@ impl<'a> BinaryModuleLoader<'a> {
             fun_data.params = params;
             fun_data.access_specifiers = access_specifiers;
             fun_data.result_type = result_type;
+            fun_data.is_struct_api = is_struct_api_fn;
         }
 
         if has_error {
@@ -520,130 +558,27 @@ impl<'a> BinaryModuleLoader<'a> {
                 fun_id.symbol().display(self.env.symbol_pool())
             ))
         }
-    }
 
-    fn rw_specifiers(
-        &self,
-        handle_view: &FunctionHandleView<CompiledModule>,
-        params: &[Parameter],
-    ) -> Option<Vec<ASTAccessSpecifier>> {
-        let ff_access_specifiers = handle_view.access_specifiers()?;
-        let mut access_specifiers = Vec::new();
-        let ff_module = handle_view.module();
-
-        // Helper function mapping a file format `ModuleId` to a `ModuleEnv` in move model
-        let ff_mid_to_module_env = |ff_mid: language_storage::ModuleId| {
-            let mname = self.env.to_module_name(&ff_mid);
-            self.env
-                .find_module(&mname)
-                .unwrap_or_else(|| abort_if_missing!(self.with_dep_closure))
-        };
-
-        for ff_acc_spec in ff_access_specifiers {
-            let spec_kind = match ff_acc_spec.kind {
-                FFAccessKind::Reads => ASTAccessSpecifierKind::Reads,
-                FFAccessKind::Writes => ASTAccessSpecifierKind::Writes,
-            };
-            let spec_negated = ff_acc_spec.negated;
-            let resource_spec = match ff_acc_spec.resource {
-                FFResourceSpecifier::Any => ASTResourceSpecifier::Any,
-                FFResourceSpecifier::DeclaredAtAddress(addr_idx) => {
-                    let acct_addr = ff_module.address_identifier_at(addr_idx);
-                    ASTResourceSpecifier::DeclaredAtAddress(Address::Numerical(*acct_addr))
-                },
-                FFResourceSpecifier::DeclaredInModule(mhid) => {
-                    // ModuleHandleIndex -> ModuleHandle -> File format ModuleId
-                    let ff_mhandle = ff_module.module_handle_at(mhid);
-                    let ff_mid = ff_module.module_id_for_handle(ff_mhandle);
-                    // File format ModuleId -> ModuleEnv in move model
-                    let module_env = ff_mid_to_module_env(ff_mid);
-                    ASTResourceSpecifier::DeclaredInModule(module_env.get_id())
-                },
-                FFResourceSpecifier::Resource(shid) => {
-                    // StructHandleIndex -> StructHandle -> ModuleHandle -> File format ModuleId
-                    let ff_shandle = ff_module.struct_handle_at(shid);
-                    let ff_mhandle = ff_module.module_handle_at(ff_shandle.module);
-                    let ff_mid = ff_module.module_id_for_handle(ff_mhandle);
-                    // StructHandle -> struct name -> StructId in move model
-                    let sname = ff_module.identifier_at(ff_shandle.name);
-                    let struct_id = StructId::new(self.sym(sname.as_str()));
-                    // File format ModuleId -> ModuleEnv in move model -> StructEnv in move model
-                    let module_env = ff_mid_to_module_env(ff_mid);
-                    let struct_env = self
-                        .env
-                        .get_struct_opt(module_env.get_id().qualified(struct_id))
-                        .unwrap_or_else(|| abort_if_missing!(self.with_dep_closure));
-                    ASTResourceSpecifier::Resource(
-                        module_env
-                            .get_id()
-                            .qualified_inst(struct_env.get_id(), vec![]),
-                    )
-                },
-                FFResourceSpecifier::ResourceInstantiation(shid, sig_idx) => {
-                    // Process similar to `FFResourceSpecifier::Resource`
-                    let ff_shandle = ff_module.struct_handle_at(shid);
-                    let ff_mhandle = ff_module.module_handle_at(ff_shandle.module);
-                    let ff_mid = ff_module.module_id_for_handle(ff_mhandle);
-                    let sname = ff_module.identifier_at(ff_shandle.name);
-                    let sig = ff_module.signature_at(sig_idx);
-                    let type_args: Vec<_> = sig.0.iter().map(|arg| self.ty(arg)).collect();
-                    let struct_id = StructId::new(self.sym(sname.as_str()));
-                    let module_env = ff_mid_to_module_env(ff_mid);
-                    let struct_env = self
-                        .env
-                        .get_struct_opt(module_env.get_id().qualified(struct_id))
-                        .unwrap_or_else(|| abort_if_missing!(self.with_dep_closure));
-                    ASTResourceSpecifier::Resource(
-                        module_env
-                            .get_id()
-                            .qualified_inst(struct_env.get_id(), type_args),
-                    )
-                },
-            };
-            let addr_spec = match ff_acc_spec.address {
-                FFAddressSpecifier::Any => ASTAddressSpecifier::Any,
-                FFAddressSpecifier::Literal(addr_idx) => {
-                    let addr = Address::Numerical(*ff_module.address_identifier_at(addr_idx));
-                    ASTAddressSpecifier::Address(addr)
-                },
-                FFAddressSpecifier::Parameter(param_idx, func_inst_inx) => {
-                    if let Some(func_inst_idx) = func_inst_inx {
-                        // FunctionInstantiationIndex -> FunctionInstantiation -> FunctionHandle -> ModuleHandle -> File format ModuleId
-                        let ff_func_inst = ff_module.function_instantiation_at(func_inst_idx);
-                        let ff_func_handle = ff_module.function_handle_at(ff_func_inst.handle);
-                        let ff_mhandle = ff_module.module_handle_at(ff_func_handle.module);
-                        let ff_mid = ff_module.module_id_for_handle(ff_mhandle);
-                        // FunctionHandle -> function name -> FunId in move model
-                        let fname = ff_module.identifier_at(ff_func_handle.name);
-                        let fun_id = FunId::new(self.sym(fname.as_str()));
-                        // File format ModuleId -> ModuleEnv in move model -> FunctionEnv in move model
-                        let module_env = ff_mid_to_module_env(ff_mid);
-                        let fun_env = self
-                            .env
-                            .get_function_opt(module_env.get_id().qualified(fun_id))
-                            .unwrap_or_else(|| abort_if_missing!(self.with_dep_closure));
-                        ASTAddressSpecifier::Call(
-                            module_env
-                                .get_id()
-                                .qualified_inst(fun_env.get_id(), fun_env.get_parameter_types()),
-                            params[param_idx as usize].0,
-                        )
-                    } else {
-                        ASTAddressSpecifier::Parameter(params[param_idx as usize].0)
-                    }
-                },
-            };
-            let loc = Loc::default();
-            let ast_access_specifier: ASTAccessSpecifier = ASTAccessSpecifier {
-                kind: spec_kind,
-                negated: spec_negated,
-                resource: (loc.clone(), resource_spec),
-                address: (loc.clone(), addr_spec),
-                loc,
-            };
-            access_specifiers.push(ast_access_specifier);
+        // If this is a struct API function in the defining module, update the corresponding
+        // struct's visibility to match the API function's visibility. The binary format does
+        // not store struct visibility explicitly; it is inferred from the API wrapper functions
+        // (pack$S, unpack$S, borrow$S$N, etc.) which carry the correct visibility.
+        if has_def && is_struct_api_fn {
+            let fun_name = handle_view.name().as_str();
+            // The struct name is always the component between the first and second '$'.
+            // This holds for every struct API operation:
+            //   pack$S → "S",  unpack$S → "S",  borrow$S$N → "S",  borrow_mut$S$N → "S",
+            //   test_variant$E$V → "E",  pack_variant$E$V → "E",  unpack_variant$E$V → "E"
+            if let Some(struct_name) = fun_name.split('$').nth(1) {
+                let struct_id = StructId::new(self.sym(struct_name));
+                if let Some(struct_data) = self.env.module_data[module_id.to_usize()]
+                    .struct_data
+                    .get_mut(&struct_id)
+                {
+                    struct_data.visibility = visibility;
+                }
+            }
         }
-        Some(access_specifiers)
     }
 
     fn acquire_specifiers(
@@ -658,7 +593,6 @@ impl<'a> BinaryModuleLoader<'a> {
         }
         for sdef_idx in def_view.acquired_resources() {
             let spec_kind = ASTAccessSpecifierKind::LegacyAcquires;
-            let spec_negated = false;
             let resource_spec = {
                 // StructDefinitionIndex -> StructHandleIndex -> StructHandle -> ModuleHandle -> File format ModuleId
                 let struct_hidx = ff_module.struct_def_at(*sdef_idx).struct_handle;
@@ -688,7 +622,6 @@ impl<'a> BinaryModuleLoader<'a> {
             let loc = Loc::default();
             let ast_acquire_specifier: ASTAccessSpecifier = ASTAccessSpecifier {
                 kind: spec_kind,
-                negated: spec_negated,
                 resource: (loc.clone(), resource_spec),
                 address: (loc.clone(), addr_spec),
                 loc,

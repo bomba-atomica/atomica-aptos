@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::common::{Author, Round};
 use anyhow::{ensure, Context};
@@ -79,9 +78,9 @@ impl CommitVote {
         &self.ledger_info
     }
 
-    /// Return the signature of the vote
-    pub fn signature(&self) -> &bls12381::Signature {
-        self.signature.signature()
+    /// Return the (decompressed) signature of the vote.
+    pub fn decompressed_signature(&self) -> Result<bls12381::Signature, CryptoMaterialError> {
+        self.signature.decompressed_signature()
     }
 
     /// Returns the signature along with the verification status of the signature.

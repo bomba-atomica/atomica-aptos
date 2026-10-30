@@ -1,16 +1,18 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     ast::{
-        AccessSpecifier, Address, Attribute, AttributeValue, Condition, ConditionKind, Exp,
-        ExpData, FriendDecl, ModuleName, Operation, Pattern, PropertyBag, PropertyValue,
-        QualifiedSymbol, Spec, SpecBlockInfo, SpecBlockTarget, SpecFunDecl, SpecVarDecl, TempIndex,
-        UseDecl, Value,
+        AccessSpecifier, Address, Attribute, AttributeValue, BehaviorKind, Condition,
+        ConditionKind, Exp, ExpData, FrameSpec, FriendDecl, FunParamAccessOf, LemmaDecl, LemmaId,
+        MemoryLabel, MemoryRange, ModuleName, Operation, Pattern, Proof, PropertyBag,
+        PropertyValue, QualifiedSymbol, Spec, SpecBlockInfo, SpecBlockTarget, SpecFunDecl,
+        SpecVarDecl, TempIndex, UseDecl, Value,
     },
     builder::{
-        exp_builder::ExpTranslator,
+        exp_builder::{ExpTranslator, OldExpStatus},
         model_builder::{
             ConstEntry, EntryVisibility, FunEntry, LocalVarEntry, ModelBuilder,
             SpecOrBuiltinFunEntry, StructLayout, StructVariant,
@@ -19,23 +21,23 @@ use crate::{
     constant_folder::ConstantFolder,
     exp_rewriter::{ExpRewriter, ExpRewriterFunctions, RewriteTarget},
     intrinsics::process_intrinsic_declaration,
+    metadata::lang_feature_versions::LANGUAGE_VERSION_FOR_PUBLIC_STRUCT,
     model::{
         self, EqIgnoringLoc, FieldData, FieldId, FunId, FunctionData, FunctionKind, FunctionLoc,
         Loc, ModuleId, MoveIrLoc, NamedConstantData, NamedConstantId, NodeId, Parameter, SchemaId,
-        SpecFunId, SpecVarId, StructData, StructId, TypeParameter, TypeParameterKind,
+        SpecFunId, SpecVarId, StructData, StructId, TypeParameter, TypeParameterKind, UserId,
     },
-    options::ModelBuilderOptions,
     pragmas::{
-        is_pragma_valid_for_block, is_property_valid_for_condition, CONDITION_ABSTRACT_PROP,
-        CONDITION_CONCRETE_PROP, CONDITION_DEACTIVATED_PROP, CONDITION_EXPORT_PROP,
-        CONDITION_INJECTED_PROP, OPAQUE_PRAGMA, VERIFY_PRAGMA,
+        is_pragma_valid_for_block, is_property_valid_for_condition, CONDITION_DEACTIVATED_PROP,
+        CONDITION_EXPORT_PROP, CONDITION_INJECTED_PROP, INTRINSIC_PRAGMA,
     },
     symbol::{Symbol, SymbolPool},
     ty::{
         Constraint, ConstraintContext, ErrorMessageContext, PrimitiveType, Type, Variance,
         BOOL_TYPE,
     },
-    well_known, LanguageVersion,
+    well_known::{self},
+    LanguageVersion,
 };
 use codespan_reporting::diagnostic::Severity;
 use itertools::Itertools;
@@ -66,12 +68,14 @@ pub(crate) struct ModuleBuilder<'env, 'translator> {
     pub use_decls: Vec<UseDecl>,
     /// Translated friend declarations.
     pub friend_decls: Vec<FriendDecl>,
-    /// Location of a friend visibility modifier in the current module
-    pub friend_fun_loc: Option<move_ir_types::location::Loc>,
+    /// Location of a friend/package visibility modifier in the current module
+    pub friend_visibility_loc: Option<move_ir_types::location::Loc>,
     /// Location of a package visibility modifier in the current module
     pub package_fun_loc: Option<move_ir_types::location::Loc>,
     /// Set of functions with package visibility in the current module
     pub package_funs: BTreeSet<FunId>,
+    /// Set of structs with package visibility in the current module
+    pub package_structs: BTreeSet<StructId>,
     /// Translated specification functions.
     pub spec_funs: Vec<SpecFunDecl>,
     /// During the definition analysis, the index into `spec_funs` we are currently
@@ -87,6 +91,10 @@ pub(crate) struct ModuleBuilder<'env, 'translator> {
     pub fun_defs: BTreeMap<Symbol, Exp>,
     /// Translated access specifiers, if we are compiling Move code
     pub fun_access_specifiers: BTreeMap<Symbol, Vec<AccessSpecifier>>,
+    /// Access specifiers for function-typed parameters (from `modifies_of`/`reads_of`)
+    pub fun_param_access_of: BTreeMap<Symbol, Vec<FunParamAccessOf>>,
+    /// Access specifiers for function-typed struct fields (from `modifies_of`/`reads_of` in struct spec)
+    pub struct_field_access_of: BTreeMap<Symbol, Vec<FunParamAccessOf>>,
     /// Translated struct specifications.
     pub struct_specs: BTreeMap<Symbol, Spec>,
     /// Translated module spec
@@ -96,6 +104,14 @@ pub(crate) struct ModuleBuilder<'env, 'translator> {
     /// Let bindings for the current spec block, characterized by a boolean indicating whether
     /// post state is active and the node id of the original expression of the let.
     pub spec_block_lets: BTreeMap<Symbol, (bool, NodeId)>,
+    /// Shared state label map for the current spec block. Ensures that the same label name
+    /// (e.g. `S`) used in different conditions within the same spec block maps to the same
+    /// MemoryLabel (GlobalId).
+    pub spec_block_state_labels: BTreeMap<Symbol, MemoryLabel>,
+    /// Translated lemma declarations.
+    pub lemmas: Vec<LemmaDecl>,
+    /// Map from lemma name to index in `lemmas` vec (used for resolution during proof analysis).
+    pub lemma_name_to_idx: BTreeMap<Symbol, usize>,
 }
 
 /// A value which we pass in to spec block analyzers, describing the resolved target of the spec
@@ -155,9 +171,10 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
             module_id,
             module_name,
             use_decls: vec![],
-            friend_fun_loc: None,
+            friend_visibility_loc: None,
             package_fun_loc: None,
             package_funs: BTreeSet::new(),
+            package_structs: BTreeSet::new(),
             friend_decls: vec![],
             spec_funs: vec![],
             inline_spec_builder: Spec::default(),
@@ -166,10 +183,15 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
             fun_specs: BTreeMap::new(),
             fun_defs: BTreeMap::new(),
             fun_access_specifiers: BTreeMap::new(),
+            fun_param_access_of: BTreeMap::new(),
+            struct_field_access_of: BTreeMap::new(),
             struct_specs: BTreeMap::new(),
             module_spec: Spec::default(),
             spec_block_infos: Default::default(),
             spec_block_lets: BTreeMap::new(),
+            spec_block_state_labels: BTreeMap::new(),
+            lemmas: Vec::new(),
+            lemma_name_to_idx: BTreeMap::new(),
         }
     }
 
@@ -196,6 +218,7 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
     pub fn translate(&mut self, loc: Loc, module_def: EA::ModuleDefinition) {
         self.decl_ana(&module_def);
         self.def_ana(&module_def);
+        self.synthesize_validity_slots();
         self.collect_spec_block_infos(&module_def);
         let attrs = self.translate_attributes(&module_def.attributes);
         self.populate_and_finalize_env(loc, attrs);
@@ -464,6 +487,23 @@ impl ModuleBuilder<'_, '_> {
 /// # Declaration Analysis
 
 impl ModuleBuilder<'_, '_> {
+    /// Pre-register lemma declarations from spec blocks so cross-module references
+    /// resolve regardless of module processing order.
+    pub(crate) fn pre_register_lemma_decls(&mut self, module_def: &EA::ModuleDefinition) {
+        for spec in &module_def.specs {
+            for member in &spec.value.members {
+                use EA::SpecBlockMember_::*;
+                let loc = self.parent.env.to_loc(&member.loc);
+                if let Lemma {
+                    name, signature, ..
+                } = &member.value
+                {
+                    self.decl_ana_lemma(&loc, name, signature);
+                }
+            }
+        }
+    }
+
     fn decl_ana(&mut self, module_def: &EA::ModuleDefinition) {
         for (name, struct_def) in module_def.structs.key_cloned_iter() {
             self.decl_ana_struct(&name, struct_def);
@@ -496,6 +536,23 @@ impl ModuleBuilder<'_, '_> {
                 &format!("duplicate declaration of const `{}`", &name.value()),
             )
         }
+        let (move_visibility, has_package_visibility) = match def.visibility {
+            EA::Visibility::Public(_) => (Visibility::Public, false),
+            EA::Visibility::Friend(loc) => {
+                if self.friend_visibility_loc.is_none() {
+                    self.friend_visibility_loc = Some(loc);
+                }
+                (Visibility::Friend, false)
+            },
+            EA::Visibility::Internal => (Visibility::Private, false),
+            EA::Visibility::Package(loc) => {
+                if self.package_fun_loc.is_none() {
+                    self.package_fun_loc = Some(loc);
+                }
+                (Visibility::Friend, true)
+            },
+        };
+        let attributes = self.translate_attributes(&def.attributes);
         let mut et = ExpTranslator::new(self);
         et.set_translate_move_fun();
         let loc = et.to_loc(&def.loc);
@@ -505,6 +562,10 @@ impl ModuleBuilder<'_, '_> {
             ty,
             value: Value::Bool(false), // dummy value, actual will be assigned in def_ana
             visibility: EntryVisibility::SpecAndImpl,
+            move_visibility,
+            has_package_visibility,
+            users: BTreeSet::new(),
+            attributes,
         });
     }
 
@@ -519,6 +580,23 @@ impl ModuleBuilder<'_, '_> {
         let struct_id = StructId::new(qsym.symbol);
         let attrs = self.translate_attributes(&def.attributes);
         let abilities = self.translate_abilities(&def.abilities);
+        let visibility = match def.visibility {
+            EA::Visibility::Public(_) => Visibility::Public,
+            EA::Visibility::Friend(loc) => {
+                if self.friend_visibility_loc.is_none() {
+                    self.friend_visibility_loc = Some(loc);
+                }
+                Visibility::Friend
+            },
+            EA::Visibility::Internal => Visibility::Private,
+            EA::Visibility::Package(loc) => {
+                if self.package_fun_loc.is_none() {
+                    self.package_fun_loc = Some(loc);
+                }
+                self.package_structs.insert(struct_id);
+                Visibility::Friend
+            },
+        };
         let mut et = ExpTranslator::new(self);
         et.set_translate_move_fun();
         let type_params = et.analyze_and_add_type_params(
@@ -536,6 +614,7 @@ impl ModuleBuilder<'_, '_> {
             type_params,
             StructLayout::None, // will be filled in during definition analysis,
             matches!(def.layout, EA::StructLayout::Native(_)),
+            visibility,
         );
     }
 
@@ -551,8 +630,8 @@ impl ModuleBuilder<'_, '_> {
         let visibility = match def.visibility {
             EA::Visibility::Public(_) => Visibility::Public,
             EA::Visibility::Friend(loc) => {
-                if self.friend_fun_loc.is_none() {
-                    self.friend_fun_loc = Some(loc);
+                if self.friend_visibility_loc.is_none() {
+                    self.friend_visibility_loc = Some(loc);
                 }
                 Visibility::Friend
             },
@@ -579,7 +658,7 @@ impl ModuleBuilder<'_, '_> {
         let params = et.analyze_and_add_params(&def.signature.parameters, true);
         let result_type = et.translate_type(&def.signature.return_type);
         let kind = if def.entry.is_some() {
-            if et.env().language_version.is_at_least(LanguageVersion::V2_0) && def.inline {
+            if def.inline {
                 et.error(&et.to_loc(&def.loc), "An entry function cannot be inlined.");
             }
             FunctionKind::Entry
@@ -711,6 +790,35 @@ impl ModuleBuilder<'_, '_> {
     }
 
     fn decl_ana_spec_block(&mut self, block: &EA::SpecBlock) {
+        // Ghost field declarations must be registered at declaration time:
+        // function bodies — whose inline spec blocks may reference ghost
+        // fields — are translated before struct spec blocks are
+        // definition-analyzed.
+        if let Some(SpecBlockContext::Struct(struct_name)) =
+            self.get_spec_block_context(&block.value.target)
+        {
+            for member in &block.value.members {
+                if let EA::SpecBlockMember_::Variable {
+                    is_global: false,
+                    is_ghost: true,
+                    name,
+                    type_parameters,
+                    type_,
+                    init,
+                } = &member.value
+                {
+                    let loc = self.parent.env.to_loc(&member.loc);
+                    self.decl_ana_ghost_field(
+                        &loc,
+                        &struct_name,
+                        name,
+                        type_parameters,
+                        type_,
+                        init,
+                    );
+                }
+            }
+        }
         for member in &block.value.members {
             self.decl_ana_spec_block_member(member)
         }
@@ -733,6 +841,7 @@ impl ModuleBuilder<'_, '_> {
             } => self.decl_ana_spec_fun(&loc, *uninterpreted, name, signature),
             Variable {
                 is_global: true,
+                is_ghost: _,
                 name,
                 type_,
                 type_parameters,
@@ -743,6 +852,9 @@ impl ModuleBuilder<'_, '_> {
                 type_parameters.iter().map(|(n, a)| (n, a)),
                 type_,
             ),
+            Lemma {
+                name, signature, ..
+            } => self.decl_ana_lemma(&loc, name, signature),
             _ => {},
         }
     }
@@ -756,11 +868,18 @@ impl ModuleBuilder<'_, '_> {
     ) {
         let name = self.symbol_pool().make(&name.0.value);
         let (type_params, params, result_type) = self.decl_ana_signature(signature, false);
-        // Eliminate references in parameters and result type for spec functions
+        // Eliminate references in parameters and result type for spec functions,
+        // but keep &mut parameters as-is since they have dual-state semantics.
         // `derive_spec_fun` does the same when generating spec functions from general move functions
         let params = params
             .into_iter()
-            .map(|Parameter(sym, ty, loc)| Parameter(sym, ty.skip_reference().clone(), loc))
+            .map(|Parameter(sym, ty, loc)| {
+                if ty.is_mutable_reference() {
+                    Parameter(sym, ty, loc)
+                } else {
+                    Parameter(sym, ty.skip_reference().clone(), loc)
+                }
+            })
             .collect_vec();
         let result_type = result_type.skip_reference().clone();
 
@@ -770,7 +889,7 @@ impl ModuleBuilder<'_, '_> {
             self.qualified_by_module(name),
             SpecOrBuiltinFunEntry {
                 loc: loc.clone(),
-                oper: Operation::SpecFunction(self.module_id, fun_id, None),
+                oper: Operation::SpecFunction(self.module_id, fun_id, MemoryRange::default()),
                 type_params: type_params.clone(),
                 type_param_constraints: BTreeMap::default(),
                 params: params.clone(),
@@ -786,19 +905,73 @@ impl ModuleBuilder<'_, '_> {
             name,
             type_params,
             params,
-            context_params: None,
             result_type,
             used_memory: BTreeSet::new(),
+            old_memory: BTreeSet::new(),
             uninterpreted,
             is_move_fun: false,
             is_native: false,
             body: None,
             callees: Default::default(),
             is_recursive: Default::default(),
+            frame_spec: None,
+            uses_old: false,
             insts_using_generic_type_reflection: Default::default(),
             spec: RefCell::new(Default::default()),
         };
         self.spec_funs.push(fun_decl);
+    }
+
+    /// Declaration-phase analysis for a lemma: register name, signature, and skeleton.
+    /// This mirrors `decl_ana_spec_fun` so that lemma names are available during `def_ana`.
+    fn decl_ana_lemma(
+        &mut self,
+        loc: &Loc,
+        name: &PA::FunctionName,
+        signature: &EA::FunctionSignature,
+    ) {
+        let lemma_sym = self.symbol_pool().make(name.0.value.as_str());
+        let (type_params, params, result_type) = self.decl_ana_signature(signature, false);
+
+        if !result_type.is_unit() {
+            self.parent.error(loc, "lemma must have unit return type");
+        }
+
+        // Register in fun_table so condition analysis can find parameters.
+        let lemma_qsym = self.qualified_by_module(lemma_sym);
+        let fun_id = FunId::new(lemma_sym);
+        let fun_entry = FunEntry {
+            loc: loc.clone(),
+            name_loc: loc.clone(),
+            result_type_loc: loc.clone(),
+            module_id: self.module_id,
+            fun_id,
+            visibility: Visibility::Private,
+            is_native: false,
+            kind: FunctionKind::Lemma,
+            type_params: type_params.clone(),
+            params: params.clone(),
+            result_type: Type::unit(),
+            attributes: vec![],
+            inline_specs: BTreeMap::new(),
+        };
+        self.parent.fun_table.insert(lemma_qsym.clone(), fun_entry);
+
+        // Register the lemma skeleton (without conditions or proof).
+        let idx = self.lemmas.len();
+        self.lemma_name_to_idx.insert(lemma_sym, idx);
+        self.parent
+            .lemma_decl_table
+            .insert(lemma_qsym, (self.module_id, idx, params.clone()));
+        self.lemmas.push(LemmaDecl {
+            loc: loc.clone(),
+            name: lemma_sym,
+            type_params,
+            params,
+            conditions: vec![],
+            properties: Default::default(),
+            proof: None,
+        });
     }
 
     fn decl_ana_signature(
@@ -881,6 +1054,7 @@ impl ModuleBuilder<'_, '_> {
         for member in &block.value.members {
             if let EA::SpecBlockMember_::Variable {
                 is_global: false,
+                is_ghost: false,
                 name,
                 type_,
                 type_parameters,
@@ -1011,13 +1185,6 @@ impl ModuleBuilder<'_, '_> {
                 if !self.parent.const_table.contains_key(&qsym) {
                     continue;
                 }
-                if !self.test_language_version(
-                    &loc,
-                    "constant definitions referring to other constants",
-                    LanguageVersion::V2_0,
-                ) {
-                    continue;
-                }
                 if visited.contains(&const_name) {
                     continue;
                 }
@@ -1043,6 +1210,14 @@ impl ModuleBuilder<'_, '_> {
         for (name, def) in module_def.structs.key_cloned_iter() {
             self.def_ana_struct(&name, def);
         }
+
+        // Re-check ghost field types for recursion now that every struct in
+        // the module has its runtime layout: the declaration-time check
+        // cannot see same-module runtime fields (layouts are still empty
+        // then), so a cycle routed through another struct's runtime field
+        // (e.g. `spec S { ghost g: Two; }` with `Two { b: Wrap<S> }`) is
+        // only detectable here.
+        self.check_ghost_field_recursion();
 
         // Analyze all constants.
         self.analyze_constants(module_def);
@@ -1081,15 +1256,15 @@ impl ModuleBuilder<'_, '_> {
             self.def_ana_fun(&name, fun_def);
         }
 
-        // TODO: we should re-visit this decision once we have high-order function ready on
-        // the compiled bytecode (i.e., file format) level. Before that, the rule is:
-        // - an inline function can have in-body spec blocks
-        // - an inline function cannot have function spec (i.e., pre/post-conditions)
-        //
-        // On the verification side:
-        // - we do not verify the correctness of in-body spec blocks in the inline function
-        // - instead, we inline these in-body spec blocks into the caller and verify these
-        //   specs in the context of caller.
+        // The rules for specs on inline functions are:
+        // - an inline function can have in-body spec blocks; they are expanded into the
+        //   caller and verified in the caller's context
+        // - an inline function without function-typed parameters can have a function spec;
+        //   in verify mode such a function is compiled to bytecode and checked against its
+        //   spec, and if it is opaque, calls are retained and use the spec at call sites
+        // - an inline function with function-typed parameters cannot have a function spec:
+        //   its spec would need to refer to the behavior of lambda arguments, which is not
+        //   supported (see move-prover/doc/dev/inline_fun_specs.md)
 
         // Analyze all module level spec blocks (except schemas)
         for spec in &module_def.specs {
@@ -1116,11 +1291,17 @@ impl ModuleBuilder<'_, '_> {
                                 self.validate_target_signature(&fun_decl, &loc, signature);
                             }
 
-                            // TODO: to be revisited once we have high-order function
-                            if fun_decl.kind == FunctionKind::Inline {
+                            if fun_decl.kind == FunctionKind::Inline
+                                && fun_decl
+                                    .params
+                                    .iter()
+                                    .any(|Parameter(_, ty, _)| ty.is_function())
+                            {
                                 self.parent.error(
                                     &loc,
-                                    "functional spec blocks for inline functions are not supported yet",
+                                    "function spec blocks are not supported for inline \
+                                     functions with function-typed parameters; those \
+                                     functions are verified at each application site",
                                 );
                             }
                         },
@@ -1142,9 +1323,6 @@ impl ModuleBuilder<'_, '_> {
                 },
             }
         }
-
-        // Apply tweaks after all specs are analyzed
-        self.apply_tweaks(module_def);
     }
 
     pub(crate) fn def_ana_code_spec_block(
@@ -1186,6 +1364,9 @@ impl ModuleBuilder<'_, '_> {
                     if matches!(context, SpecBlockContext::FunctionCodeV2(.., Some(..))) =>
                 {
                     self.def_ana_pragma(loc, &context, properties);
+                },
+                EA::SpecBlockMember_::Modifies { targets } => {
+                    self.def_ana_modifies(loc, &context, targets);
                 },
                 _ => {
                     self.parent.error(loc, "item not allowed");
@@ -1237,7 +1418,9 @@ impl ModuleBuilder<'_, '_> {
         };
         let value = {
             // Type check the constant.
+            let const_id = self.module_id.qualified(NamedConstantId::new(qsym.symbol));
             let mut et = ExpTranslator::new(self);
+            et.set_constant_use_context(UserId::Constant(const_id));
             et.set_translate_move_fun();
             let exp = et.translate_exp(&def.value, &ty).into_exp();
             et.finalize_types(true);
@@ -1262,7 +1445,12 @@ impl ModuleBuilder<'_, '_> {
                 );
                 ok = false;
             }
-            if ok {
+            // Suppress the folder when the translated expression already contains an
+            // `Invalid` placeholder: that means an upstream translator error fired
+            // (e.g. a rejected cross-module const reference), and the folder would
+            // only stack a redundant "not foldable" diagnostic on top.
+            let has_invalid_subexp = exp.as_ref().any(&mut |e| matches!(e, ExpData::Invalid(_)));
+            if ok && !has_invalid_subexp {
                 let mut folder = ConstantFolder::new(self.parent.env, true);
                 let rewritten = folder.rewrite_exp(exp);
                 if let ExpData::Value(_, value) = rewritten.as_ref() {
@@ -1350,6 +1538,43 @@ impl ModuleBuilder<'_, '_> {
             .expect("struct invalid");
         entry.layout = layout;
         entry.is_empty_struct = is_empty_struct;
+        // Ghost fields are registered (from the struct's spec block) during
+        // declaration analysis, before field definitions are known; check for
+        // clashes with declared fields here, through the same field lookup
+        // used everywhere else.
+        let qid = entry.module_id.qualified_inst(entry.struct_id, vec![]);
+        let ghost_decls = entry
+            .ghost_fields
+            .iter()
+            .map(|(sym, data)| (*sym, data.loc.clone()))
+            .collect_vec();
+        for (sym, loc) in ghost_decls {
+            if !self.parent.lookup_struct_field_decl(&qid, sym).0.is_empty() {
+                self.parent.error(
+                    &loc,
+                    &format!(
+                        "duplicate declaration of field `{}` in struct `{}`",
+                        sym.display(self.parent.env.symbol_pool()),
+                        qsym.display(self.parent.env)
+                    ),
+                );
+                // Drop the clashing ghost so downstream analysis does not
+                // treat the field name as ghost.
+                self.parent
+                    .struct_table
+                    .get_mut(&qsym)
+                    .expect("struct invalid")
+                    .ghost_fields
+                    .remove(&sym);
+                self.parent
+                    .struct_table
+                    .get_mut(&qsym)
+                    .expect("struct invalid")
+                    .pending_ghost_inits
+                    .remove(&sym);
+            }
+        }
+        self.translate_pending_ghost_inits(&qsym);
     }
 
     fn build_field_map(
@@ -1393,6 +1618,8 @@ impl ModuleBuilder<'_, '_> {
                 offset: *idx,
                 variant: for_variant,
                 ty: field_ty,
+                is_ghost: false,
+                init: None,
             });
         }
         let mut is_empty_struct = false;
@@ -1408,6 +1635,8 @@ impl ModuleBuilder<'_, '_> {
                 offset: 0,
                 variant: None,
                 ty: field_ty,
+                is_ghost: false,
+                init: None,
             });
             is_empty_struct = true;
         }
@@ -1438,21 +1667,21 @@ impl ModuleBuilder<'_, '_> {
             let params = entry.params.clone();
             let result_type = entry.result_type.clone();
             let spec_block_map = entry.inline_specs.clone();
-
+            let fun_qid = entry.module_id.qualified(entry.fun_id);
             let mut et = ExpTranslator::new(self);
             et.set_spec_block_map(spec_block_map);
             et.set_result_type(result_type.clone());
             et.set_fun_name(full_name.clone());
+            et.set_constant_use_context(UserId::Function(fun_qid));
             et.set_translate_move_fun();
             let loc = et.to_loc(&body.loc);
             for (pos, TypeParameter(name, kind, loc)) in type_params.iter().enumerate() {
                 et.define_type_param(loc, *name, Type::new_param(pos), kind.clone(), false);
             }
             et.enter_scope();
-            let is_lang_version_2_1 = et.env().language_version.is_at_least(LanguageVersion::V2_1);
             for (idx, Parameter(n, ty, loc)) in params.iter().enumerate() {
                 let symbol_pool = et.parent.parent.env.symbol_pool();
-                if !is_lang_version_2_1 || symbol_pool.string(*n).as_ref() != "_" {
+                if symbol_pool.string(*n).as_ref() != "_" {
                     et.define_local(loc, *n, ty.clone(), None, Some(idx));
                 }
             }
@@ -1482,9 +1711,11 @@ impl ModuleBuilder<'_, '_> {
 impl ModuleBuilder<'_, '_> {
     fn def_ana_spec_block(&mut self, context: &SpecBlockContext, block: &EA::SpecBlock) {
         let block_loc = self.parent.env.to_loc(&block.loc);
-        self.update_spec(context, move |spec| spec.loc = Some(block_loc));
+        let block_loc_for_spec = block_loc.clone();
+        self.update_spec(context, move |spec| spec.loc = Some(block_loc_for_spec));
 
         assert!(self.spec_block_lets.is_empty());
+        assert!(self.spec_block_state_labels.is_empty());
 
         // Sort members so that lets are processed first. This is needed so that lets included
         // from schemas are properly renamed on name clash.
@@ -1502,8 +1733,212 @@ impl ModuleBuilder<'_, '_> {
             self.def_ana_spec_block_member(context, member)
         }
 
-        // clear the let bindings stored in the build.
+        // Validate state labels
+        self.validate_state_labels(context, &block_loc);
+
+        // clear the let bindings and state labels stored in the build.
         self.spec_block_lets.clear();
+        self.spec_block_state_labels.clear();
+    }
+
+    /// Validates state labels within a spec block.
+    /// Checks that:
+    /// 1. Every post-state label is referenced by a pre-state label in the same spec
+    /// 2. There are no cycles in state label references
+    fn validate_state_labels(&mut self, context: &SpecBlockContext, loc: &Loc) {
+        use crate::ast::MemoryLabel;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        // Each state-labeled expression can have:
+        // - A pre-label: reads from this state (must be defined by another expression's post-label)
+        // - A post-label: defines this state (other expressions can reference it as pre-label)
+
+        // Collect: (pre_label, post_label, node_id, behavior_kind) for each expression with state labels
+        let mut labeled_exprs: Vec<(
+            Option<MemoryLabel>,
+            Option<MemoryLabel>,
+            NodeId,
+            Option<BehaviorKind>,
+        )> = Vec::new();
+
+        // Also collect labels used in Global/Exists memory access operations, with NodeId
+        // for error reporting
+        let mut memory_access_labels: Vec<(MemoryLabel, NodeId)> = Vec::new();
+
+        self.update_spec(context, |spec| {
+            fn collect_state_labels(
+                exp: &Exp,
+                predicates: &mut Vec<(
+                    Option<MemoryLabel>,
+                    Option<MemoryLabel>,
+                    NodeId,
+                    Option<BehaviorKind>,
+                )>,
+                memory_labels: &mut Vec<(MemoryLabel, NodeId)>,
+            ) {
+                // Collect pre/post labels from MemoryRange on Behavior/SpecFunction
+                // and memory labels from Global/Exists operations.
+                exp.visit_pre_order(&mut |e| {
+                    if let ExpData::Call(id, op, _) = e {
+                        match op {
+                            Operation::Behavior(kind, range) => {
+                                if range.pre.is_some() || range.post.is_some() {
+                                    predicates.push((range.pre, range.post, *id, Some(*kind)));
+                                }
+                            },
+                            Operation::SpecFunction(_, _, range) => {
+                                if range.pre.is_some() || range.post.is_some() {
+                                    predicates.push((range.pre, range.post, *id, None));
+                                }
+                            },
+                            Operation::Global(Some(label)) | Operation::Exists(Some(label)) => {
+                                memory_labels.push((*label, *id));
+                            },
+                            _ => {},
+                        }
+                    }
+                    true
+                });
+            }
+
+            for cond in &spec.conditions {
+                collect_state_labels(&cond.exp, &mut labeled_exprs, &mut memory_access_labels);
+                for additional in &cond.additional_exps {
+                    collect_state_labels(additional, &mut labeled_exprs, &mut memory_access_labels);
+                }
+            }
+        });
+
+        // Helper to get symbol name for a memory label
+        let get_label_name =
+            |label: MemoryLabel| -> Option<Symbol> { self.parent.env.get_memory_label_name(label) };
+
+        // Build set of defined post-labels and used pre-labels
+        // TODO(#18762): Duplicate post-state labels are silently overwritten; should report an error.
+        let mut defined_post_labels: BTreeMap<Symbol, Loc> = BTreeMap::new();
+        let mut used_pre_labels: BTreeSet<Symbol> = BTreeSet::new();
+        for (pre_label, post_label, node_id, behavior_kind) in &labeled_exprs {
+            if let Some(post_name) = post_label.and_then(&get_label_name) {
+                let exp_loc = self.parent.env.get_node_loc(*node_id);
+                defined_post_labels.insert(post_name, exp_loc);
+            }
+            if let Some(pre_name) = pre_label.and_then(&get_label_name) {
+                used_pre_labels.insert(pre_name);
+            }
+            // Reject post-state labels on predicates without an explicit
+            // post-state (requires_of, aborts_of, unchanged_of, folds_of).
+            if post_label.is_some() {
+                if let Some(
+                    kind @ (BehaviorKind::RequiresOf
+                    | BehaviorKind::AbortsOf
+                    | BehaviorKind::UnchangedOf
+                    | BehaviorKind::FoldsOf),
+                ) = behavior_kind
+                {
+                    let msg = match kind {
+                        BehaviorKind::RequiresOf | BehaviorKind::AbortsOf => format!(
+                            "`{}` describes a single state and cannot have a post-state label; \
+                             only `ensures_of` and `result_of` support state transitions",
+                            kind,
+                        ),
+                        BehaviorKind::UnchangedOf | BehaviorKind::FoldsOf => format!(
+                            "`{}` implicitly relates the pre-state to the current \
+                             state and cannot have a post-state label",
+                            kind,
+                        ),
+                        _ => unreachable!(),
+                    };
+                    let exp_loc = self.parent.env.get_node_loc(*node_id);
+                    self.parent.env.error(&exp_loc, &msg);
+                }
+            }
+        }
+        // Labels in Global/Exists memory accesses also count as references
+        for (label, _) in &memory_access_labels {
+            if let Some(name) = get_label_name(*label) {
+                used_pre_labels.insert(name);
+            }
+        }
+
+        let symbol_pool = self.symbol_pool();
+
+        // Note: we do NOT validate that pre-labels reference defined post-labels.
+        // Pre-only labels are legitimate — they represent state snapshots from sequential
+        // composition (e.g., the state after a `move_from` but before a `move_to`).
+
+        // Validate that all post-labels are referenced by some pre-label
+        for (post_label, post_loc) in &defined_post_labels {
+            if !used_pre_labels.contains(post_label) {
+                self.parent.env.error(
+                    post_loc,
+                    &format!(
+                        "state label `{}` is defined but never referenced; \
+                         every post-state label must be referenced by a pre-state label in the same spec",
+                        post_label.display(symbol_pool)
+                    ),
+                );
+            }
+        }
+
+        // Check for cycles: build a dependency graph
+        // Each predicate that defines a post-label and uses a pre-label creates an edge:
+        // post_label_defined -> pre_label_used
+        // This means: to get the state of `post_label_defined`, we need the state of `pre_label_used`
+        let mut edges: BTreeMap<Symbol, BTreeSet<Symbol>> = BTreeMap::new();
+        for (pre_label, post_label, _, _) in &labeled_exprs {
+            let pre_name = pre_label.and_then(&get_label_name);
+            let post_name = post_label.and_then(&get_label_name);
+            if let (Some(pre), Some(post)) = (pre_name, post_name) {
+                // The predicate defines `post` and reads from `pre`
+                // So `post` depends on `pre`
+                edges.entry(post).or_default().insert(pre);
+            }
+        }
+
+        // Detect cycles using DFS
+        fn has_cycle(
+            node: Symbol,
+            edges: &BTreeMap<Symbol, BTreeSet<Symbol>>,
+            visiting: &mut BTreeSet<Symbol>,
+            visited: &mut BTreeSet<Symbol>,
+        ) -> Option<Vec<Symbol>> {
+            if visiting.contains(&node) {
+                return Some(vec![node]); // Found cycle
+            }
+            if visited.contains(&node) {
+                return None; // Already fully processed
+            }
+
+            visiting.insert(node);
+            if let Some(neighbors) = edges.get(&node) {
+                for &neighbor in neighbors {
+                    if let Some(mut cycle) = has_cycle(neighbor, edges, visiting, visited) {
+                        cycle.push(node);
+                        return Some(cycle);
+                    }
+                }
+            }
+            visiting.remove(&node);
+            visited.insert(node);
+            None
+        }
+
+        let mut visiting = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        for &start in edges.keys() {
+            if let Some(cycle) = has_cycle(start, &edges, &mut visiting, &mut visited) {
+                let cycle_str = cycle
+                    .iter()
+                    .rev()
+                    .map(|s| s.display(symbol_pool).to_string())
+                    .join(" -> ");
+                self.parent.env.error(
+                    loc,
+                    &format!("cyclic state label reference detected: {}", cycle_str),
+                );
+                break; // Report only one cycle
+            }
+        }
     }
 
     fn def_ana_spec_block_member(
@@ -1534,9 +1969,25 @@ impl ModuleBuilder<'_, '_> {
             Function {
                 uninterpreted,
                 signature,
+                modifies,
+                reads,
+                weight,
                 body,
                 ..
-            } => self.def_ana_spec_fun(*uninterpreted, signature, body),
+            } => self.def_ana_spec_fun(*uninterpreted, signature, modifies, reads, *weight, body),
+            ModifiesOf {
+                fun_param,
+                params,
+                targets,
+                all,
+            } => self.def_ana_modifies_of(loc, context, fun_param, params, targets, *all),
+            ReadsOf {
+                fun_param,
+                types,
+                all,
+            } => self.def_ana_reads_of(loc, context, fun_param, types, *all),
+            Modifies { targets } => self.def_ana_modifies(loc, context, targets),
+            Reads { types } => self.def_ana_reads(loc, context, types),
             Let {
                 name,
                 post_state,
@@ -1559,9 +2010,595 @@ impl ModuleBuilder<'_, '_> {
                 ..
             } => self.def_ana_global_var(loc, name, init.as_ref()),
             Variable {
+                is_global: false,
+                is_ghost: true,
+                ..
+            } => {
+                // Registered during declaration analysis when the enclosing
+                // spec block targets a struct; anywhere else it is an error.
+                if !matches!(context, SpecBlockContext::Struct(..)) {
+                    self.parent.env.error(
+                        loc,
+                        "ghost fields can only be declared in a struct spec block",
+                    );
+                }
+            },
+            Variable {
                 is_global: false, ..
             } => { /* nothing to do right now */ },
             Update { lhs, rhs } => self.def_ana_global_var_update(loc, context, lhs, rhs),
+            Proof { body } => self.def_ana_proof_block(loc, context, body),
+            Lemma {
+                name,
+                signature,
+                spec_members,
+                proof,
+            } => self.def_ana_lemma(loc, context, name, signature, spec_members, proof),
+        }
+    }
+
+    fn def_ana_proof_block(&mut self, loc: &Loc, context: &SpecBlockContext, proof: &EA::Proof) {
+        // Proof blocks are only allowed in function-level spec blocks.
+        if !matches!(
+            context,
+            SpecBlockContext::Function(_) | SpecBlockContext::FunctionCodeV2(..)
+        ) {
+            self.parent
+                .error(loc, "proof block is only allowed in function spec blocks");
+            return;
+        }
+        let mut proof_locals = vec![];
+        if let Some(model_proof) =
+            self.def_ana_proof(context, proof, &mut proof_locals, false, false)
+        {
+            self.update_spec(context, |spec| spec.proof = Some(model_proof));
+        }
+    }
+
+    /// Recursively translates a parser proof to a model proof.
+    /// `proof_locals` accumulates let-bound variables for scoping within blocks.
+    /// `in_post` is true when inside a `post` wrapper (to detect nested `post post`).
+    /// `is_lemma` is true when analyzing a lemma proof (where `post` is not allowed).
+    fn def_ana_proof(
+        &mut self,
+        context: &SpecBlockContext,
+        proof: &EA::Proof,
+        proof_locals: &mut Vec<(Loc, Symbol, Type)>,
+        in_post: bool,
+        is_lemma: bool,
+    ) -> Option<Proof> {
+        let proof_loc = self.parent.to_loc(&proof.loc);
+        match &proof.value {
+            EA::Proof_::Let(name, exp) => {
+                let sym = self.symbol_pool().make(name.value.as_str());
+                let kind = if in_post {
+                    ConditionKind::Ensures
+                } else {
+                    ConditionKind::Assume
+                };
+                let mut et = self.exp_translator_for_context(&proof_loc, context, &kind);
+                if !in_post {
+                    et.old_status = OldExpStatus::NotSupported;
+                }
+                add_proof_locals(&mut et, proof_locals);
+                let (_, translated) = et.translate_exp_free(exp);
+                let translated = translated.into_exp();
+                let ty = et.get_node_type(translated.node_id());
+                et.finalize_types(true);
+                proof_locals.push((proof_loc.clone(), sym, ty));
+                Some(Proof::Let(proof_loc, sym, translated))
+            },
+            EA::Proof_::IfElse(cond, then_branch, else_branch) => {
+                let kind = if in_post {
+                    ConditionKind::Ensures
+                } else {
+                    ConditionKind::Assert
+                };
+                let mut et = self.exp_translator_for_context(&proof_loc, context, &kind);
+                if !in_post {
+                    et.old_status = OldExpStatus::NotSupported;
+                }
+                add_proof_locals(&mut et, proof_locals);
+                let cond_exp = et.translate_exp(cond, &BOOL_TYPE).into_exp();
+                et.finalize_types(true);
+                // Save/restore proof_locals per branch so let bindings don't leak.
+                // Truncate before `?` so that a failing branch doesn't leak bindings
+                // into subsequent statements when this IfElse is inside a Block.
+                let saved_len = proof_locals.len();
+                let then_result =
+                    self.def_ana_proof(context, then_branch, proof_locals, in_post, is_lemma);
+                proof_locals.truncate(saved_len);
+                let then_proof = then_result?;
+                let else_proof = match else_branch {
+                    Some(eb) => {
+                        let saved_len = proof_locals.len();
+                        let else_result =
+                            self.def_ana_proof(context, eb, proof_locals, in_post, is_lemma);
+                        proof_locals.truncate(saved_len);
+                        Some(Box::new(else_result?))
+                    },
+                    None => None,
+                };
+                Some(Proof::IfElse(
+                    proof_loc,
+                    cond_exp,
+                    Box::new(then_proof),
+                    else_proof,
+                ))
+            },
+            EA::Proof_::Block(stmts) => {
+                let mut model_stmts = vec![];
+                let saved_len = proof_locals.len();
+                for s in stmts {
+                    if let Some(ms) =
+                        self.def_ana_proof(context, s, proof_locals, in_post, is_lemma)
+                    {
+                        model_stmts.push(ms);
+                    }
+                }
+                // Let bindings are block-scoped.
+                proof_locals.truncate(saved_len);
+                Some(Proof::Block(proof_loc, model_stmts))
+            },
+            EA::Proof_::Assert(exp) => {
+                let kind = if in_post {
+                    ConditionKind::Ensures
+                } else {
+                    ConditionKind::Assert
+                };
+                let mut et = self.exp_translator_for_context(&proof_loc, context, &kind);
+                if !in_post {
+                    et.old_status = OldExpStatus::NotSupported;
+                }
+                add_proof_locals(&mut et, proof_locals);
+                let translated = et.translate_exp(exp, &BOOL_TYPE).into_exp();
+                et.finalize_types(true);
+                Some(Proof::Assert(proof_loc, translated))
+            },
+            EA::Proof_::Assume(properties, exp) => {
+                let has_trusted = properties
+                    .iter()
+                    .any(|p| p.value.name.value.as_str() == "trusted");
+                if !has_trusted {
+                    self.parent.error(
+                        &proof_loc,
+                        "`assume` in proof block requires `[trusted]` annotation",
+                    );
+                    return None;
+                }
+                let kind = ConditionKind::Assume;
+                let mut et = self.exp_translator_for_context(&proof_loc, context, &kind);
+                et.old_status = OldExpStatus::NotSupported;
+                add_proof_locals(&mut et, proof_locals);
+                let translated = et.translate_exp(exp, &BOOL_TYPE).into_exp();
+                et.finalize_types(true);
+                self.parent.env.diag(
+                    Severity::Warning,
+                    &proof_loc,
+                    "proof uses trusted assumption",
+                );
+                Some(Proof::Assume(proof_loc, translated))
+            },
+            EA::Proof_::Apply(maccess, args) => self.def_ana_proof_apply(
+                &proof_loc,
+                context,
+                proof,
+                maccess,
+                args,
+                proof_locals,
+                in_post,
+            ),
+            EA::Proof_::ForallApply {
+                bindings,
+                patterns,
+                lemma,
+                args,
+                weight,
+            } => self.def_ana_proof_forall_apply(
+                &proof_loc,
+                context,
+                bindings,
+                patterns,
+                lemma,
+                args,
+                *weight,
+                proof_locals,
+                in_post,
+            ),
+            EA::Proof_::Calc(steps) => {
+                let kind = if in_post {
+                    ConditionKind::Ensures
+                } else {
+                    ConditionKind::Assert
+                };
+                let mut expanded = vec![];
+                let mut prev_exp: Option<Exp> = None;
+                let mut prev_op: Option<Operation> = None;
+                for (exp, op) in steps {
+                    let mut et = self.exp_translator_for_context(&proof_loc, context, &kind);
+                    if !in_post {
+                        et.old_status = OldExpStatus::NotSupported;
+                    }
+                    add_proof_locals(&mut et, proof_locals);
+                    let (_, translated) = et.translate_exp_free(exp);
+                    let translated = translated.into_exp();
+                    et.finalize_types(true);
+                    if let (Some(lhs), Some(relop)) = (prev_exp.take(), prev_op.take()) {
+                        expanded.push((lhs, relop, translated.clone()));
+                    }
+                    prev_exp = Some(translated);
+                    prev_op = match op.as_ref() {
+                        Some(spanned) => Some(match &spanned.value {
+                            PA::BinOp_::Eq => Operation::Eq,
+                            PA::BinOp_::Neq => Operation::Neq,
+                            PA::BinOp_::Lt => Operation::Lt,
+                            PA::BinOp_::Gt => Operation::Gt,
+                            PA::BinOp_::Le => Operation::Le,
+                            PA::BinOp_::Ge => Operation::Ge,
+                            _ => {
+                                self.parent.error(
+                                    &proof_loc,
+                                    "unsupported operator in calc; \
+                                     expected relational operator (==, !=, <, >, <=, >=)",
+                                );
+                                return None;
+                            },
+                        }),
+                        None => None,
+                    };
+                }
+                Some(Proof::Calc(proof_loc, expanded))
+            },
+            EA::Proof_::Post(inner) => {
+                if is_lemma {
+                    self.parent.error(
+                        &proof_loc,
+                        "`post` is not allowed in lemma proofs (lemmas have no return value)",
+                    );
+                    return None;
+                }
+                if in_post {
+                    self.parent
+                        .error(&proof_loc, "nested `post` is not allowed");
+                    return None;
+                }
+                let inner_proof =
+                    self.def_ana_proof(context, inner, proof_locals, true, is_lemma)?;
+                Some(Proof::Post(proof_loc, Box::new(inner_proof)))
+            },
+            EA::Proof_::Split(exp) => {
+                let kind = ConditionKind::Assume;
+                let mut et = self.exp_translator_for_context(&proof_loc, context, &kind);
+                et.old_status = OldExpStatus::NotSupported;
+                add_proof_locals(&mut et, proof_locals);
+                let (_, translated) = et.translate_exp_free(exp);
+                let translated = translated.into_exp();
+                et.finalize_types(true);
+                // Type validation (bool or enum) is deferred to spec instrumentation
+                // because the full struct env is not yet available during model building.
+                Some(Proof::Split(proof_loc, translated))
+            },
+        }
+    }
+
+    /// Resolve a lemma reference from a module access. Returns (module_id, lemma_index, params).
+    /// Looks up first in the current module, then in the global lemma declaration table.
+    fn resolve_lemma(
+        &self,
+        _proof_loc: &Loc,
+        maccess: &EA::ModuleAccess,
+    ) -> Option<(ModuleId, usize, Vec<Parameter>)> {
+        // For unqualified names, try module-local first.
+        if let EA::ModuleAccess_::Name(name) = &maccess.value {
+            let sym = self.symbol_pool().make(name.value.as_str());
+            if let Some(&idx) = self.lemma_name_to_idx.get(&sym) {
+                let params = self.lemmas[idx].params.clone();
+                return Some((self.module_id, idx, params));
+            }
+        }
+        // Resolve via qualified symbol in the global lemma table (pre-populated).
+        let qsym = self.module_access_to_qualified(maccess);
+        if let Some((mod_id, idx, params)) = self.parent.lemma_decl_table.get(&qsym) {
+            return Some((*mod_id, *idx, params.clone()));
+        }
+        None
+    }
+
+    /// Analyze an `apply lemma(args)` proof statement.
+    fn def_ana_proof_apply(
+        &mut self,
+        proof_loc: &Loc,
+        context: &SpecBlockContext,
+        proof: &EA::Proof,
+        maccess: &EA::ModuleAccess,
+        args: &[EA::Exp],
+        proof_locals: &[(Loc, Symbol, Type)],
+        in_post: bool,
+    ) -> Option<Proof> {
+        use crate::model::QualifiedId;
+
+        // Try to resolve as a lemma. First try module-local, then global table.
+        if let Some((mod_id, idx, lemma_params)) = self.resolve_lemma(proof_loc, maccess) {
+            let name_sym = match &maccess.value {
+                EA::ModuleAccess_::Name(name) => self.symbol_pool().make(name.value.as_str()),
+                EA::ModuleAccess_::ModuleAccess(_, name, _) => {
+                    self.symbol_pool().make(name.value.as_str())
+                },
+            };
+            if args.len() != lemma_params.len() {
+                self.parent.error(
+                    proof_loc,
+                    &format!(
+                        "lemma `{}` expects {} argument(s), but {} were provided",
+                        name_sym.display(self.symbol_pool()),
+                        lemma_params.len(),
+                        args.len(),
+                    ),
+                );
+                return None;
+            }
+            let kind = if in_post {
+                ConditionKind::Ensures
+            } else {
+                ConditionKind::Assume
+            };
+            let mut et = self.exp_translator_for_context(proof_loc, context, &kind);
+            if !in_post {
+                et.old_status = OldExpStatus::NotSupported;
+            }
+            add_proof_locals(&mut et, proof_locals);
+            let translated_args: Vec<Exp> = args
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let expected_ty = lemma_params
+                        .get(i)
+                        .map(|p| &p.1)
+                        .cloned()
+                        .unwrap_or(Type::Error);
+                    et.translate_exp(a, &expected_ty).into_exp()
+                })
+                .collect();
+            et.finalize_types(true);
+            let lemma_qid = QualifiedId {
+                module_id: mod_id,
+                id: LemmaId::new(idx),
+            };
+            return Some(Proof::Apply(proof_loc.clone(), lemma_qid, translated_args));
+        }
+
+        // Not a lemma — fall back to translating as a spec function call assertion.
+        let args_loc = if let Some(last) = args.last() {
+            last.loc
+        } else {
+            maccess.loc
+        };
+        let call_exp = sp(
+            proof.loc,
+            EA::Exp_::Call(
+                maccess.clone(),
+                PA::CallKind::Regular,
+                None,
+                sp(args_loc, args.to_vec()),
+            ),
+        );
+        let kind = if in_post {
+            ConditionKind::Ensures
+        } else {
+            ConditionKind::Assert
+        };
+        let mut et = self.exp_translator_for_context(proof_loc, context, &kind);
+        if !in_post {
+            et.old_status = OldExpStatus::NotSupported;
+        }
+        add_proof_locals(&mut et, proof_locals);
+        let translated = et.translate_exp(&call_exp, &BOOL_TYPE).into_exp();
+        et.finalize_types(true);
+        Some(Proof::Assert(proof_loc.clone(), translated))
+    }
+
+    /// Analyze a `forall bindings [triggers] apply lemma(args)` proof statement.
+    fn def_ana_proof_forall_apply(
+        &mut self,
+        proof_loc: &Loc,
+        context: &SpecBlockContext,
+        bindings: &EA::LValueWithRangeList,
+        patterns: &[Vec<EA::Exp>],
+        lemma_access: &EA::ModuleAccess,
+        args: &[EA::Exp],
+        weight: Option<u32>,
+        proof_locals: &[(Loc, Symbol, Type)],
+        in_post: bool,
+    ) -> Option<Proof> {
+        use crate::model::QualifiedId;
+
+        // Resolve lemma via global table.
+        let (mod_id, idx, lemma_params) =
+            if let Some(resolved) = self.resolve_lemma(proof_loc, lemma_access) {
+                resolved
+            } else {
+                let name_sym = match &lemma_access.value {
+                    EA::ModuleAccess_::Name(name) => self.symbol_pool().make(name.value.as_str()),
+                    EA::ModuleAccess_::ModuleAccess(_, name, _) => {
+                        self.symbol_pool().make(name.value.as_str())
+                    },
+                };
+                self.parent.error(
+                    proof_loc,
+                    &format!("`{}` is not a lemma", name_sym.display(self.symbol_pool())),
+                );
+                return None;
+            };
+
+        if args.len() != lemma_params.len() {
+            let name_sym = match &lemma_access.value {
+                EA::ModuleAccess_::Name(name) => self.symbol_pool().make(name.value.as_str()),
+                EA::ModuleAccess_::ModuleAccess(_, name, _) => {
+                    self.symbol_pool().make(name.value.as_str())
+                },
+            };
+            self.parent.error(
+                proof_loc,
+                &format!(
+                    "lemma `{}` expects {} argument(s), but {} were provided",
+                    name_sym.display(self.symbol_pool()),
+                    lemma_params.len(),
+                    args.len(),
+                ),
+            );
+            return None;
+        }
+
+        // For now, translate forall...apply as a quantified assumption without trigger support.
+        // The bindings define the quantifier variables, and the lemma is instantiated with args.
+        let kind = if in_post {
+            ConditionKind::Ensures
+        } else {
+            ConditionKind::Assume
+        };
+        let mut et = self.exp_translator_for_context(proof_loc, context, &kind);
+        if !in_post {
+            et.old_status = OldExpStatus::NotSupported;
+        }
+        add_proof_locals(&mut et, proof_locals);
+
+        // Translate quantifier bindings (only `x: T` style type-domain bindings are supported).
+        let mut bind_vars = vec![];
+        for range in &bindings.value {
+            let (ref bind, ref range_exp) = range.value;
+            if let EA::LValue_::Var(maccess, _) = &bind.value {
+                let name = match &maccess.value {
+                    EA::ModuleAccess_::Name(n) => n,
+                    _ => {
+                        et.error(proof_loc, "expected simple name in forall binding");
+                        return None;
+                    },
+                };
+                let sym = et.symbol_pool().make(name.value.as_str());
+                let (_, range_translated) = et.translate_exp_free(range_exp);
+                let range_ty = et.get_node_type(range_translated.node_id());
+                // Only `x: T` style bindings (TypeDomain) are supported.
+                let elem_ty = if let Type::TypeDomain(inner) = &range_ty {
+                    *inner.clone()
+                } else {
+                    et.error(
+                        proof_loc,
+                        "range expressions in `forall ... apply` are not supported; \
+                         use `x: T` type bindings instead",
+                    );
+                    return None;
+                };
+                bind_vars.push((sym, elem_ty));
+            }
+        }
+        // Define quantifier locals in translator scope for arg translation.
+        et.enter_scope();
+        for (sym, ty) in &bind_vars {
+            et.define_local(proof_loc, *sym, ty.clone(), None, None);
+        }
+
+        // Translate patterns (trigger groups).
+        let translated_patterns: Vec<Vec<Exp>> = patterns
+            .iter()
+            .map(|group| {
+                group
+                    .iter()
+                    .map(|e| {
+                        let (_, te) = et.translate_exp_free(e);
+                        te.into_exp()
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // Translate args.
+        let translated_args: Vec<Exp> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let expected_ty = lemma_params
+                    .get(i)
+                    .map(|p| &p.1)
+                    .cloned()
+                    .unwrap_or(Type::Error);
+                et.translate_exp(a, &expected_ty).into_exp()
+            })
+            .collect();
+        et.finalize_types(true);
+
+        let lemma_qid = QualifiedId {
+            module_id: mod_id,
+            id: LemmaId::new(idx),
+        };
+        Some(Proof::ForallApply(
+            proof_loc.clone(),
+            bind_vars,
+            translated_patterns,
+            lemma_qid,
+            translated_args,
+            weight,
+        ))
+    }
+
+    /// Definition-phase analysis for a lemma: analyze conditions and defer proof body.
+    /// The name, signature, and skeleton were already registered in `decl_ana_lemma`.
+    fn def_ana_lemma(
+        &mut self,
+        loc: &Loc,
+        context: &SpecBlockContext,
+        name: &PA::FunctionName,
+        _signature: &EA::FunctionSignature,
+        spec_members: &[EA::SpecBlockMember],
+        proof: &Option<EA::Proof>,
+    ) {
+        // Lemmas are only allowed in module-level spec blocks.
+        if !matches!(context, SpecBlockContext::Module) {
+            self.parent.error(
+                loc,
+                "lemma declarations are only allowed in module spec blocks",
+            );
+            return;
+        }
+
+        let lemma_sym = self.symbol_pool().make(name.0.value.as_str());
+        let idx = self.lemma_name_to_idx[&lemma_sym];
+
+        // Create a function-like context for analyzing conditions.
+        let lemma_qsym = self.qualified_by_module(lemma_sym);
+        let lemma_context = SpecBlockContext::Function(lemma_qsym.clone());
+
+        // Analyze spec conditions (requires/ensures) using the standard method.
+        for member in spec_members {
+            self.def_ana_spec_block_member(&lemma_context, member);
+        }
+
+        // Collect the conditions and properties from the spec built by the condition analysis.
+        let (conditions, properties) = self
+            .fun_specs
+            .get(&lemma_sym)
+            .map(|spec| (spec.conditions.clone(), spec.properties.clone()))
+            .unwrap_or_default();
+
+        // Store conditions into the existing skeleton.
+        self.lemmas[idx].conditions = conditions;
+        self.lemmas[idx].properties = properties;
+
+        // Translate proof body. All lemma names are already registered from decl_ana,
+        // so mutual recursion works without deferral.
+        if let Some(p) = proof {
+            let mut proof_locals = vec![];
+            let model_proof = self.def_ana_proof(&lemma_context, p, &mut proof_locals, false, true);
+            self.lemmas[idx].proof = model_proof;
+        }
+    }
+}
+
+/// Adds accumulated proof-local let bindings to an ExpTranslator's scope.
+fn add_proof_locals(et: &mut ExpTranslator, proof_locals: &[(Loc, Symbol, Type)]) {
+    if !proof_locals.is_empty() {
+        et.enter_scope();
+        for (ploc, name, ty) in proof_locals {
+            et.define_local(ploc, *name, ty.clone(), None, None);
         }
     }
 }
@@ -1586,13 +2623,18 @@ impl ModuleBuilder<'_, '_> {
         };
         let mut et = self.exp_translator_for_context(loc, context, &kind);
         let (_, def) = et.translate_exp_free(def);
+        // Need to acquire type information to be able to resolve receiver-style functions.
+        et.finalize_types(false);
+        // Post-process to resolve placeholders including receiver-style function calls.
+        let desugared_exp = et.post_process_body(def.into_exp());
+        // Run type inference again with proper error reporting.
         et.finalize_types(true);
 
         // Check whether a let of this name is already defined, and add it to the
         // map which tracks lets in this block.
         if self
             .spec_block_lets
-            .insert(sym, (post_state, def.node_id()))
+            .insert(sym, (post_state, desugared_exp.node_id()))
             .is_some()
         {
             self.parent.error(
@@ -1607,7 +2649,7 @@ impl ModuleBuilder<'_, '_> {
                 loc: loc.clone(),
                 kind,
                 properties: Default::default(),
-                exp: def.into_exp(),
+                exp: desugared_exp,
                 additional_exps: vec![],
             })
         })
@@ -1839,16 +2881,18 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
 
                 let mut et = ExpTranslator::new_with_old(self, allows_old);
                 et.define_type_params(loc, &entry.type_params, false);
+                // Build the self type with proper type parameter instantiation.
+                // Type params were just defined as TypeParameter(0), TypeParameter(1), ...
+                let self_type_args: Vec<Type> = (0..entry.type_params.len())
+                    .map(|i| Type::TypeParameter(i as u16))
+                    .collect();
                 if let StructLayout::Singleton(fields, _is_positional) = &entry.layout {
                     et.enter_scope();
-                    let lang_ver_ge_2 =
-                        et.env().language_version.is_at_least(LanguageVersion::V2_0);
                     for f in fields.values() {
-                        // In Aptos Move 2.0 and above, field `self` is omitted from local bindings
-                        // so `self` can be used to refer to `self` parameter.
-                        if lang_ver_ge_2
-                            && f.name.display(et.symbol_pool()).to_string()
-                                == well_known::RECEIVER_PARAM_NAME
+                        // Field `self` is omitted from local bindings
+                        // so `self` can be used to refer to the `self` parameter.
+                        if f.name.display(et.symbol_pool()).to_string()
+                            == well_known::RECEIVER_PARAM_NAME
                         {
                             continue;
                         }
@@ -1864,20 +2908,48 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
                             None,
                         );
                     }
-                    if lang_ver_ge_2 {
-                        let receiver_param_name =
-                            et.symbol_pool().make(well_known::RECEIVER_PARAM_NAME);
-                        let struct_type = Type::Struct(entry.module_id, entry.struct_id, vec![]);
-                        et.define_local(loc, receiver_param_name, struct_type, None, None);
+                    // Ghost fields are also bindable bare in struct invariants
+                    // (`invariant g > 0` instead of only `invariant self.g > 0`).
+                    for f in entry.ghost_fields.values() {
+                        et.define_local(
+                            loc,
+                            f.name,
+                            f.ty.clone(),
+                            Some(Operation::Select(
+                                entry.module_id,
+                                entry.struct_id,
+                                FieldId::new(f.name),
+                            )),
+                            None,
+                        );
                     }
+                    let receiver_param_name =
+                        et.symbol_pool().make(well_known::RECEIVER_PARAM_NAME);
+                    let struct_type =
+                        Type::Struct(entry.module_id, entry.struct_id, self_type_args);
+                    et.define_local(loc, receiver_param_name, struct_type, None, None);
                 } else if let StructLayout::Variants(_) = &entry.layout {
                     et.enter_scope();
-                    if et.env().language_version.is_at_least(LanguageVersion::V2_0) {
-                        let receiver_param_name =
-                            et.symbol_pool().make(well_known::RECEIVER_PARAM_NAME);
-                        let struct_type = Type::Struct(entry.module_id, entry.struct_id, vec![]);
-                        et.define_local(loc, receiver_param_name, struct_type, None, None);
+                    // Ghost fields on enums are variant-agnostic and also
+                    // bindable bare in struct invariants.
+                    for f in entry.ghost_fields.values() {
+                        et.define_local(
+                            loc,
+                            f.name,
+                            f.ty.clone(),
+                            Some(Operation::Select(
+                                entry.module_id,
+                                entry.struct_id,
+                                FieldId::new(f.name),
+                            )),
+                            None,
+                        );
                     }
+                    let receiver_param_name =
+                        et.symbol_pool().make(well_known::RECEIVER_PARAM_NAME);
+                    let struct_type =
+                        Type::Struct(entry.module_id, entry.struct_id, self_type_args);
+                    et.define_local(loc, receiver_param_name, struct_type, None, None);
                 }
 
                 et
@@ -1942,7 +3014,7 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
     fn check_visibility_compatibility(&self) {
         if let Some(package_vis_loc) = &self.package_fun_loc {
             let package_vis_loc = self.parent.to_loc(package_vis_loc);
-            let friend_vis_loc = if let Some(friend_vis_loc) = &self.friend_fun_loc {
+            let friend_vis_loc = if let Some(friend_vis_loc) = &self.friend_visibility_loc {
                 Some(self.parent.to_loc(friend_vis_loc))
             } else {
                 self.friend_decls
@@ -2057,33 +3129,62 @@ impl ModuleBuilder<'_, '_> {
             cond.exp.visit_post_order(&mut visitor);
         } else if !context.allow_old() {
             let name = context.name().expect("should have name");
-            // Restrict accesses to function arguments only for `old(..)` in in-spec block
+            // For `old(..)` in an inline spec block, restrict the wrapped
+            // expression to function parameters and global state: local
+            // variables have no value at function entry. Everything built
+            // from parameters, `global`/`exists` reads, selections thereof,
+            // and pure operations is admissible.
             let entry = self.parent.fun_table.get(name).expect("function defined");
+            let param_count = entry.params.len();
+            // Variables bound within the condition itself (quantifiers, lets,
+            // lambdas) are rigid values, not state-dependent: `old(..)`
+            // reinterprets only state reads. Only occurrences free in the
+            // whole condition refer to locals of the enclosing function.
+            let mut free_occurrences = BTreeSet::new();
+            cond.exp.visit_free_local_vars(|id, _sym| {
+                free_occurrences.insert(id);
+            });
             let mut visitor = |e: &ExpData| {
                 if let ExpData::Call(_, Operation::Old, args) = e {
                     let arg = &args[0];
-                    match args[0].as_ref() {
-                        ExpData::Temporary(_, idx) if *idx < entry.params.len() => (),
-                        _ => {
-                            let label_cond = (
-                                cond.loc.clone(),
-                                "only a function parameter is allowed in old(..) expressions \
-                                in inline spec block"
-                                    .to_owned(),
-                            );
-                            let label_exp = (
-                                self.parent.env.get_node_loc(arg.node_id()),
-                                "this expression is not a function parameter".to_owned(),
-                            );
-                            self.parent.env.diag_with_labels(
-                                Severity::Error,
-                                loc,
-                                "invalid old(..) expression in inline spec block",
-                                vec![label_cond, label_exp],
-                            );
-                            ok = false;
-                        },
-                    };
+                    let mut offender = None;
+                    arg.visit_pre_order(&mut |sub| {
+                        if offender.is_some() {
+                            return false;
+                        }
+                        match sub {
+                            ExpData::LocalVar(id, _) if free_occurrences.contains(id) => {
+                                offender = Some(*id);
+                                false
+                            },
+                            ExpData::Temporary(id, idx) if *idx >= param_count => {
+                                offender = Some(*id);
+                                false
+                            },
+                            _ => true,
+                        }
+                    });
+                    if let Some(offender_id) = offender {
+                        let label_cond = (
+                            cond.loc.clone(),
+                            "only function parameters and global state can be used \
+                            in old(..) in inline spec blocks"
+                                .to_owned(),
+                        );
+                        let label_exp = (
+                            self.parent.env.get_node_loc(offender_id),
+                            "this refers to a local variable, which has no value \
+                            at function entry"
+                                .to_owned(),
+                        );
+                        self.parent.env.diag_with_labels(
+                            Severity::Error,
+                            loc,
+                            "invalid old(..) expression in inline spec block",
+                            vec![label_cond, label_exp],
+                        );
+                        ok = false;
+                    }
                 }
                 true // continue visit, note all problematic subexprs
             };
@@ -2273,15 +3374,6 @@ impl ModuleBuilder<'_, '_> {
                 let first = exps.remove(0);
                 (first, exps)
             },
-            ConditionKind::Modifies => {
-                // Parser has created a dummy exp, targets are all in additional_exps
-                let mut exps = additional_exps
-                    .iter()
-                    .map(|target| et.translate_modify_target(target).into_exp())
-                    .collect_vec();
-                let first = exps.remove(0);
-                (first, exps)
-            },
             ConditionKind::Emits => {
                 // TODO: `first` is the "message" part, and `second` is the "handle" part.
                 //       `second` should have type std::event::EventHandle<T>, and `first`
@@ -2380,7 +3472,6 @@ impl ModuleBuilder<'_, '_> {
             PK::Assert => Assert,
             PK::Assume => Assume,
             PK::Decreases => Decreases,
-            PK::Modifies => Modifies,
             PK::Emits => Emits,
             PK::Ensures => Ensures,
             PK::Requires => Requires,
@@ -2454,15 +3545,73 @@ impl ModuleBuilder<'_, '_> {
         &mut self,
         uninterpreted: bool,
         _signature: &EA::FunctionSignature,
+        modifies: &[EA::Exp],
+        reads: &[EA::Type],
+        weight: Option<u32>,
         body: &EA::FunctionBody,
     ) {
+        // Stash `[weight = N]` in the spec fun's properties for the Boogie backend.
+        if let Some(n) = weight {
+            use num::BigInt;
+            let weight_sym = self.symbol_pool().make("weight");
+            self.spec_funs[self.spec_fun_index]
+                .spec
+                .borrow_mut()
+                .properties
+                .insert(
+                    weight_sym,
+                    PropertyValue::Value(Value::Number(BigInt::from(n))),
+                );
+        }
+        if !modifies.is_empty() || !reads.is_empty() {
+            let entry = &self.spec_funs[self.spec_fun_index];
+            let type_params = entry.type_params.clone();
+            let params = entry.params.clone();
+            let mut et = ExpTranslator::new_with_old(self, true);
+            let loc = et.to_loc(&body.loc);
+            et.define_type_params(&loc, &type_params, false);
+            et.enter_scope();
+            for Parameter(n, ty, loc) in params {
+                et.define_local(&loc, n, ty, None, None);
+            }
+            let translated_modifies: Vec<Exp> = modifies
+                .iter()
+                .map(|target| {
+                    let exp = et.translate_modify_target(target).into_exp();
+                    et.post_process_body(exp)
+                })
+                .collect();
+            // Translate reads types to QualifiedInstId<StructId>
+            let mut reads_targets = BTreeSet::new();
+            for ty in reads {
+                let translated_ty = et.translate_type(ty);
+                if let Type::Struct(module_id, struct_id, inst) = &translated_ty {
+                    reads_targets.insert(module_id.qualified_inst(*struct_id, inst.clone()));
+                } else {
+                    et.error(
+                        &loc,
+                        &format!(
+                            "expected a resource type, found `{}`",
+                            translated_ty.display(&et.type_display_context()),
+                        ),
+                    );
+                }
+            }
+            et.finalize_types(true);
+            let frame = self.spec_funs[self.spec_fun_index]
+                .frame_spec
+                .get_or_insert_with(FrameSpec::default);
+            frame.modifies_targets = translated_modifies;
+            frame.reads_targets = reads_targets;
+        }
         match &body.value {
             EA::FunctionBody_::Defined(seq) => {
                 let entry = &self.spec_funs[self.spec_fun_index];
                 let type_params = entry.type_params.clone();
                 let params = entry.params.clone();
                 let result_type = entry.result_type.clone();
-                let mut et = ExpTranslator::new(self);
+                // Always allow old() in spec fun bodies
+                let mut et = ExpTranslator::new_with_old(self, true);
                 let loc = et.to_loc(&body.loc);
                 et.define_type_params(&loc, &type_params, false);
                 et.enter_scope();
@@ -2487,6 +3636,727 @@ impl ModuleBuilder<'_, '_> {
             },
         }
         self.spec_fun_index += 1;
+    }
+
+    fn def_ana_modifies_of(
+        &mut self,
+        loc: &Loc,
+        context: &SpecBlockContext,
+        fun_param: &Spanned<move_symbol_pool::Symbol>,
+        params: &[(PA::Var, EA::Type)],
+        targets: &[EA::Exp],
+        all: bool,
+    ) {
+        let (owner_name, is_struct) = match context {
+            SpecBlockContext::Function(name) => (name.clone(), false),
+            SpecBlockContext::Struct(name) => (name.clone(), true),
+            _ => {
+                self.parent.env.error(
+                    loc,
+                    "`modifies_of` can only appear in a function or struct spec block",
+                );
+                return;
+            },
+        };
+        // Validate that fun_param names a function-typed parameter or field.
+        let param_sym = self.symbol_pool().make(&fun_param.value);
+        if is_struct {
+            if !self.validate_struct_fun_field(loc, &owner_name, param_sym) {
+                return;
+            }
+        } else if let Some(entry) = self.parent.fun_table.get(&owner_name) {
+            let found = entry
+                .params
+                .iter()
+                .any(|Parameter(name, ty, _)| *name == param_sym && ty.is_function());
+            if !found {
+                self.parent.env.error(
+                    loc,
+                    &format!(
+                        "`{}` is not a function-typed parameter of `{}`",
+                        fun_param.value,
+                        owner_name.display(self.parent.env)
+                    ),
+                );
+                return;
+            }
+        }
+        let mut et = ExpTranslator::new_with_old(self, true);
+        et.enter_scope();
+        // Define the formal parameter names so target expressions can reference them
+        let translated_params: Vec<Parameter> = params
+            .iter()
+            .map(|(v, ty)| {
+                let ty = et.translate_type(ty);
+                let sym = et.symbol_pool().make(&v.0.value);
+                let loc = et.to_loc(&v.0.loc);
+                et.define_local(&loc, sym, ty.clone(), None, None);
+                Parameter(sym, ty, loc)
+            })
+            .collect();
+        let translated_targets: Vec<Exp> = targets
+            .iter()
+            .map(|target| {
+                let exp = et.translate_modify_target(target).into_exp();
+                et.post_process_body(exp)
+            })
+            .collect();
+        et.finalize_types(true);
+        // Find or create entry for this parameter/field
+        let entries = if is_struct {
+            self.struct_field_access_of
+                .entry(owner_name.symbol)
+                .or_default()
+        } else {
+            self.fun_param_access_of
+                .entry(owner_name.symbol)
+                .or_default()
+        };
+        if let Some(entry) = entries.iter_mut().find(|e| e.fun_param == param_sym) {
+            entry.modifies_params = translated_params;
+            entry.frame_spec.modifies_targets = translated_targets;
+            entry.frame_spec.modifies_all = all;
+        } else {
+            entries.push(FunParamAccessOf {
+                loc: loc.clone(),
+                fun_param: param_sym,
+                modifies_params: translated_params,
+                frame_spec: FrameSpec {
+                    modifies_targets: translated_targets,
+                    reads_targets: BTreeSet::new(),
+                    modifies_all: all,
+                    ..Default::default()
+                },
+                used_memory: BTreeSet::new(),
+                old_memory: BTreeSet::new(),
+            });
+        }
+    }
+
+    fn def_ana_reads_of(
+        &mut self,
+        loc: &Loc,
+        context: &SpecBlockContext,
+        fun_param: &Spanned<move_symbol_pool::Symbol>,
+        types: &[EA::Type],
+        all: bool,
+    ) {
+        let (owner_name, is_struct) = match context {
+            SpecBlockContext::Function(name) => (name.clone(), false),
+            SpecBlockContext::Struct(name) => (name.clone(), true),
+            _ => {
+                self.parent.env.error(
+                    loc,
+                    "`reads_of` can only appear in a function or struct spec block",
+                );
+                return;
+            },
+        };
+        // Validate that fun_param names a function-typed parameter or field.
+        let param_sym = self.symbol_pool().make(&fun_param.value);
+        if is_struct {
+            if !self.validate_struct_fun_field(loc, &owner_name, param_sym) {
+                return;
+            }
+        } else if let Some(entry) = self.parent.fun_table.get(&owner_name) {
+            let found = entry
+                .params
+                .iter()
+                .any(|Parameter(name, ty, _)| *name == param_sym && ty.is_function());
+            if !found {
+                self.parent.env.error(
+                    loc,
+                    &format!(
+                        "`{}` is not a function-typed parameter of `{}`",
+                        fun_param.value,
+                        owner_name.display(self.parent.env)
+                    ),
+                );
+                return;
+            }
+        }
+        let mut et = ExpTranslator::new(self);
+        let mut reads_types = BTreeSet::new();
+        for ty in types {
+            let translated_ty = et.translate_type(ty);
+            // Resolve the type to a struct type
+            if let Type::Struct(module_id, struct_id, inst) = &translated_ty {
+                reads_types.insert(module_id.qualified_inst(*struct_id, inst.clone()));
+            } else {
+                et.error(
+                    loc,
+                    &format!(
+                        "expected a resource type, found `{}`",
+                        translated_ty.display(&et.type_display_context()),
+                    ),
+                );
+            }
+        }
+        et.finalize_types(true);
+        let param_sym = self.symbol_pool().make(&fun_param.value);
+        // Find or create entry for this parameter/field
+        let entries = if is_struct {
+            self.struct_field_access_of
+                .entry(owner_name.symbol)
+                .or_default()
+        } else {
+            self.fun_param_access_of
+                .entry(owner_name.symbol)
+                .or_default()
+        };
+        if let Some(entry) = entries.iter_mut().find(|e| e.fun_param == param_sym) {
+            entry.frame_spec.reads_targets = reads_types;
+            entry.frame_spec.reads_all = all;
+        } else {
+            entries.push(FunParamAccessOf {
+                loc: loc.clone(),
+                fun_param: param_sym,
+                modifies_params: vec![],
+                frame_spec: FrameSpec {
+                    modifies_targets: vec![],
+                    reads_targets: reads_types,
+                    reads_all: all,
+                    ..Default::default()
+                },
+                used_memory: BTreeSet::new(),
+                old_memory: BTreeSet::new(),
+            });
+        }
+    }
+
+    /// Validate that `field_sym` names a function-typed field in the struct `struct_name`.
+    fn validate_struct_fun_field(
+        &self,
+        loc: &Loc,
+        struct_name: &QualifiedSymbol,
+        field_sym: Symbol,
+    ) -> bool {
+        if let Some(entry) = self.parent.struct_table.get(struct_name) {
+            let found = match &entry.layout {
+                StructLayout::Singleton(fields, _) => fields
+                    .values()
+                    .any(|f| f.name == field_sym && f.ty.is_function()),
+                StructLayout::Variants(variants) => variants.iter().any(|v| {
+                    v.fields
+                        .values()
+                        .any(|f| f.name == field_sym && f.ty.is_function())
+                }),
+                StructLayout::None => false,
+            };
+            if !found {
+                self.parent.env.error(
+                    loc,
+                    &format!(
+                        "`{}` is not a function-typed field of `{}`",
+                        field_sym.display(self.symbol_pool()),
+                        struct_name.display(self.parent.env)
+                    ),
+                );
+                return false;
+            }
+        }
+        true
+    }
+
+    fn def_ana_modifies(&mut self, loc: &Loc, context: &SpecBlockContext, targets: &[EA::Exp]) {
+        let mut et = self.exp_translator_for_context(loc, context, &ConditionKind::AbortsIf);
+        let mut translated: Vec<Exp> = vec![];
+        for target in targets {
+            let (_, exp) = et.translate_exp_free(target);
+            match &exp {
+                ExpData::Call(_, Operation::Global(_), _) => {
+                    let exp = et.post_process_body(exp.into_exp());
+                    translated.push(exp);
+                },
+                _ => {
+                    et.error(&et.to_loc(&target.loc), "global resource access expected");
+                },
+            }
+        }
+        et.finalize_types(true);
+        self.update_spec(context, |spec| {
+            let frame = spec.frame_spec.get_or_insert_with(FrameSpec::default);
+            frame.modifies_targets.extend(translated);
+        });
+    }
+
+    fn def_ana_reads(&mut self, loc: &Loc, context: &SpecBlockContext, types: &[EA::Type]) {
+        let mut et = self.exp_translator_for_context(loc, context, &ConditionKind::AbortsIf);
+        let mut resolved = BTreeSet::new();
+        for ty in types {
+            let translated_ty = et.translate_type(ty);
+            if let Type::Struct(module_id, struct_id, inst) = &translated_ty {
+                resolved.insert(module_id.qualified_inst(*struct_id, inst.clone()));
+            } else {
+                et.error(
+                    loc,
+                    &format!(
+                        "expected a resource type, found `{}`",
+                        translated_ty.display(&et.type_display_context()),
+                    ),
+                );
+            }
+        }
+        et.finalize_types(true);
+        self.update_spec(context, |spec| {
+            let frame = spec.frame_spec.get_or_insert_with(FrameSpec::default);
+            frame.reads_targets.extend(resolved);
+        });
+    }
+}
+
+/// ## Ghost Field Definition Analysis
+
+impl ModuleBuilder<'_, '_> {
+    /// Declaration analysis for a ghost field (`ghost f: T;`) in a struct
+    /// spec block: registers a model-only field on the struct. Ghost fields
+    /// have no runtime counterpart; they are fresh (unconstrained) when the
+    /// struct is packed, carried along by every copy/move/borrow, excluded
+    /// from equality, and only accessible in specification expressions. This
+    /// runs in the declaration phase so that inline spec blocks in function
+    /// bodies, which are translated before struct spec blocks are
+    /// definition-analyzed, can reference ghost fields.
+    fn decl_ana_ghost_field(
+        &mut self,
+        loc: &Loc,
+        struct_name: &QualifiedSymbol,
+        name: &Name,
+        type_parameters: &[(Name, EA::AbilitySet)],
+        type_: &EA::Type,
+        init: &Option<EA::Exp>,
+    ) {
+        let struct_name = struct_name.clone();
+        if !type_parameters.is_empty() {
+            self.parent
+                .env
+                .error(loc, "ghost fields cannot have their own type parameters");
+            return;
+        }
+        let entry = self
+            .parent
+            .struct_table
+            .get(&struct_name)
+            .expect("invalid spec block context")
+            .clone();
+        // Translate the field type with the struct's type parameters in scope.
+        let mut et = ExpTranslator::new(self);
+        for (pos, TypeParameter(tp_name, tp_kind, tp_loc)) in entry.type_params.iter().enumerate() {
+            et.define_type_param(
+                tp_loc,
+                *tp_name,
+                Type::new_param(pos),
+                tp_kind.clone(),
+                false, /*report_errors*/
+            );
+        }
+        let ty = et.translate_type(type_);
+        // Reference types would generate ill-typed Boogie: the datatype
+        // constructor arg would require `$Mutation(...)`, but ghost value
+        // generation supplies bare typed values. Ghost state is model-only
+        // and shouldn't carry runtime reference semantics anyway.
+        if matches!(&ty, Type::Reference(..)) {
+            self.parent
+                .env
+                .error(loc, "ghost field type cannot be a reference");
+            return;
+        }
+        // A ghost field whose type transitively references its own enclosing
+        // struct produces a non-well-founded Boogie datatype (the only
+        // constructor requires another value of the same type). Reject it
+        // up front — the recursive-type check that runs over runtime fields
+        // doesn't see ghost fields.
+        let self_qid = entry.module_id.qualified(entry.struct_id);
+        if self.type_contains_struct(&ty, self_qid, &mut BTreeSet::new()) {
+            self.parent.env.error(
+                loc,
+                &format!(
+                    "ghost field type cannot reference its enclosing struct `{}`, \
+                     directly or transitively",
+                    struct_name.display(self.parent.env)
+                ),
+            );
+            return;
+        }
+        let field_sym = self.symbol_pool().make(&name.value);
+        // Collisions with declared (runtime) fields are checked when the
+        // struct definition is analyzed (`def_ana_struct`), where the field
+        // layout is known; only ghost-vs-ghost duplicates are checked here.
+        let duplicate_ghost = self
+            .parent
+            .struct_table
+            .get(&struct_name)
+            .expect("struct entry")
+            .ghost_fields
+            .contains_key(&field_sym);
+        if duplicate_ghost {
+            self.parent.env.error(
+                loc,
+                &format!(
+                    "duplicate declaration of field `{}` in struct `{}`",
+                    name.value,
+                    struct_name.display(self.parent.env)
+                ),
+            );
+            return;
+        }
+        let ghost_fields = &mut self
+            .parent
+            .struct_table
+            .get_mut(&struct_name)
+            .expect("struct entry")
+            .ghost_fields;
+        let offset = ghost_fields.len();
+        ghost_fields.insert(field_sym, FieldData {
+            name: field_sym,
+            loc: loc.clone(),
+            offset,
+            variant: None,
+            ty,
+            is_ghost: true,
+            init: None,
+        });
+        // Stash the raw initializer expression until the struct's runtime
+        // field layout is known; `def_ana_struct` translates and installs it
+        // on the FieldData.
+        if let Some(init_exp) = init {
+            self.parent
+                .struct_table
+                .get_mut(&struct_name)
+                .expect("struct entry")
+                .pending_ghost_inits
+                .insert(field_sym, init_exp.clone());
+        }
+    }
+
+    /// Translates any pending ghost-field initializer expressions (`ghost f: T = expr;`)
+    /// on the given struct into `Exp`s and installs them on the corresponding
+    /// ghost `FieldData::init`. Called from `def_ana_struct` once the struct's
+    /// runtime layout is known.
+    ///
+    /// Scope for the initializer:
+    /// * Type parameters of the enclosing struct.
+    /// * For singleton structs, each runtime field is bare-bindable (bound as a
+    ///   `LocalVar` of the field's type). Pack sites substitute the pack
+    ///   argument in for each `LocalVar`.
+    /// * For enums, only type parameters are in scope: ghost fields are
+    ///   variant-agnostic, so the initializer cannot reference variant fields.
+    fn translate_pending_ghost_inits(&mut self, struct_name: &QualifiedSymbol) {
+        let entry = self
+            .parent
+            .struct_table
+            .get(struct_name)
+            .expect("struct entry")
+            .clone();
+        if entry.pending_ghost_inits.is_empty() {
+            return;
+        }
+        for (field_sym, init_ea) in entry.pending_ghost_inits.iter() {
+            let ghost_ty = match entry.ghost_fields.get(field_sym) {
+                Some(fd) => fd.ty.clone(),
+                None => continue,
+            };
+            let mut et = ExpTranslator::new(self);
+            for (pos, TypeParameter(tp_name, tp_kind, tp_loc)) in
+                entry.type_params.iter().enumerate()
+            {
+                et.define_type_param(
+                    tp_loc,
+                    *tp_name,
+                    Type::new_param(pos),
+                    tp_kind.clone(),
+                    false, /*report_errors*/
+                );
+            }
+            et.enter_scope();
+            if let StructLayout::Singleton(field_map, _) = &entry.layout {
+                for (fname, fdata) in field_map {
+                    et.define_local(&fdata.loc, *fname, fdata.ty.clone(), None, None);
+                }
+            }
+            let translated = et.translate_exp(init_ea, &ghost_ty);
+            et.finalize_types(true);
+            let init_exp = translated.into_exp();
+            if exp_contains_bitwise_op(&init_exp) {
+                self.parent.env.error(
+                    &self.parent.env.get_node_loc(init_exp.node_id()),
+                    "bitvector expressions (|, &, ^, int2bv) cannot appear in a \
+                     ghost field initializer (ghost integer fields are modeled \
+                     as mathematical integers)",
+                );
+                continue;
+            }
+            if !self.parent.env.has_errors() {
+                self.parent
+                    .struct_table
+                    .get_mut(struct_name)
+                    .expect("struct entry")
+                    .ghost_fields
+                    .get_mut(field_sym)
+                    .expect("ghost field")
+                    .init = Some(init_exp);
+            }
+        }
+        // Drain pending; translated (or errored-out) initializers stay on the
+        // FieldData.
+        self.parent
+            .struct_table
+            .get_mut(struct_name)
+            .expect("struct entry")
+            .pending_ghost_inits
+            .clear();
+    }
+
+    /// Backend-synthesized iterator-validity slots. Binding a validity
+    /// predicate role (`map_spec_iter_valid`, `map_spec_leaf_iter_valid`, or
+    /// `map_spec_iter_preserved`) gives the intrinsic map — and, for the
+    /// per-iterator predicates, the predicate's iterator enum — a hidden
+    /// ghost field named `$validity`. The name is not spellable in Move
+    /// source, so no user spec can read, write, initialize, or constrain the
+    /// slot; the ghost machinery (carrier representation, fresh-at-pack,
+    /// havoc on structural mutation, equality exclusion) carries it, and the
+    /// role templates define the predicates over it.
+    fn synthesize_validity_slots(&mut self) {
+        use crate::pragmas::{
+            INTRINSIC_FUN_MAP_SPEC_ITER_PRESERVED, INTRINSIC_FUN_MAP_SPEC_ITER_VALID,
+            INTRINSIC_FUN_MAP_SPEC_LEAF_ITER_VALID,
+        };
+        let hidden = self.symbol_pool().make("$validity");
+        let mut to_stamp: Vec<QualifiedSymbol> = vec![];
+        let mut bad_roles: Vec<(&'static str, Loc)> = vec![];
+        for decl in &self.parent.intrinsics {
+            if decl.get_move_type().module_id != self.module_id {
+                continue;
+            }
+            let mut any = false;
+            for role in [
+                INTRINSIC_FUN_MAP_SPEC_ITER_VALID,
+                INTRINSIC_FUN_MAP_SPEC_LEAF_ITER_VALID,
+            ] {
+                let Some(sf_qid) = decl.lookup_spec_fun(self.parent.env, role) else {
+                    continue;
+                };
+                any = true;
+                // The iterator enum is the predicate's first parameter; it
+                // must live in this module so its slot can be synthesized
+                // here. Full signature validation happens at mono analysis.
+                let (iter_qsym, sf_loc) = if sf_qid.module_id == self.module_id {
+                    let sf = &self.spec_funs[sf_qid.id.as_usize()];
+                    let qsym = match sf.params.first() {
+                        Some(Parameter(_, Type::Struct(mid, sid, _), _))
+                            if *mid == self.module_id =>
+                        {
+                            Some(QualifiedSymbol {
+                                module_name: self.module_name.clone(),
+                                symbol: sid.symbol(),
+                            })
+                        },
+                        _ => None,
+                    };
+                    (qsym, sf.loc.clone())
+                } else {
+                    let sf_loc = self
+                        .parent
+                        .env
+                        .get_module(sf_qid.module_id)
+                        .get_spec_fun(sf_qid.id)
+                        .loc
+                        .clone();
+                    (None, sf_loc)
+                };
+                match iter_qsym {
+                    Some(qsym) => to_stamp.push(qsym),
+                    None => bad_roles.push((role, sf_loc)),
+                }
+            }
+            if decl
+                .lookup_spec_fun(self.parent.env, INTRINSIC_FUN_MAP_SPEC_ITER_PRESERVED)
+                .is_some()
+            {
+                any = true;
+            }
+            if any {
+                to_stamp.push(QualifiedSymbol {
+                    module_name: self.module_name.clone(),
+                    symbol: decl.get_move_type().id.symbol(),
+                });
+            }
+        }
+        for (role, loc) in bad_roles {
+            self.parent.env.error(
+                &loc,
+                &format!(
+                    "the first parameter of a `{}` binding must be an iterator \
+                     type declared in the same module as the map",
+                    role
+                ),
+            );
+        }
+        for qsym in to_stamp {
+            let Some(entry) = self.parent.struct_table.get_mut(&qsym) else {
+                continue;
+            };
+            if entry.ghost_fields.contains_key(&hidden) {
+                continue;
+            }
+            let offset = entry.ghost_fields.len();
+            entry.ghost_fields.insert(hidden, FieldData {
+                name: hidden,
+                loc: entry.loc.clone(),
+                offset,
+                variant: None,
+                ty: Type::Primitive(PrimitiveType::Num),
+                is_ghost: true,
+                init: None,
+            });
+        }
+    }
+
+    /// Post-definition-analysis check of all ghost field types in this
+    /// module for recursion through runtime fields. Rejecting ghosts whose
+    /// type reaches back to the enclosing struct keeps the generated Boogie
+    /// datatypes well-founded.
+    fn check_ghost_field_recursion(&mut self) {
+        let ghost_decls: Vec<(QualifiedSymbol, Symbol, Loc, Type)> = self
+            .parent
+            .struct_table
+            .iter()
+            .filter(|(_, entry)| entry.module_id == self.module_id)
+            .flat_map(|(qsym, entry)| {
+                entry
+                    .ghost_fields
+                    .values()
+                    .map(|f| (qsym.clone(), f.name, f.loc.clone(), f.ty.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for (struct_name, field_sym, loc, ty) in ghost_decls {
+            let entry = self.parent.struct_table.get(&struct_name).expect("entry");
+            let self_qid = entry.module_id.qualified(entry.struct_id);
+            if self.type_contains_struct(&ty, self_qid, &mut BTreeSet::new()) {
+                self.parent.env.error(
+                    &loc,
+                    &format!(
+                        "ghost field type cannot reference its enclosing struct `{}`, \
+                         directly or transitively",
+                        struct_name.display(self.parent.env)
+                    ),
+                );
+                self.parent
+                    .struct_table
+                    .get_mut(&struct_name)
+                    .expect("entry")
+                    .ghost_fields
+                    .remove(&field_sym);
+            }
+        }
+    }
+
+    /// Whether `ty` transitively references the struct identified by `needle`.
+    /// Used by ghost-field declaration analysis to reject self-referential
+    /// ghost types (which would generate a non-well-founded Boogie datatype).
+    ///
+    /// Runs during declaration analysis, when structs in the current module
+    /// may not yet be visible via `GlobalEnv::get_struct`. For same-module
+    /// struct references, walks the builder's `struct_table` instead; for
+    /// cross-module references, uses the global env.
+    fn type_contains_struct(
+        &self,
+        ty: &Type,
+        needle: crate::model::QualifiedId<StructId>,
+        visited: &mut BTreeSet<(crate::model::QualifiedId<StructId>, Vec<Type>)>,
+    ) -> bool {
+        match ty {
+            Type::Struct(mid, sid, inst) => {
+                let qid = mid.qualified(*sid);
+                if qid == needle {
+                    return true;
+                }
+                // Key the visited set on the full instantiation: `Wrap<u64>`
+                // must not shield a later `Wrap<S>` whose argument reaches
+                // the needle. Struct declarations are acyclic (up to the
+                // ghost edges being checked), so the set of instantiations
+                // encountered is finite.
+                if !visited.insert((qid, inst.clone())) {
+                    return false;
+                }
+                // Same-module structs may not be in GlobalEnv yet during
+                // declaration analysis; look them up in the builder table
+                // via the reverse index.
+                if *mid == self.module_id {
+                    let sym = self
+                        .parent
+                        .reverse_struct_table
+                        .get(&(*mid, *sid))
+                        .expect("same-module struct in builder table");
+                    let entry = self
+                        .parent
+                        .struct_table
+                        .get(sym)
+                        .expect("same-module struct entry");
+                    let mut hit = false;
+                    let mut check_fields = |fields: &BTreeMap<Symbol, FieldData>| {
+                        for f in fields.values() {
+                            if self.type_contains_struct(&f.ty.instantiate(inst), needle, visited) {
+                                hit = true;
+                            }
+                        }
+                    };
+                    match &entry.layout {
+                        StructLayout::Singleton(field_map, _) => check_fields(field_map),
+                        StructLayout::Variants(variants) => {
+                            for v in variants {
+                                check_fields(&v.fields);
+                            }
+                        },
+                        StructLayout::None => {},
+                    }
+                    // Ghost fields are constructor arguments of the Boogie
+                    // datatype too, so a cycle through another struct's ghost
+                    // is just as non-well-founded as one through a runtime
+                    // field.
+                    check_fields(&entry.ghost_fields);
+                    return hit;
+                }
+                let s = self.parent.env.get_struct(qid);
+                let mut hit = false;
+                if s.has_variants() {
+                    for variant in s.get_variants() {
+                        for f in s.get_fields_of_variant(variant) {
+                            if self.type_contains_struct(
+                                &f.get_type().instantiate(inst),
+                                needle,
+                                visited,
+                            ) {
+                                hit = true;
+                            }
+                        }
+                    }
+                } else {
+                    for f in s.get_fields() {
+                        if self.type_contains_struct(
+                            &f.get_type().instantiate(inst),
+                            needle,
+                            visited,
+                        ) {
+                            hit = true;
+                        }
+                    }
+                }
+                for f in s.get_ghost_fields() {
+                    if self.type_contains_struct(&f.get_type().instantiate(inst), needle, visited) {
+                        hit = true;
+                    }
+                }
+                hit
+            },
+            Type::Vector(inner) | Type::Reference(_, inner) => {
+                self.type_contains_struct(inner, needle, visited)
+            },
+            Type::Tuple(tys) => tys
+                .iter()
+                .any(|t| self.type_contains_struct(t, needle, visited)),
+            _ => false,
+        }
     }
 }
 
@@ -2548,11 +4418,101 @@ impl ModuleBuilder<'_, '_> {
                 PropertyBag::default(),
                 "",
             );
+        } else if let Some((base, is_ghost_field)) =
+            self.extract_ghost_field_update_target(&translated_lhs)
+        {
+            if !is_ghost_field {
+                self.parent.error(
+                    &self.parent.env.get_node_loc(translated_lhs.node_id()),
+                    "target of `update` restricted to specification variables and ghost fields",
+                );
+                return;
+            }
+            // Local variables of inline spec blocks appear as `LocalVar` here
+            // and are remapped to `Temporary` when the spec is attached to
+            // the code.
+            if !matches!(
+                base.as_ref(),
+                ExpData::Temporary(..) | ExpData::LocalVar(..)
+            ) {
+                self.parent.error(
+                    &self.parent.env.get_node_loc(translated_lhs.node_id()),
+                    "ghost field update target must be a local variable or parameter",
+                );
+                return;
+            }
+            // Immutable references are eliminated before spec instrumentation:
+            // the write would land on an owned prover copy, but the callee's
+            // postcondition over the immutable reference is still assumed —
+            // letting a caller certify false assertions about unchanged
+            // runtime state. Only owned values and mutable references have
+            // observable ghost mutations.
+            let base_ty = self.parent.env.get_node_type(base.node_id());
+            if matches!(
+                base_ty,
+                crate::ty::Type::Reference(crate::ty::ReferenceKind::Immutable, _)
+            ) {
+                self.parent.error(
+                    &self.parent.env.get_node_loc(translated_lhs.node_id()),
+                    "ghost field update target cannot be behind an immutable reference; \
+                     use an owned value or a mutable reference",
+                );
+                return;
+            }
+            // Read-only-ness of intrinsic-map ghosts is checked in spec
+            // instrumentation, where the intrinsics annotation is complete
+            // even for same-module declarations.
+            // Bitwise operators on the RHS produce bitvector-typed Boogie
+            // expressions, but ghost fields are declared as unbounded integer
+            // in Boogie (they are model-only and don't participate in
+            // number-operation analysis). Emitting the update would yield an
+            // ill-typed Boogie program, so reject at model build time.
+            let rhs_exp = translated_rhs.into_exp();
+            if exp_contains_bitwise_op(&rhs_exp) {
+                self.parent.error(
+                    &self.parent.env.get_node_loc(rhs_exp.node_id()),
+                    "bitvector expressions (|, &, ^, int2bv) cannot appear in a \
+                     ghost field update expression (ghost integer fields are \
+                     modeled as mathematical integers)",
+                );
+                return;
+            }
+            self.add_conditions_to_context(
+                context,
+                loc,
+                vec![Condition {
+                    loc: loc.clone(),
+                    kind: ConditionKind::Update,
+                    properties: Default::default(),
+                    exp: rhs_exp,
+                    additional_exps: vec![translated_lhs.into_exp()],
+                }],
+                PropertyBag::default(),
+                "",
+            );
         } else {
             self.parent.error(
                 &self.parent.env.get_node_loc(translated_lhs.node_id()),
-                "target of `update` restricted to specification variables",
+                "target of `update` restricted to specification variables and ghost fields",
             )
+        }
+    }
+
+    /// If the expression is a field selection `base.f`, returns the base
+    /// expression and whether `f` is a ghost field of the base's struct.
+    /// Consults the builder tables since the struct's module may still be
+    /// under construction.
+    fn extract_ghost_field_update_target(&self, lhs: &ExpData) -> Option<(Exp, bool)> {
+        if let ExpData::Call(_, Operation::Select(mid, sid, fid), args) = lhs {
+            let is_ghost = self
+                .parent
+                .reverse_struct_table
+                .get(&(*mid, *sid))
+                .and_then(|qsym| self.parent.struct_table.get(qsym))
+                .is_some_and(|entry| entry.ghost_fields.contains_key(&fid.symbol()));
+            Some((args[0].clone(), is_ghost))
+        } else {
+            None
         }
     }
 }
@@ -2661,6 +4621,7 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
         // in schema arguments of includes. This unfortunately means we can't refer in
         // lets to variables included from schemas, but this seems to be a rare use case.
         assert!(self.spec_block_lets.is_empty());
+        assert!(self.spec_block_state_labels.is_empty());
         for member in &block.value.members {
             let member_loc = self.parent.to_loc(&member.loc);
             if let EA::SpecBlockMember_::Let {
@@ -2732,12 +4693,21 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
                         );
                     }
                 },
+                EA::SpecBlockMember_::Modifies { targets } => {
+                    let context = SpecBlockContext::Schema(name.clone());
+                    self.def_ana_modifies(&member_loc, &context, targets);
+                },
+                EA::SpecBlockMember_::Reads { types } => {
+                    let context = SpecBlockContext::Schema(name.clone());
+                    self.def_ana_reads(&member_loc, &context, types);
+                },
                 _ => {
                     self.parent.error(&member_loc, "item not allowed in schema");
                 },
             };
         }
         self.spec_block_lets.clear();
+        self.spec_block_state_labels.clear();
     }
 
     /// Extracts all schema inclusions from a list of spec block members.
@@ -3153,6 +5123,31 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
             }
         }
 
+        // Transfer frame_spec from schema (and included schemas) to the target spec.
+        for source_spec in [&schema_entry.spec, &schema_entry.included_spec] {
+            if let Some(frame) = &source_spec.frame_spec {
+                let mut replacer = |_, target: RewriteTarget| {
+                    if let RewriteTarget::LocalVar(sym) = target {
+                        argument_map.get(&sym).cloned()
+                    } else {
+                        None
+                    }
+                };
+                let mut rewriter =
+                    ExpRewriter::new(self.parent.env, &mut replacer).set_type_args(type_arguments);
+                let rewritten_targets: Vec<Exp> = frame
+                    .modifies_targets
+                    .iter()
+                    .map(|t| rewriter.rewrite_exp(t.clone()))
+                    .collect();
+                let target_frame = spec.frame_spec.get_or_insert_with(FrameSpec::default);
+                target_frame.modifies_targets.extend(rewritten_targets);
+                target_frame
+                    .reads_targets
+                    .extend(frame.reads_targets.iter().cloned());
+            }
+        }
+
         // Put schema entry back.
         self.parent
             .spec_schema_table
@@ -3275,6 +5270,16 @@ impl<'env, 'translator> ModuleBuilder<'env, 'translator> {
             context_properties,
             "(included from schema)",
         );
+        // Transfer frame_spec (modifies/reads) from the schema to the context.
+        if let Some(frame) = spec.frame_spec {
+            self.update_spec(context, |target_spec| {
+                let target_frame = target_spec
+                    .frame_spec
+                    .get_or_insert_with(FrameSpec::default);
+                target_frame.modifies_targets.extend(frame.modifies_targets);
+                target_frame.reads_targets.extend(frame.reads_targets);
+            });
+        }
     }
 
     /// Analyzes a schema apply weaving operator.
@@ -3459,88 +5464,6 @@ impl ModuleBuilder<'_, '_> {
 
 /// # Tweak application
 
-impl ModuleBuilder<'_, '_> {
-    /// Tweak the specifications at the AST level based on `ModuleBuilderOptions`.
-    fn apply_tweaks(&mut self, module_def: &EA::ModuleDefinition) {
-        self.tweak_pragma_opaque(module_def);
-    }
-
-    /// If the `ignore_pragma_opaque_*` options are set, the opaque pragma will be
-    /// removed from the function spec property bag according to the options.
-    fn tweak_pragma_opaque(&mut self, module_def: &EA::ModuleDefinition) {
-        let env = &self.parent.env;
-        let options = env
-            .get_extension::<ModelBuilderOptions>()
-            .unwrap_or_default();
-        if !(options.ignore_pragma_opaque_when_possible
-            || options.ignore_pragma_opaque_internal_only)
-        {
-            return;
-        }
-
-        for spec in &module_def.specs {
-            if matches!(spec.value.target.value, EA::SpecBlockTarget_::Schema(..)) {
-                continue;
-            }
-            if let Some(SpecBlockContext::Function(fun_name)) =
-                self.get_spec_block_context(&spec.value.target)
-            {
-                if let Some(spec) = self.fun_specs.get_mut(&fun_name.symbol) {
-                    // if the spec does not have "pragma opaque;" do nothing,
-                    let has_pragma_opaque = env
-                        .is_property_true(&spec.properties, OPAQUE_PRAGMA)
-                        .unwrap_or(false);
-                    if !has_pragma_opaque {
-                        continue;
-                    }
-
-                    // if the spec has `pragma verify = false;` do not remove its `opaque` mark
-                    let is_verified = env
-                        .is_property_true(&spec.properties, VERIFY_PRAGMA)
-                        .unwrap_or(true)
-                        && env
-                            .is_property_true(&self.module_spec.properties, VERIFY_PRAGMA)
-                            .unwrap_or(true);
-                    if !is_verified {
-                        continue;
-                    }
-
-                    // if the spec has `[concrete]` or `[abstract]` properties, do not remove its
-                    // `opaque` mark
-                    let has_opaque_prop = spec.any(|cond| {
-                        env.is_property_true(&cond.properties, CONDITION_CONCRETE_PROP)
-                            .unwrap_or(false)
-                            || env
-                                .is_property_true(&cond.properties, CONDITION_ABSTRACT_PROP)
-                                .unwrap_or(false)
-                    });
-                    if has_opaque_prop {
-                        continue;
-                    }
-
-                    // if the function may have unknown callers, respect the option
-                    // `ignore_pragma_opaque_internal_only`.
-                    let fun_entry = self.parent.fun_table.get(&fun_name).unwrap_or_else(|| {
-                        panic!(
-                            "Unable to find function `{}`",
-                            fun_name.display(self.parent.env)
-                        )
-                    });
-                    let has_unknown_caller = matches!(fun_entry.visibility, Visibility::Public)
-                        || fun_entry.kind == FunctionKind::Entry;
-                    if has_unknown_caller && options.ignore_pragma_opaque_internal_only {
-                        continue;
-                    }
-
-                    // everything is cleared, we can remove the `opaque` mark now
-                    let opaque_symbol = env.symbol_pool().make(OPAQUE_PRAGMA);
-                    spec.properties.remove(&opaque_symbol);
-                }
-            }
-        }
-    }
-}
-
 /// # Environment Population and finalization
 
 impl ModuleBuilder<'_, '_> {
@@ -3552,6 +5475,25 @@ impl ModuleBuilder<'_, '_> {
             }
             // New struct in this module
             let spec = self.struct_specs.remove(&name.symbol).unwrap_or_default();
+            // Intrinsic types have no generated Boogie datatype to carry
+            // ghost constructor arguments; reject ghosts on them — except
+            // intrinsic MAP types, which gain a carrier datatype. This is the
+            // earliest point where the intrinsic pragma is reliably known.
+            if !entry.ghost_fields.is_empty() {
+                let pool = self.parent.env.symbol_pool();
+                if spec.properties.contains_key(&pool.make(INTRINSIC_PRAGMA)) {
+                    for f in entry.ghost_fields.values() {
+                        // Backend-synthesized validity slots carry unspellable
+                        // `$`-names and exist precisely for intrinsic maps.
+                        if pool.string(f.name).starts_with('$') {
+                            continue;
+                        }
+                        self.parent
+                            .env
+                            .error(&f.loc, "ghost fields are not supported on intrinsic types");
+                    }
+                }
+            }
             let mut field_data: BTreeMap<FieldId, FieldData> = BTreeMap::new();
             let mut variants: BTreeMap<Symbol, model::StructVariant> = BTreeMap::new();
             let is_enum = match &entry.layout {
@@ -3580,6 +5522,11 @@ impl ModuleBuilder<'_, '_> {
                 },
                 StructLayout::None => false,
             };
+            // Collect field access declarations for this struct
+            let field_access_of = self
+                .struct_field_access_of
+                .remove(&name.symbol)
+                .unwrap_or_default();
             let data = StructData {
                 name: name.symbol,
                 loc: entry.loc.clone(),
@@ -3589,15 +5536,43 @@ impl ModuleBuilder<'_, '_> {
                 abilities: entry.abilities,
                 spec_var_opt: None,
                 field_data,
+                ghost_field_data: entry
+                    .ghost_fields
+                    .iter()
+                    .map(|(sym, data)| (FieldId::new(*sym), data.clone()))
+                    .collect(),
                 variants: if is_enum { Some(variants) } else { None },
                 spec: RefCell::new(spec),
+                field_access_of,
                 is_native: entry.is_native,
+                visibility: entry.visibility,
+                has_package_visibility: self.package_structs.contains(&entry.struct_id),
+                is_empty_struct: entry.is_empty_struct,
+                users: entry.users.clone(),
             };
             struct_data.insert(StructId::new(name.symbol), data);
+            if entry.visibility != Visibility::Private
+                && !self
+                    .parent
+                    .env
+                    .language_version()
+                    .language_version_for_public_struct()
+            {
+                self.parent.env.warning(
+                        &loc,
+                        &format!("structs/enums with visibility modifier are only supported at version {} or later",
+                        LANGUAGE_VERSION_FOR_PUBLIC_STRUCT)
+                    );
+            }
         }
         let mut function_data: BTreeMap<FunId, FunctionData> = Default::default();
         for (name, entry) in &self.parent.fun_table {
             if entry.module_id != self.module_id {
+                continue;
+            }
+            // Skip lemma entries — they were added to fun_table for name resolution
+            // during condition analysis but are handled separately below.
+            if entry.kind == FunctionKind::Lemma {
                 continue;
             }
             // If the function is from a script, its return value must be unit.
@@ -3613,6 +5588,10 @@ impl ModuleBuilder<'_, '_> {
             let called_funs = Some(def.as_ref().map(|e| e.called_funs()).unwrap_or_default());
             let used_funs = Some(def.as_ref().map(|e| e.used_funs()).unwrap_or_default());
             let access_specifiers = self.fun_access_specifiers.remove(&name.symbol);
+            let fun_param_access_of = self
+                .fun_param_access_of
+                .remove(&name.symbol)
+                .unwrap_or_default();
             let fun_id = FunId::new(name.symbol);
             let data = FunctionData {
                 name: name.symbol,
@@ -3626,22 +5605,62 @@ impl ModuleBuilder<'_, '_> {
                 visibility: entry.visibility,
                 has_package_visibility: self.package_funs.contains(&fun_id),
                 is_native: entry.is_native,
+                is_struct_api: false,
                 kind: entry.kind,
                 attributes: entry.attributes.clone(),
                 type_params: entry.type_params.clone(),
                 params: entry.params.clone(),
                 result_type: entry.result_type.clone(),
                 access_specifiers,
+                fun_param_access_of,
+                spec_used_memory: std::cell::RefCell::new(BTreeSet::new()),
+                spec_old_memory: std::cell::RefCell::new(BTreeSet::new()),
+                spec_uses_old: std::cell::Cell::new(false),
                 acquired_structs: None,
                 spec: spec.into(),
                 def,
                 called_funs,
-                calling_funs: RefCell::default(),
-                transitive_closure_of_called_funs: RefCell::default(),
                 used_funs,
-                using_funs: RefCell::default(),
-                transitive_closure_of_used_funs: RefCell::default(),
-                used_functions_with_transitive_inline: RefCell::default(),
+            };
+            function_data.insert(fun_id, data);
+        }
+
+        // Create synthetic FunctionData entries for lemma declarations so they are visible
+        // to the prover pipeline via `get_functions()`. They have `def: None` and
+        // `kind: FunctionKind::Lemma`, and their spec conditions come from the LemmaDecl.
+        for lemma in &self.lemmas {
+            let fun_id = FunId::new(lemma.name);
+            let spec = Spec {
+                loc: Some(lemma.loc.clone()),
+                conditions: lemma.conditions.clone(),
+                properties: lemma.properties.clone(),
+                proof: lemma.proof.clone(),
+                ..Default::default()
+            };
+            let data = FunctionData {
+                name: lemma.name,
+                loc: FunctionLoc::from_single(lemma.loc.clone()),
+                def_idx: None,
+                handle_idx: None,
+                visibility: Visibility::Private,
+                has_package_visibility: false,
+                is_native: false,
+                is_struct_api: false,
+                kind: FunctionKind::Lemma,
+                attributes: vec![],
+                type_params: lemma.type_params.clone(),
+                params: lemma.params.clone(),
+                result_type: Type::unit(),
+                access_specifiers: None,
+                fun_param_access_of: vec![],
+                spec_used_memory: std::cell::RefCell::new(BTreeSet::new()),
+                spec_old_memory: std::cell::RefCell::new(BTreeSet::new()),
+                spec_uses_old: std::cell::Cell::new(false),
+                acquired_structs: None,
+                spec: spec.into(),
+                def: None,
+                called_funs: Some(Default::default()),
+                used_funs: Some(Default::default()),
             };
             function_data.insert(fun_id, data);
         }
@@ -3657,12 +5676,20 @@ impl ModuleBuilder<'_, '_> {
                 value,
                 ty,
                 visibility: _,
+                move_visibility,
+                has_package_visibility,
+                users,
+                attributes,
             } = const_entry.clone();
             let data = NamedConstantData {
                 name: name.symbol,
                 loc,
                 type_: ty,
                 value,
+                visibility: move_visibility,
+                has_package_visibility,
+                attributes,
+                users,
             };
             named_constants.insert(NamedConstantId::new(name.symbol), data);
         }
@@ -3678,10 +5705,29 @@ impl ModuleBuilder<'_, '_> {
             function_data,
             std::mem::take(&mut self.spec_vars),
             std::mem::take(&mut self.spec_funs),
+            std::mem::take(&mut self.lemmas),
             std::mem::take(&mut self.module_spec),
             std::mem::take(&mut self.spec_block_infos),
         );
     }
+}
+
+/// Whether `exp` contains a bitvector-producing operation anywhere in its
+/// tree: a bitwise operator or `int2bv`. These lower to bitvector-typed
+/// Boogie expressions and cannot be assigned into a ghost integer field
+/// (which is modeled as unbounded int).
+pub(crate) fn exp_contains_bitwise_op(exp: &crate::ast::Exp) -> bool {
+    use crate::ast::{ExpData, Operation};
+    exp.as_ref().any(&mut |e| {
+        matches!(
+            e,
+            ExpData::Call(
+                _,
+                Operation::BitOr | Operation::BitAnd | Operation::Xor | Operation::Int2Bv,
+                _
+            )
+        )
+    })
 }
 
 /// Extract all accesses of a schema from a schema expression.

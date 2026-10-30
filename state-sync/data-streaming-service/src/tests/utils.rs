@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{data_notification::DataNotification, data_stream::DataStreamListener, error::Error};
 use aptos_config::config::AptosDataClientConfig;
@@ -14,6 +13,7 @@ use aptos_data_client::{
 };
 use aptos_infallible::Mutex;
 use aptos_logger::Level;
+use aptos_storage_interface::StateKind;
 use aptos_storage_service_types::{
     requests::{
         DataRequest, EpochEndingLedgerInfoRequest, NewTransactionOutputsWithProofRequest,
@@ -288,6 +288,7 @@ impl AptosDataClientInterface for MockAptosDataClient {
         start_index: u64,
         end_index: u64,
         request_timeout_ms: u64,
+        _kind: StateKind,
     ) -> Result<Response<StateValueChunkWithProof>, aptos_data_client::error::Error> {
         // Verify the request timeout
         let data_request = DataRequest::GetStateValuesWithProof(StateValuesWithProofRequest {
@@ -530,6 +531,7 @@ impl AptosDataClientInterface for MockAptosDataClient {
         &self,
         version: Version,
         request_timeout_ms: u64,
+        _kind: StateKind,
     ) -> Result<Response<u64>, aptos_data_client::error::Error> {
         // Verify the request timeout
         let data_request = DataRequest::GetNumberOfStatesAtVersion(version);
@@ -1121,5 +1123,5 @@ pub fn create_output_list_with_proof(
 ///
 /// Note: there's a 50-50 chance of this occurring.
 fn return_transactions_instead_of_outputs() -> bool {
-    (create_random_u64(u64::MAX) % 2) == 0
+    create_random_u64(u64::MAX).is_multiple_of(2)
 }

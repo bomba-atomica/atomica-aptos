@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     smoke_test_environment::{new_local_swarm_with_aptos, SwarmBuilder},
@@ -28,6 +27,8 @@ use move_core_types::{
 };
 use std::{convert::TryFrom, str::FromStr, sync::Arc, time::Duration};
 
+// Trivial test that is already tested in the API tests
+#[ignore]
 #[tokio::test]
 async fn test_get_index() {
     let swarm = new_local_swarm_with_aptos(1).await;
@@ -136,6 +137,8 @@ async fn test_gas_estimation_inner(swarm: &mut LocalSwarm) {
             },
             100,
         )]],
+        false,
+        None,
     )
     .await
     .unwrap();

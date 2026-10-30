@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::aggregator::AggregatorResource;
 use crate::account_address::create_derived_object_address;
@@ -33,6 +33,10 @@ impl FungibleStoreResource {
             balance,
             frozen,
         }
+    }
+
+    pub fn new_apt(balance: u64, frozen: bool) -> Self {
+        Self::new(AccountAddress::TEN, balance, frozen)
     }
 
     pub fn metadata(&self) -> AccountAddress {
