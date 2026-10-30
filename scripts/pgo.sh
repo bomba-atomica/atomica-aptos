@@ -67,11 +67,11 @@ case "$CMD" in
 
         # Merge the raw profile data
         # Note: A relatively up-to-date version of llvm is required. 
-        #       (Rust 1.89 uses llvm-20)
+        #       (Rust 1.94 uses llvm-21)
         #
         #       Follow the instructions here to install:
         #         - https://apt.llvm.org/
-        llvm-profdata-20 merge -o "$PROFILE_DATA_PATH" "$TMPDIR"
+        llvm-profdata-21 merge -o "$PROFILE_DATA_PATH" "$TMPDIR"
 
         # Clean up the raw profile data
         rm -rf "$TMPDIR"

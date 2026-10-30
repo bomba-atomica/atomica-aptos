@@ -1,23 +1,20 @@
 #!/bin/bash
-# Copyright (c) Aptos
-# SPDX-License-Identifier: Apache-2.0
-set -e
-
-PROFILE=cli
+# Copyright (c) Aptos Foundation
+# Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
+set -ex
 
 echo "Building tools and services docker images"
 echo "PROFILE: $PROFILE"
 echo "CARGO_TARGET_DIR: $CARGO_TARGET_DIR"
 
 # Build all the rust binaries
-cargo build --locked --profile=$PROFILE \
+CLI_PROFILE=cli
+cargo build --locked --profile=$CLI_PROFILE \
     -p aptos \
-    -p aptos-backup-cli \
     -p aptos-faucet-service \
     -p aptos-openapi-spec-generator \
     -p aptos-telemetry-service \
     -p aptos-keyless-pepper-service \
-    -p aptos-debugger \
     -p aptos-transaction-emitter \
     -p aptos-release-builder \
     "$@"
@@ -29,7 +26,6 @@ BINS=(
     aptos-openapi-spec-generator
     aptos-telemetry-service
     aptos-keyless-pepper-service
-    aptos-debugger
     aptos-transaction-emitter
     aptos-release-builder
 )
@@ -37,9 +33,9 @@ BINS=(
 mkdir dist
 
 for BIN in "${BINS[@]}"; do
-    cp $CARGO_TARGET_DIR/$PROFILE/$BIN dist/$BIN
+    cp $CARGO_TARGET_DIR/$CLI_PROFILE/$BIN dist/$BIN
 done
 
 # Build the Aptos Move framework and place it in dist. It can be found afterwards in the current directory.
 echo "Building the Aptos Move framework..."
-(cd dist && cargo run --locked --profile=$PROFILE --package aptos-framework -- release)
+(cd dist && cargo run --locked --profile=$CLI_PROFILE --package aptos-framework -- release)
