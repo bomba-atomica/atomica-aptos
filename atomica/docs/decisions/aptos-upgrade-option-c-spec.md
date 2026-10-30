@@ -1,6 +1,10 @@
 # Option C Spec: FPTX Inside Atomica's Natives
 
-Status: Proposed. Date: 2026-10-30.
+Status: Superseded on 2026-10-30 by the [IBE on chunky DKG spec](aptos-upgrade-ibe-chunky-spec.md). Do not implement from this document.
+
+> Superseded. A user decision changed the design direction. The product path no longer uses FPTX or `aptos-batch-encryption`, and no longer uses the encrypted mempool's ciphers or secret. The timelock keeps atomica's Boneh-Franklin IBE, hardened, with its secret taken from its own chunky DKG session. Read [aptos-upgrade-ibe-chunky-spec.md](aptos-upgrade-ibe-chunky-spec.md). Section 9 of that spec says which decisions below no longer apply (round allocation, batch size, `DigestKey`) and which still apply (epoch bounds, expiry and refund, separate secret from the mempool). The text below is kept unchanged as the record of the earlier decision.
+
+Original status: Proposed. Date: 2026-10-30.
 
 This spec fixes the four open design questions from the [Aptos Upgrade Cost Report](https://github.com/bomba-atomica/atomica/blob/main/docs/code-reviews/aptos-upgrade-cost-report.md) (sections f and g, open questions 1 to 4). It lives in the Atomica docs set at `atomica/docs/` in this fork. The report sits in the `atomica` repo, so it is linked by URL. Related docs here are [ADR-001 dual-output DKG](../adr/adr-001-dual-output-dkg.md), [timelock spec](../product-spec/atomica-timelock-spec.md) and [IBE summary](../technical/ibe-summary.md).
 
