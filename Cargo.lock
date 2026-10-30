@@ -5136,6 +5136,7 @@ dependencies = [
  "aptos-block-executor",
  "aptos-block-partitioner",
  "aptos-crypto",
+ "aptos-dkg",
  "aptos-experimental-runtimes",
  "aptos-framework-natives",
  "aptos-gas-algebra",

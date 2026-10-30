@@ -7,6 +7,7 @@ module aptos_framework::block {
     use std::option::Option;
     use aptos_framework::randomness;
     use aptos_framework::decryption;
+    use aptos_framework::ibe_config;
 
     use aptos_framework::account;
     use aptos_framework::event::{Self, EventHandle};
@@ -195,6 +196,9 @@ module aptos_framework::block {
         // transition is the last block in the previous epoch.
         stake::update_performance_statistics(proposer_index, failed_proposer_indices);
         state_storage::on_new_block(reconfiguration::current_epoch());
+
+        // Expire due timelocks, in a bounded batch. Runs before any reconfiguration of this block.
+        ibe_config::on_new_block(vm);
 
         block_metadata_ref.epoch_interval
     }

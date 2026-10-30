@@ -51,6 +51,22 @@ pub static RECONFIGURATION_WITH_DKG_MODULE: Lazy<ModuleId> = Lazy::new(|| {
 pub const FINISH_WITH_DKG_RESULT: &IdentStr = ident_str!("finish_with_dkg_result");
 pub const FINISH_WITH_CHUNKY_DKG_RESULT: &IdentStr = ident_str!("finish_with_chunky_dkg_result");
 
+pub static IBE_CONFIG_MODULE: Lazy<ModuleId> = Lazy::new(|| {
+    ModuleId::new(
+        account_config::CORE_CODE_ADDRESS,
+        ident_str!("ibe_config").to_owned(),
+    )
+});
+
+pub const SUBMIT_DK_SHARES_FUNCTION: &IdentStr = ident_str!("submit_dk_shares");
+pub const FINALIZE_TIMELOCK_REVEAL_FUNCTION: &IdentStr = ident_str!("finalize_timelock_reveal");
+pub const FAIL_TIMELOCK_KEY_CHECK_FUNCTION: &IdentStr = ident_str!("fail_timelock_key_check");
+pub const IS_RECONSTRUCTABLE_FUNCTION: &IdentStr = ident_str!("is_reconstructable");
+pub const GET_RECONSTRUCTION_INPUTS_FUNCTION: &IdentStr = ident_str!("get_reconstruction_inputs");
+pub const GET_IDENTITY_FUNCTION: &IdentStr = ident_str!("get_identity");
+pub const GET_TIMELOCK_EPOCH_FUNCTION: &IdentStr = ident_str!("get_timelock_epoch");
+pub const GET_MPK_FUNCTION: &IdentStr = ident_str!("get_mpk");
+
 pub static JWKS_MODULE: Lazy<ModuleId> = Lazy::new(|| {
     ModuleId::new(
         account_config::CORE_CODE_ADDRESS,
