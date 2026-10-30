@@ -19,7 +19,15 @@ on:
       - ".github/workflows/**"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
+  RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   CARGO_BUILD_JOBS: 2
@@ -34,14 +42,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.94.1
+      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
 
       - name: Free up disk space
         run: |
@@ -66,7 +74,7 @@ jobs:
             libdw-dev
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.7.8
         with:
           shared-key: "atomica-test"
           cache-on-failure: true
@@ -81,20 +89,19 @@ jobs:
           cargo build -p aptos-node --features=failpoints,indexer,smoke-test
         timeout-minutes: 60
 
+      # `if: always()` lets every smoke test report, and each is guarded so a
+      # filter that matches nothing fails instead of passing with zero tests.
       - name: Run test_basic_client
         if: always()
-        run: |
-          cargo test -p smoke-test --lib rest_api::test_basic_client -- --nocapture --test-threads=1
+        run: .github/scripts/run-tests-guarded.sh test_basic_client 1 -- cargo test -p smoke-test --lib rest_api::test_basic_client -- --nocapture --test-threads=1
         timeout-minutes: 60
 
       - name: Run randomness_correctness
         if: always()
-        run: |
-          cargo test -p smoke-test --lib randomness_correctness -- --nocapture --test-threads=1
+        run: .github/scripts/run-tests-guarded.sh randomness_correctness 1 -- cargo test -p smoke-test --lib randomness_correctness -- --nocapture --test-threads=1
         timeout-minutes: 60
 
       - name: Run test_validator_execution_sync_epoch_changes
         if: always()
-        run: |
-          cargo test -p smoke-test --lib state_sync::test_validator_execution_sync_epoch_changes -- --nocapture --test-threads=1
+        run: .github/scripts/run-tests-guarded.sh state_sync_epoch_changes 1 -- cargo test -p smoke-test --lib state_sync::test_validator_execution_sync_epoch_changes -- --nocapture --test-threads=1
         timeout-minutes: 60
