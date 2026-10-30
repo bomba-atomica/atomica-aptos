@@ -22,13 +22,18 @@ variable "BUILT_VIA_BUILDKIT" {}
 
 variable "GCP_DOCKER_ARTIFACT_REPO" {}
 
-variable "AWS_ECR_ACCOUNT_NUM" {}
+// NOTE: AWS ECR publishing has been disabled. Variables kept for reference.
+variable "AWS_ECR_ACCOUNT_NUM" {
+  default = ""
+}
 
 variable "TARGET_REGISTRY" {
   // must be "gcp" | "local" | "remote-all" | "remote" (deprecated, but kept for backwards compatibility. Same as "gcp"), informs which docker tags are being generated
+  // NOTE: "remote-all" no longer publishes to ECR (now behaves same as "gcp"/"remote")
   default = CI == "true" ? "remote" : "local"
 }
 
+// ECR base URL kept for reference (no longer used)
 variable "ecr_base" {
   default = "${AWS_ECR_ACCOUNT_NUM}.dkr.ecr.us-west-2.amazonaws.com/aptos"
 }
@@ -67,8 +72,8 @@ group "forge-images" {
 target "debian-base" {
   dockerfile = "docker/builder/debian-base.Dockerfile"
   contexts = {
-    # Run `docker buildx imagetools inspect debian:bullseye` to find the latest multi-platform hash
-    debian = "docker-image://debian:bullseye@sha256:25c0cab214b810db1b3c8adef5a12a92596979abddf86bb364e8d9c9d111df9f"
+    # Run `docker buildx imagetools inspect debian:trixie` to find the latest multi-platform hash
+    debian = "docker-image://debian:trixie@sha256:e2d08da6f42ef4b09b165d55528a12727aeed8240dc9edf888e3ec07e10ef9da"
   }
 }
 
@@ -77,8 +82,8 @@ target "builder-base" {
   target     = "builder-base"
   context    = "."
   contexts = {
-    # Run `docker buildx imagetools inspect rust:1.80.1-bullseye` to find the latest multi-platform hash
-    rust = "docker-image://rust:1.80.1-bullseye@sha256:f6f599d3f027a97fb60cb87854199fcde390e25cee216712c3f9eede545b052e"
+    # Run `docker buildx imagetools inspect rust:1.94.1-trixie` to find the latest multi-platform hash
+    rust = "docker-image://rust:1.94.1-trixie@sha256:652612f07bfbbdfa3af34761c1e435094c00dde4a98036132fca28c7bb2b165c"
   }
   args = {
     PROFILE            = "${PROFILE}"
@@ -113,6 +118,17 @@ target "tools-builder" {
   ]
 }
 
+target "forge-builder" {
+  dockerfile = "docker/builder/builder.Dockerfile"
+  target     = "forge-builder"
+  contexts = {
+    builder-base = "target:builder-base"
+  }
+  secret = [
+    "id=GIT_CREDENTIALS"
+  ]
+}
+
 target "indexer-builder" {
   dockerfile = "docker/builder/builder.Dockerfile"
   target     = "indexer-builder"
@@ -128,6 +144,7 @@ target "_common" {
   contexts = {
     debian-base     = "target:debian-base"
     node-builder    = "target:aptos-node-builder"
+    forge-builder   = "target:forge-builder"
     tools-builder   = "target:tools-builder"
     indexer-builder = "target:indexer-builder"
   }
@@ -218,18 +235,15 @@ target "nft-metadata-crawler" {
 
 function "generate_tags" {
   params = [target]
-  result = TARGET_REGISTRY == "remote-all" ? [
+  // NOTE: ECR publishing has been disabled. "remote-all" now behaves same as "gcp"/"remote".
+  // ECR tags kept as reference (previously included when TARGET_REGISTRY == "remote-all"):
+  //   "${ecr_base}/${target}:${IMAGE_TAG_PREFIX}${GIT_SHA}",
+  //   "${ecr_base}/${target}:${IMAGE_TAG_PREFIX}${NORMALIZED_GIT_BRANCH_OR_PR}",
+  result = TARGET_REGISTRY == "remote-all" || TARGET_REGISTRY == "gcp" || TARGET_REGISTRY == "remote" ? [
     "${GCP_DOCKER_ARTIFACT_REPO}/${target}:${IMAGE_TAG_PREFIX}${GIT_SHA}",
     "${GCP_DOCKER_ARTIFACT_REPO}/${target}:${IMAGE_TAG_PREFIX}${NORMALIZED_GIT_BRANCH_OR_PR}",
-    "${ecr_base}/${target}:${IMAGE_TAG_PREFIX}${GIT_SHA}",
-    "${ecr_base}/${target}:${IMAGE_TAG_PREFIX}${NORMALIZED_GIT_BRANCH_OR_PR}",
-    ] : (
-    TARGET_REGISTRY == "gcp" || TARGET_REGISTRY == "remote" ? [
-      "${GCP_DOCKER_ARTIFACT_REPO}/${target}:${IMAGE_TAG_PREFIX}${GIT_SHA}",
-      "${GCP_DOCKER_ARTIFACT_REPO}/${target}:${IMAGE_TAG_PREFIX}${NORMALIZED_GIT_BRANCH_OR_PR}",
-      ] : [ // "local" or any other value
-      "aptos-core/${target}:${IMAGE_TAG_PREFIX}${GIT_SHA}-from-local",
-      "aptos-core/${target}:${IMAGE_TAG_PREFIX}from-local",
-    ]
-  )
+    ] : [ // "local" or any other value
+    "aptos-core/${target}:${IMAGE_TAG_PREFIX}${GIT_SHA}-from-local",
+    "aptos-core/${target}:${IMAGE_TAG_PREFIX}from-local",
+  ]
 }

@@ -19,7 +19,7 @@ The builder can produce the following Docker images. To build a particular image
 
 1. `validator-testing` : Image containing the `aptos-node`, `aptos-debugger` binaries and other linux tools useful for debugging and testing. This image is used in Forge tests.
 2. `validator` : Image containing the `aptos-node` and `aptos-debugger` binaries. This image is usually used for distribution.
-3. `tools`: Image containing all the aptos tools binaries including `aptos-debugger`, `aptos`, `aptos-transaction-emitter`, `aptos-openapi-spec-generator` and `aptos-fn-check-client`. Also, includes the Aptos Move framework for use with genesis generation.
+3. `tools`: Image containing all the aptos tools binaries including `aptos-debugger`, `aptos`, `aptos-transaction-emitter` and `aptos-openapi-spec-generator`. Also, includes the Aptos Move framework for use with genesis generation.
 4. `forge`: Image containing the `forge` binary that orchestrates and runs Forge tests.
 5. `faucet`: Image containing the `faucet` binary that provides a faucet service for minting coins.
 6. `indexer-grpc`: Image containing the `indexer-grpc` binary that indexes the blockchain and provides a gRPC service for querying.
@@ -42,7 +42,7 @@ Using a builder step allows us to cache the build artifacts and reuse them acros
 
 > Note: If your requirements don't fit into the instructions below, please reach out to the team for help.
 
-1. Modify the `cargo build` step in `build-tools.sh` to include the new binary.
+1. Modify the `cargo build` step in `build-tools-with-cli-profile.sh` to include the new binary.
 2. Create a new Dockerfile by cloning an existing target Dockerfile (e.g. `validator.Dockerfile`). When you use a `RUN` instruction, try to use a mount cache as they can improve build times by caching the output of the command.
 3. Add the following `FROM` statements to the new Dockerfile depending on whether you need to copy from the `aptos-node-builder`, `indexer-builder`, `tools-builder`. This ensures that your image references the required builder images to copy the binaries from. These image references are injected as build contexts at build time. This is defined in the `contexts` field in `_common` target in [docker-bake-rust-all.hcl](docker-bake-rust-all.hcl).
 
