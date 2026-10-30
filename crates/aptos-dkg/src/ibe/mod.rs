@@ -27,6 +27,7 @@ mod tests;
 pub use ciphertext::{BidCiphertext, MAX_CIPHERTEXT_BYTES};
 
 use aptos_crypto::arkworks::shamir::ShamirThresholdConfig;
+pub use ark_bls12_381::Fr as MasterScalar;
 use ark_bls12_381::{
     g1::Config as G1Config, Bls12_381, Fr, G1Affine, G1Projective, G2Affine, G2Projective,
 };
@@ -229,6 +230,52 @@ pub fn verify_dk_share(share: &G1Affine, identity: &[u8], vk: &G2Affine) -> bool
         Err(_) => return false,
     };
     Bls12_381::multi_pairing([q, -*share], [*vk, G2Affine::generator()]).is_zero()
+}
+
+/// Why [`verify_player_shares`] refused a share set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShareCheckFailure {
+    /// The number of shares differs from the number of verification keys of the author.
+    CountMismatch { shares: usize, keys: usize },
+    /// The identity does not hash to a curve point.
+    Identity,
+    /// Share `index` failed validated decoding.
+    InvalidShare { index: usize, error: IbeError },
+    /// Verification key `index` failed validated decoding.
+    InvalidVerificationKey { index: usize, error: IbeError },
+    /// Share `index` failed `e(H1(id), vk) = e(share, g2)`.
+    PairingMismatch { index: usize },
+}
+
+/// Boneh-Franklin share check for all virtual players of one validator.
+///
+/// `shares[j]` and `verification_keys[j]` belong to the same virtual player `j`. Every point is decoded
+/// with validation (on curve, prime-order subgroup, not the identity) and every share must satisfy
+/// `e(H1(identity), vk_j) = e(share_j, g2)`. `H1(identity)` is computed once. The result depends only on
+/// the arguments, so every validator reaches the same verdict. Never panics.
+pub fn verify_player_shares(
+    identity: &[u8],
+    shares: &[Vec<u8>],
+    verification_keys: &[Vec<u8>],
+) -> Result<(), ShareCheckFailure> {
+    if shares.is_empty() || shares.len() != verification_keys.len() {
+        return Err(ShareCheckFailure::CountMismatch {
+            shares: shares.len(),
+            keys: verification_keys.len(),
+        });
+    }
+    let q = hash_to_g1(identity).map_err(|_| ShareCheckFailure::Identity)?;
+    let g2 = G2Affine::generator();
+    for (index, (share, vk)) in shares.iter().zip(verification_keys).enumerate() {
+        let share =
+            decode_g1(share).map_err(|error| ShareCheckFailure::InvalidShare { index, error })?;
+        let vk = decode_g2(vk)
+            .map_err(|error| ShareCheckFailure::InvalidVerificationKey { index, error })?;
+        if !Bls12_381::multi_pairing([q, -share], [vk, g2]).is_zero() {
+            return Err(ShareCheckFailure::PairingMismatch { index });
+        }
+    }
+    Ok(())
 }
 
 /// KEM encapsulation with an explicit randomness scalar. Returns `(U, K)`.

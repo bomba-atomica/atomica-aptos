@@ -22,8 +22,13 @@ move-harness-with-test-only = ["aptos-cached-packages/move-harness-with-test-onl
 
 [dependencies]
 anyhow = { workspace = true }
+ark-bls12-381 = { workspace = true }
+ark-ec = { workspace = true }
+ark-serialize = { workspace = true }
 aptos-cached-packages = { workspace = true }
 aptos-crypto = { workspace = true }
+aptos-dkg = { workspace = true }
+aptos-logger = { workspace = true }
 aptos-framework = { workspace = true }
 aptos-gas-algebra = { workspace = true }
 aptos-gas-profiling = { workspace = true }
@@ -39,6 +44,7 @@ aptos-vm = { workspace = true, features = ["testing"] }
 aptos-vm-environment = { workspace = true }
 bcs = { workspace = true }
 claims = { workspace = true }
+rand = { workspace = true }
 hex = { workspace = true }
 move-binary-format = { workspace = true }
 move-core-types = { workspace = true }
