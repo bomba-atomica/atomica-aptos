@@ -574,6 +574,14 @@ pub enum EntryFunctionCall {
         amount: u64,
     },
 
+    /// Registers a timelock for `deadline_us`.
+    ///
+    /// Aborts unless the MPK of the current epoch is ready, the deadline is in the future and the deadline is at
+    /// most `epoch_end - 15 minutes`.
+    IbeConfigRegisterTimelock {
+        deadline_us: u64,
+    },
+
     /// This can be called to install or update a set of JWKs for a federated OIDC provider.  This function should
     /// be invoked to intially install a set of JWKs or to update a set of JWKs when a keypair is rotated.
     ///
@@ -1631,6 +1639,7 @@ impl EntryFunctionCall {
                 pool_address,
                 amount,
             } => delegation_pool_withdraw(pool_address, amount),
+            IbeConfigRegisterTimelock { deadline_us } => ibe_config_register_timelock(deadline_us),
             JwksUpdateFederatedJwkSet {
                 iss,
                 kid_vec,
@@ -3579,6 +3588,25 @@ pub fn delegation_pool_withdraw(pool_address: AccountAddress, amount: u64) -> Tr
             bcs::to_bytes(&pool_address).unwrap(),
             bcs::to_bytes(&amount).unwrap(),
         ],
+    ))
+}
+
+/// Registers a timelock for `deadline_us`.
+///
+/// Aborts unless the MPK of the current epoch is ready, the deadline is in the future and the deadline is at
+/// most `epoch_end - 15 minutes`.
+pub fn ibe_config_register_timelock(deadline_us: u64) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("ibe_config").to_owned(),
+        ),
+        ident_str!("register_timelock").to_owned(),
+        vec![],
+        vec![bcs::to_bytes(&deadline_us).unwrap()],
     ))
 }
 
@@ -6601,6 +6629,16 @@ mod decoder {
         }
     }
 
+    pub fn ibe_config_register_timelock(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(EntryFunctionCall::IbeConfigRegisterTimelock {
+                deadline_us: bcs::from_bytes(script.args().get(0)?).ok()?,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn jwks_update_federated_jwk_set(
         payload: &TransactionPayload,
     ) -> Option<EntryFunctionCall> {
@@ -8120,6 +8158,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
         map.insert(
             "delegation_pool_withdraw".to_string(),
             Box::new(decoder::delegation_pool_withdraw),
+        );
+        map.insert(
+            "ibe_config_register_timelock".to_string(),
+            Box::new(decoder::ibe_config_register_timelock),
         );
         map.insert(
             "jwks_update_federated_jwk_set".to_string(),
