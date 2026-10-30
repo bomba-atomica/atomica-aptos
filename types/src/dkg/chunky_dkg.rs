@@ -453,6 +453,29 @@ impl ChunkyDKGSessionMetadata {
     }
 }
 
+/// Domain tag of the timelock chunky DKG session id.
+pub const TIMELOCK_DKG_SESSION_TAG: &str = "atomica/timelock-chunky-dkg/v1";
+
+/// Session id of the timelock chunky DKG session. It is BCS-serialized through the generic
+/// `session_id` parameter of the chunky PVSS, so a dealing made for the mempool session
+/// (session id = `ChunkyDKGSessionMetadata`) never verifies under it, and the reverse.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TimelockDKGSessionId {
+    pub tag: String,
+    pub chain_id: ChainId,
+    pub metadata: ChunkyDKGSessionMetadata,
+}
+
+impl TimelockDKGSessionId {
+    pub fn new(chain_id: ChainId, metadata: ChunkyDKGSessionMetadata) -> Self {
+        Self {
+            tag: TIMELOCK_DKG_SESSION_TAG.to_string(),
+            chain_id,
+            metadata,
+        }
+    }
+}
+
 /// Reflection of `0x1::chunky_dkg::ChunkyDKGStartEvent` in rust for Chunky DKG.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkyDKGStartEvent {
