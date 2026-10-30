@@ -1401,6 +1401,7 @@ dependencies = [
 name = "aptos-dkg"
 version = "0.2.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "aptos-crypto",
  "aptos-crypto-derive",
@@ -1418,9 +1419,11 @@ dependencies = [
  "chrono",
  "criterion",
  "derive_more 0.99.17",
+ "ed25519-dalek 2.1.1",
  "ff",
  "group",
  "hex",
+ "hmac 0.12.1",
  "itertools 0.13.0",
  "merlin",
  "more-asserts",
@@ -1434,6 +1437,7 @@ dependencies = [
  "rayon",
  "serde",
  "serde_bytes",
+ "sha2 0.10.9",
  "sha3 0.9.1",
  "static_assertions",
 ]
@@ -2057,6 +2061,7 @@ dependencies = [
  "anyhow",
  "aptos-aggregator",
  "aptos-crypto",
+ "aptos-dkg",
  "aptos-gas-algebra",
  "aptos-gas-schedule",
  "aptos-native-interface",
