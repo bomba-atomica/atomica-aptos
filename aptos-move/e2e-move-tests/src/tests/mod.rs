@@ -42,6 +42,7 @@ mod generate_upgrade_script;
 mod generic_cmp;
 mod governance_updates;
 mod hot_state;
+mod ibe_gas;
 mod infinite_loop;
 mod init_module;
 mod init_module_api;
