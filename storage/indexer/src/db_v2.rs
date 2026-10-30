@@ -305,13 +305,10 @@ impl<'a, R: StateView> TableInfoParser<'a, R> {
             handle,
         } in infos
         {
-            self.save_table_info(
-                TableHandle(handle),
-                TableInfo {
-                    key_type,
-                    value_type,
-                },
-            )?
+            self.save_table_info(TableHandle(handle), TableInfo {
+                key_type,
+                value_type,
+            })?
         }
         Ok(())
     }

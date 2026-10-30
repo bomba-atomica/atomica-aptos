@@ -45,10 +45,10 @@ mod tests {
         let good_values = vec![
             MoveValue::Struct(MoveStruct::RuntimeVariant(0, vec![MoveValue::U64(42)])),
             MoveValue::Struct(MoveStruct::RuntimeVariant(1, vec![])),
-            MoveValue::Struct(MoveStruct::RuntimeVariant(
-                2,
-                vec![MoveValue::Bool(true), MoveValue::U32(13)],
-            )),
+            MoveValue::Struct(MoveStruct::RuntimeVariant(2, vec![
+                MoveValue::Bool(true),
+                MoveValue::U32(13),
+            ])),
         ];
         for value in good_values {
             let blob = value.simple_serialize().expect("serialization succeeds");
@@ -146,10 +146,10 @@ mod tests {
         let move_values = vec![
             MoveValue::Struct(MoveStruct::RuntimeVariant(0, vec![MoveValue::U64(42)])),
             MoveValue::Struct(MoveStruct::RuntimeVariant(1, vec![])),
-            MoveValue::Struct(MoveStruct::RuntimeVariant(
-                2,
-                vec![MoveValue::Bool(true), MoveValue::U32(13)],
-            )),
+            MoveValue::Struct(MoveStruct::RuntimeVariant(2, vec![
+                MoveValue::Bool(true),
+                MoveValue::U32(13),
+            ])),
         ];
         let rust_values = vec![
             RustEnum::Number(42),
@@ -252,21 +252,14 @@ mod tests {
         let fun_layout = make_fun_layout();
         let ty_args = make_type_args();
         let good_values = vec![
-            make_move_closure(
-                "f",
-                ty_args,
-                ClosureMask::new(0b101),
-                vec![
-                    (MoveTypeLayout::Bool, MoveValue::Bool(true)),
-                    (MoveTypeLayout::U64, MoveValue::U64(22)),
-                ],
-            ),
-            make_move_closure(
-                "f",
-                vec![],
-                ClosureMask::new(0b1),
-                vec![(MoveTypeLayout::U64, MoveValue::U64(22))],
-            ),
+            make_move_closure("f", ty_args, ClosureMask::new(0b101), vec![
+                (MoveTypeLayout::Bool, MoveValue::Bool(true)),
+                (MoveTypeLayout::U64, MoveValue::U64(22)),
+            ]),
+            make_move_closure("f", vec![], ClosureMask::new(0b1), vec![(
+                MoveTypeLayout::U64,
+                MoveValue::U64(22),
+            )]),
             make_move_closure("f", vec![], ClosureMask::new(0b0), vec![]),
         ];
         for value in good_values {
@@ -279,15 +272,10 @@ mod tests {
     #[test]
     fn closure_round_trip_move_value_bad_size() {
         let fun_layout = make_fun_layout();
-        let bad_captures_more = make_move_closure(
-            "f",
-            vec![],
-            ClosureMask::new(0b1),
-            vec![
-                (MoveTypeLayout::Bool, MoveValue::Bool(true)),
-                (MoveTypeLayout::U64, MoveValue::U64(22)),
-            ],
-        );
+        let bad_captures_more = make_move_closure("f", vec![], ClosureMask::new(0b1), vec![
+            (MoveTypeLayout::Bool, MoveValue::Bool(true)),
+            (MoveTypeLayout::U64, MoveValue::U64(22)),
+        ]);
         let blob = bad_captures_more
             .simple_serialize()
             .expect("serialization succeeds");
@@ -300,12 +288,10 @@ mod tests {
                 );
             })
             .expect_err("bad size value deserialization fails");
-        let bad_captures_less = make_move_closure(
-            "f",
-            vec![],
-            ClosureMask::new(0b11),
-            vec![(MoveTypeLayout::Bool, MoveValue::Bool(true))],
-        );
+        let bad_captures_less = make_move_closure("f", vec![], ClosureMask::new(0b11), vec![(
+            MoveTypeLayout::Bool,
+            MoveValue::Bool(true),
+        )]);
         let blob = bad_captures_less
             .simple_serialize()
             .expect("serialization succeeds");
@@ -323,21 +309,16 @@ mod tests {
     #[test]
     fn closure_round_trip_move_value_bad_layout() {
         let fun_layout = make_fun_layout();
-        let bad_layout = make_move_closure(
-            "f",
-            vec![],
-            ClosureMask::new(0b11),
-            vec![
-                (
-                    MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U8)),
-                    MoveValue::Bool(true),
-                ),
-                (
-                    MoveTypeLayout::Bool,
-                    MoveValue::Vector(vec![MoveValue::U64(22), MoveValue::U8(1)]),
-                ),
-            ],
-        );
+        let bad_layout = make_move_closure("f", vec![], ClosureMask::new(0b11), vec![
+            (
+                MoveTypeLayout::Vector(Box::new(MoveTypeLayout::U8)),
+                MoveValue::Bool(true),
+            ),
+            (
+                MoveTypeLayout::Bool,
+                MoveValue::Vector(vec![MoveValue::U64(22), MoveValue::U8(1)]),
+            ),
+        ]);
         let blob = bad_layout
             .simple_serialize()
             .expect("serialization succeeds");
@@ -389,21 +370,16 @@ mod tests {
         let ty_args = make_type_args();
         let good_seeds = vec![
             (
-                MockAbstractFunction::new(
-                    "f",
-                    ty_args,
-                    ClosureMask::new(0b101),
-                    vec![MoveTypeLayout::Bool, MoveTypeLayout::U64],
-                ),
+                MockAbstractFunction::new("f", ty_args, ClosureMask::new(0b101), vec![
+                    MoveTypeLayout::Bool,
+                    MoveTypeLayout::U64,
+                ]),
                 vec![Value::bool(true), Value::u64(22)],
             ),
             (
-                MockAbstractFunction::new(
-                    "f",
-                    vec![TypeTag::Bool],
-                    ClosureMask::new(0b1),
-                    vec![MoveTypeLayout::U64],
-                ),
+                MockAbstractFunction::new("f", vec![TypeTag::Bool], ClosureMask::new(0b1), vec![
+                    MoveTypeLayout::U64,
+                ]),
                 vec![Value::u64(22)],
             ),
             (
@@ -423,12 +399,10 @@ mod tests {
     #[test]
     fn closure_round_trip_vm_value_bad_size() {
         let (_, de_value) = round_trip_vm_closure_value(
-            MockAbstractFunction::new(
-                "f",
-                vec![],
-                ClosureMask::new(0b1),
-                vec![MoveTypeLayout::Bool, MoveTypeLayout::U64],
-            ),
+            MockAbstractFunction::new("f", vec![], ClosureMask::new(0b1), vec![
+                MoveTypeLayout::Bool,
+                MoveTypeLayout::U64,
+            ]),
             vec![Value::bool(false), Value::u64(22)],
         );
         de_value
@@ -442,12 +416,9 @@ mod tests {
             .expect_err("bad size value deserialization fails");
 
         let (_, de_value) = round_trip_vm_closure_value(
-            MockAbstractFunction::new(
-                "f",
-                vec![],
-                ClosureMask::new(0b11),
-                vec![MoveTypeLayout::Bool],
-            ),
+            MockAbstractFunction::new("f", vec![], ClosureMask::new(0b11), vec![
+                MoveTypeLayout::Bool,
+            ]),
             vec![Value::bool(false)],
         );
         de_value
@@ -461,12 +432,9 @@ mod tests {
             .expect_err("bad size value deserialization fails");
 
         let (_, de_value) = round_trip_vm_closure_value(
-            MockAbstractFunction::new(
-                "f",
-                vec![],
-                ClosureMask::new(0b1),
-                vec![MoveTypeLayout::Bool],
-            ),
+            MockAbstractFunction::new("f", vec![], ClosureMask::new(0b1), vec![
+                MoveTypeLayout::Bool,
+            ]),
             vec![],
         );
         de_value
