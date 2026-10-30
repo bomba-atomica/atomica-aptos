@@ -17,6 +17,7 @@ on:
         default: "HEAD"
 
 env:
+  RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Reduce memory pressure during builds
@@ -38,7 +39,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
 
@@ -64,10 +65,10 @@ jobs:
           echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
           echo "Git commit: $GIT_SHA (full: $GIT_SHA_FULL)"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.94.1
+      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
 
       - name: Free up disk space
         run: |
@@ -99,7 +100,7 @@ jobs:
             libdw-dev
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.7.8
         with:
           shared-key: "aptos-build"
           cache-on-failure: true
@@ -205,7 +206,7 @@ jobs:
           cd ..
 
       - name: Upload binaries as artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: aptos-binaries-${{ steps.git-commit.outputs.sha }}
           path: artifacts/
@@ -213,15 +214,15 @@ jobs:
 
       - name: Create GitHub Release
         if: github.event_name != 'pull_request'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2.2.1
         with:
           tag_name: binary-${{ steps.git-commit.outputs.sha }}
           name: Aptos Binaries ${{ steps.git-commit.outputs.sha }}
           body: |
-            Aptos binaries built from commit ${{ steps.git-commit.outputs.sha-full }}
+            Aptos binaries built from commit ${{ steps.git-commit.outputs.sha_full }}
 
             **Build Information:**
-            - Commit: ${{ steps.git-commit.outputs.sha-full }}
+            - Commit: ${{ steps.git-commit.outputs.sha_full }}
             - Branch: ${{ github.ref_name }}
             - Built: ${{ github.event.repository.updated_at }}
 
