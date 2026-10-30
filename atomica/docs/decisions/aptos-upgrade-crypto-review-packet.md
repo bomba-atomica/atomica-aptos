@@ -4,7 +4,7 @@ Status: Awaiting human review. Prepared 2026-10-30 by an AI agent for forgectl f
 
 This packet is evidence for a human cryptographer. It is not a review and it is not a sign-off. No cryptographer has reviewed anything in it. The agent that wrote it checked code and ran tests. It did not do a cryptographic proof. Every conclusion below is a claim to be confirmed or refuted by the reviewer.
 
-The feature stays unmerged until a human fills the Reviewer record in section 7.
+The forgectl feature `crypto-review-signoff` is closed on the engineering outcome in section 6a (required changes recorded, no external sign-off). The human Reviewer record in section 7 stays open.
 
 Spec under review: [Option C spec](aptos-upgrade-option-c-spec.md). Prototype: `atomica/proto-fptx-timelock/` in this fork. Upstream code: branch `baseline/aptos-node-v1.49.6` (tip `b4359185dd`, "Bump version to 1.49.6"). Paths in section 1 to 4 are relative to the repo root on that branch unless marked `proto:`.
 
@@ -238,6 +238,42 @@ These are suggestions. None has been done.
 - A test that a share released for one digest key and secret is invalid under another, with the same `tau`.
 - A test that a signed ciphertext with a malformed `ct_g2` is rejected at submission or isolated at reveal.
 - Round exhaustion and epoch change tests on the Move side.
+
+## 6a. Outcome: required changes (engineering review, no external cryptographer)
+
+No external cryptographer has reviewed or signed anything. This section records the outcome of the engineering review of this packet, dated 2026-10-30, made for forgectl feature `crypto-review-signoff`. It is required changes, not a sign-off. The Reviewer record in section 7 is blank and stays open.
+
+A cryptographer review is still recommended before any release or mainnet use. Closing this feature does not satisfy that recommendation.
+
+### Question A: separate secret versus shared mempool secret
+
+Outcome: proceeds on the separate-secret default. The cost report (`docs/code-reviews/aptos-upgrade-cost-report.md`, section g, "Key separation") says a cryptographer's sign-off is needed only to reuse the mempool's secret. The Option C spec chose the separate secret, the safe default. No external sign-off is needed to proceed. Reusing the mempool secret stays forbidden until a cryptographer signs off. The prototype's key-separation test is weak (section 4, item 4), so a stronger test is carried below.
+
+### Question B: DigestKey deserialization skipping validation
+
+Outcome: required changes. The packet found that the spec's startup validation is not implemented (section 2).
+
+- B-1. Replace `Validate::No` in the DigestKey file loader (`read_round`) with validated deserialization, or enforce a full startup validation (on-curve, subgroup, tau power ratio checks, `tau_g2` consistency, `prepared_toeplitz_input` consistency). Add a negative test with one corrupted point.
+- B-2. Replace `Validate::No` in `ark_de` with validated deserialization, or subgroup-check every network-facing type on receipt. Fix its doc comment.
+- B-3. Make `ValidateDigestKey` honest. It must run the real validation, not only parse and check size.
+- B-4. Enforce the DigestKey blake3 hash against an expected value, and refuse to start on mismatch. The hash is only a metric today.
+- B-5. Make `verify_ct` reject ciphertexts with malformed group elements at submission, so one bad bid cannot abort a batch reveal.
+
+### Question C: FPTX round allocation
+
+Outcome: required changes.
+
+- C-1. Build and test the rule that one round never yields two keys under one secret: one digest per round per epoch, enforced on chain, with a test that two distinct digests for one round are rejected.
+- C-2. Test that a share released for one digest key and secret is invalid under another, with the same `tau`.
+- C-3. Add Move-side tests for round exhaustion and epoch change.
+- Open for the cryptographer: whether `r_i` reuse across epochs is safe (C2), and the exact assumption for two digests under one round (C1).
+
+### Where each required change is carried (forgectl features)
+
+- `natives-port-timelock`: B-2 and B-5.
+- `node-share-verification`: subgroup check of share points before store (part of B-2), and C-2.
+- `node-validator-txn-timelock`: C-1 and C-3.
+- `node-dkg-chunky-wiring`: B-1, B-3, B-4.
 
 ## 7. Reviewer record
 

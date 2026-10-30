@@ -4,7 +4,7 @@ Status: Proposed. Date: 2026-10-30.
 
 This spec fixes the four open design questions from the [Aptos Upgrade Cost Report](https://github.com/bomba-atomica/atomica/blob/main/docs/code-reviews/aptos-upgrade-cost-report.md) (sections f and g, open questions 1 to 4). It lives in the Atomica docs set at `atomica/docs/` in this fork. The report sits in the `atomica` repo, so it is linked by URL. Related docs here are [ADR-001 dual-output DKG](../adr/adr-001-dual-output-dkg.md), [timelock spec](../product-spec/atomica-timelock-spec.md) and [IBE summary](../technical/ibe-summary.md).
 
-Cryptographer review packet: [aptos-upgrade-crypto-review-packet.md](aptos-upgrade-crypto-review-packet.md). Sign-off is pending a human.
+Cryptographer review packet: [aptos-upgrade-crypto-review-packet.md](aptos-upgrade-crypto-review-packet.md). Engineering review recorded required changes (section 6a of the packet). No external cryptographer has signed off, and the human Reviewer record is still open.
 
 Code references are to the `baseline/aptos-node-v1.49.6` branch unless a path says `dev-atomica`.
 
