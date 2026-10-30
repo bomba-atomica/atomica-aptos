@@ -1,0 +1,65 @@
+name: Timelock Tests
+
+# Standalone FPTX timelock prototype (atomica/proto-fptx-timelock). It is not a
+# workspace member and does not build aptos-node, so it is fast and runs on
+# every change under its folder.
+
+on:
+  push:
+    branches:
+      - dev-atomica
+    paths:
+      - "atomica/proto-fptx-timelock/**"
+      - ".github/workflows/timelock-tests.yml"
+      - ".github/scripts/**"
+  pull_request:
+    branches:
+      - dev-atomica
+    paths:
+      - "atomica/proto-fptx-timelock/**"
+      - ".github/workflows/timelock-tests.yml"
+      - ".github/scripts/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.94.1"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  timelock:
+    name: Timelock crate tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: atomica/proto-fptx-timelock
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -c clippy -c rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2.7.8
+        with:
+          workspaces: "atomica/proto-fptx-timelock -> target"
+          cache-on-failure: true
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      # Local run on 2026-10-30 collected and executed 11 tests, so 11 is the floor.
+      - name: Run timelock tests (zero-test guard, minimum 11)
+        run: ../../.github/scripts/run-tests-guarded.sh timelock 11 -- cargo test --locked

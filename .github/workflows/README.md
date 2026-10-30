@@ -169,3 +169,34 @@ When creating new workflows:
 - Check that `cache-on-failure: true` is set
 - Ensure `workspaces: "."` points to root directory
 - Use `add-job-id-key: false` to share across jobs
+
+
+---
+
+## Strict test-coverage invariants (loud-skip policy)
+
+Exit code 0 does not mean tested. Every test step runs through
+`.github/scripts/run-tests-guarded.sh LABEL MIN_TESTS -- cargo test ...`, which
+keeps the command's exit status and then runs `assert_tests_ran.py`. A step fails
+when the log has no `test result:` line, executed zero tests, executed fewer than
+`MIN_TESTS`, or had a failure. Ignored tests are never silent: each prints a
+`::warning::` line, and the counts (`collected`, `executed`, `skipped`) go to the
+step summary. Self-test: `.github/scripts/tests/selftest.sh` (also run in
+`crypto-crates-tests.yml`).
+
+## Workflow set for the 1.49.6 line (branch `dev-atomica`)
+
+| Workflow | Covers | Trigger |
+| --- | --- | --- |
+| `lint-format.yml` | rustfmt and clippy | push and PR on Rust paths |
+| `crypto-crates-tests.yml` | aptos-dkg, aptos-crypto, aptos-types | push and PR |
+| `node-framework-tests.yml` | aptos-node and aptos-framework (Move unit tests) | push and PR on Rust and Move paths |
+| `timelock-tests.yml` | `atomica/proto-fptx-timelock` | push and PR on its folder |
+| `debug-tests.yml` | smoke tests | push and PR on Rust paths |
+| `build-aptos-binary.yml` | node, CLI, faucet, framework bundle | push on Rust paths, manual |
+| `build-validator-image.yml` | validator image | release, manual |
+| `test-docker-image.yml` | image build and testnet run | PR and push |
+
+All use Rust 1.94.1 (installed through rustup, matching `rust-toolchain.toml`) and
+actions pinned to exact versions. The older sections above describe earlier
+behavior where they disagree with this table.

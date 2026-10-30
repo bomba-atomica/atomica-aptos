@@ -25,7 +25,15 @@ on:
       - "clippy.toml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
+  RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Reduce memory pressure during builds
@@ -41,12 +49,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -c rustfmt
+          rustup default "$RUST_TOOLCHAIN"
 
       - name: Check formatting
         run: |
@@ -60,14 +68,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -c clippy
+          rustup default "$RUST_TOOLCHAIN"
 
       - name: Install build dependencies
         run: |
@@ -84,7 +92,7 @@ jobs:
             libdw-dev
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.7.8
         with:
           shared-key: "atomica-test"
           cache-on-failure: true
