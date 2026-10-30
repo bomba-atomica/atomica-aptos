@@ -695,6 +695,10 @@ pub fn setup_environment_and_start_node(
     // Log the node config at node startup
     node_config.log_all_configs();
 
+    // Install the timelock share verifier before any block executes. Without it the VM discards every
+    // `TimelockShare` validator transaction (fail closed). The verifier reads its keys from chain state.
+    aptos_vm::validator_txns::install_boneh_franklin_share_verifier();
+
     // Start periodic jemalloc metrics collection
     #[cfg(unix)]
     aptos_jemalloc::start_jemalloc_metrics_thread();

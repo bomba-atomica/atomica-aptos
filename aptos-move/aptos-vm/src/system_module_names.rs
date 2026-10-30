@@ -65,6 +65,9 @@ pub const IS_RECONSTRUCTABLE_FUNCTION: &IdentStr = ident_str!("is_reconstructabl
 pub const GET_RECONSTRUCTION_INPUTS_FUNCTION: &IdentStr = ident_str!("get_reconstruction_inputs");
 pub const GET_IDENTITY_FUNCTION: &IdentStr = ident_str!("get_identity");
 pub const GET_TIMELOCK_EPOCH_FUNCTION: &IdentStr = ident_str!("get_timelock_epoch");
+pub const GET_SHARE_VERIFICATION_KEYS_FUNCTION: &IdentStr =
+    ident_str!("get_share_verification_keys");
+pub const REPORT_REJECTED_SHARE_FUNCTION: &IdentStr = ident_str!("report_rejected_share");
 pub const GET_MPK_FUNCTION: &IdentStr = ident_str!("get_mpk");
 
 pub static JWKS_MODULE: Lazy<ModuleId> = Lazy::new(|| {

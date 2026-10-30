@@ -56,5 +56,6 @@ mod jwk;
 mod timelock;
 
 pub use timelock::{
-    set_timelock_share_verifier, ShareCheckError, ShareCheckRequest, TimelockShareVerifier,
+    install_boneh_franklin_share_verifier, set_timelock_share_verifier, BonehFranklinShareVerifier,
+    ShareCheckError, ShareCheckRequest, TimelockShareVerifier,
 };
