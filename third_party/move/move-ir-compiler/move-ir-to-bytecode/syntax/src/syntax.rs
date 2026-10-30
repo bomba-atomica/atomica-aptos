@@ -938,13 +938,10 @@ fn parse_field_bindings(
         let v = parse_var(tokens)?;
         Ok((f, v))
     } else {
-        Ok((
-            f.clone(),
-            Spanned {
-                loc: f.loc,
-                value: Var_(f.value.0),
-            },
-        ))
+        Ok((f.clone(), Spanned {
+            loc: f.loc,
+            value: Var_(f.value.0),
+        }))
     }
 }
 
