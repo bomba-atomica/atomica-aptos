@@ -82,7 +82,7 @@ USER aptos
 
 # Health check
 HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8080/v1 || exit 1
+    CMD curl -f http://localhost:8080/v1/-/healthy || exit 1
 
 # Use Tini as entrypoint for proper signal handling
 ENTRYPOINT ["/tini", "--", "/usr/local/bin/aptos-node"]
