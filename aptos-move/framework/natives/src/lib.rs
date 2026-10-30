@@ -24,6 +24,7 @@ pub mod randomness;
 pub mod state_storage;
 pub mod storage_slot;
 pub mod string_utils;
+pub mod timelock;
 pub mod transaction_context;
 pub mod type_info;
 pub mod util;
@@ -76,6 +77,7 @@ pub fn all_natives(
     add_natives_from_module!("util", util::make_all(builder));
     add_natives_from_module!("from_bcs", util::make_all(builder));
     add_natives_from_module!("randomness", randomness::make_all(builder));
+    add_natives_from_module!("ibe", timelock::make_all(builder));
     add_natives_from_module!(
         "ristretto255_bulletproofs",
         cryptography::bulletproofs::make_all(builder)
