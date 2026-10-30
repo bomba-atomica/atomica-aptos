@@ -402,4 +402,84 @@ module aptos_framework::ibe_config_tests {
         );
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 1);
     }
+
+    // ---- handler support ----
+
+    #[test(user = @0xA)]
+    fun is_reconstructable_tracks_threshold_and_status(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        assert!(!ibe_config::is_reconstructable(id), 1);
+        assert!(!ibe_config::is_reconstructable(id + 100), 2);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        assert!(!ibe_config::is_reconstructable(id), 3);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
+        assert!(ibe_config::is_reconstructable(id), 4);
+        ibe_config::finalize_for_testing(id, fixtures::timelock_basic_reconstructed_dk(), true);
+        assert!(!ibe_config::is_reconstructable(id), 5);
+    }
+
+    #[test(user = @0xA)]
+    fun fail_key_check_expires_with_reason_and_never_reopens(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
+        ibe_config::fail_key_check_for_testing(id);
+        assert!(ibe_config::get_status(id) == 2, 1);
+        assert!(ibe_config::get_expiry_reason(id) == 3, 2);
+        assert!(!ibe_config::is_reconstructable(id), 3);
+    }
+
+    #[test(user = @0xA)]
+    #[expected_failure(abort_code = 12, location = aptos_framework::ibe_config)]
+    fun fail_key_check_below_threshold_aborts(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        ibe_config::fail_key_check_for_testing(id);
+    }
+
+    #[test(user = @0xA)]
+    #[expected_failure(abort_code = 11, location = aptos_framework::ibe_config)]
+    fun fail_key_check_after_reveal_aborts(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
+        ibe_config::finalize_for_testing(id, fixtures::timelock_basic_reconstructed_dk(), true);
+        ibe_config::fail_key_check_for_testing(id);
+    }
+
+    /// Refund gate for the auction contract: every expiry reason reads as status Expired with its own reason,
+    /// and a revealed timelock never does.
+    #[test(user = @0xA)]
+    fun every_expiry_reason_is_visible_to_the_refund_path(user: &signer) {
+        setup_ready();
+        let key_failed = register(user, 60 * MIN);
+        let window = register(user, 60 * MIN);
+        let revealed = register(user, 60 * MIN);
+        let epoch_ended = register(user, 100 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(key_failed, shares(2), 0, @0xB0, 0);
+        ibe_config::submit_dk_shares_for_testing(key_failed, shares(1), 1, @0xB1, 0);
+        ibe_config::fail_key_check_for_testing(key_failed);
+        ibe_config::submit_dk_shares_for_testing(revealed, shares(2), 0, @0xB0, 0);
+        ibe_config::submit_dk_shares_for_testing(revealed, shares(1), 1, @0xB1, 0);
+        ibe_config::finalize_for_testing(revealed, fixtures::timelock_basic_reconstructed_dk(), true);
+        timestamp::update_global_time_for_test(71 * MIN);
+        ibe_config::on_new_block_for_testing();
+        assert!(ibe_config::get_expiry_reason(window) == 2, 1);
+        assert!(ibe_config::get_status(window) == 2, 2);
+        assert!(ibe_config::get_expiry_reason(key_failed) == 3, 3);
+        assert!(ibe_config::get_status(revealed) == 1, 4);
+        assert!(ibe_config::get_expiry_reason(revealed) == 0, 5);
+        reconfiguration::reconfigure_for_test_custom();
+        assert!(ibe_config::get_expiry_reason(epoch_ended) == 1, 6);
+        assert!(ibe_config::get_status(epoch_ended) == 2, 7);
+    }
 }

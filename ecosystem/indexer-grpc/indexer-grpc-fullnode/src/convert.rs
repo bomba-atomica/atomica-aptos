@@ -1105,6 +1105,11 @@ fn convert_validator_transaction(
                 // TODO(ibalajiarun): Support indexer
                 None
             },
+            ApiValidatorTransactionEnum::TimelockShare(_) => {
+                // The indexer protobuf has no timelock share type yet. The transaction is kept
+                // with its events, and the share payload is not indexed.
+                None
+            },
         },
         events: convert_events(api_validator_txn.events()),
     })

@@ -815,6 +815,7 @@ pub enum ValidatorTransaction {
     ObservedJwkUpdate(JWKUpdateTransaction),
     DkgResult(DKGResultTransaction),
     ChunkyDKGResult(ChunkyDKGResultTransaction),
+    TimelockShare(TimelockShareTransaction),
 }
 
 impl ValidatorTransaction {
@@ -825,6 +826,7 @@ impl ValidatorTransaction {
             },
             ValidatorTransaction::DkgResult(_) => "validator_transaction__dkg_result",
             ValidatorTransaction::ChunkyDKGResult(_) => "validator_transaction__chunky_dkg_result",
+            ValidatorTransaction::TimelockShare(_) => "validator_transaction__timelock_share",
         }
     }
 
@@ -833,6 +835,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::ObservedJwkUpdate(t) => &t.info,
             ValidatorTransaction::DkgResult(t) => &t.info,
             ValidatorTransaction::ChunkyDKGResult(t) => &t.info,
+            ValidatorTransaction::TimelockShare(t) => &t.info,
         }
     }
 
@@ -841,6 +844,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::ObservedJwkUpdate(t) => &mut t.info,
             ValidatorTransaction::DkgResult(t) => &mut t.info,
             ValidatorTransaction::ChunkyDKGResult(t) => &mut t.info,
+            ValidatorTransaction::TimelockShare(t) => &mut t.info,
         }
     }
 
@@ -849,6 +853,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::ObservedJwkUpdate(t) => t.timestamp,
             ValidatorTransaction::DkgResult(t) => t.timestamp,
             ValidatorTransaction::ChunkyDKGResult(t) => t.timestamp,
+            ValidatorTransaction::TimelockShare(t) => t.timestamp,
         }
     }
 
@@ -857,6 +862,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::ObservedJwkUpdate(t) => &t.events,
             ValidatorTransaction::DkgResult(t) => &t.events,
             ValidatorTransaction::ChunkyDKGResult(t) => &t.events,
+            ValidatorTransaction::TimelockShare(t) => &t.events,
         }
     }
 }
@@ -901,6 +907,17 @@ impl
                     timestamp: U64::from(timestamp),
                     certified_subtrx: dkg_output.certified_transcript.into(),
                     encryption_key: HexEncodedBytes::from(dkg_output.encryption_key),
+                })
+            },
+            aptos_types::validator_txn::ValidatorTransaction::TimelockShare(share) => {
+                Self::TimelockShare(TimelockShareTransaction {
+                    info,
+                    events,
+                    timestamp: U64::from(timestamp),
+                    epoch: share.epoch.into(),
+                    timelock_id: share.timelock_id.into(),
+                    author: share.author.into(),
+                    shares: share.shares.into_iter().map(HexEncodedBytes::from).collect(),
                 })
             },
         }
@@ -1009,6 +1026,20 @@ impl From<DKGTranscript> for ExportedDKGTranscript {
             payload: HexEncodedBytes::from(transcript_bytes),
         }
     }
+}
+
+/// API form of `aptos_types::validator_txn::TimelockShare`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct TimelockShareTransaction {
+    #[serde(flatten)]
+    #[oai(flatten)]
+    pub info: TransactionInfo,
+    pub events: Vec<Event>,
+    pub timestamp: U64,
+    pub epoch: U64,
+    pub timelock_id: U64,
+    pub author: Address,
+    pub shares: Vec<HexEncodedBytes>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]

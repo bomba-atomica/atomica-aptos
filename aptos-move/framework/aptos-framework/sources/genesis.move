@@ -18,6 +18,7 @@ module aptos_framework::genesis {
     use aptos_framework::execution_config;
     use aptos_framework::create_signer::create_signer;
     use aptos_framework::gas_schedule;
+    use aptos_framework::ibe_config;
     use aptos_framework::transaction_limits;
     use aptos_framework::nonce_validation;
     use aptos_framework::reconfiguration;
@@ -133,6 +134,8 @@ module aptos_framework::genesis {
         block::initialize(&aptos_framework_account, epoch_interval_microsecs);
         state_storage::initialize(&aptos_framework_account);
         nonce_validation::initialize(&aptos_framework_account);
+        // Timelock registry. Empty until the timelock DKG writes the first epoch config.
+        ibe_config::initialize(&aptos_framework_account);
 
         transaction_limits::initialize(
             &aptos_framework_account,
