@@ -13,8 +13,12 @@
 //!    timelock's epoch, pending status, deadline passed in the committed block time, reveal window, one
 //!    slot per validator, exact share count. Any Move abort discards the transaction.
 //! 3. The share check. A [`TimelockShareVerifier`] must accept the shares against the verification keys
-//!    of the author's virtual players. **There is no default verifier: with none installed every share is
-//!    rejected (fail closed).** The real verifier belongs to `node-share-verification`.
+//!    of the author's virtual players, which the handler reads from `TimelockEpochConfig` through
+//!    `ibe_config::get_share_verification_keys`. [`BonehFranklinShareVerifier`] is the real verifier and the
+//!    node installs it at startup ([`install_boneh_franklin_share_verifier`]). **With no verifier installed
+//!    every share is rejected (fail closed).** When the check fails the session is dropped, so the shares
+//!    are not stored and the author's slot stays free. A fresh session then only emits
+//!    `TimelockShareRejectedEvent` naming the author, and the transaction is kept.
 //! 4. If verified weight reached the threshold, the key is rebuilt in Rust and checked with
 //!    `e(dk, g2) = e(H1(id), mpk)`. Only a key that passes goes to `finalize_timelock_reveal`, which checks
 //!    it again in a native. A key that fails sets `Expired(key-check-failed)` through
@@ -28,8 +32,9 @@ use crate::{
     move_vm_ext::{AptosMoveResolver, SessionExt, SessionId},
     system_module_names::{
         FAIL_TIMELOCK_KEY_CHECK_FUNCTION, FINALIZE_TIMELOCK_REVEAL_FUNCTION, GET_IDENTITY_FUNCTION,
-        GET_MPK_FUNCTION, GET_RECONSTRUCTION_INPUTS_FUNCTION, GET_TIMELOCK_EPOCH_FUNCTION,
-        IBE_CONFIG_MODULE, IS_RECONSTRUCTABLE_FUNCTION, SUBMIT_DK_SHARES_FUNCTION,
+        GET_MPK_FUNCTION, GET_RECONSTRUCTION_INPUTS_FUNCTION, GET_SHARE_VERIFICATION_KEYS_FUNCTION,
+        GET_TIMELOCK_EPOCH_FUNCTION, IBE_CONFIG_MODULE, IS_RECONSTRUCTABLE_FUNCTION,
+        REPORT_REJECTED_SHARE_FUNCTION, SUBMIT_DK_SHARES_FUNCTION,
     },
     AptosVM,
 };
@@ -65,6 +70,8 @@ enum ExpectedFailure {
     InvalidShareEncoding = 0x10401,
     EpochNotCurrent = 0x10402,
     TimelockEpochMismatch = 0x10403,
+    /// Kept for the code table. A failed share check now keeps the transaction with a rejection event.
+    #[allow(dead_code)]
     ShareCheckFailed = 0x10404,
     /// The Move registry refused the shares. The abort code is logged.
     RegistryAbort = 0x10405,
@@ -91,6 +98,9 @@ pub struct ShareCheckRequest<'a> {
     pub identity: &'a [u8],
     /// The master public key of the epoch (compressed G2, 96 bytes).
     pub mpk: &'a [u8],
+    /// The verification keys `g2^{s_p}` (compressed G2) of the author's virtual players, in player order,
+    /// read from `TimelockEpochConfig` on chain.
+    pub verification_keys: &'a [Vec<u8>],
     /// One compressed G1 share per virtual player of the author, in player order. Each already passed
     /// validated decoding (`aptos_dkg::ibe::decode_g1`).
     pub shares: &'a [Vec<u8>],
@@ -108,6 +118,24 @@ pub struct ShareCheckError(pub String);
 /// between validators.
 pub trait TimelockShareVerifier: Send + Sync {
     fn verify_shares(&self, request: &ShareCheckRequest<'_>) -> Result<(), ShareCheckError>;
+}
+
+/// The Boneh-Franklin share check of spec section 5: for every virtual player `p` of the author,
+/// `e(H1(identity), vk_p) = e(share_p, g2)`, over validated points. Stateless and a pure function of the
+/// request, which the handler fills from chain state, so all validators agree.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BonehFranklinShareVerifier;
+
+impl TimelockShareVerifier for BonehFranklinShareVerifier {
+    fn verify_shares(&self, request: &ShareCheckRequest<'_>) -> Result<(), ShareCheckError> {
+        ibe::verify_player_shares(request.identity, request.shares, request.verification_keys)
+            .map_err(|e| ShareCheckError(format!("{:?}", e)))
+    }
+}
+
+/// Installs [`BonehFranklinShareVerifier`]. The node calls this before it executes blocks.
+pub fn install_boneh_franklin_share_verifier() {
+    set_timelock_share_verifier(Some(Arc::new(BonehFranklinShareVerifier)));
 }
 
 static SHARE_VERIFIER: RwLock<Option<Arc<dyn TimelockShareVerifier>>> = RwLock::new(None);
@@ -269,6 +297,43 @@ impl AptosVM {
         }
     }
 
+    /// Keeps a transaction whose only effect is `TimelockShareRejectedEvent`. If the registry refuses even
+    /// that (for example the window closed), the transaction is discarded.
+    #[allow(clippy::too_many_arguments)]
+    fn report_rejected_share(
+        &self,
+        resolver: &impl AptosMoveResolver,
+        module_storage: &impl AptosModuleStorage,
+        log_context: &AdapterLogSchema,
+        session_id: SessionId,
+        timelock_id: u64,
+        author: AccountAddress,
+        epoch: u64,
+    ) -> Result<(VMStatus, VMOutput), ExecutionFailure> {
+        let mut session = self.new_session(resolver, session_id, None);
+        call_ibe_config(
+            &mut session,
+            module_storage,
+            log_context,
+            REPORT_REJECTED_SHARE_FUNCTION,
+            vec![
+                MoveValue::U64(timelock_id),
+                MoveValue::Address(author),
+                MoveValue::U64(epoch),
+            ],
+        )?;
+        let output = get_system_transaction_output(
+            session,
+            module_storage,
+            &self
+                .storage_gas_params(log_context)
+                .map_err(ExecutionFailure::Unexpected)?
+                .change_set_configs,
+        )
+        .map_err(ExecutionFailure::Unexpected)?;
+        Ok((VMStatus::Executed, output))
+    }
+
     fn process_timelock_share_inner(
         &self,
         resolver: &impl AptosMoveResolver,
@@ -304,7 +369,7 @@ impl AptosVM {
             ExpectedFailure::ShareVerifierUnavailable,
         ))?;
 
-        let mut session = self.new_session(resolver, session_id, None);
+        let mut session = self.new_session(resolver, session_id.clone(), None);
 
         // 2. Store the shares. The Move registry enforces epoch, status, time window, slot and count.
         call_ibe_config(
@@ -361,12 +426,23 @@ impl AptosVM {
             )?,
             0,
         )?;
+        let verification_keys: Vec<Vec<u8>> = decode_return(
+            &call_ibe_config(
+                &mut session,
+                module_storage,
+                log_context,
+                GET_SHARE_VERIFICATION_KEYS_FUNCTION,
+                vec![MoveValue::Address(author)],
+            )?,
+            0,
+        )?;
         let request = ShareCheckRequest {
             epoch,
             timelock_id,
             author,
             identity: &identity,
             mpk: &mpk,
+            verification_keys: &verification_keys,
             shares: &shares,
         };
         if let Err(e) = verifier.verify_shares(&request) {
@@ -374,9 +450,18 @@ impl AptosVM {
                 "Timelock share check failed: author {}, timelock {}: {}",
                 author, timelock_id, e.0
             );
-            return Err(ExecutionFailure::Expected(
-                ExpectedFailure::ShareCheckFailed,
-            ));
+            // Drop the session: the shares are not stored and the slot stays free. A fresh session
+            // only records the rejection in an event that names the author.
+            drop(session);
+            return self.report_rejected_share(
+                resolver,
+                module_storage,
+                log_context,
+                session_id,
+                timelock_id,
+                author,
+                epoch,
+            );
         }
 
         // 4. Reveal, once verified weight reached the threshold.
@@ -580,5 +665,67 @@ mod tests {
         ] {
             assert!((0x10401..=0x10405).contains(&code) || (0x30401..=0x30402).contains(&code));
         }
+    }
+
+    // ---- Boneh-Franklin verifier on a request ----
+
+    fn dealing(seed: u64) -> (Vec<aptos_dkg::ibe::MasterScalar>, Vec<Vec<u8>>) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let secrets: Vec<_> = (0..3).map(|_| random_scalar(&mut rng)).collect();
+        let vks = secrets
+            .iter()
+            .map(|s| encode_g2(&master_public_key(s)).to_vec())
+            .collect();
+        (secrets, vks)
+    }
+
+    fn shares(secrets: &[aptos_dkg::ibe::MasterScalar], identity: &[u8]) -> Vec<Vec<u8>> {
+        secrets
+            .iter()
+            .map(|s| encode_g1(&derive_decryption_key(s, identity).unwrap()).to_vec())
+            .collect()
+    }
+
+    fn check(identity: &[u8], shares: &[Vec<u8>], vks: &[Vec<u8>]) -> Result<(), ShareCheckError> {
+        BonehFranklinShareVerifier.verify_shares(&ShareCheckRequest {
+            epoch: 3,
+            timelock_id: 11,
+            author: AccountAddress::ONE,
+            identity,
+            mpk: &[],
+            verification_keys: vks,
+            shares,
+        })
+    }
+
+    #[test]
+    fn boneh_franklin_verifier_accepts_valid_and_refuses_each_negative() {
+        let (secrets, vks) = dealing(7);
+        let good = shares(&secrets, &id());
+        assert_eq!(check(&id(), &good, &vks), Ok(()));
+
+        // wrong share
+        let mut wrong = good.clone();
+        wrong[2] = good[0].clone();
+        assert!(check(&id(), &wrong, &vks).is_err());
+        // another identity, another epoch
+        for other in [
+            compute_identity(4, 3, 12, 1_700_000_000_000_000),
+            compute_identity(4, 4, 11, 1_700_000_000_000_000),
+        ] {
+            assert!(check(&id(), &shares(&secrets, &other), &vks).is_err());
+        }
+        // another secret
+        let (foreign, _) = dealing(8);
+        assert!(check(&id(), &shares(&foreign, &id()), &vks).is_err());
+        // a share count that differs from the key count
+        assert!(check(&id(), &good[..2], &vks).is_err());
+        assert!(check(&id(), &[], &[]).is_err());
+        // an invalid point
+        let mut identity_point = vec![0u8; 48];
+        identity_point[0] = 0xc0;
+        let mut bad_point = good.clone();
+        bad_point[1] = identity_point;
+        assert!(check(&id(), &bad_point, &vks).is_err());
     }
 }

@@ -133,7 +133,14 @@ For each submitted virtual-player share, in this order:
 
 The handler runs this in Rust inside the validator transaction handler, not as a metered Move native. The weighted check costs one pairing per virtual player, as upstream notes (`fptx_weighted.rs` lines 159 to 181, "TODO could use a multipairing"). The cost is not measured yet. It is a required measurement (section 10). No batched random-combination fast path is allowed in the first version.
 
-A rejected share is not stored and does not take the validator's one slot. The handler returns an expected failure code and logs the author. A rejection raises an event naming the validator for the performance report.
+A rejected share is not stored and does not take the validator's one slot. The handler drops its VM session, so nothing is stored. A fresh session emits `TimelockShareRejectedEvent` (timelock id, epoch, author) and the transaction is kept. The event is emitted only for a submission that passed the cheap registry checks (deadline passed in committed time, window open, slot free). The author is named in an unsigned transaction, so the event is a claim about a message and not proof of misbehavior: a proposer can name an honest validator. Alerts must not slash on it.
+
+Implementation notes (`node-share-verification`):
+
+- `aptos_dkg::ibe::verify_player_shares` computes `H1(id)` once, decodes every share and key with validation, and runs one multi-pairing per share. No batching, so the verdict is the same on every validator.
+- `BonehFranklinShareVerifier` in `aptos-vm` wraps it. `aptos-node` installs it before any block executes. With none installed every share is discarded (code `0x30401`).
+- The node derivation rule is `aptos_types::timelock::DerivableTimelock::authorize`: Pending, current epoch, committed block timestamp at or after `deadline_us` and before the reveal expiry, and a registry identity equal to `compute_identity(chain, epoch, id, deadline)`. Shares are derived only from that value. No wall clock is an input.
+- Measured cost (release build, one core, local machine, `cargo test -p aptos-dkg --release --lib ibe::tests::measure_share_check_cost -- --ignored --nocapture`): about 2.3 ms per share, including validated decoding of the share and of the key (3.2 ms for a single share, 18 ms for weight 8, 74 ms for weight 32, 285 ms for weight 128 per author). A block that carries one `TimelockShare` per validator of total virtual weight W costs about `2.3 ms * W` of verification. Debug builds are roughly an order of magnitude slower. This is not a CI result.
 
 ### Reconstruction and key check (fixes gap 1)
 
@@ -200,7 +207,7 @@ Timelock id (monotonic, `next_timelock_id`), `deadline_us`, the identity, share 
 
 ### Added resource: `TimelockEpochConfig`
 
-Written once per epoch by `finish_with_timelock_dkg_result`. Fields: `epoch`, `mpk`, `reconstruct_threshold_weight`, `total_weight`, per-validator `weights` from the DKG rounding profile, `public_parameters_hash`, and the hash of the aggregated subtranscript. The handler reads weights and threshold from here. The vtxn author does not supply them. The current `submit_dk_shares` takes `weight` and `total_weight` as arguments.
+Written once per epoch by `finish_with_timelock_dkg_result`. Fields: `epoch`, `mpk`, `reconstruct_threshold_weight`, `total_weight`, per-validator `weights` from the DKG rounding profile, `public_parameters_hash`, the hash of the aggregated subtranscript, and `verification_keys`: the G2 verification key `g2^{s_p}` of every virtual player in player order (validator `i` owns the `weights[i]` entries after the weights of validators `0..i`). `set_epoch_config` checks that there are `total_weight` keys of 96 bytes each. The handler reads the author's keys through `ibe_config::get_share_verification_keys`, so the share check uses chain state only. The handler reads weights and threshold from here. The vtxn author does not supply them. The current `submit_dk_shares` takes `weight` and `total_weight` as arguments.
 
 ### Rules
 

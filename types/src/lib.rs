@@ -52,6 +52,7 @@ pub mod validator_config;
 pub mod validator_info;
 pub mod validator_performances;
 pub mod validator_signer;
+pub mod timelock;
 pub mod validator_txn;
 pub mod validator_verifier;
 pub mod vesting;

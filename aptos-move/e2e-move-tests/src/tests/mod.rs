@@ -43,6 +43,7 @@ mod generic_cmp;
 mod governance_updates;
 mod hot_state;
 mod ibe_gas;
+mod timelock_share;
 mod infinite_loop;
 mod init_module;
 mod init_module_api;

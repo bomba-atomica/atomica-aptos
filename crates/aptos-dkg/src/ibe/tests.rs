@@ -768,3 +768,130 @@ fn generate_move_fixtures() {
     println!("CT_NON_SUBGROUP_U={}", hex::encode(bad.to_bytes()));
     println!("NON_SUBGROUP_G1={}", hex::encode(ns_share));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Per-validator share check (`verify_player_shares`)
+// ---------------------------------------------------------------------------------------------
+
+fn player_vks(d: &Dealing, validator: usize) -> Vec<Vec<u8>> {
+    (0..d.weights[validator] as usize)
+        .map(|j| encode_g2(&d.vks[d.start(validator) + j]).to_vec())
+        .collect()
+}
+
+#[test]
+fn player_shares_valid_set_verifies_and_rebuilds() {
+    let d = deal(&[2, 3, 1, 2], 5, 21);
+    let id = identity();
+    let shares = d.dk_shares(&[0, 1, 2, 3], &id);
+    for v in 0..4 {
+        assert_eq!(
+            verify_player_shares(&id, &shares[v], &player_vks(&d, v)),
+            Ok(())
+        );
+    }
+    // The verified shares of a threshold set rebuild a key that passes the key check.
+    let rebuilt = d.reconstruct(&[0, 1, 3], &id).unwrap();
+    assert!(verify_decryption_key(&rebuilt, &id, &d.mpk));
+}
+
+#[test]
+fn player_shares_negative_cases() {
+    let d = deal(&[2, 2, 2, 2], 5, 22);
+    let id = identity();
+    let shares = d.dk_shares(&[0, 1], &id);
+    let vks0 = player_vks(&d, 0);
+
+    // Wrong share: one point shifted by the generator.
+    let good0 = decode_g1(&shares[0][0]).unwrap();
+    let bad = (G1Projective::from(good0) + G1Projective::from(G1Affine::generator())).into_affine();
+    let mut wrong = shares[0].clone();
+    wrong[1] = encode_g1(&bad).to_vec();
+    assert_eq!(
+        verify_player_shares(&id, &wrong, &vks0),
+        Err(ShareCheckFailure::PairingMismatch { index: 1 })
+    );
+    // Shares of another validator under this validator's keys.
+    assert_eq!(
+        verify_player_shares(&id, &shares[1], &vks0),
+        Err(ShareCheckFailure::PairingMismatch { index: 0 })
+    );
+    // Swapped players of the same validator.
+    let swapped = vec![shares[0][1].clone(), shares[0][0].clone()];
+    assert_eq!(
+        verify_player_shares(&id, &swapped, &vks0),
+        Err(ShareCheckFailure::PairingMismatch { index: 0 })
+    );
+    // Share for another identity (timelock id), and for another epoch.
+    for other in [
+        compute_identity(7, 3, 12, 1_700_000_000_000_000),
+        compute_identity(7, 4, 11, 1_700_000_000_000_000),
+    ] {
+        let other_shares = d.dk_shares(&[0], &other);
+        assert_eq!(
+            verify_player_shares(&id, &other_shares[0], &vks0),
+            Err(ShareCheckFailure::PairingMismatch { index: 0 })
+        );
+    }
+    // Share for another DKG secret.
+    let d2 = deal(&[2, 2, 2, 2], 5, 23);
+    let foreign = d2.dk_shares(&[0], &id);
+    assert_eq!(
+        verify_player_shares(&id, &foreign[0], &vks0),
+        Err(ShareCheckFailure::PairingMismatch { index: 0 })
+    );
+    // Non-subgroup point and the identity point are refused by validated decoding.
+    let mut ns = shares[0].clone();
+    ns[0] = raw_g1(&non_subgroup_g1());
+    assert!(matches!(
+        verify_player_shares(&id, &ns, &vks0),
+        Err(ShareCheckFailure::InvalidShare { index: 0, .. })
+    ));
+    let mut ident = vec![0u8; G1_COMPRESSED_LEN];
+    ident[0] = 0xc0;
+    let mut zero = shares[0].clone();
+    zero[1] = ident;
+    assert!(matches!(
+        verify_player_shares(&id, &zero, &vks0),
+        Err(ShareCheckFailure::InvalidShare { index: 1, .. })
+    ));
+    // A bad verification key is refused too.
+    let mut bad_vks = vks0.clone();
+    bad_vks[0] = raw_g2(&non_subgroup_g2());
+    assert!(matches!(
+        verify_player_shares(&id, &shares[0], &bad_vks),
+        Err(ShareCheckFailure::InvalidVerificationKey { index: 0, .. })
+    ));
+    // Count mismatch and empty input.
+    assert_eq!(
+        verify_player_shares(&id, &shares[0][..1], &vks0),
+        Err(ShareCheckFailure::CountMismatch { shares: 1, keys: 2 })
+    );
+    assert!(verify_player_shares(&id, &[], &[]).is_err());
+}
+
+/// Measures the cost of the per-share check for validator weights in the range the chunky DKG rounding
+/// can produce. Run with:
+/// `cargo test -p aptos-dkg --release --lib ibe::tests::measure_share_check_cost -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn measure_share_check_cost() {
+    let id = identity();
+    for weight in [1u64, 8, 32, 128] {
+        let d = deal(&[weight, 1], (weight as usize + 2) / 2 + 1, 99);
+        let shares = d.dk_shares(&[0], &id).remove(0);
+        let vks = player_vks(&d, 0);
+        let reps = 5;
+        let start = std::time::Instant::now();
+        for _ in 0..reps {
+            assert_eq!(verify_player_shares(&id, &shares, &vks), Ok(()));
+        }
+        let per_author = start.elapsed() / reps;
+        println!(
+            "share check: weight {:>4}: {:>10.2?} per author, {:>8.2?} per share",
+            weight,
+            per_author,
+            per_author / weight as u32
+        );
+    }
+}

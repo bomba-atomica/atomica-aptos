@@ -4,7 +4,9 @@
 /// The pairing check inside `finalize_timelock_reveal` is a native. These tests drive the same
 /// state machine through `finalize_for_testing(.., key_ok)`.
 module aptos_framework::ibe_config_tests {
+    use std::vector;
     use aptos_framework::account;
+    use aptos_framework::event;
     use aptos_framework::ibe_config;
     use aptos_framework::ibe_golden_vector_fixtures as fixtures;
     use aptos_framework::reconfiguration;
@@ -481,5 +483,103 @@ module aptos_framework::ibe_config_tests {
         reconfiguration::reconfigure_for_test_custom();
         assert!(ibe_config::get_expiry_reason(epoch_ended) == 1, 6);
         assert!(ibe_config::get_status(epoch_ended) == 2, 7);
+    }
+
+    // ---- verification keys and rejected shares ----
+
+    fun keys(n: u64): vector<vector<u8>> {
+        let out = vector[];
+        let i = 0;
+        while (i < n) {
+            let vk = vector[];
+            let b = 0;
+            while (b < 96) {
+                vk.push_back((i as u8));
+                b += 1;
+            };
+            out.push_back(vk);
+            i += 1;
+        };
+        out
+    }
+
+    #[test]
+    fun player_keys_are_sliced_by_weight() {
+        let framework = setup();
+        ibe_config::set_epoch_config_with_keys_for_testing(
+            &framework, 0, fixtures::timelock_basic_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL, keys(5)
+        );
+        let k0 = ibe_config::get_player_keys_for_testing(0);
+        let k1 = ibe_config::get_player_keys_for_testing(1);
+        let k2 = ibe_config::get_player_keys_for_testing(2);
+        assert!(k0.length() == 2 && k1.length() == 1 && k2.length() == 2, 1);
+        assert!(k0[0][0] == 0 && k0[1][0] == 1, 2);
+        assert!(k1[0][0] == 2, 3);
+        assert!(k2[0][0] == 3 && k2[1][0] == 4, 4);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 14, location = aptos_framework::ibe_config)]
+    fun player_keys_of_unknown_validator_abort() {
+        let framework = setup();
+        ibe_config::set_epoch_config_with_keys_for_testing(
+            &framework, 0, fixtures::timelock_basic_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL, keys(5)
+        );
+        ibe_config::get_player_keys_for_testing(3);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 16, location = aptos_framework::ibe_config)]
+    fun epoch_config_with_wrong_key_count_aborts() {
+        let framework = setup();
+        ibe_config::set_epoch_config_with_keys_for_testing(
+            &framework, 0, fixtures::timelock_basic_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL, keys(4)
+        );
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 16, location = aptos_framework::ibe_config)]
+    fun epoch_config_with_short_key_aborts() {
+        let framework = setup();
+        let bad = keys(5);
+        vector::borrow_mut(&mut bad, 2).pop_back();
+        ibe_config::set_epoch_config_with_keys_for_testing(
+            &framework, 0, fixtures::timelock_basic_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL, bad
+        );
+    }
+
+    #[test(user = @0xA)]
+    fun rejected_share_emits_event_and_keeps_the_slot_free(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::report_rejected_share_for_testing(id, 0, @0xB0, 0);
+        let events = event::emitted_events<ibe_config::TimelockShareRejectedEvent>();
+        assert!(events.length() == 1, 1);
+        // Nothing was stored.
+        let (_, _, _, count) = ibe_config::get_timelock(id);
+        assert!(count == 0, 2);
+        // The same validator can still submit.
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        let (_, _, _, count) = ibe_config::get_timelock(id);
+        assert!(count == 2, 3);
+    }
+
+    #[test(user = @0xA)]
+    #[expected_failure(abort_code = 3, location = aptos_framework::ibe_config)]
+    fun rejected_share_before_deadline_emits_nothing(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        ibe_config::report_rejected_share_for_testing(id, 0, @0xB0, 0);
+    }
+
+    #[test(user = @0xA)]
+    #[expected_failure(abort_code = 7, location = aptos_framework::ibe_config)]
+    fun rejected_share_after_accepted_submission_aborts(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        ibe_config::report_rejected_share_for_testing(id, 0, @0xB0, 0);
     }
 }

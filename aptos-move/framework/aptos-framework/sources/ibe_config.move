@@ -135,7 +135,11 @@ module aptos_framework::ibe_config {
         /// Length of the epoch. The epoch ends at `last_reconfiguration_time + epoch_interval_us`.
         epoch_interval_us: u64,
         public_parameters_hash: vector<u8>,
-        subtranscript_hash: vector<u8>
+        subtranscript_hash: vector<u8>,
+        /// Verification key `g2^{s_p}` (compressed G2, 96 bytes) of every virtual player, in player order.
+        /// Validator `i` owns the `weights[i]` entries that start at `weights[0] + ... + weights[i - 1]`.
+        /// The Rust share check reads the keys of the share's author from here.
+        verification_keys: vector<vector<u8>>
     }
 
     enum TimelockStatus has copy, drop, store {
@@ -198,6 +202,17 @@ module aptos_framework::ibe_config {
         timestamp_us: u64
     }
 
+    /// A share set that failed the Rust share check. Nothing was stored, so the validator can submit again.
+    /// `validator` is the author named in the transaction. No signature backs it, so the event is a claim
+    /// about a message, not proof of misbehavior.
+    #[event]
+    struct TimelockShareRejectedEvent has drop, store {
+        timelock_id: u64,
+        epoch: u64,
+        validator: address,
+        timestamp_us: u64
+    }
+
     #[event]
     struct TimelockExpiredEvent has drop, store {
         timelock_id: u64,
@@ -252,9 +267,15 @@ module aptos_framework::ibe_config {
         weights: vector<u64>,
         epoch_interval_us: u64,
         public_parameters_hash: vector<u8>,
-        subtranscript_hash: vector<u8>
+        subtranscript_hash: vector<u8>,
+        verification_keys: vector<vector<u8>>
     ) acquires IBEPublicParams, TimelockEpochConfig {
         system_addresses::assert_aptos_framework(aptos_framework);
+        let total_weight = weights.fold(0u64, |acc, w| acc + w);
+        assert!(verification_keys.length() == total_weight, E_INVALID_EPOCH_CONFIG);
+        verification_keys.for_each_ref(|vk| {
+            assert!(vk.length() == G2_COMPRESSED_LENGTH, E_INVALID_EPOCH_CONFIG);
+        });
         set_epoch_config_internal(
             aptos_framework,
             epoch,
@@ -263,7 +284,8 @@ module aptos_framework::ibe_config {
             weights,
             epoch_interval_us,
             public_parameters_hash,
-            subtranscript_hash
+            subtranscript_hash,
+            verification_keys
         );
     }
 
@@ -275,7 +297,8 @@ module aptos_framework::ibe_config {
         weights: vector<u64>,
         epoch_interval_us: u64,
         public_parameters_hash: vector<u8>,
-        subtranscript_hash: vector<u8>
+        subtranscript_hash: vector<u8>,
+        verification_keys: vector<vector<u8>>
     ) acquires IBEPublicParams, TimelockEpochConfig {
         assert!(mpk.length() == G2_COMPRESSED_LENGTH, E_INVALID_MPK_LENGTH);
         let total_weight = weights.fold(0u64, |acc, w| acc + w);
@@ -293,7 +316,8 @@ module aptos_framework::ibe_config {
             weights,
             epoch_interval_us,
             public_parameters_hash,
-            subtranscript_hash
+            subtranscript_hash,
+            verification_keys
         };
         if (exists<TimelockEpochConfig>(@aptos_framework)) {
             *&mut TimelockEpochConfig[@aptos_framework] = config;
@@ -340,6 +364,37 @@ module aptos_framework::ibe_config {
         assert!(exists<TimelockEpochConfig>(@aptos_framework), E_IBE_NOT_READY);
         let config = &TimelockEpochConfig[@aptos_framework];
         (config.epoch, config.reconstruct_threshold_weight, config.total_weight)
+    }
+
+    /// The verification keys of the virtual players of `validator_address`, in player order. The share check
+    /// of the `TimelockShare` handler reads them here, so every validator checks against chain state.
+    /// Aborts unless the config is of the current epoch and the address is in the active validator set.
+    public fun get_share_verification_keys(validator_address: address): vector<vector<u8>>
+    acquires TimelockEpochConfig {
+        assert!(exists<TimelockEpochConfig>(@aptos_framework), E_IBE_NOT_READY);
+        let config = &TimelockEpochConfig[@aptos_framework];
+        assert!(config.epoch == reconfiguration::current_epoch(), E_WRONG_EPOCH);
+        let validator_index = stake::get_validator_index(validator_address);
+        get_player_keys(config, validator_index)
+    }
+
+    fun get_player_keys(config: &TimelockEpochConfig, validator_index: u64): vector<vector<u8>> {
+        assert!(validator_index < config.weights.length(), E_UNKNOWN_VALIDATOR_INDEX);
+        let start = 0u64;
+        let i = 0u64;
+        while (i < validator_index) {
+            start += config.weights[i];
+            i += 1;
+        };
+        let weight = config.weights[validator_index];
+        assert!(start + weight <= config.verification_keys.length(), E_INVALID_EPOCH_CONFIG);
+        let keys = vector[];
+        let j = 0u64;
+        while (j < weight) {
+            keys.push_back(config.verification_keys[start + j]);
+            j += 1;
+        };
+        keys
     }
 
     #[view]
@@ -437,17 +492,36 @@ module aptos_framework::ibe_config {
         validator_address: address,
         share_epoch: u64
     ) acquires TimelockRegistry, TimelockEpochConfig {
+        let weight = assert_can_submit(timelock_id, validator_index, validator_address, share_epoch);
+        assert!(shares.length() == weight, E_INVALID_THRESHOLD);
+        let registry = &mut TimelockRegistry[@aptos_framework];
+        let info = registry.timelocks.borrow_mut(timelock_id);
+        info.validator_indices.push_back(validator_index);
+        info.submitted_shares.push_back(shares);
+        info.validator_weights.push_back(weight);
+        info.submitters.push_back(validator_address);
+        info.share_count += weight;
+    }
+
+    /// The cheap checks of a share submission: current epoch, the timelock's epoch, pending status, deadline
+    /// passed in the committed block time, reveal window open and one slot per validator. Returns the weight
+    /// of the validator.
+    fun assert_can_submit(
+        timelock_id: u64,
+        validator_index: u64,
+        validator_address: address,
+        share_epoch: u64
+    ): u64 acquires TimelockRegistry, TimelockEpochConfig {
         assert!(exists<TimelockEpochConfig>(@aptos_framework), E_IBE_NOT_READY);
         let config = &TimelockEpochConfig[@aptos_framework];
         let current_epoch = reconfiguration::current_epoch();
         assert!(config.epoch == current_epoch && share_epoch == current_epoch, E_WRONG_EPOCH);
         assert!(validator_index < config.weights.length(), E_UNKNOWN_VALIDATOR_INDEX);
         let weight = config.weights[validator_index];
-        assert!(shares.length() == weight, E_INVALID_THRESHOLD);
 
-        let registry = &mut TimelockRegistry[@aptos_framework];
+        let registry = &TimelockRegistry[@aptos_framework];
         assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
-        let info = registry.timelocks.borrow_mut(timelock_id);
+        let info = registry.timelocks.borrow(timelock_id);
         assert!(info.status is TimelockStatus::Pending, E_NOT_PENDING);
         assert!(info.epoch == current_epoch, E_WRONG_EPOCH);
 
@@ -455,12 +529,27 @@ module aptos_framework::ibe_config {
         assert!(now >= info.deadline_us, E_DEADLINE_NOT_PASSED);
         assert!(now < info.reveal_expiry_us, E_REVEAL_WINDOW_ELAPSED);
         assert!(!info.submitters.contains(&validator_address), E_SHARE_ALREADY_SUBMITTED);
+        weight
+    }
 
-        info.validator_indices.push_back(validator_index);
-        info.submitted_shares.push_back(shares);
-        info.validator_weights.push_back(weight);
-        info.submitters.push_back(validator_address);
-        info.share_count += weight;
+    /// Records that the share set of `validator_address` failed the Rust share check. Stores nothing, so
+    /// the validator's slot stays free. Emits `TimelockShareRejectedEvent`. Runs the same cheap checks as a
+    /// submission, so an event exists only for a submission that was otherwise acceptable.
+    public(friend) fun report_rejected_share(
+        timelock_id: u64,
+        validator_address: address,
+        share_epoch: u64
+    ) acquires TimelockRegistry, TimelockEpochConfig {
+        let validator_index = stake::get_validator_index(validator_address);
+        assert_can_submit(timelock_id, validator_index, validator_address, share_epoch);
+        event::emit(
+            TimelockShareRejectedEvent {
+                timelock_id,
+                epoch: share_epoch,
+                validator: validator_address,
+                timestamp_us: timestamp::now_microseconds()
+            }
+        );
     }
 
     /// Everything the handler needs to reconstruct the key:
@@ -744,7 +833,45 @@ module aptos_framework::ibe_config {
         weights: vector<u64>,
         epoch_interval_us: u64
     ) acquires IBEPublicParams, TimelockEpochConfig {
-        set_epoch_config_internal(aptos_framework, epoch, mpk, threshold, weights, epoch_interval_us, vector[], vector[]);
+        set_epoch_config_internal(aptos_framework, epoch, mpk, threshold, weights, epoch_interval_us, vector[], vector[], vector[]);
+    }
+
+    #[test_only]
+    public fun set_epoch_config_with_keys_for_testing(
+        aptos_framework: &signer,
+        epoch: u64,
+        mpk: vector<u8>,
+        threshold: u64,
+        weights: vector<u64>,
+        epoch_interval_us: u64,
+        verification_keys: vector<vector<u8>>
+    ) acquires IBEPublicParams, TimelockEpochConfig {
+        set_epoch_config(
+            aptos_framework, epoch, mpk, threshold, weights, epoch_interval_us, vector[], vector[], verification_keys
+        );
+    }
+
+    #[test_only]
+    public fun get_player_keys_for_testing(validator_index: u64): vector<vector<u8>> acquires TimelockEpochConfig {
+        get_player_keys(&TimelockEpochConfig[@aptos_framework], validator_index)
+    }
+
+    #[test_only]
+    public fun report_rejected_share_for_testing(
+        timelock_id: u64,
+        validator_index: u64,
+        validator_address: address,
+        share_epoch: u64
+    ) acquires TimelockRegistry, TimelockEpochConfig {
+        assert_can_submit(timelock_id, validator_index, validator_address, share_epoch);
+        event::emit(
+            TimelockShareRejectedEvent {
+                timelock_id,
+                epoch: share_epoch,
+                validator: validator_address,
+                timestamp_us: timestamp::now_microseconds()
+            }
+        );
     }
 
     #[test_only]
