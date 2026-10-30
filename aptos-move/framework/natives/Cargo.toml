@@ -27,6 +27,7 @@ testing = ["aptos-crypto/fuzzing"]
 anyhow = { workspace = true }
 aptos-aggregator = { workspace = true }
 aptos-crypto = { workspace = true }
+aptos-dkg = { workspace = true }
 aptos-gas-algebra = { workspace = true }
 aptos-gas-schedule = { workspace = true }
 aptos-native-interface = { workspace = true }

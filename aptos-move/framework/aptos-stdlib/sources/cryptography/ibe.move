@@ -11,6 +11,10 @@
 /// | `reconstruct_ibe_dk` | 5 | Weighted Lagrange interpolation of G1 key shares |
 /// | `verify_decryption_key` | 5 | Pairing check `e(dk, g2) = e(H1(id), mpk)` |
 /// | `verify_bid_ct` | 6 | Submission check of a bid ciphertext against its associated data |
+///
+/// Abort codes of `reconstruct_ibe_dk` (from the native): 1 when the type argument is not
+/// `bls12381_algebra::G1`, 2 for malformed input (shape, bounds, weights, below threshold, or a
+/// share that is not a valid prime-order non-identity G1 point).
 module aptos_std::ibe {
     /// Reconstructs an IBE decryption key from G1 key shares.
     ///
@@ -53,13 +57,15 @@ module aptos_std::ibe {
 
     /// Verifies a bid ciphertext at submission time.
     ///
-    /// * `ct` - serialized ciphertext `(vk, U, nonce, C, sig)`.
+    /// * `ct` - BCS of the five byte vectors `(vk, U, nonce, C, sig)`: 32, 96, 12, at least 16 and
+    ///   64 bytes. Trailing bytes and any other length are rejected.
     /// * `ad` - associated data the contract built on chain (BCS of tag, chain id, epoch,
-    ///   timelock id, auction id, bidder, deadline).
+    ///   timelock id, auction id, bidder, deadline). It is not part of `ct`. It is bound by the
+    ///   one-time signature, so a caller cannot supply a different bidder or auction.
     ///
-    /// Checks in order: `U` is a valid prime-order non-identity G2 point and the field lengths
-    /// are right, the associated data inside `ct` equals `ad`, the one-time Ed25519 signature
-    /// over `BCS(U, nonce, C, AD)` verifies. Returns false on any failure.
+    /// Checks: `U` is a valid prime-order non-identity G2 point, and the one-time Ed25519
+    /// signature (strict verification) over `BCS(U, nonce, C, AD)` verifies for `vk`.
+    /// Returns false on any failure.
     public fun verify_bid_ct(ct: vector<u8>, ad: vector<u8>): bool {
         verify_bid_ct_internal(ct, ad)
     }
