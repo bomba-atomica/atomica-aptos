@@ -1,12 +1,14 @@
 # Option C Cryptographer Review Packet
 
-Status: Awaiting human review. Prepared 2026-10-30 by an AI agent for forgectl feature `crypto-review-signoff`.
+Status: Awaiting human review (revised for the new design, see section 8). Prepared 2026-10-30 by an AI agent for forgectl feature `crypto-review-signoff`.
 
 This packet is evidence for a human cryptographer. It is not a review and it is not a sign-off. No cryptographer has reviewed anything in it. The agent that wrote it checked code and ran tests. It did not do a cryptographic proof. Every conclusion below is a claim to be confirmed or refuted by the reviewer.
 
 The forgectl feature `crypto-review-signoff` is closed on the engineering outcome in section 6a (required changes recorded, no external sign-off). The human Reviewer record in section 7 stays open.
 
-Spec under review: [Option C spec](aptos-upgrade-option-c-spec.md). Prototype: `atomica/proto-fptx-timelock/` in this fork. Upstream code: branch `baseline/aptos-node-v1.49.6` (tip `b4359185dd`, "Bump version to 1.49.6"). Paths in section 1 to 4 are relative to the repo root on that branch unless marked `proto:`.
+Revision notice (2026-10-30): the design direction changed after this packet was written. Sections 0 to 7 below review the superseded Option C (FPTX) design and are kept as the record. Section 8 maps each earlier required change to the new design. Section 9 holds the open questions for the new design. The spec now under review is the [IBE on chunky DKG spec](aptos-upgrade-ibe-chunky-spec.md). Section 7, the Reviewer record, is unchanged and blank. No external cryptographer has signed anything, and review is still recommended before release.
+
+Superseded spec (sections 0 to 7): [Option C spec](aptos-upgrade-option-c-spec.md). Prototype: `atomica/proto-fptx-timelock/` in this fork. Upstream code: branch `baseline/aptos-node-v1.49.6` (tip `b4359185dd`, "Bump version to 1.49.6"). Paths in section 1 to 4 are relative to the repo root on that branch unless marked `proto:`.
 
 ## 0. What to know first
 
@@ -295,3 +297,64 @@ TO BE FILLED BY THE HUMAN CRYPTOGRAPHER. The agent that prepared this packet did
 | Signature or attestation (human only) | |
 
 Merge rule: the forgectl feature `crypto-review-signoff` is not complete and is not merged until a human has filled this section.
+
+## 8. Revision for the new design (IBE on chunky DKG)
+
+Date: 2026-10-30. Prepared by an AI agent. This section is not a review and not a sign-off.
+
+### 8a. What changed
+
+The new design is in [aptos-upgrade-ibe-chunky-spec.md](aptos-upgrade-ibe-chunky-spec.md). The timelock keeps atomica's Boneh-Franklin IBE and hardens it. The secret comes from the timelock's own chunky DKG session. The encrypted mempool's ciphers and secret are not used.
+
+The FPTX-specific questions no longer apply:
+
+- Question B, the `DigestKey` file questions (B-1, B-3, B-4 as written, and B1 to B3, B6, B7): the new design has no `DigestKey`. The nearest remaining item is the chunky `PublicParameters` blob, covered by new questions in section 9.
+- Question C, FPTX round allocation (all of C1 to C7): the new design has one key per identity and no rounds. The registry rules that remain are in the spec, section 7.
+
+Questions A and the network-facing deserialization part of B still apply in changed form.
+
+### 8b. Mapping of earlier required changes
+
+| Earlier change | Status under the new design | Replacement or reason |
+|---|---|---|
+| Question A, separate secret from the mempool | Carried | Spec section 4. A separate chunky DKG session with its own session id tag, own state, own parameters blob. Reusing the mempool secret stays forbidden |
+| B-1, validate the `DigestKey` file loader | Moot, with a carried analogue | No `DigestKey`. The analogue is startup validation of the timelock `PublicParameters` blob (validated deserialization, hash compare, `G_2` equals the generator). Carried by `node-dkg-chunky-wiring` |
+| B-2, validated deserialization for network-facing `ark_de` types | Carried, narrower | Shares and bid ciphertext points are decoded with `Validate::Yes` (on curve, prime-order subgroup, not identity). Share points: carried by `node-share-verification`. Bid `U`: carried by `natives-port-timelock`. No FPTX types remain |
+| B-3, honest `ValidateDigestKey` command | Moot | The command validates a `DigestKey`, which is not used. If a node command for the timelock parameters blob is added, it must run the real validation. Carried by `node-dkg-chunky-wiring` |
+| B-4, compare the `DigestKey` hash to an expected value | Carried as an analogue | `TimelockEpochConfig.public_parameters_hash`. The node refuses to start the timelock service on mismatch. Carried by `node-dkg-chunky-wiring` |
+| B-5, `verify_ct` rejects malformed group elements | Replaced | `ibe::verify_bid_ct` checks `U` group membership, associated data and the one-time signature at submission. Spec section 6. Carried by `natives-port-timelock` |
+| C-1, one digest per round per epoch | Moot | No digests and no rounds. One key per identity, and the registry status moves one way (spec section 7, rules 1 and 2). The nearest test is the one-way status test |
+| C-2, a share for one digest key and secret is invalid under another | Replaced | A share for another identity, epoch or secret fails the per-share pairing check. A transcript for another session id fails verification. Carried by `node-share-verification` and `node-dkg-chunky-wiring` |
+| C-3, Move tests for round exhaustion and epoch change | Replaced | Round exhaustion is moot. Epoch change stays, with expiry `epoch-ended`, dropped shares, no straddle, and refund. Carried by `node-validator-txn-timelock` |
+| Cost report gap 1, one bad share breaks a reveal | New check | Per-share pairing check before store, and a verified rebuilt key before a reveal counts. Spec section 5 |
+| Cost report gap 2, bids forged from other bids | New wrapper | AES-128-GCM and one-time Ed25519 wrapper. Spec section 6 |
+| Cost report gap 3, no range proofs | Carried by construction | Chunky PVSS with DeKART range proofs replaces `scalar_elgamal` |
+| Cost report gap 4, one secret serves two protocols | Carried by construction | The dual-output DKG is retired. Randomness stays on DAS PVSS |
+| Section 4, cross-cutting findings 1 and 5 (`ValidateDigestKey`, two digests per round) | Moot | The objects they describe are gone |
+| Section 4, cross-cutting finding 2 (`ark_de` skips validation) | Carried | Same as B-2 |
+| Section 4, cross-cutting finding 3 (`verify_ct` and group elements) | Replaced | Same as B-5 |
+| Section 4, cross-cutting finding 6 (`virtualized_sk_shares` TODO panic) | Moot | That FPTX type is not used. The new share types must return an error, not panic, on an out-of-bounds player id |
+| Section 4, cross-cutting finding 7 (two chunky sessions, AD layout, ceremony) | Carried | Two sessions, AD layout and parameters ceremony are items in section 9 |
+
+### 8c. Evidence status
+
+- The prototype in `atomica/proto-fptx-timelock/` (11 passing tests, local run, not CI) covers the superseded FPTX design only. It is a reference. It gives no evidence for the new design.
+- No test or prototype yet exists for the new design. Every claim in the new spec is a claim to confirm or refute.
+- No external cryptographer has reviewed or signed anything. Review is still recommended before any release or mainnet use.
+
+## 9. Open questions for the new design
+
+For the human cryptographer. Each refers to the [new spec](aptos-upgrade-ibe-chunky-spec.md).
+
+- A1. Is a second chunky DKG session per epoch, separated only by a session id tag, sound at 1.49.6? The session id is the generic `session_id: &A` of `deal` and `verify` (spec section 4). Is any further transcript domain separation needed, given that the DST is fixed in `weighted_transcript_v2.rs` line 56?
+- A2. Is it acceptable that both sessions encrypt shares to the same validator consensus key (`epoch_manager.rs` line 1204)? Is there a cross-session attack on chunked ElGamal with a reused key?
+- A3. May the timelock reuse the mempool's chunky `PublicParameters` blob (DeKART setup), or must it have its own, as the spec decides? What breaks if one setup's trapdoor leaks: only range-proof soundness, or also confidentiality?
+- B1. Is the CCA argument in spec section 6 sound? The construction is Boneh-Franklin KEM, HKDF over the pairing value plus `U`, identity, `vk` and the associated data hash, AES-128-GCM, and a one-time Ed25519 signature. Is a Fujisaki-Okamoto re-encryption check also required at decrypt time? State the assumption used.
+- B2. Is it safe that one key per timelock opens every ciphertext under its identity, and that the only freeze is the contract rule that no bid is accepted at or after the deadline?
+- B3. Is `H1` (RFC 9380 BLS12381G1 SSWU with the Atomica DST) acceptable, and is the identity layout (chain, epoch, timelock id, deadline) enough?
+- C1. Does the per-share pairing check, plus validated decoding, fully close the bad-share problem? Is a rebuilt-key check still needed for an accepted DKG output?
+- C2. Does upstream chunky transcript verification already imply that the dealt public key `V0` equals the interpolation of the public key shares `Vs`? The spec adds an explicit check. Is it redundant?
+- C3. Is the threshold taken from the DKG (`reconstruct_threshold_in_weights`) the right threshold for confidentiality and liveness of timelock reveals, or does the timelock need its own secrecy and reconstruction thresholds?
+- D1. Is the no-straddle rule enough: reveal only while `current_epoch == info.epoch`, expiry at epoch change, shares of two epochs never combined?
+- D2. Are the reveal window (10 minutes after the deadline) and the 15 minute registration guard acceptable?
+- D3. Round exhaustion is gone. Is the registration flood risk (no fee, no cap) an acceptable economic risk, or does it affect the confidentiality claim?
