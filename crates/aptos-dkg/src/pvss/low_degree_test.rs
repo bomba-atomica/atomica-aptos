@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 /// Low-degree test from the SCRAPE paper that checks whether $n$ evaluations encode a degree $\le t-1$
 /// polynomial.
@@ -240,9 +240,10 @@ impl<'a> LowDegreeTest<'a> {
 mod test {
     use crate::{
         algebra::{evaluation_domain::BatchEvaluationDomain, fft::fft_assign},
-        pvss::{test_utils, traits::ThresholdConfig, LowDegreeTest, ThresholdConfigBlstrs},
+        pvss::{test_utils, LowDegreeTest, ThresholdConfigBlstrs},
         utils::random::random_scalars,
     };
+    use aptos_crypto::traits::ThresholdConfig as _;
     use blstrs::Scalar;
     use rand::{prelude::ThreadRng, thread_rng};
 

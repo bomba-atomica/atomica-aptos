@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 /// Chain ID of the current chain
 pub const X_APTOS_CHAIN_ID: &str = "X-Aptos-Chain-Id";
@@ -22,5 +22,7 @@ pub const X_APTOS_CURSOR: &str = "X-Aptos-Cursor";
 pub const X_APTOS_GAS_USED: &str = "X-Aptos-Gas-Used";
 /// Provided by the client to identify what client it is.
 pub const X_APTOS_CLIENT: &str = "x-aptos-client";
+/// Per-epoch transaction encryption key (hex-encoded)
+pub const X_APTOS_TXN_ENCRYPTION_KEY: &str = "X-Aptos-Txn-Encryption-Key";
 /// W3C Trace Context traceparent header for distributed tracing
 pub const TRACEPARENT: &str = "traceparent";

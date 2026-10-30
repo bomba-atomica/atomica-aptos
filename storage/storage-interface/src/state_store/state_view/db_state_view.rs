@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::DbReader;
 use aptos_crypto::HashValue;
@@ -60,7 +60,10 @@ impl TStateView for DbStateView {
     }
 
     fn get_state_slot(&self, state_key: &StateKey) -> StateViewResult<StateSlot> {
-        Ok(StateSlot::from_db_get(self.get(state_key)?))
+        Ok(StateSlot::from_db_get(
+            state_key.clone(),
+            self.get(state_key)?,
+        ))
     }
 
     fn get_usage(&self) -> StateViewResult<StateStorageUsage> {

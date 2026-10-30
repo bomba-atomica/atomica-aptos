@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 #![allow(unused)]
 
 pub use super::prebuilt_packages::PreBuiltPackagesImpl;
@@ -278,10 +278,6 @@ pub enum EntryPoints {
     /// there to slow down deserialization & verification, effectively making it more expensive to
     /// load it into code cache.
     SimpleScript,
-    /// Set up an APT transfer permission and transfering APT by using that permissioned signer.
-    APTTransferWithPermissionedSigner,
-    /// Transfer APT using vanilla master signer to compare the performance.
-    APTTransferWithMasterSigner,
 
     OrderBook {
         state: Arc<OrderBookState>,
@@ -305,6 +301,9 @@ pub enum EntryPoints {
 
     /// Different microbenchmarks to stress-test Move VM.
     MoveVmMicroBenchmark(MoveVmMicroBenchmark),
+
+    /// Roll a dice using on-chain randomness (#[randomness] entry function)
+    DiceRoll,
 }
 
 impl EntryPointTrait for EntryPoints {
@@ -360,9 +359,8 @@ impl EntryPointTrait for EntryPoints {
             | EntryPoints::ResourceGroupsSenderMultiChange { .. }
             | EntryPoints::CoinInitAndMint
             | EntryPoints::FungibleAssetMint
-            | EntryPoints::APTTransferWithPermissionedSigner
-            | EntryPoints::APTTransferWithMasterSigner
-            | EntryPoints::MonotonicCounter { .. } => "framework_usecases",
+            | EntryPoints::MonotonicCounter { .. }
+            | EntryPoints::DiceRoll => "framework_usecases",
             EntryPoints::OrderBook { .. } => "experimental_usecases",
             EntryPoints::TokenV2AmbassadorMint { .. } | EntryPoints::TokenV2AmbassadorBurn => {
                 "ambassador_token"
@@ -447,10 +445,9 @@ impl EntryPointTrait for EntryPoints {
             EntryPoints::IncGlobalMilestoneAggV2 { .. }
             | EntryPoints::CreateGlobalMilestoneAggV2 { .. } => "counter_with_milestone",
             EntryPoints::DeserializeU256 => "bcs_stream",
-            EntryPoints::APTTransferWithPermissionedSigner
-            | EntryPoints::APTTransferWithMasterSigner => "permissioned_transfer",
             EntryPoints::MonotonicCounter { .. } => "transaction_context_example",
             EntryPoints::OrderBook { .. } => "order_book_example",
+            EntryPoints::DiceRoll => "dice_roll",
             EntryPoints::MoveVmMicroBenchmark(entrypoint) => match entrypoint {
                 MoveVmMicroBenchmark::Locals | MoveVmMicroBenchmark::LocalsGeneric => "locals",
             },
@@ -884,20 +881,6 @@ impl EntryPointTrait for EntryPoints {
                     ],
                 )
             },
-            EntryPoints::APTTransferWithPermissionedSigner => get_payload(
-                module_id,
-                ident_str!("transfer_permissioned").to_owned(),
-                vec![
-                    bcs::to_bytes(&other.expect("Must provide other")).unwrap(),
-                    bcs::to_bytes(&1u64).unwrap(),
-                ],
-            ),
-            EntryPoints::APTTransferWithMasterSigner => {
-                get_payload(module_id, ident_str!("transfer").to_owned(), vec![
-                    bcs::to_bytes(&other.expect("Must provide other")).unwrap(),
-                    bcs::to_bytes(&1u64).unwrap(),
-                ])
-            },
             EntryPoints::MonotonicCounter { counter_type } => match counter_type {
                 MonotonicCounterType::Single => get_payload_void(
                     module_id,
@@ -952,6 +935,7 @@ impl EntryPointTrait for EntryPoints {
                     get_payload_void(module_id, ident_str!("benchmark_generic").to_owned())
                 },
             },
+            EntryPoints::DiceRoll => get_payload_void(module_id, ident_str!("roll").to_owned()),
         }
     }
 
@@ -1072,11 +1056,10 @@ impl EntryPointTrait for EntryPoints {
             EntryPoints::DeserializeU256 => AutomaticArgs::None,
             EntryPoints::IncGlobalMilestoneAggV2 { .. } => AutomaticArgs::None,
             EntryPoints::CreateGlobalMilestoneAggV2 { .. } => AutomaticArgs::Signer,
-            EntryPoints::APTTransferWithPermissionedSigner
-            | EntryPoints::APTTransferWithMasterSigner => AutomaticArgs::Signer,
             EntryPoints::MonotonicCounter { .. } => AutomaticArgs::None,
             EntryPoints::OrderBook { .. } => AutomaticArgs::None,
             EntryPoints::MoveVmMicroBenchmark(_) => AutomaticArgs::None,
+            EntryPoints::DiceRoll => AutomaticArgs::Signer,
         }
     }
 }

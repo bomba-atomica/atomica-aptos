@@ -1,9 +1,9 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::streaming_client::Epoch;
 use aptos_data_client::interface::{Response, ResponsePayload};
+use aptos_storage_interface::StateKind;
 use aptos_types::{
     ledger_info::LedgerInfoWithSignatures,
     state_store::state_value::StateValueChunkWithProof,
@@ -46,7 +46,7 @@ pub enum DataPayload {
     ContinuousTransactionsWithProof(LedgerInfoWithSignatures, TransactionListWithProofV2),
     EpochEndingLedgerInfos(Vec<LedgerInfoWithSignatures>),
     EndOfStream,
-    StateValuesWithProof(StateValueChunkWithProof),
+    StateValuesWithProof(StateKind, StateValueChunkWithProof),
     TransactionOutputsWithProof(TransactionOutputListWithProofV2),
     TransactionsWithProof(TransactionListWithProofV2),
 }
@@ -120,12 +120,13 @@ impl DataClientRequest {
     }
 }
 
-/// A request for fetching states values.
+/// A request for fetching states values (of the given kind).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StateValuesWithProofRequest {
     pub version: Version,
     pub start_index: u64,
     pub end_index: u64,
+    pub state_kind: StateKind,
 }
 
 /// A client request for fetching epoch ending ledger infos.
@@ -158,10 +159,11 @@ pub struct NewTransactionOutputsWithProofRequest {
     pub known_epoch: Epoch,
 }
 
-/// A client request for fetching the number of states at a version.
+/// A client request for fetching the number of states (of the given kind) at a version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NumberOfStatesRequest {
     pub version: Version,
+    pub state_kind: StateKind,
 }
 
 /// A client request for subscribing to transactions with proofs.

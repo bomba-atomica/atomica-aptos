@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Defines 'experiments' (flags) for the compiler. Most phases of the
 //! compiler can be enabled or disabled via an experiment. An experiment
@@ -91,12 +90,6 @@ pub static EXPERIMENTS: Lazy<BTreeMap<String, Experiment>> = Lazy::new(|| {
             default: Inherited(Experiment::CHECKS.to_string()),
         },
         Experiment {
-            name: Experiment::SEQS_IN_BINOPS_CHECK.to_string(),
-            description: "Turns on or off checks for sequences within binary operations"
-                .to_string(),
-            default: Inherited(Experiment::CHECKS.to_string()),
-        },
-        Experiment {
             name: Experiment::CMP_REWRITE.to_string(),
             description: "Rewrite comparison operations".to_string(),
             default: Given(true),
@@ -109,17 +102,17 @@ pub static EXPERIMENTS: Lazy<BTreeMap<String, Experiment>> = Lazy::new(|| {
         Experiment {
             name: Experiment::INLINING_OPTIMIZATION.to_string(),
             description: "Turns on or off inlining optimizations".to_string(),
-            default: Given(false),
+            default: Inherited(Experiment::OPTIMIZE_EXTRA.to_string()),
         },
         Experiment {
             name: Experiment::ACROSS_PACKAGE_INLINING.to_string(),
             description: "Turns on or off inlining across package boundaries".to_string(),
-            default: Given(false),
+            default: Inherited(Experiment::EXTENDED_FRAMEWORK_OPTIMIZATIONS.to_string()),
         },
         Experiment {
             name: Experiment::INLINING_OPTIMIZATION_TO_NON_PRIMARY_TARGETS.to_string(),
             description: "Turns on or off restricting inlining optimization to primary target modules".to_string(),
-            default: Given(false),
+            default: Inherited(Experiment::EXTENDED_FRAMEWORK_OPTIMIZATIONS.to_string()),
         },
         Experiment {
             name: Experiment::SPEC_CHECK.to_string(),
@@ -132,9 +125,21 @@ pub static EXPERIMENTS: Lazy<BTreeMap<String, Experiment>> = Lazy::new(|| {
             default: Given(false),
         },
         Experiment {
+            name: Experiment::SPEC_REWRITE_PURE_FUNS.to_string(),
+            description: "Derive spec functions for all pure Move functions (prover only)"
+                .to_string(),
+            default: Given(false),
+        },
+        Experiment {
             name: Experiment::LAMBDA_LIFTING_INLINE.to_string(),
             description: "Whether inline functions shall be included in lambda lifting".to_string(),
             default: Given(false),
+        },
+        Experiment {
+            name: Experiment::NATIVE_CHECK.to_string(),
+            description: "Whether to check for native functions/structs in non-special modules"
+                .to_string(),
+            default: Inherited(Experiment::CHECKS.to_string()),
         },
         Experiment {
             name: Experiment::RECURSIVE_TYPE_CHECK.to_string(),
@@ -298,6 +303,11 @@ pub static EXPERIMENTS: Lazy<BTreeMap<String, Experiment>> = Lazy::new(|| {
                 .to_string(),
             default: Given(false),
         },
+        Experiment {
+            name: Experiment::EXTENDED_FRAMEWORK_OPTIMIZATIONS.to_string(),
+            description: "Set of optimizations that are safe to perform on the framework, but are disabled otherwise".to_string(),
+            default: Given(false),
+        },
     ];
     experiments
         .into_iter()
@@ -320,6 +330,7 @@ impl Experiment {
     pub const COMPILE_FOR_TESTING: &'static str = "compile-for-testing";
     pub const DEAD_CODE_ELIMINATION: &'static str = "dead-code-elimination";
     pub const DUPLICATE_STRUCT_PARAMS_CHECK: &'static str = "duplicate-struct-params-check";
+    pub const EXTENDED_FRAMEWORK_OPTIMIZATIONS: &'static str = "extended-framework-optimizations";
     pub const FAIL_ON_WARNING: &'static str = "fail-on-warning";
     pub const FLUSH_WRITES_OPTIMIZATION: &'static str = "flush-writes-optimization";
     pub const INLINING: &'static str = "inlining";
@@ -332,6 +343,7 @@ impl Experiment {
     pub const LIFT_INLINE_FUNS: &'static str = "lift-inline-funs";
     pub const LINT_CHECKS: &'static str = "lint-checks";
     pub const MESSAGE_FORMAT_JSON: &'static str = "compiler-message-format-json";
+    pub const NATIVE_CHECK: &'static str = "native-check";
     pub const OPTIMIZE: &'static str = "optimize";
     pub const OPTIMIZE_EXTRA: &'static str = "optimize-extra";
     pub const OPTIMIZE_WAITING_FOR_COMPARE_TESTS: &'static str =
@@ -340,11 +352,11 @@ impl Experiment {
     pub const RECURSIVE_TYPE_CHECK: &'static str = "recursive-type-check";
     pub const REFERENCE_SAFETY: &'static str = "reference-safety";
     pub const REFERENCE_SAFETY_V3: &'static str = "reference-safety-v3";
-    pub const SEQS_IN_BINOPS_CHECK: &'static str = "seqs-in-binops-check";
     pub const SKIP_BAILOUT_ON_EXTENDED_CHECKS: &'static str = "skip-bailout-on-extended-checks";
     pub const SKIP_INLINING_INLINE_FUNS: &'static str = "skip-inlining-inline-funs";
     pub const SPEC_CHECK: &'static str = "spec-check";
     pub const SPEC_REWRITE: &'static str = "spec-rewrite";
+    pub const SPEC_REWRITE_PURE_FUNS: &'static str = "spec-rewrite-pure-funs";
     pub const SPLIT_CRITICAL_EDGES: &'static str = "split-critical-edges";
     pub const STOP_AFTER_EXTENDED_CHECKS: &'static str = "stop-after-extended-checks";
     pub const STOP_BEFORE_EXTENDED_CHECKS: &'static str = "stop-before-extended-checks";

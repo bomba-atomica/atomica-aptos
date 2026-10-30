@@ -1,18 +1,19 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use crate::{Options, COMPILER_BUG_REPORT_MSG};
+use crate::COMPILER_BUG_REPORT_MSG;
 use codespan_reporting::diagnostic::Severity;
 use ethnum::{I256, U256};
 use itertools::Itertools;
+use move_binary_format::file_format::Visibility;
 use move_core_types::ability::Ability;
 use move_model::{
-    ast::{Exp, ExpData, MatchArm, Operation, Pattern, SpecBlockTarget, TempIndex, Value},
+    ast::{
+        AbortKind, Exp, ExpData, MatchArm, Operation, Pattern, SpecBlockTarget, TempIndex, Value,
+    },
     exp_rewriter::{ExpRewriter, ExpRewriterFunctions, RewriteTarget},
-    metadata::LanguageVersion,
     model::{
-        FieldId, FunId, FunctionEnv, GlobalEnv, Loc, NodeId, Parameter, QualifiedId,
+        FieldId, FunId, FunctionEnv, GlobalEnv, Loc, ModuleId, NodeId, Parameter, QualifiedId,
         QualifiedInstId, StructId,
     },
     symbol::Symbol,
@@ -27,10 +28,7 @@ use move_stackless_bytecode::{
     stackless_bytecode_generator::BytecodeGeneratorContext,
 };
 use num::{BigInt, ToPrimitive, Zero};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use std::collections::{BTreeMap, BTreeSet};
 // ======================================================================================
 // Entry
 
@@ -288,6 +286,26 @@ impl<'env> Generator<'env> {
         }
     }
 
+    /// Require binary arguments. This has to clone the arg but thats fine because of
+    /// interning.
+    fn require_binary_args(&self, id: NodeId, args: &[Exp]) -> [Exp; 2] {
+        if args.len() != 2 {
+            self.internal_error(
+                id,
+                format!(
+                    "inconsistent expression argument arity: {} and 2",
+                    args.len()
+                ),
+            );
+            [
+                ExpData::Invalid(self.env().new_node_id()).into_exp(),
+                ExpData::Invalid(self.env().new_node_id()).into_exp(),
+            ]
+        } else {
+            [args[0].to_owned(), args[1].to_owned()]
+        }
+    }
+
     /// Finds the temporary index assigned to the local.
     fn find_local(&self, id: NodeId, sym: Symbol) -> TempIndex {
         for scope in self.scopes.iter().rev() {
@@ -327,30 +345,17 @@ impl<'env> Generator<'env> {
         );
     }
 
+    /// Check if the current module is at least version 2.4.
+    fn check_version_for_cross_module_access(&self) -> bool {
+        self.env()
+            .language_version()
+            .language_version_for_public_struct()
+    }
+
     fn diag(&self, id: NodeId, severity: Severity, msg: impl AsRef<str>) {
         let env = self.env();
         let loc = env.get_node_loc(id);
         env.diag(severity, &loc, msg.as_ref())
-    }
-
-    fn check_if_lambdas_enabled(&self) -> bool {
-        let options = self
-            .env()
-            .get_extension::<Options>()
-            .expect("Options is available");
-        options
-            .language_version
-            .unwrap_or_default()
-            .is_at_least(LanguageVersion::V2_2)
-    }
-
-    fn expect_function_values_enabled(&self, id: NodeId) {
-        if !self.check_if_lambdas_enabled() {
-            self.error(
-                id,
-                "function values outside of inline functions not supported in this language version",
-            )
-        }
     }
 }
 
@@ -365,20 +370,11 @@ impl Generator<'_> {
             ExpData::Value(id, val) => self.gen_value(targets, *id, val),
             ExpData::LocalVar(id, name) => self.gen_local(targets, *id, *name),
             ExpData::Call(id, op, args) => self.gen_call(targets, *id, op, args),
-            ExpData::Invoke(id, fun, args) => {
-                self.expect_function_values_enabled(*id);
-                self.gen_invoke(targets, *id, fun, args)
-            },
-            ExpData::Lambda(id, ..) => {
-                if self.check_if_lambdas_enabled() {
-                    self.internal_error(
-                        *id,
-                        "unexpected lambda, expected to be eliminated by lambda lifting",
-                    )
-                } else {
-                    self.expect_function_values_enabled(*id)
-                }
-            },
+            ExpData::Invoke(id, fun, args) => self.gen_invoke(targets, *id, fun, args),
+            ExpData::Lambda(id, ..) => self.internal_error(
+                *id,
+                "unexpected lambda, expected to be eliminated by lambda lifting",
+            ),
             ExpData::Sequence(_, exps) => {
                 for step in exps.iter().take(exps.len() - 1) {
                     // Result is thrown away, but for typing reasons, we need to introduce
@@ -685,18 +681,17 @@ impl Generator<'_> {
             let raw_fun_temp = self.new_temp(raw_fun_ty);
             // This here should be well-defined because only structs can be wrappers.
             let (wrapper_struct, inst) = fun_ty.get_struct(self.env()).unwrap();
+            let inst: Vec<Type> = inst.to_vec();
             let struct_id = wrapper_struct.get_qualified_id();
-            if struct_id.module_id != self.func_env.module_env.get_id() {
-                self.error(
-                    id,
-                    format!(
-                    "cannot unpack a wrapper struct `{}` (defined in a different module `{}`) and invoke the wrapped function value ",
-                    wrapper_struct.get_full_name_str(),
-                    self.func_env.env().get_module(struct_id.module_id).get_full_name_str(),
-                    ),
-                )
-            }
-            let inst = inst.to_vec();
+            self.check_pack_unpack_wrapper(
+                id,
+                self.func_env.module_env.get_id(),
+                fun_ty,
+                struct_id.module_id,
+                struct_id.id,
+                "unpack",
+                " and invoke the wrapped function value",
+            );
             self.emit_with(id, |attr| {
                 Bytecode::Call(
                     attr,
@@ -874,17 +869,27 @@ impl Generator<'_> {
                 }
                 self.gen_borrow(target, id, *kind, &arg)
             },
-            Operation::Abort => {
-                let arg = self.require_unary_arg(id, args);
-                let temp = self.gen_escape_auto_ref_arg(&arg, false);
-                self.emit_with(id, |attr| Bytecode::Abort(attr, temp))
+            Operation::Abort(kind) => {
+                let (temp0, temp1) = match kind {
+                    AbortKind::Code => {
+                        let arg = self.require_unary_arg(id, args);
+                        let temp = self.gen_escape_auto_ref_arg(&arg, false);
+                        (temp, None)
+                    },
+                    AbortKind::Message => {
+                        let [arg0, arg1] = self.require_binary_args(id, args);
+                        let temp0 = self.gen_escape_auto_ref_arg(&arg0, false);
+                        let temp1 = self.gen_escape_auto_ref_arg(&arg1, false);
+                        (temp0, Some(temp1))
+                    },
+                };
+                self.emit_with(id, |attr| Bytecode::Abort(attr, temp0, temp1))
             },
             Operation::Deref => self.gen_deref(targets, id, args),
             Operation::MoveFunction(m, f) => {
                 self.gen_function_call(targets, id, m.qualified(*f), args)
             },
             Operation::Closure(mid, fid, mask) => {
-                self.expect_function_values_enabled(id);
                 let inst = self.env().get_node_instantiation(id);
                 debug_assert_eq!(
                     inst.len(),
@@ -894,16 +899,15 @@ impl Generator<'_> {
                 );
                 let target_ty = self.temp_type(targets[0]).clone();
                 if let Type::Struct(wrapper_mid, wrapper_sid, wrapper_inst) = target_ty.clone() {
-                    if wrapper_mid != *mid {
-                        self.error(
-                            id,
-                            format!(
-                                "cannot implicitly pack a wrapper struct `{}` defined in a different module `{}`",
-                                target_ty.display(&self.func_env.get_type_display_ctx()),
-                                self.func_env.env().get_module(wrapper_mid).get_full_name_str(),
-                                ),
-                        );
-                    }
+                    self.check_pack_unpack_wrapper(
+                        id,
+                        *mid,
+                        target_ty,
+                        wrapper_mid,
+                        wrapper_sid,
+                        "pack",
+                        "",
+                    );
                     // Implicitly convert to a function wrapper.
                     let fun_ty = self
                         .env()
@@ -978,9 +982,13 @@ impl Generator<'_> {
             | Operation::TypeValue
             | Operation::TypeDomain
             | Operation::ResourceDomain
+            | Operation::StateDomain
             | Operation::Global(_)
             | Operation::CanModify
             | Operation::Old
+            | Operation::SaveStateAnchor(..)
+            | Operation::WithStateAnchor(..)
+            | Operation::FoldsCaptureAnchor(..)
             | Operation::Trace(_)
             | Operation::Identical
             | Operation::EmptyVec
@@ -1008,10 +1016,69 @@ impl Generator<'_> {
             | Operation::EmptyEventStore
             | Operation::ExtendEventStore
             | Operation::EventStoreIncludes
-            | Operation::EventStoreIncludedIn => self.internal_error(
+            | Operation::EventStoreIncludedIn
+            | Operation::Behavior(..)
+            | Operation::SpecPublish(..)
+            | Operation::SpecRemove(..)
+            | Operation::SpecUpdate(..) => self.internal_error(
                 id,
                 format!("unsupported specification construct: `{:?}`", op),
             ),
+        }
+    }
+
+    /// Check whether we can pack/unpack a wrapper struct
+    /// if public struct is not supported, pack/unpack can only happen in the module that defines the wrapper struct
+    /// otherwise, error is raised when either the struct is private or the struct is package/friend
+    /// and pack/unpack happens in modules that are not a friend of the module that defines the wrapper struct
+    fn check_pack_unpack_wrapper(
+        &mut self,
+        id: NodeId,
+        mid: ModuleId,
+        target_ty: Type,
+        wrapper_mid: ModuleId,
+        wrapper_sid: StructId,
+        oper: &str,
+        extra_msg: &str,
+    ) {
+        let wrapper_struct = self.env().get_struct(wrapper_mid.qualified(wrapper_sid));
+        let different_module = wrapper_mid != mid;
+        let lang_pub_api = self.check_version_for_cross_module_access();
+        if different_module {
+            let wrapper_name = wrapper_struct.get_full_name_str();
+            let module_name = self
+                .func_env
+                .env()
+                .get_module(wrapper_mid)
+                .get_full_name_str();
+
+            let err_msg = if !lang_pub_api || wrapper_struct.get_visibility() == Visibility::Private
+            {
+                Some(format!(
+                    "cannot implicitly {} a wrapper struct `{}` defined in a different module `{}`{}",
+                    oper,
+                    target_ty.display(&self.func_env.get_type_display_ctx()),
+                    module_name,
+                    extra_msg,
+                ))
+            } else if wrapper_struct.get_visibility() == Visibility::Friend
+                && !wrapper_struct.module_env.has_friend(&mid)
+            {
+                let visibility_str = if wrapper_struct.has_package_visibility() {
+                    "package"
+                } else {
+                    "friend"
+                };
+                Some(format!(
+                            "cannot implicitly {} a wrapper struct `{}` defined in a different module `{}`{} because it has {} visibility",
+                            oper, wrapper_name, module_name, extra_msg, visibility_str,
+                        ))
+            } else {
+                None
+            };
+            if let Some(msg) = err_msg {
+                self.error(id, msg);
+            }
         }
     }
 
@@ -1026,18 +1093,37 @@ impl Generator<'_> {
         let target = self.require_unary_target(id, targets);
         let temp =
             self.gen_auto_ref_arg(&self.require_unary_arg(id, args), ReferenceKind::Immutable);
-        let mut bool_temp = Some(target);
-        let success_label = self.new_label(id);
         let inst = self.env().get_node_instantiation(id);
-        self.gen_test_variants_operation(
-            id,
-            &mut bool_temp,
-            success_label,
-            &struct_id.instantiate(inst),
-            variants.to_vec(),
-            temp,
-        );
-        self.emit_with(id, |attr| Bytecode::Label(attr, success_label))
+        if variants.len() == 1 {
+            // Test single variant: directly translate
+            self.emit_with(id, |attr| {
+                Bytecode::Call(
+                    attr,
+                    vec![target],
+                    BytecodeOperation::TestVariant(
+                        struct_id.module_id,
+                        struct_id.id,
+                        variants[0],
+                        inst,
+                    ),
+                    vec![temp],
+                    None,
+                )
+            })
+        } else {
+            // Test more than one variant: create branches
+            let mut bool_temp = Some(target);
+            let success_label = self.new_label(id);
+            self.gen_test_variants_operation(
+                id,
+                &mut bool_temp,
+                success_label,
+                &struct_id.instantiate(inst),
+                variants.to_vec(),
+                temp,
+            );
+            self.emit_with(id, |attr| Bytecode::Label(attr, success_label))
+        }
     }
 
     fn gen_cast_call(&mut self, targets: Vec<TempIndex>, id: NodeId, args: &[Exp]) {
@@ -1272,7 +1358,10 @@ impl Generator<'_> {
                     self.get_node_type(id)
                 };
                 let temp = self.new_temp(ty);
-                self.generate(vec![temp], exp);
+                // Materializing a general expression into a temporary must not let the
+                // current reference mode leak into arbitrary sub-expressions. Preserve
+                // reference mode only for the dedicated direct-selection case above.
+                self.without_reference_mode(|s| s.generate(vec![temp], exp));
                 temp
             },
         }
@@ -1859,21 +1948,9 @@ impl Generator<'_> {
                 Constant::U64(well_known::INCOMPLETE_MATCH_ABORT_CODE),
             )
         });
-        self.emit_with(id, |attr| Bytecode::Abort(attr, abort_code));
+        self.emit_with(id, |attr| Bytecode::Abort(attr, abort_code, None));
         // Here we end if some path was successful
         self.emit_with(id, |attr| Bytecode::Label(attr, success_path));
-        // Finally check exhaustiveness of match
-        ValueShape::analyze_match_coverage(
-            self.env(),
-            exp.node_id(),
-            arms.iter().filter_map(|arm| {
-                if arm.condition.is_none() {
-                    Some(&arm.pattern)
-                } else {
-                    None
-                }
-            }),
-        );
     }
 
     // Generates a probing match for a given match arm. The probing match doesn't consume
@@ -1953,16 +2030,36 @@ impl Generator<'_> {
         match_mode: &MatchMode,
         next_scope: Option<&Scope>,
     ) {
-        if !matches!(pat, Pattern::Tuple(..)) && values.len() != 1 {
+        if !matches!(pat, Pattern::Wildcard(..) | Pattern::Tuple(..)) && values.len() != 1 {
             self.internal_error(id, "inconsistent tuple value in match");
             return;
         }
         match pat {
             Pattern::Wildcard(id) => {
+                if match_mode.is_probing() {
+                    return;
+                }
                 let pat_ty = self.env().get_node_type(*id);
-                if !match_mode.is_probing() {
+                if values.len() == 1 {
                     let temp = self.new_temp(pat_ty);
                     self.emit_assign_with_convert(*id, temp, values[0], AssignKind::Inferred)
+                } else {
+                    match pat_ty {
+                        Type::Tuple(tys) if values.len() == tys.len() => {
+                            for (value, ty) in std::iter::zip(values, tys) {
+                                let temp = self.new_temp(ty);
+                                self.emit_assign_with_convert(
+                                    *id,
+                                    temp,
+                                    *value,
+                                    AssignKind::Inferred,
+                                )
+                            }
+                        },
+                        _ => {
+                            self.internal_error(*id, "inconsistent pattern wildcard");
+                        },
+                    }
                 }
             },
             Pattern::Var(var_id, sym) => {
@@ -2062,6 +2159,14 @@ impl Generator<'_> {
                         next_scope,
                     )
                 }
+            },
+            Pattern::LiteralValue(..) => {
+                // Value patterns should have been transformed to if-else before bytecode generation
+                self.internal_error(id, "unexpected value pattern in bytecode generation")
+            },
+            Pattern::Range(..) => {
+                // Range patterns should have been transformed to if-else before bytecode generation
+                self.internal_error(id, "unexpected range pattern in bytecode generation")
             },
             Pattern::Error(_) => self.internal_error(id, "unexpected error pattern"),
         }
@@ -2267,293 +2372,6 @@ impl Generator<'_> {
             .env()
             .type_abilities(ty, &[])
             .has_ability(Ability::Drop)
-    }
-}
-
-// ======================================================================================
-// Pattern coverage analysis
-
-/// Pattern coverage analysis is complicated by that patterns are
-/// matched sequentially (in contrast to so-called 'best fit' pattern matching).
-/// Consider the sequence of patterns from a match, `S{R{p}, q1}` and `S{_, q2}`.
-/// `R{p}` is only matched under the condition that `q1` is also matched. On
-/// the other hand, any arbitrary other value for the first parameter of `S` depends
-/// on that `q2` matches as well. These dependencies between patterns make it
-/// hard to decompose the analysis of completeness into independent sub-problems,
-/// and to apply some kind of algebraic simplification on patterns (e.g. something
-/// like `S{_, q1 | q2}` is _not_ equivalent to the above two patterns).
-///
-/// Another challenge in pattern coverage analysis is to produce useful error messages
-/// which show the counterexamples of missed patterns, but only up to the shape as the user
-/// has inspected values via patterns. For example, if the user has written `R{S{_}, _}`
-/// the counter example should not contain irrelevant other parts of the value (as e.g.
-/// in `R{T{x:_}, S}`). Moreover, patterns which can never be matched because there is
-/// a previous pattern which captures all covered values, should
-/// be reported, as dead code analysis will not determine this without flow dependent
-/// analysis.
-///
-/// The solution to those problems performs some kind of 'abstract interpretation'
-/// of what happens during matching at runtime.
-///
-/// 1. The type `ValueShape` represents both patterns, as partial,
-///    _abstract_ values to be matched against.
-/// 2. All patterns are translated to a list of pattern shapes.
-/// 3. The list of abstract values which are needed to explore coverage of the
-///    shapes in (2) is computed. Those values are only as detailed
-///    as needed to fully explore the pattern shapes.
-/// 4. For each abstract value, at least one matching pattern shape must exist,
-///    otherwise the value (its shape) is reported as missing. Also, a pattern must
-///    match at least one value to be reachable.
-///
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum ValueShape {
-    Any,
-    Tuple(Vec<ValueShape>),
-    // Struct(struct_id, optional_variant, argument_shapes)
-    Struct(QualifiedId<StructId>, Option<Symbol>, Vec<ValueShape>),
-}
-
-struct ValueShapeDisplay<'a> {
-    env: &'a GlobalEnv,
-    shape: &'a ValueShape,
-}
-
-impl ValueShape {
-    /// Main entrypoint for analyzing match coverage.
-    fn analyze_match_coverage<'a>(
-        env: &GlobalEnv,
-        value_exp_id: NodeId,
-        patterns: impl Iterator<Item = &'a Pattern>,
-    ) {
-        // Translate patterns into shapes
-        let pattern_shapes: Vec<(NodeId, ValueShape)> = patterns
-            .map(|p| (p.node_id(), ValueShape::for_pattern(p)))
-            .collect();
-        // Compute the set of abstract values which need to be matched.
-        let mut values = BTreeSet::new();
-        for (_, shape) in &pattern_shapes {
-            for partial_value in shape.possible_values(env) {
-                values = Self::join_value_shape(values, partial_value);
-            }
-        }
-        // Now go over all patterns in sequence and incrementally remove matched
-        // values. If a pattern doesn't match any values, report it as unreachable.
-        for (pat_id, pattern_shape) in pattern_shapes {
-            let mut matched = false;
-            let mut remaining_values = BTreeSet::new();
-            while let Some(value) = values.pop_first() {
-                if value.instance_of(&pattern_shape) {
-                    matched = true;
-                } else {
-                    remaining_values.insert(value);
-                }
-            }
-            if !matched {
-                env.error(&env.get_node_loc(pat_id), "unreachable pattern");
-            }
-            values = remaining_values
-        }
-        // Finally, report any unmatched value shapes
-        if !values.is_empty() {
-            env.error_with_notes(
-                &env.get_node_loc(value_exp_id),
-                "match not exhaustive",
-                values
-                    .into_iter()
-                    .map(|s| format!("missing `{}`", s.display(env)))
-                    .collect(),
-            )
-        }
-    }
-
-    /// Creates a value shape from a pattern.
-    fn for_pattern(pat: &Pattern) -> ValueShape {
-        use Pattern::*;
-        match pat {
-            Var(_, _) | Wildcard(_) => ValueShape::Any,
-            Tuple(_, pats) => ValueShape::Tuple(pats.iter().map(Self::for_pattern).collect()),
-            Struct(_, sid, variant, pats) => ValueShape::Struct(
-                sid.to_qualified_id(),
-                *variant,
-                pats.iter().map(Self::for_pattern).collect(),
-            ),
-            Error(_) => ValueShape::Any,
-        }
-    }
-
-    /// Creates all value shapes needed to explore the given pattern shape's completeness.
-    fn possible_values(&self, env: &GlobalEnv) -> Vec<ValueShape> {
-        use ValueShape::*;
-        match self {
-            Any => vec![Any],
-            Tuple(args) => Self::possible_values_product(env, args)
-                .map(Tuple)
-                .collect(),
-            Struct(sid, variant, args) => {
-                let derived = if args.is_empty() {
-                    vec![Struct(*sid, *variant, vec![])]
-                } else {
-                    Self::possible_values_product(env, args)
-                        .map(|new_args| Struct(*sid, *variant, new_args))
-                        .collect_vec()
-                };
-                if let Some(v) = variant {
-                    // If this is a variant pattern, need to add all _other_ variants to
-                    // explore for completeness.
-                    let struct_env = env.get_struct(*sid);
-                    derived
-                        .into_iter()
-                        .chain(
-                            struct_env
-                                .get_variants()
-                                .filter(|other_variant| v != other_variant)
-                                .map(|other_variant| {
-                                    let field_count =
-                                        struct_env.get_fields_of_variant(other_variant).count();
-                                    Struct(
-                                        *sid,
-                                        Some(other_variant),
-                                        (0..field_count).map(|_| Any).collect(),
-                                    )
-                                }),
-                        )
-                        .collect()
-                } else {
-                    derived
-                }
-            },
-        }
-    }
-
-    /// From a slice of pattern shapes, construct all value shapes needed to explore completeness
-    /// of the slice. The cartesian product of all value shapes for each individual pattern is
-    /// returned. Note that this can lead to some computational complexity, but because of
-    /// the sequential character matching as discussed at the top of this section, this is
-    /// currently not known how to avoid.
-    fn possible_values_product(
-        env: &GlobalEnv,
-        shapes: &[ValueShape],
-    ) -> impl Iterator<Item = Vec<ValueShape>> + use<> {
-        shapes
-            .iter()
-            .map(|shape| shape.possible_values(env))
-            .multi_cartesian_product()
-    }
-
-    /// Attempt to join two shapes. If the join exists, it can be used in place of the others
-    /// to explore pattern completeness. For example, `join(R{v, _}, R{_, w}) == R{v,w}`.
-    fn try_join(&self, other: &ValueShape) -> Option<ValueShape> {
-        use ValueShape::*;
-        let unify_n = |shapes1: &[ValueShape], shapes2: &[ValueShape]| -> Option<Vec<ValueShape>> {
-            let mut result = vec![];
-            for (s1, s2) in shapes1.iter().zip(shapes2) {
-                if let Some(s) = s1.try_join(s2) {
-                    result.push(s);
-                } else {
-                    break;
-                }
-            }
-            if result.len() == shapes1.len() {
-                Some(result)
-            } else {
-                None
-            }
-        };
-        match (self, other) {
-            (Any, _) => Some(other.clone()),
-            (_, Any) => Some(self.clone()),
-            (Struct(sid1, var1, args1), Struct(sid2, var2, args2))
-                if sid1 == sid2 && var1 == var2 =>
-            {
-                unify_n(args1, args2).map(|args| Struct(*sid1, *var1, args))
-            },
-            (Tuple(args1), Tuple(args2)) => unify_n(args1, args2).map(Tuple),
-            _ => None,
-        }
-    }
-
-    /// Given a list of value shapes, join a new one. This attempts specializing existing shapes
-    /// via the join operator in order to keep the list minimal.
-    fn join_value_shape(set: BTreeSet<ValueShape>, value: ValueShape) -> BTreeSet<ValueShape> {
-        let mut new_set = BTreeSet::new();
-        let mut joined = false;
-        for v in set.into_iter() {
-            if let Some(unified) = v.try_join(&value) {
-                new_set.insert(unified);
-                joined = true;
-            } else {
-                new_set.insert(v);
-            }
-        }
-        if !joined {
-            new_set.insert(value);
-        }
-        new_set
-    }
-
-    /// Checks whether one shape is instance of another. It holds that
-    /// `s1.instance_of(s2) <==> s1.unify(s2) == Some(s1)`.
-    fn instance_of(&self, other: &ValueShape) -> bool {
-        use ValueShape::*;
-        match (self, other) {
-            (_, Any) => true,
-            (Tuple(args1), Tuple(args2)) => {
-                args1.iter().zip(args2).all(|(a1, a2)| a1.instance_of(a2))
-            },
-            (Struct(str1, variant1, args1), Struct(str2, variant2, args2))
-                if str1 == str2 && variant1 == variant2 =>
-            {
-                args1.iter().zip(args2).all(|(a1, a2)| a1.instance_of(a2))
-            },
-            _ => false,
-        }
-    }
-
-    fn display<'a>(&'a self, env: &'a GlobalEnv) -> ValueShapeDisplay<'a> {
-        ValueShapeDisplay { env, shape: self }
-    }
-}
-
-impl fmt::Display for ValueShapeDisplay<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use ValueShape::*;
-        let fmt_list = |list: &[ValueShape], sep: &str| {
-            list.iter()
-                .map(|s| s.display(self.env).to_string())
-                .join(sep)
-        };
-        match self.shape {
-            Any => write!(f, "_"),
-            Tuple(elems) => write!(f, "({})", fmt_list(elems, ",")),
-            Struct(sid, var, args) => {
-                let struct_env = self.env.get_struct(*sid);
-                write!(
-                    f,
-                    "{}",
-                    struct_env.get_name().display(self.env.symbol_pool())
-                )?;
-                if let Some(v) = var {
-                    write!(f, "::{}", v.display(self.env.symbol_pool()))?
-                }
-                if var.is_none() || !args.is_empty() {
-                    if args.iter().all(|a| matches!(a, Any)) {
-                        write!(f, "{{..}}")?
-                    } else {
-                        write!(
-                            f,
-                            "{{{}}}",
-                            struct_env
-                                .get_fields_optional_variant(*var)
-                                .map(|f| f.get_name().display(self.env.symbol_pool()).to_string())
-                                .zip(args.iter())
-                                .map(|(f, e)| format!("{}: {}", f, e.display(self.env)))
-                                .join(", ")
-                        )?
-                    }
-                }
-                Ok(())
-            },
-        }
     }
 }
 

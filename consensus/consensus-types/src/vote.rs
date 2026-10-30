@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     common::Author, quorum_cert::QuorumCert, timeout_2chain::TwoChainTimeout, vote_data::VoteData,
@@ -106,11 +105,6 @@ impl Vote {
     /// Return the LedgerInfo associated with this vote
     pub fn ledger_info(&self) -> &LedgerInfo {
         &self.ledger_info
-    }
-
-    /// Return the signature of the vote
-    pub fn signature(&self) -> &bls12381::Signature {
-        self.signature.signature()
     }
 
     pub fn signature_with_status(&self) -> &SignatureWithStatus {

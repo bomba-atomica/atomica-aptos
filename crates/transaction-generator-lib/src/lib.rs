@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -11,6 +11,7 @@ use aptos_sdk::{
     transaction_builder::{aptos_stdlib, TransactionFactory},
     types::{transaction::SignedTransaction, LocalAccount},
 };
+use aptos_types::transaction::TransactionOutput;
 use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 use log::{info, warn};
@@ -99,6 +100,9 @@ pub enum TransactionType {
         num_modules: usize,
         progress_type: WorkflowProgress,
     },
+    Encrypted {
+        inner: Box<TransactionType>,
+    },
 }
 
 #[derive(Debug, Copy, Clone, ValueEnum, Default, Deserialize, Parser, Serialize)]
@@ -143,9 +147,29 @@ pub trait TransactionGenerator: Sync + Send {
     ) -> Vec<SignedTransaction>;
 }
 
+/// Callback invoked after each block is ledger-updated, with all transaction outputs
+/// (including events). Implementors can inspect events to feed data back into subsequent
+/// transaction generation (e.g., reading UIDs emitted by a register step to use in a
+/// follow-up commit step).
+pub trait TransactionFeedback: Sync + Send {
+    fn on_block_committed(&self, outputs: &[TransactionOutput]);
+
+    /// Called by the block generator in the main thread (outside rayon) before
+    /// each block. Implementations should block here until there is work to
+    /// generate, preventing empty blocks while waiting for on-chain events.
+    /// Default: no-op.
+    fn wait_until_ready(&self) {}
+}
+
 #[async_trait]
 pub trait TransactionGeneratorCreator: Sync + Send {
     fn create_transaction_generator(&self) -> Box<dyn TransactionGenerator>;
+
+    /// Return a feedback handler if this generator needs to observe transaction outputs.
+    /// Default implementation returns None (no feedback needed).
+    fn transaction_feedback(&self) -> Option<Arc<dyn TransactionFeedback>> {
+        None
+    }
 }
 
 pub struct CounterState {
@@ -292,10 +316,34 @@ pub async fn create_txn_generator_creator(
         }
     }
 
+    let any_per_workload_encryption = transaction_mix_per_phase.iter().any(|phase| {
+        phase
+            .iter()
+            .any(|(tt, _)| matches!(tt, TransactionType::Encrypted { .. }))
+    });
+
     for transaction_mix in transaction_mix_per_phase {
         let mut txn_generator_creator_mix: Vec<(Box<dyn TransactionGeneratorCreator>, usize)> =
             Vec::new();
         for (transaction_type, weight) in transaction_mix {
+            // Unwrap the Encrypted wrapper and select the right factory:
+            // - Encrypted workloads get the shared factory (has encryption key Arc)
+            // - Non-encrypted workloads get without_encryption() when per-workload
+            //   encryption is active (detached, empty key)
+            // - When no Encrypted variants exist, all get the shared factory
+            //   (preserves backward compat with global encrypt_transactions flag)
+            let (transaction_type, effective_factory) = match transaction_type {
+                TransactionType::Encrypted { inner } => (*inner, txn_factory.clone()),
+                other => {
+                    let factory = if any_per_workload_encryption {
+                        txn_factory.clone().without_encryption()
+                    } else {
+                        txn_factory.clone()
+                    };
+                    (other, factory)
+                },
+            };
+
             let txn_generator_creator: Box<dyn TransactionGeneratorCreator> = match transaction_type
             {
                 TransactionType::CoinTransfer {
@@ -307,7 +355,7 @@ pub async fn create_txn_generator_creator(
                     use_orderless_transactions,
                 } => wrap_accounts_pool(
                     Box::new(P2PTransactionGeneratorCreator::new(
-                        txn_factory.clone(),
+                        effective_factory,
                         SEND_AMOUNT,
                         addresses_pool.clone(),
                         invalid_transaction_ratio,
@@ -328,7 +376,7 @@ pub async fn create_txn_generator_creator(
                     max_account_working_set,
                     creation_balance,
                 } => Box::new(AccountGeneratorCreator::new(
-                    txn_factory.clone(),
+                    effective_factory,
                     add_created_accounts_to_pool.then(|| {
                         addresses_pool.reserve(max_account_working_set);
                         addresses_pool.clone()
@@ -346,7 +394,7 @@ pub async fn create_txn_generator_creator(
                     package_name,
                 } => wrap_accounts_pool(
                     Box::new(PublishPackageCreator::new(
-                        txn_factory.clone(),
+                        effective_factory,
                         PackageHandler::new(pre_built, &package_name),
                     )),
                     use_account_pool,
@@ -359,7 +407,7 @@ pub async fn create_txn_generator_creator(
                 } => wrap_accounts_pool(
                     Box::new(
                         CustomModulesDelegationGeneratorCreator::new(
-                            txn_factory.clone(),
+                            effective_factory,
                             init_txn_factory.clone(),
                             &root_account,
                             txn_executor,
@@ -380,7 +428,7 @@ pub async fn create_txn_generator_creator(
                 } => wrap_accounts_pool(
                     Box::new(
                         CustomModulesDelegationGeneratorCreator::new(
-                            txn_factory.clone(),
+                            effective_factory,
                             init_txn_factory.clone(),
                             &root_account,
                             txn_executor,
@@ -396,7 +444,7 @@ pub async fn create_txn_generator_creator(
                 ),
                 TransactionType::BatchTransfer { batch_size } => {
                     Box::new(BatchTransferTransactionGeneratorCreator::new(
-                        txn_factory.clone(),
+                        effective_factory,
                         SEND_AMOUNT,
                         addresses_pool.clone(),
                         batch_size,
@@ -409,7 +457,7 @@ pub async fn create_txn_generator_creator(
                 } => Box::new(
                     WorkflowTxnGeneratorCreator::create_workload(
                         workflow_kind,
-                        txn_factory.clone(),
+                        effective_factory,
                         init_txn_factory.clone(),
                         &root_account,
                         txn_executor,
@@ -419,6 +467,9 @@ pub async fn create_txn_generator_creator(
                     )
                     .await,
                 ),
+                TransactionType::Encrypted { .. } => {
+                    unreachable!("Encrypted variant should have been unwrapped above")
+                },
             };
             txn_generator_creator_mix.push((txn_generator_creator, weight));
         }

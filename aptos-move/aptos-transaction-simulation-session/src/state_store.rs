@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::{bail, Result};
 use aptos_types::{
@@ -84,6 +84,7 @@ impl std::fmt::Display for HumanReadable<&StateKey> {
                 write!(f, "table_item::{}::{}", handle.0, hex::encode(key))
             },
             StateKeyInner::Raw(bytes) => write!(f, "raw::{}", hex::encode(bytes)),
+            StateKeyInner::TradingNative(key) => write!(f, "trading_native::{:?}", key),
         }
     }
 }

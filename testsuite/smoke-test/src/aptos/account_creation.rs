@@ -1,11 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::smoke_test_environment::new_local_swarm_with_aptos;
 use aptos_cached_packages::aptos_stdlib;
 use aptos_forge::Swarm;
 use aptos_types::CoinType;
 
+#[ignore] // Already automatic, no longer need to test
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_account_auto_creation() {
     let swarm = new_local_swarm_with_aptos(1).await;

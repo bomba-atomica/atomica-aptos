@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 mod common;
 mod fake;
@@ -7,8 +7,8 @@ mod mint;
 mod transfer;
 
 pub use self::{
-    common::{ApiConnectionConfig, TransactionSubmissionConfig},
-    mint::MintFunderConfig,
+    common::{ApiConnectionConfig, AssetConfig, TransactionSubmissionConfig, DEFAULT_ASSET_NAME},
+    mint::{MintAssetConfig, MintFunderConfig},
 };
 use self::{fake::FakeFunderConfig, transfer::TransferFunderConfig};
 use crate::endpoints::AptosTapError;
@@ -37,19 +37,11 @@ pub trait FunderTrait: Sync + Send + 'static {
         &self,
         amount: Option<u64>,
         receiver_address: AccountAddress,
+        asset: Option<String>,
         check_only: bool,
         // True if a Bypasser let this request bypass the Checkers.
         did_bypass_checkers: bool,
     ) -> Result<Vec<SignedTransaction>, AptosTapError>;
-
-    /// Given a requested amount and any configuration internal to this funder,
-    /// determine the amount that can be funded.
-    fn get_amount(
-        &self,
-        amount: Option<u64>,
-        // True if a Bypasser let this request bypass the Checkers.
-        did_bypass_checkers: bool,
-    ) -> u64;
 
     /// This should return whether the Funder is healthy and able to accept
     /// requests. With this a Funder can indicate some issue that will get

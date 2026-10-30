@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 #![deny(deprecated)]
@@ -121,6 +120,7 @@ pub mod system_module_names;
 pub mod testing;
 pub mod transaction_metadata;
 mod transaction_validation;
+mod transaction_validation_versioned;
 pub mod validator_txns;
 pub mod verifier;
 
@@ -134,8 +134,8 @@ use aptos_types::{
     },
     state_store::StateView,
     transaction::{
-        signature_verified_transaction::SignatureVerifiedTransaction, AuxiliaryInfo, BlockOutput,
-        SignedTransaction, TransactionOutput, VMValidatorResult,
+        signature_verified_transaction::SignatureVerifiedTransaction, AuxiliaryInfo, BlockError,
+        BlockExecutionResult, BlockOutput, SignedTransaction, TransactionOutput, VMValidatorResult,
     },
     vm_status::VMStatus,
 };
@@ -173,7 +173,7 @@ pub trait VMBlockExecutor: Send + Sync {
         state_view: &(impl StateView + Sync),
         onchain_config: BlockExecutorConfigFromOnchain,
         transaction_slice_metadata: TransactionSliceMetadata,
-    ) -> Result<BlockOutput<SignatureVerifiedTransaction, TransactionOutput>, VMStatus>;
+    ) -> BlockExecutionResult<SignatureVerifiedTransaction, TransactionOutput>;
 
     /// Executes a block of transactions and returns output for each one of them, without applying
     /// any block limit.
@@ -181,7 +181,7 @@ pub trait VMBlockExecutor: Send + Sync {
         &self,
         txn_provider: &DefaultTxnProvider<SignatureVerifiedTransaction, AuxiliaryInfo>,
         state_view: &(impl StateView + Sync),
-    ) -> Result<Vec<TransactionOutput>, VMStatus> {
+    ) -> Result<Vec<TransactionOutput>, BlockError> {
         self.execute_block(
             txn_provider,
             state_view,

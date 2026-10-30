@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     application::{error::Error, storage::PeersAndMetadata},
@@ -39,7 +38,6 @@ pub trait NetworkClientInterface<Message: NetworkMessageTrait>: Clone + Send + S
 
     /// Requests that the network connection for the specified peer
     /// is disconnected.
-    // TODO: support disconnect reasons.
     async fn disconnect_from_peer(
         &self,
         _peer: PeerNetworkId,

@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::state_store::state_view::hot_state_view::HotStateView;
 use aptos_crypto::HashValue;
@@ -11,7 +10,6 @@ use aptos_types::{
     contract_event::{ContractEvent, EventWithVersion},
     epoch_change::EpochChangeProof,
     epoch_state::EpochState,
-    event::EventKey,
     ledger_info::LedgerInfoWithSignatures,
     proof::{
         AccumulatorConsistencyProof, SparseMerkleProof, SparseMerkleProofExt,
@@ -19,15 +17,15 @@ use aptos_types::{
     },
     state_proof::StateProof,
     state_store::{
+        hot_state::{HotStateValue, HotStateValueChunkWithProof},
         state_key::StateKey,
         state_storage_usage::StateStorageUsage,
         state_value::{StateValue, StateValueChunkWithProof},
-        table::{TableHandle, TableInfo},
     },
     transaction::{
-        AccountOrderedTransactionsWithProof, IndexedTransactionSummary, PersistedAuxiliaryInfo,
-        Transaction, TransactionAuxiliaryData, TransactionInfo, TransactionListWithProofV2,
-        TransactionOutputListWithProofV2, TransactionToCommit, TransactionWithProof, Version,
+        IndexedTransactionSummary, PersistedAuxiliaryInfo, Transaction, TransactionAuxiliaryData,
+        TransactionInfo, TransactionListWithProofV2, TransactionOutputListWithProofV2,
+        TransactionToCommit, TransactionWithProof, Version,
     },
     write_set::WriteSet,
 };
@@ -46,10 +44,12 @@ pub mod state_store;
 
 use crate::{
     chunk_to_commit::ChunkToCommit,
-    state_store::{state::State, state_summary::StateSummary},
+    state_store::{
+        sharded_jmt_state::PositionStateWithSummary, state::State, state_summary::StateSummary,
+        state_with_summary::LedgerWithSummary,
+    },
 };
-pub use aptos_types::block_info::BlockHeight;
-use aptos_types::state_store::state_key::prefix::StateKeyPrefix;
+pub use aptos_types::{block_info::BlockHeight, state_store::StateKind};
 pub use errors::AptosDbError;
 pub use ledger_summary::LedgerSummary;
 
@@ -205,16 +205,6 @@ pub trait DbReader: Send + Sync {
             ledger_version: Version,
         ) -> Result<TransactionOutputListWithProofV2>;
 
-        /// Returns events by given event key
-        fn get_events(
-            &self,
-            event_key: &EventKey,
-            start: u64,
-            order: Order,
-            limit: u64,
-            ledger_version: Version,
-        ) -> Result<Vec<EventWithVersion>>;
-
         fn get_transaction_iterator(
             &self,
             start_version: Version,
@@ -281,16 +271,6 @@ pub trait DbReader: Send + Sync {
         /// Gets the latest epoch state currently held in storage.
         fn get_latest_epoch_state(&self) -> Result<EpochState>;
 
-        /// Returns the (key, value) iterator for a particular state key prefix at at desired version. This
-        /// API can be used to get all resources of an account by passing the account address as the
-        /// key prefix.
-        fn get_prefixed_state_value_iterator(
-            &self,
-            key_prefix: &StateKeyPrefix,
-            cursor: Option<&StateKey>,
-            version: Version,
-        ) -> Result<Box<dyn Iterator<Item = Result<(StateKey, StateValue)>> + '_>>;
-
         /// Returns the latest ledger info, if any.
         fn get_latest_ledger_info_option(&self) -> Result<Option<LedgerInfoWithSignatures>>;
 
@@ -310,30 +290,6 @@ pub trait DbReader: Send + Sync {
             &self,
             next_version: Version,
         ) -> Result<Option<(Version, HashValue)>>;
-
-        /// Returns a transaction that is the `sequence_number`-th one associated with the given account. If
-        /// the transaction with given `sequence_number` doesn't exist, returns `None`.
-        fn get_account_ordered_transaction(
-            &self,
-            address: AccountAddress,
-            seq_num: u64,
-            include_events: bool,
-            ledger_version: Version,
-        ) -> Result<Option<TransactionWithProof>>;
-
-        /// Returns the list of ordered transactions (transactions that include a sequence number)
-        /// sent by an account with `address` starting
-        /// at sequence number `seq_num`. Will return no more than `limit` transactions.
-        /// Will ignore transactions with `txn.version > ledger_version`. Optionally
-        /// fetch events for each transaction when `fetch_events` is `true`.
-        fn get_account_ordered_transactions(
-            &self,
-            address: AccountAddress,
-            seq_num: u64,
-            limit: u64,
-            include_events: bool,
-            ledger_version: Version,
-        ) -> Result<AccountOrderedTransactionsWithProof>;
 
         /// Returns the list of summaries of transactions committed by an account.
         /// Each transaction summary contains the sender address, transaction hash, version, replay protector
@@ -391,6 +347,7 @@ pub trait DbReader: Send + Sync {
             key_hash: &HashValue,
             version: Version,
             root_depth: usize,
+            use_hot_state: bool,
         ) -> Result<SparseMerkleProofExt>;
 
         /// Gets a state value by state key along with the proof, out of the ledger state indicated by the state
@@ -403,10 +360,19 @@ pub trait DbReader: Send + Sync {
         /// This is used by aptos core (executor) internally.
         fn get_state_value_with_proof_by_version_ext(
             &self,
-            key_hash: &HashValue,
+            key_hash: HashValue,
             version: Version,
             root_depth: usize,
         ) -> Result<(Option<StateValue>, SparseMerkleProofExt)>;
+
+        /// Returns the live `HotStateValue` at `version` together with a proof against the hot
+        /// state root. `None` means the key was never hot, or was evicted at or before `version`.
+        fn get_hot_state_value_with_proof_by_version_ext(
+            &self,
+            key_hash: HashValue,
+            version: Version,
+            root_depth: usize,
+        ) -> Result<(Option<HotStateValue>, SparseMerkleProofExt)>;
 
         /// Gets the latest LedgerView no matter if db has been bootstrapped.
         /// Used by the Db-bootstrapper.
@@ -415,6 +381,31 @@ pub trait DbReader: Send + Sync {
         fn get_persisted_state(&self) -> Result<(Arc<dyn HotStateView>, State)>;
 
         fn get_persisted_state_summary(&self) -> Result<StateSummary>;
+
+        /// Native-position analog of `get_persisted_state_summary`: the latest
+        /// merklized position summary, used by execution as the freeze base and
+        /// proof source for computing the position state root. Errors when the
+        /// feature is on but native-position storage is absent (i.e.
+        /// `ENABLE_TRADING_NATIVE` is off).
+        fn get_persisted_position_state_summary(&self) -> Result<PositionStateWithSummary>;
+
+        /// The pre-committed position tip (latest + last_checkpoint), including
+        /// committed writes the merklized snapshot in
+        /// `get_persisted_position_state_summary` may not yet reflect. Used by
+        /// execution to seed the parent position summary when no in-memory
+        /// block parent is available.
+        fn get_pre_committed_position_state_summary(
+            &self,
+        ) -> Result<LedgerWithSummary<PositionStateWithSummary>>;
+
+        /// Native-position analog of `get_state_proof_by_version_ext`: a
+        /// cold-key proof from the persisted position JMT at `version`.
+        fn get_position_state_proof_by_version_ext(
+            &self,
+            key_hash: &HashValue,
+            version: Version,
+            root_depth: usize,
+        ) -> Result<SparseMerkleProofExt>;
 
         /// Get the ledger info of the epoch that `known_version` belongs to.
         fn get_epoch_ending_ledger_info(
@@ -466,32 +457,61 @@ pub trait DbReader: Send + Sync {
             ledger_version: Version,
         ) -> Result<TransactionAccumulatorSummary>;
 
-        /// Returns total number of state items in state store at given version.
-        fn get_state_item_count(&self, version: Version) -> Result<usize>;
+        /// Returns the number of items in the given snapshot store at `version`.
+        fn get_state_item_count(&self, version: Version, kind: StateKind) -> Result<usize>;
 
-        /// Get a chunk of state store value, addressed by the index.
+        /// Get a chunk of values from the given snapshot store, addressed by the index.
         fn get_state_value_chunk_with_proof(
             &self,
             version: Version,
             start_idx: usize,
             chunk_size: usize,
+            kind: StateKind,
         ) -> Result<StateValueChunkWithProof>;
 
-        /// Returns an iterator of state key value pairs starting from the index.
+        /// Returns an iterator of value pairs from the given snapshot store,
+        /// starting from the index.
         fn get_state_value_chunk_iter(
             &self,
             version: Version,
             first_index: usize,
             chunk_size: usize,
+            kind: StateKind,
         ) -> Result<Box<dyn Iterator<Item = Result<(StateKey, StateValue)>> + '_>>;
 
-        /// Returns a state value chunk proof for the given state key values.
+        /// Returns a value chunk proof for the given values from the given
+        /// snapshot store.
         fn get_state_value_chunk_proof(
             &self,
             version: Version,
             first_index: usize,
             state_key_values: Vec<(StateKey, StateValue)>,
+            kind: StateKind,
         ) -> Result<StateValueChunkWithProof>;
+
+        /// Returns the total number of hot state items (leaves of the hot state Merkle tree) at
+        /// the given version.
+        fn get_hot_state_item_count(&self, version: Version) -> Result<usize>;
+
+        /// Returns an iterator over hot state leaves, walking the hot state Merkle tree at
+        /// `version` from `first_index` for up to `chunk_size` leaves. Each item pairs the full
+        /// state key with its `HotStateValue` (the value or vacancy plus `hot_since_version`) —
+        /// what a fast-syncing node needs to rebuild the hot state KV DB and Merkle tree.
+        fn get_hot_state_value_chunk_iter(
+            &self,
+            version: Version,
+            first_index: usize,
+            chunk_size: usize,
+        ) -> Result<Box<dyn Iterator<Item = Result<(StateKey, HotStateValue)>> + '_>>;
+
+        /// Assembles a hot state value chunk with a range proof against the hot state Merkle root
+        /// at `version`.
+        fn get_hot_state_value_chunk_proof(
+            &self,
+            version: Version,
+            first_index: usize,
+            raw_values: Vec<(StateKey, HotStateValue)>,
+        ) -> Result<HotStateValueChunkWithProof>;
 
         /// Returns if the state store pruner is enabled.
         fn is_state_merkle_pruner_enabled(&self) -> Result<bool>;
@@ -504,12 +524,6 @@ pub trait DbReader: Send + Sync {
 
         /// Get the ledger prune window config value.
         fn get_ledger_prune_window(&self) -> Result<usize>;
-
-        /// Get table info from the internal indexer.
-        fn get_table_info(&self, handle: TableHandle) -> Result<TableInfo>;
-
-        /// Returns whether the internal indexer DB has been enabled or not
-        fn indexer_enabled(&self) -> bool;
 
         /// Returns state storage usage at the end of an epoch.
         fn get_state_storage_usage(&self, version: Option<Version>) -> Result<StateStorageUsage>;
@@ -547,8 +561,13 @@ pub trait DbReader: Send + Sync {
         state_key: &StateKey,
         version: Version,
     ) -> Result<(Option<StateValue>, SparseMerkleProof)> {
-        self.get_state_value_with_proof_by_version_ext(state_key.crypto_hash_ref(), version, 0)
-            .map(|(value, proof_ext)| (value, proof_ext.into()))
+        // TODO(HotState): check all callers and possibly query hot state first
+        self.get_state_value_with_proof_by_version_ext(
+            *state_key.crypto_hash_ref(),
+            version,
+            /* root_depth = */ 0,
+        )
+        .map(|(value, proof_ext)| (value, proof_ext.into()))
     }
 
     fn ensure_synced_version(&self) -> Result<Version> {
@@ -571,13 +590,14 @@ pub trait DbReader: Send + Sync {
 /// expected of an Aptos DB. This adds write APIs to DbReader.
 #[allow(unused_variables)]
 pub trait DbWriter: Send + Sync {
-    /// Get a (stateful) state snapshot receiver.
+    /// Get a (stateful) snapshot receiver for the given snapshot store.
     ///
     /// Chunk of accounts need to be added via `add_chunk()` before finishing up with `finish_box()`
     fn get_state_snapshot_receiver(
         &self,
         version: Version,
         expected_root_hash: HashValue,
+        kind: StateKind,
     ) -> Result<Box<dyn StateSnapshotReceiver<StateKey, StateValue>>> {
         unimplemented!()
     }

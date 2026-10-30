@@ -1,12 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     erased::Node,
     log::{ExecutionAndIOCosts, ExecutionGasEvent},
     render::{Render, TableKey},
 };
-use aptos_gas_algebra::{GasQuantity, GasScalingFactor, InternalGas, InternalGasUnit};
+use aptos_gas_algebra::{GasQuantity, InternalGas, InternalGasUnit};
 use std::collections::{btree_map, BTreeMap};
 
 /// Represents an aggregation of execution gas events, including the count and total gas costs for each type of event.
@@ -14,13 +14,6 @@ use std::collections::{btree_map, BTreeMap};
 /// The events are sorted by the amount of gas used, from high to low.
 #[derive(Debug)]
 pub struct AggregatedExecutionGasEvents {
-    /// The gas scaling factor.
-    /// This is included so to make this struct self-contained, suitable for displaying in (external) gas units.
-    pub gas_scaling_factor: GasScalingFactor,
-
-    /// The total gas cost.
-    pub total: InternalGas,
-
     // TODO: Make this more strongly typed?
     pub ops: Vec<(String, usize, InternalGas)>,
     pub methods: Vec<(String, usize, InternalGas)>,
@@ -124,6 +117,7 @@ impl ExecutionAndIOCosts {
                     format!("table_item<{},{}>", Render(handle), TableKey { bytes: key },)
                 },
                 Raw(..) => panic!("not supported"),
+                TradingNative(..) => panic!("not supported"),
             };
 
             insert_or_add(&mut storage_writes, key, write.cost);
@@ -136,18 +130,20 @@ impl ExecutionAndIOCosts {
         compute_method_self_cost(&tree, &mut methods_self);
 
         AggregatedExecutionGasEvents {
-            gas_scaling_factor: self.gas_scaling_factor,
-            total: self.total,
-
             ops: into_sorted_vec(ops),
             methods: into_sorted_vec(methods),
             methods_self: into_sorted_vec(methods_self),
-            transaction_write: self.transaction_transient.unwrap_or_else(|| 0.into()),
+            transaction_write: self.transaction_transient.unwrap_or_else(InternalGas::zero),
             event_writes: into_sorted_vec(event_writes),
             storage_reads: into_sorted_vec(storage_reads),
             storage_writes: into_sorted_vec(storage_writes),
         }
     }
+}
+
+/// Check if a name looks like a function call (e.g., "0xcafe::module::function")
+fn is_function_name(name: &str) -> bool {
+    name.contains("::")
 }
 
 fn compute_method_recursive_cost(
@@ -159,7 +155,8 @@ fn compute_method_recursive_cost(
         sum += compute_method_recursive_cost(child, methods);
     }
 
-    if !node.children.is_empty() {
+    // Only include entries that look like function names (contain "::")
+    if !node.children.is_empty() && is_function_name(&node.text) {
         insert_or_add(methods, node.text.clone(), sum);
     }
     sum
@@ -177,7 +174,8 @@ fn compute_method_self_cost(
         sum += child.val;
     }
 
-    if !node.children.is_empty() {
+    // Only include entries that look like function names (contain "::")
+    if !node.children.is_empty() && is_function_name(&node.text) {
         insert_or_add(methods, node.text.clone(), sum);
     }
 }

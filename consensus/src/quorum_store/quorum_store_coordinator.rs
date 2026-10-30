@@ -1,30 +1,34 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     monitor,
     quorum_store::{
-        batch_coordinator::BatchCoordinatorCommand, batch_generator::BatchGeneratorCommand,
-        counters, proof_coordinator::ProofCoordinatorCommand, proof_manager::ProofManagerCommand,
+        batch_coordinator::{BatchCoordinatorCommand, BatchCoordinatorQueueKey},
+        batch_generator::BatchGeneratorCommand,
+        counters,
+        proof_coordinator::ProofCoordinatorCommand,
+        proof_manager::ProofManagerCommand,
     },
     round_manager::VerifiedEvent,
 };
 use aptos_channels::aptos_channel;
-use aptos_consensus_types::{common::Author, proof_of_store::BatchInfo};
+use aptos_consensus_types::{common::Author, proof_of_store::BatchInfoExt};
 use aptos_logger::prelude::*;
 use aptos_types::{account_address::AccountAddress, PeerId};
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
 
 pub enum CoordinatorCommand {
-    CommitNotification(u64, Vec<BatchInfo>),
+    CommitNotification(u64, Vec<BatchInfoExt>),
     Shutdown(futures_channel::oneshot::Sender<()>),
 }
 
 pub struct QuorumStoreCoordinator {
     my_peer_id: PeerId,
     batch_generator_cmd_tx: mpsc::Sender<BatchGeneratorCommand>,
-    remote_batch_coordinator_cmd_tx: Vec<mpsc::Sender<BatchCoordinatorCommand>>,
+    remote_batch_coordinator_cmd_tx:
+        Vec<aptos_channel::Sender<BatchCoordinatorQueueKey, BatchCoordinatorCommand>>,
     proof_coordinator_cmd_tx: mpsc::Sender<ProofCoordinatorCommand>,
     proof_manager_cmd_tx: mpsc::Sender<ProofManagerCommand>,
     quorum_store_msg_tx: aptos_channel::Sender<AccountAddress, (Author, VerifiedEvent)>,
@@ -34,7 +38,9 @@ impl QuorumStoreCoordinator {
     pub(crate) fn new(
         my_peer_id: PeerId,
         batch_generator_cmd_tx: mpsc::Sender<BatchGeneratorCommand>,
-        remote_batch_coordinator_cmd_tx: Vec<mpsc::Sender<BatchCoordinatorCommand>>,
+        remote_batch_coordinator_cmd_tx: Vec<
+            aptos_channel::Sender<BatchCoordinatorQueueKey, BatchCoordinatorCommand>,
+        >,
         proof_coordinator_cmd_tx: mpsc::Sender<ProofCoordinatorCommand>,
         proof_manager_cmd_tx: mpsc::Sender<ProofManagerCommand>,
         quorum_store_msg_tx: aptos_channel::Sender<AccountAddress, (Author, VerifiedEvent)>,
@@ -123,10 +129,12 @@ impl QuorumStoreCoordinator {
                                 remote_batch_coordinator_shutdown_rx,
                             ) = oneshot::channel();
                             remote_batch_coordinator_cmd_tx
-                                .send(BatchCoordinatorCommand::Shutdown(
-                                    remote_batch_coordinator_shutdown_tx,
-                                ))
-                                .await
+                                .push_expect_enqueued(
+                                    BatchCoordinatorQueueKey::Control,
+                                    BatchCoordinatorCommand::Shutdown(
+                                        remote_batch_coordinator_shutdown_tx,
+                                    ),
+                                )
                                 .expect("Failed to send to Remote BatchCoordinator");
                             remote_batch_coordinator_shutdown_rx
                                 .await

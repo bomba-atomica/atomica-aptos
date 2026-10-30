@@ -1,18 +1,17 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     account_config::{
         DepositEvent, NewBlockEvent, NewEpochEvent, WithdrawEvent, NEW_EPOCH_EVENT_MOVE_TYPE_TAG,
         NEW_EPOCH_EVENT_V2_MOVE_TYPE_TAG,
     },
-    dkg::DKGStartEvent,
+    dkg::{chunky_dkg::ChunkyDKGStartEvent, DKGStartEvent},
     event::EventKey,
     jwks::ObservedJWKsUpdated,
     transaction::Version,
 };
-use anyhow::{bail, Error, Result};
+use anyhow::{bail, ensure, Error, Result};
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
 use move_core_types::{
     ident_str,
@@ -322,6 +321,23 @@ impl TryFrom<&ContractEvent> for DKGStartEvent {
                 bcs::from_bytes(&event.event_data).map_err(Into::into)
             },
         }
+    }
+}
+
+impl TryFrom<&ContractEvent> for ChunkyDKGStartEvent {
+    type Error = Error;
+
+    fn try_from(event: &ContractEvent) -> Result<Self> {
+        let ContractEvent::V2(event) = event else {
+            bail!("Only ContractEvent::V2 is supported for ChunkyDKGStartEvent");
+        };
+
+        ensure!(
+            event.type_tag == TypeTag::Struct(Box::new(Self::struct_tag())),
+            "Unexpected event type tag for ChunkyDKGStartEvent: {}",
+            event.type_tag.to_canonical_string(),
+        );
+        Ok(bcs::from_bytes(&event.event_data)?)
     }
 }
 

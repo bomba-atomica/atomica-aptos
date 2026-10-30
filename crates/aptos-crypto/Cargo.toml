@@ -12,8 +12,13 @@ publish = { workspace = true }
 repository = { workspace = true }
 rust-version = { workspace = true }
 
-[lib]
-doctest = false
+[features]
+default = []
+arkworks-upgrade-compat-test = []
+assert-private-keys-not-cloneable = []
+cloneable-private-keys = []
+fuzzing = ["proptest", "proptest-derive", "cloneable-private-keys", "arbitrary"]
+testing = []
 
 [dependencies]
 aes-gcm = { workspace = true }
@@ -51,6 +56,7 @@ libsecp256k1 = { workspace = true }
 merlin = { workspace = true }
 more-asserts = { workspace = true }
 neptune = { workspace = true }
+num = { workspace = true }
 num-bigint = { workspace = true }
 num-integer = { workspace = true }
 num-traits = { workspace = true }
@@ -61,6 +67,7 @@ proptest = { workspace = true, optional = true }
 proptest-derive = { workspace = true, optional = true }
 rand = { workspace = true }
 rand_core = { workspace = true }
+rayon = { workspace = true }
 ring = { workspace = true }
 serde = { workspace = true }
 serde-name = { workspace = true }
@@ -69,6 +76,7 @@ sha2 = { workspace = true }
 sha2_0_10_6 = { workspace = true }
 sha3 = { workspace = true }
 signature = { workspace = true }
+slh-dsa = { workspace = true }
 static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tiny-keccak = { workspace = true }
@@ -95,13 +103,9 @@ proptest-derive = { workspace = true }
 serde_json = { workspace = true }
 trybuild = { workspace = true }
 
-[features]
-default = []
-arkworks-upgrade-compat-test = []
-assert-private-keys-not-cloneable = []
-cloneable-private-keys = []
-fuzzing = ["proptest", "proptest-derive", "cloneable-private-keys", "arbitrary"]
-testing = []
+[[bench]]
+name = "ark_batch_mul"
+harness = false
 
 [[bench]]
 name = "ark_bls12_381"
@@ -136,7 +140,15 @@ name = "hash"
 harness = false
 
 [[bench]]
+name = "hash_pair"
+harness = false
+
+[[bench]]
 name = "noise"
+harness = false
+
+[[bench]]
+name = "random"
 harness = false
 
 [[bench]]
@@ -145,6 +157,10 @@ harness = false
 
 [[bench]]
 name = "secp256k1"
+harness = false
+
+[[bench]]
+name = "slh_dsa_sha2_128s"
 harness = false
 
 [[example]]

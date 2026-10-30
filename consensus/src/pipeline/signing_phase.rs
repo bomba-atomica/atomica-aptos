@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::pipeline::pipeline_phase::StatelessPipeline;
 use aptos_consensus_types::pipelined_block::PipelinedBlock;
@@ -85,8 +84,11 @@ impl StatelessPipeline for SigningPhase {
             fut.commit_vote_fut
                 .clone()
                 .await
-                .map(|vote| vote.signature().clone())
                 .map_err(|e| Error::InternalError(e.to_string()))
+                .and_then(|vote| {
+                    vote.decompressed_signature()
+                        .map_err(|e| Error::InternalError(e.to_string()))
+                })
         } else {
             self.safety_rule_handle
                 .sign_commit_vote(ordered_ledger_info, commit_ledger_info.clone())

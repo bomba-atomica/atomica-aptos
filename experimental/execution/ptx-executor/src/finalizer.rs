@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -119,9 +119,7 @@ impl<'view> Worker<'view> {
 
     fn finalize_one(&mut self) {
         let vm_output = self.buffer.pop_front().unwrap().unwrap();
-        let txn_out = vm_output
-            .try_materialize_into_transaction_output(&self.state_view)
-            .unwrap();
+        let txn_out = vm_output.into_transaction_output().unwrap();
         for (key, op) in txn_out.write_set().expect_write_op_iter() {
             // TODO(ptx): hack: deal only with the total supply
             if key == Lazy::force(&TOTAL_SUPPLY_STATE_KEY) {

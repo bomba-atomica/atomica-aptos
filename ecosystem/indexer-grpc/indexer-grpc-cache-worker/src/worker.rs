@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::metrics::{ERROR_COUNT, WAIT_FOR_FILE_STORE_COUNTER};
 use anyhow::{bail, Context, Result};
@@ -418,7 +418,7 @@ async fn process_streaming_response(
                     let result = join_all(tasks_to_run).await;
                     if result
                         .iter()
-                        .any(|r| (r.is_err() || r.as_ref().unwrap().is_err()))
+                        .any(|r| r.is_err() || r.as_ref().unwrap().is_err())
                     {
                         error!(
                             start_version = start_version,

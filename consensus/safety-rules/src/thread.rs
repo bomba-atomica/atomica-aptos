@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This provides a execution separation between SafetyRules and Consensus without requiring the
 //! use of processes. Rust does not support fork and so the mechanics to actually construct a
@@ -32,7 +31,10 @@ impl ThreadService {
         let listen_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), listen_port);
         let server_addr = listen_addr;
 
-        let child = thread::spawn(move || remote_service::execute(storage, listen_addr, timeout));
+        let child = thread::Builder::new()
+            .name("safety-rules".into())
+            .spawn(move || remote_service::execute(storage, listen_addr, timeout))
+            .expect("failed to spawn safety-rules thread");
 
         Self {
             _child: child,

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Objects of the Rosetta spec
 //!
@@ -28,7 +28,7 @@ use aptos_logger::warn;
 use aptos_rest_client::aptos_api_types::{ResourceGroup, TransactionOnChainData, U64};
 use aptos_types::{
     access_path::Path,
-    account_address::AccountAddress,
+    account_address::{create_derived_object_address, AccountAddress},
     account_config::{
         fungible_store::FungibleStoreResource, AccountResource, CoinStoreResourceUntyped,
         CoinWithdraw, DepositFAEvent, ObjectCoreResource, WithdrawEvent,
@@ -933,6 +933,12 @@ impl Transaction {
             BlockEpilogue(_) => (TransactionType::BlockEpilogue, None, txn.info, vec![]),
         };
 
+        let gas_payer = maybe_user_txn.map(|txn| {
+            txn.authenticator()
+                .fee_payer_address()
+                .unwrap_or_else(|| txn.sender())
+        });
+
         // Operations must be sequential and operation index must always be in the same order
         // with no gaps
         let successful = txn_info.status().is_success();
@@ -977,7 +983,7 @@ impl Transaction {
             }
 
             // For storage fee refund
-            if let Some(user_txn) = maybe_user_txn {
+            if let Some(refund_recipient) = gas_payer {
                 let fee_events = get_fee_statement_from_event(&events)
                     .into_iter()
                     .filter(|event| event.storage_fee_refund() > 0);
@@ -985,7 +991,7 @@ impl Transaction {
                     operations.push(Operation::deposit(
                         operation_index,
                         Some(OperationStatusType::Success),
-                        AccountIdentifier::base_account(user_txn.sender()),
+                        AccountIdentifier::base_account(refund_recipient),
                         native_coin(),
                         event.storage_fee_refund(),
                     ));
@@ -1014,10 +1020,10 @@ impl Transaction {
         }
 
         // Everything committed costs gas
-        if let Some(txn) = maybe_user_txn {
+        if let Some((payer, txn)) = gas_payer.zip(maybe_user_txn) {
             operations.push(Operation::gas_fee(
                 operation_index,
-                txn.sender(),
+                payer,
                 txn_info.gas_used(),
                 txn.gas_unit_price(),
             ));
@@ -2183,12 +2189,19 @@ fn parse_fungible_store_changes(
 
     let owner = maybe_owner.copied().unwrap();
 
+    // We double check if the address is a primary store
+    let account = if is_primary_store(&address, &owner, currency) {
+        AccountIdentifier::base_account(owner)
+    } else {
+        AccountIdentifier::secondary_store_account(&address, currency)
+    };
+
     let withdraw_amounts = get_amount_from_fa_event(events, &WITHDRAW_TYPE_TAG, address);
     for amount in withdraw_amounts {
         operations.push(Operation::withdraw(
             operation_index,
             Some(OperationStatusType::Success),
-            AccountIdentifier::base_account(owner),
+            account.clone(),
             currency.clone(),
             amount,
         ));
@@ -2200,7 +2213,7 @@ fn parse_fungible_store_changes(
         operations.push(Operation::deposit(
             operation_index,
             Some(OperationStatusType::Success),
-            AccountIdentifier::base_account(owner),
+            account.clone(),
             currency.clone(),
             amount,
         ));
@@ -2208,6 +2221,26 @@ fn parse_fungible_store_changes(
     }
 
     Ok(operations)
+}
+
+fn is_primary_store(
+    store_address: &AccountAddress,
+    owner: &AccountAddress,
+    currency: &Currency,
+) -> bool {
+    let metadata_address = match currency.metadata.as_ref().and_then(|metadata| {
+        metadata
+            .fa_address
+            .as_ref()
+            .map(|fa_address| AccountAddress::from_str(fa_address))
+    }) {
+        Some(Ok(metadata_address)) => metadata_address,
+        Some(Err(_)) => return false,
+        None if currency == &native_coin() => AccountAddress::TEN,
+        None => return false,
+    };
+
+    create_derived_object_address(*owner, metadata_address) == *store_address
 }
 
 /// Pulls the balance change from a withdraw or deposit event

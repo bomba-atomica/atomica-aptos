@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     executor_utilities::update_transaction_on_abort,
@@ -12,7 +12,10 @@ use aptos_mvhashmap::{
     types::{Incarnation, TxnIndex},
     MVHashMap,
 };
-use aptos_types::{error::PanicError, transaction::BlockExecutableTransaction};
+use aptos_types::{
+    block_executor::value::ValueWithLayout, error::PanicError,
+    transaction::BlockExecutableTransaction,
+};
 use move_core_types::language_storage::ModuleId;
 use move_vm_types::delayed_values::delayed_field_id::DelayedFieldID;
 use std::{
@@ -108,7 +111,7 @@ impl SchedulerWrapper<'_> {
         txn_idx: TxnIndex,
         incarnation: Incarnation,
         last_input_output: &TxnLastInputOutput<T, E::Output>,
-        versioned_cache: &MVHashMap<T::Key, T::Tag, T::Value, DelayedFieldID>,
+        versioned_cache: &MVHashMap<T::Key, T::Tag, ValueWithLayout<T::Value>, DelayedFieldID>,
     ) -> Result<(), PanicError>
     where
         T: BlockExecutableTransaction,
@@ -131,7 +134,7 @@ impl SchedulerWrapper<'_> {
         &self,
         block_epilogue_idx: TxnIndex,
         last_input_output: &TxnLastInputOutput<T, E::Output>,
-        versioned_cache: &MVHashMap<T::Key, T::Tag, T::Value, DelayedFieldID>,
+        versioned_cache: &MVHashMap<T::Key, T::Tag, ValueWithLayout<T::Value>, DelayedFieldID>,
     ) -> Result<Incarnation, PanicError>
     where
         T: BlockExecutableTransaction,

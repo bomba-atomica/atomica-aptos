@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block_storage::{pending_blocks::PendingBlocks, BlockStore},
@@ -43,7 +42,7 @@ use aptos_consensus_types::{
     opt_proposal_msg::OptProposalMsg,
     order_vote_msg::OrderVoteMsg,
     pipeline::commit_decision::CommitDecision,
-    proof_of_store::BatchInfo,
+    proof_of_store::{BatchInfo, BatchInfoExt},
     proposal_msg::ProposalMsg,
     round_timeout::RoundTimeoutMsg,
     utils::PayloadTxnsSize,
@@ -71,8 +70,8 @@ use aptos_types::{
     epoch_state::EpochState,
     ledger_info::LedgerInfo,
     on_chain_config::{
-        ConsensusAlgorithmConfig, OnChainConsensusConfig, OnChainJWKConsensusConfig,
-        OnChainRandomnessConfig,
+        ConsensusAlgorithmConfig, OnChainChunkyDKGConfig, OnChainConsensusConfig,
+        OnChainJWKConsensusConfig, OnChainRandomnessConfig,
     },
     transaction::SignedTransaction,
     validator_signer::ValidatorSigner,
@@ -400,7 +399,6 @@ impl NodeSetup {
                 None,
                 vec![],
                 hashmap![],
-                false,
             ))
         } else {
             Arc::new(DirectMempoolPayloadManager::new())
@@ -414,10 +412,12 @@ impl NodeSetup {
             10, // max pruned blocks in mem
             time_service.clone(),
             10,
+            60,
             payload_manager,
             false,
             window_size,
             Arc::new(Mutex::new(PendingBlocks::new())),
+            None,
             None,
         ));
         let block_store_clone = Arc::clone(&block_store);
@@ -445,7 +445,6 @@ impl NodeSetup {
             ChainHealthBackoffConfig::new_no_backoff(),
             false,
             onchain_consensus_config.effective_validator_txn_config(),
-            true,
             Arc::new(MockOptQSPayloadProvider {}),
         );
 
@@ -477,7 +476,7 @@ impl NodeSetup {
             local_config,
             onchain_randomness_config.clone(),
             onchain_jwk_consensus_config.clone(),
-            None,
+            OnChainChunkyDKGConfig::default_disabled(),
             Arc::new(MockPastProposalStatusTracker {}),
             opt_proposal_loopback_tx,
         );
@@ -734,7 +733,7 @@ impl NodeSetup {
 struct MockQuorumStoreCommitNotifier;
 
 impl TQuorumStoreCommitNotifier for MockQuorumStoreCommitNotifier {
-    fn notify(&self, _block_timestamp: u64, _batches: Vec<BatchInfo>) {
+    fn notify(&self, _block_timestamp: u64, _batches: Vec<BatchInfoExt>) {
         unimplemented!()
     }
 }

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{smoke_test_environment::SwarmBuilder, txn_emitter::generate_traffic};
 use aptos_api_types::ViewFunction;
@@ -82,6 +82,8 @@ async fn test_impl(block_gas_limit: u64, concurrency_level: u16) {
                 20,
             ),
         ]],
+        false,
+        None,
     )
     .await
     .unwrap();

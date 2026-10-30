@@ -43,15 +43,7 @@ spec aptos_framework::voting {
         pragma aborts_if_is_partial;
     }
 
-    spec schema AbortsIfPermissionedSigner {
-        use aptos_framework::permissioned_signer;
-        s: signer;
-        let perm = VotePermission {};
-        aborts_if !permissioned_signer::spec_check_permission_exists(s, perm);
-    }
-
     spec register<ProposalType: store>(account: &signer) {
-        // include AbortsIfPermissionedSigner { s: account };
         let addr = signer::address_of(account);
 
         // Will abort if there's already a `VotingForum<ProposalType>` under addr
@@ -123,7 +115,7 @@ spec aptos_framework::voting {
 
         aborts_if !exists<VotingForum<ProposalType>>(voting_forum_address);
         aborts_if table::spec_contains(voting_forum.proposals,proposal_id);
-        aborts_if option::is_some(early_resolution_vote_threshold) && min_vote_threshold > option::spec_borrow(early_resolution_vote_threshold);
+        aborts_if option::is_some(early_resolution_vote_threshold) && min_vote_threshold > option::borrow(early_resolution_vote_threshold);
         aborts_if !std::string::spec_internal_check_utf8(IS_MULTI_STEP_PROPOSAL_KEY);
         aborts_if !std::string::spec_internal_check_utf8(IS_MULTI_STEP_PROPOSAL_IN_EXECUTION_KEY);
         aborts_if len(execution_hash) == 0;
@@ -246,7 +238,7 @@ spec aptos_framework::voting {
         ensures post_proposal.resolution_time_secs == timestamp::spec_now_seconds();
 
         aborts_if option::is_none(proposal.execution_content);
-        ensures result == option::spec_borrow(proposal.execution_content);
+        ensures result == option::borrow(proposal.execution_content);
         ensures option::is_none(post_proposal.execution_content);
     }
 
@@ -256,7 +248,7 @@ spec aptos_framework::voting {
         next_execution_hash: vector<u8>,
     ) {
         use aptos_framework::chain_status;
-        pragma verify_duration_estimate = 300;
+        pragma verify_duration_estimate = 120; // TODO: set because of timeout (property proved)
         // Ensures existence of Timestamp
         requires chain_status::is_operating();
 
@@ -319,7 +311,7 @@ spec aptos_framework::voting {
 
     spec fun spec_can_be_resolved_early<ProposalType: store>(proposal: Proposal<ProposalType>): bool {
         if (option::is_some(proposal.early_resolution_vote_threshold)) {
-            let early_resolution_threshold = option::spec_borrow(proposal.early_resolution_vote_threshold);
+            let early_resolution_threshold = option::borrow(proposal.early_resolution_vote_threshold);
             if (proposal.yes_votes >= early_resolution_threshold || proposal.no_votes >= early_resolution_threshold) {
                 true
             } else{

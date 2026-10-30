@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::metadata::LanguageVersion;
 use serde::{Deserialize, Serialize};
@@ -10,15 +11,6 @@ use serde::{Deserialize, Serialize};
 pub struct ModelBuilderOptions {
     /// The language version to use.
     pub language_version: LanguageVersion,
-
-    /// Ignore the "opaque" pragma on internal function (i.e., functions with no unknown callers)
-    /// specs when possible. The opaque can be ignored as long as the function spec has no property
-    /// marked as `[concrete]` or `[abstract]`.
-    pub ignore_pragma_opaque_internal_only: bool,
-
-    /// Ignore the "opaque" pragma on all function specs when possible. The opaque can be ignored
-    /// as long as the function spec has no property marked as `[concrete]` or `[abstract]`.
-    pub ignore_pragma_opaque_when_possible: bool,
 
     /// Whether to compiler for testing. This will be reflected in the builtin constant
     /// `__COMPILE_FOR_TESTING__`.

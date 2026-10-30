@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 extern crate core;
 
@@ -22,11 +21,10 @@ pub use aptos_api_types::{
     self, IndexResponseBcs, MoveModuleBytecode, PendingTransaction, Transaction,
 };
 use aptos_api_types::{
-    deserialize_from_string,
     mime_types::{BCS, BCS_SIGNED_TRANSACTION, BCS_VIEW_FUNCTION, JSON},
-    AptosError, AptosErrorCode, BcsBlock, Block, GasEstimation, HexEncodedBytes, IndexResponse,
-    MoveModuleId, TransactionData, TransactionOnChainData, TransactionsBatchSubmissionResult,
-    UserTransaction, VersionedEvent, ViewFunction, ViewRequest,
+    AptosError, AptosErrorCode, BcsBlock, Block, GasEstimation, IndexResponse, MoveModuleId,
+    TransactionData, TransactionOnChainData, TransactionsBatchSubmissionResult, UserTransaction,
+    VersionedEvent, ViewFunction, ViewRequest,
 };
 use aptos_crypto::HashValue;
 use aptos_logger::{debug, info, sample, sample::SampleRate};
@@ -397,7 +395,9 @@ impl Client {
 
     // TODO: Remove this, just use `get_index`: https://github.com/aptos-labs/aptos-core/issues/5597.
     pub async fn get_ledger_information(&self) -> AptosResult<Response<State>> {
-        let response = self.get_index_bcs().await?.map(|r| State {
+        let response = self.get_index_bcs().await?;
+        let encryption_key = response.state().encryption_key.clone();
+        let response = response.map(|r| State {
             chain_id: r.chain_id,
             epoch: r.epoch.into(),
             version: r.ledger_version.into(),
@@ -406,6 +406,7 @@ impl Client {
             oldest_block_height: r.oldest_block_height.into(),
             block_height: r.block_height.into(),
             cursor: None,
+            encryption_key,
         });
         assert_eq!(response.inner().chain_id, response.state().chain_id);
         assert_eq!(response.inner().epoch, response.state().epoch);
@@ -1430,23 +1431,6 @@ impl Client {
         start: Option<u64>,
         limit: Option<u16>,
     ) -> Result<Response<Vec<VersionedNewBlockEvent>>> {
-        #[derive(Clone, Debug, Serialize, Deserialize)]
-        pub struct NewBlockEventResponse {
-            hash: String,
-            #[serde(deserialize_with = "deserialize_from_string")]
-            epoch: u64,
-            #[serde(deserialize_with = "deserialize_from_string")]
-            round: u64,
-            #[serde(deserialize_with = "deserialize_from_string")]
-            height: u64,
-            #[serde(deserialize_with = "deserialize_from_prefixed_hex_string")]
-            previous_block_votes_bitvec: HexEncodedBytes,
-            proposer: String,
-            failed_proposer_indices: Vec<String>,
-            #[serde(deserialize_with = "deserialize_from_string")]
-            time_microseconds: u64,
-        }
-
         let response = self
             .get_account_events_bcs(
                 CORE_CODE_ADDRESS,

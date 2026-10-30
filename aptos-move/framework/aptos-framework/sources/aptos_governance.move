@@ -14,7 +14,6 @@ module aptos_framework::aptos_governance {
     use std::option;
     use std::signer;
     use std::string::{Self, String, utf8};
-    use std::vector;
     use std::features;
 
     use aptos_std::math64::min;
@@ -30,12 +29,15 @@ module aptos_framework::aptos_governance {
     use aptos_framework::staking_config;
     use aptos_framework::system_addresses;
     use aptos_framework::aptos_coin::{Self, AptosCoin};
+    use aptos_framework::chunky_dkg_config;
     use aptos_framework::consensus_config;
-    use aptos_framework::permissioned_signer;
     use aptos_framework::randomness_config;
     use aptos_framework::reconfiguration_with_dkg;
     use aptos_framework::timestamp;
     use aptos_framework::voting;
+
+    #[test_only]
+    use std::vector;
 
     /// The specified stake pool does not have sufficient stake to create a proposal
     const EINSUFFICIENT_PROPOSER_STAKE: u64 = 1;
@@ -65,8 +67,8 @@ module aptos_framework::aptos_governance {
     const ENOT_PARTIAL_VOTING_PROPOSAL: u64 = 14;
     /// The proposal has expired.
     const EPROPOSAL_EXPIRED: u64 = 15;
-    /// Current permissioned signer cannot perform governance operations.
-    const ENO_GOVERNANCE_PERMISSION: u64 = 16;
+    /// The permissioned signer feature has been removed.
+    const EPERMISSIONED_SIGNER_REMOVED: u64 = 17;
 
     /// This matches the same enum const in voting. We have to duplicate it as Move doesn't have support for enums yet.
     const PROPOSAL_STATE_SUCCEEDED: u64 = 1;
@@ -171,19 +173,12 @@ module aptos_framework::aptos_governance {
         voting_duration_secs: u64,
     }
 
+    #[deprecated]
     struct GovernancePermission has copy, drop, store {}
 
-    /// Permissions
-    inline fun check_governance_permission(s: &signer) {
-        assert!(
-            permissioned_signer::check_permission_exists(s, GovernancePermission {}),
-            error::permission_denied(ENO_GOVERNANCE_PERMISSION),
-        );
-    }
-
-    /// Grant permission to perform governance operations on behalf of the master signer.
-    public fun grant_permission(master: &signer, permissioned_signer: &signer) {
-        permissioned_signer::authorize_unlimited(master, permissioned_signer, GovernancePermission {})
+    #[deprecated]
+    public fun grant_permission(_master: &signer, _permissioned_signer: &signer) {
+        abort error::unavailable(EPERMISSIONED_SIGNER_REMOVED)
     }
 
     /// Can be called during genesis or by the governance itself.
@@ -204,7 +199,7 @@ module aptos_framework::aptos_governance {
         };
 
         let signer_caps = &mut borrow_global_mut<GovernanceResponsbility>(@aptos_framework).signer_caps;
-        simple_map::add(signer_caps, signer_address, signer_cap);
+        signer_caps.add(signer_address, signer_cap);
     }
 
     /// Initializes the state for Aptos Governance. Can only be called during Genesis with a signer
@@ -245,7 +240,7 @@ module aptos_framework::aptos_governance {
         min_voting_threshold: u128,
         required_proposer_stake: u64,
         voting_duration_secs: u64,
-    ) acquires GovernanceConfig, GovernanceEvents {
+    ) acquires GovernanceConfig {
         system_addresses::assert_aptos_framework(aptos_framework);
 
         let governance_config = borrow_global_mut<GovernanceConfig>(@aptos_framework);
@@ -253,25 +248,13 @@ module aptos_framework::aptos_governance {
         governance_config.min_voting_threshold = min_voting_threshold;
         governance_config.required_proposer_stake = required_proposer_stake;
 
-        if (std::features::module_event_migration_enabled()) {
-            event::emit(
-                UpdateConfig {
-                    min_voting_threshold,
-                    required_proposer_stake,
-                    voting_duration_secs
-                },
-            )
-        } else {
-            let events = borrow_global_mut<GovernanceEvents>(@aptos_framework);
-            event::emit_event<UpdateConfigEvent>(
-                &mut events.update_config_events,
-                UpdateConfigEvent {
-                    min_voting_threshold,
-                    required_proposer_stake,
-                    voting_duration_secs
-                },
-            );
-        };
+        event::emit(
+            UpdateConfig {
+                min_voting_threshold,
+                required_proposer_stake,
+                voting_duration_secs
+            },
+        );
     }
 
     /// Initializes the state for Aptos Governance partial voting. Can only be called through Aptos governance
@@ -311,7 +294,7 @@ module aptos_framework::aptos_governance {
         // If a stake pool has already voted on a proposal before partial governance voting is enabled,
         // there is a record in VotingRecords.
         let voting_records = borrow_global<VotingRecords>(@aptos_framework);
-        table::contains(&voting_records.votes, record_key)
+        voting_records.votes.contains(record_key)
     }
 
     #[view]
@@ -327,10 +310,10 @@ module aptos_framework::aptos_governance {
             @aptos_framework,
             proposal_id
         );
-        let lockup_until = stake::get_lockup_secs(stake_pool);
         // The voter's stake needs to be locked up at least as long as the proposal's expiration.
         // Also no one can vote on a expired proposal.
-        if (proposal_expiration > lockup_until || timestamp::now_seconds() > proposal_expiration) {
+        if (!stake_pool_is_eligible_to_vote(stake_pool, proposal_expiration)
+            || is_proposal_expired(proposal_expiration)) {
             return 0
         };
 
@@ -355,13 +338,28 @@ module aptos_framework::aptos_governance {
         );
         // The voter's stake needs to be locked up at least as long as the proposal's expiration.
         assert!(
-            proposal_expiration <= stake::get_lockup_secs(stake_pool),
+            stake_pool_is_eligible_to_vote(stake_pool, proposal_expiration),
             error::invalid_argument(EINSUFFICIENT_STAKE_LOCKUP),
         );
         assert!(
-            timestamp::now_seconds() <= proposal_expiration,
+            !is_proposal_expired(proposal_expiration),
             error::invalid_argument(EPROPOSAL_EXPIRED),
         );
+    }
+
+    inline fun stake_pool_is_eligible_to_vote(
+        stake_pool: address, proposal_expiration: u64
+    ): bool {
+        // The voter's stake needs to be locked up at least as long as the proposal's expiration.
+        // Also no one can vote on a expired proposal.
+        // Note the boundary condition must be strictly less than to avoid the edge case where the
+        // proposal expiration is equal to the lockup until.
+        proposal_expiration < stake::get_lockup_secs(stake_pool)
+    }
+
+    inline fun is_proposal_expired(proposal_expiration: u64): bool {
+        // Expiration time is defined as the time since when the proposal is no longer eligible to be voted on.
+        timestamp::now_seconds() >= proposal_expiration
     }
 
     /// Create a single-step proposal with the backing `stake_pool`.
@@ -373,7 +371,7 @@ module aptos_framework::aptos_governance {
         execution_hash: vector<u8>,
         metadata_location: vector<u8>,
         metadata_hash: vector<u8>,
-    ) acquires GovernanceConfig, GovernanceEvents {
+    ) acquires GovernanceConfig {
         create_proposal_v2(proposer, stake_pool, execution_hash, metadata_location, metadata_hash, false);
     }
 
@@ -387,7 +385,7 @@ module aptos_framework::aptos_governance {
         metadata_location: vector<u8>,
         metadata_hash: vector<u8>,
         is_multi_step_proposal: bool,
-    ) acquires GovernanceConfig, GovernanceEvents {
+    ) acquires GovernanceConfig {
         create_proposal_v2_impl(
             proposer,
             stake_pool,
@@ -409,8 +407,7 @@ module aptos_framework::aptos_governance {
         metadata_location: vector<u8>,
         metadata_hash: vector<u8>,
         is_multi_step_proposal: bool,
-    ): u64 acquires GovernanceConfig, GovernanceEvents {
-        check_governance_permission(proposer);
+    ): u64 acquires GovernanceConfig {
         let proposer_address = signer::address_of(proposer);
         assert!(
             stake::get_delegated_voter(stake_pool) == proposer_address,
@@ -429,7 +426,7 @@ module aptos_framework::aptos_governance {
         let current_time = timestamp::now_seconds();
         let proposal_expiration = current_time + governance_config.voting_duration_secs;
         assert!(
-            stake::get_lockup_secs(stake_pool) >= proposal_expiration,
+            stake_pool_is_eligible_to_vote(stake_pool, proposal_expiration),
             error::invalid_argument(EINSUFFICIENT_STAKE_LOCKUP),
         );
 
@@ -442,8 +439,8 @@ module aptos_framework::aptos_governance {
         // supply during the voting period.
         let total_voting_token_supply = coin::supply<AptosCoin>();
         let early_resolution_vote_threshold = option::none<u128>();
-        if (option::is_some(&total_voting_token_supply)) {
-            let total_supply = *option::borrow(&total_voting_token_supply);
+        if (total_voting_token_supply.is_some()) {
+            let total_supply = *total_voting_token_supply.borrow();
             // 50% + 1 to avoid rounding errors.
             early_resolution_vote_threshold = option::some(total_supply / 2 + 1);
         };
@@ -460,29 +457,15 @@ module aptos_framework::aptos_governance {
             is_multi_step_proposal,
         );
 
-        if (std::features::module_event_migration_enabled()) {
-            event::emit(
-                CreateProposal {
-                    proposal_id,
-                    proposer: proposer_address,
-                    stake_pool,
-                    execution_hash,
-                    proposal_metadata,
-                },
-            );
-        } else {
-            let events = borrow_global_mut<GovernanceEvents>(@aptos_framework);
-            event::emit_event<CreateProposalEvent>(
-                &mut events.create_proposal_events,
-                CreateProposalEvent {
-                    proposal_id,
-                    proposer: proposer_address,
-                    stake_pool,
-                    execution_hash,
-                    proposal_metadata,
-                },
-            );
-        };
+        event::emit(
+            CreateProposal {
+                proposal_id,
+                proposer: proposer_address,
+                stake_pool,
+                execution_hash,
+                proposal_metadata,
+            },
+        );
         proposal_id
     }
 
@@ -492,8 +475,8 @@ module aptos_framework::aptos_governance {
         stake_pools: vector<address>,
         proposal_id: u64,
         should_pass: bool,
-    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2, GovernanceEvents {
-        vector::for_each(stake_pools, |stake_pool| {
+    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2 {
+        stake_pools.for_each(|stake_pool| {
             vote_internal(voter, stake_pool, proposal_id, MAX_U64, should_pass);
         });
     }
@@ -505,8 +488,8 @@ module aptos_framework::aptos_governance {
         proposal_id: u64,
         voting_power: u64,
         should_pass: bool,
-    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2, GovernanceEvents {
-        vector::for_each(stake_pools, |stake_pool| {
+    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2 {
+        stake_pools.for_each(|stake_pool| {
             vote_internal(voter, stake_pool, proposal_id, voting_power, should_pass);
         });
     }
@@ -517,7 +500,7 @@ module aptos_framework::aptos_governance {
         stake_pool: address,
         proposal_id: u64,
         should_pass: bool,
-    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2 {
         vote_internal(voter, stake_pool, proposal_id, MAX_U64, should_pass);
     }
 
@@ -528,7 +511,7 @@ module aptos_framework::aptos_governance {
         proposal_id: u64,
         voting_power: u64,
         should_pass: bool,
-    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2 {
         vote_internal(voter, stake_pool, proposal_id, voting_power, should_pass);
     }
 
@@ -542,8 +525,7 @@ module aptos_framework::aptos_governance {
         proposal_id: u64,
         voting_power: u64,
         should_pass: bool,
-    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2, GovernanceEvents {
-        permissioned_signer::assert_master_signer(voter);
+    ) acquires ApprovedExecutionHashes, VotingRecords, VotingRecordsV2 {
         let voter_address = signer::address_of(voter);
         assert!(stake::get_delegated_voter(stake_pool) == voter_address, error::invalid_argument(ENOT_DELEGATED_VOTER));
 
@@ -573,29 +555,15 @@ module aptos_framework::aptos_governance {
         // This calculation should never overflow because the used voting cannot exceed the total voting power of this stake pool.
         *used_voting_power += voting_power;
 
-        if (std::features::module_event_migration_enabled()) {
-            event::emit(
-                Vote {
-                    proposal_id,
-                    voter: voter_address,
-                    stake_pool,
-                    num_votes: voting_power,
-                    should_pass,
-                },
-            );
-        } else {
-            let events = &mut GovernanceEvents[@aptos_framework];
-            event::emit_event(
-                &mut events.vote_events,
-                VoteEvent {
-                    proposal_id,
-                    voter: voter_address,
-                    stake_pool,
-                    num_votes: voting_power,
-                    should_pass,
-                },
-            );
-        };
+        event::emit(
+            Vote {
+                proposal_id,
+                voter: voter_address,
+                stake_pool,
+                num_votes: voting_power,
+                should_pass,
+            },
+        );
 
         let proposal_state = voting::get_proposal_state<GovernanceProposal>(@aptos_framework, proposal_id);
         if (proposal_state == PROPOSAL_STATE_SUCCEEDED) {
@@ -621,11 +589,11 @@ module aptos_framework::aptos_governance {
 
         // If this is a multi-step proposal, the proposal id will already exist in the ApprovedExecutionHashes map.
         // We will update execution hash in ApprovedExecutionHashes to be the next_execution_hash.
-        if (simple_map::contains_key(&approved_hashes.hashes, &proposal_id)) {
-            let current_execution_hash = simple_map::borrow_mut(&mut approved_hashes.hashes, &proposal_id);
+        if (approved_hashes.hashes.contains_key(&proposal_id)) {
+            let current_execution_hash = approved_hashes.hashes.borrow_mut(&proposal_id);
             *current_execution_hash = execution_hash;
         } else {
-            simple_map::add(&mut approved_hashes.hashes, proposal_id, execution_hash);
+            approved_hashes.hashes.add(proposal_id, execution_hash);
         }
     }
 
@@ -649,7 +617,7 @@ module aptos_framework::aptos_governance {
         voting::resolve_proposal_v2<GovernanceProposal>(@aptos_framework, proposal_id, next_execution_hash);
         // If the current step is the last step of this multi-step proposal,
         // we will remove the execution hash from the ApprovedExecutionHashes map.
-        if (vector::length(&next_execution_hash) == 0) {
+        if (next_execution_hash.length() == 0) {
             remove_approved_hash(proposal_id);
         } else {
             // If the current step is not the last step of this proposal,
@@ -668,8 +636,8 @@ module aptos_framework::aptos_governance {
         );
 
         let approved_hashes = &mut borrow_global_mut<ApprovedExecutionHashes>(@aptos_framework).hashes;
-        if (simple_map::contains_key(approved_hashes, &proposal_id)) {
-            simple_map::remove(approved_hashes, &proposal_id);
+        if (approved_hashes.contains_key(&proposal_id)) {
+            approved_hashes.remove(&proposal_id);
         };
     }
 
@@ -685,7 +653,11 @@ module aptos_framework::aptos_governance {
     public entry fun reconfigure(aptos_framework: &signer) {
         system_addresses::assert_aptos_framework(aptos_framework);
         if (consensus_config::validator_txn_enabled() && randomness_config::enabled()) {
-            reconfiguration_with_dkg::try_start();
+            if (chunky_dkg_config::enabled()) {
+                reconfiguration_with_dkg::try_start_with_chunky_dkg();
+            } else {
+                reconfiguration_with_dkg::try_start();
+            }
         } else {
             reconfiguration_with_dkg::finish(aptos_framework);
         }
@@ -744,7 +716,7 @@ module aptos_framework::aptos_governance {
     /// Return a signer for making changes to 0x1 as part of on-chain governance proposal process.
     fun get_signer(signer_address: address): signer acquires GovernanceResponsbility {
         let governance_responsibility = borrow_global<GovernanceResponsbility>(@aptos_framework);
-        let signer_cap = simple_map::borrow(&governance_responsibility.signer_caps, &signer_address);
+        let signer_cap = governance_responsibility.signer_caps.borrow(&signer_address);
         create_signer_with_capability(signer_cap)
     }
 
@@ -752,12 +724,12 @@ module aptos_framework::aptos_governance {
         metadata_location: vector<u8>,
         metadata_hash: vector<u8>
     ): SimpleMap<String, vector<u8>> {
-        assert!(string::length(&utf8(metadata_location)) <= 256, error::invalid_argument(EMETADATA_LOCATION_TOO_LONG));
-        assert!(string::length(&utf8(metadata_hash)) <= 256, error::invalid_argument(EMETADATA_HASH_TOO_LONG));
+        assert!(utf8(metadata_location).length() <= 256, error::invalid_argument(EMETADATA_LOCATION_TOO_LONG));
+        assert!(utf8(metadata_hash).length() <= 256, error::invalid_argument(EMETADATA_HASH_TOO_LONG));
 
         let metadata = simple_map::create<String, vector<u8>>();
-        simple_map::add(&mut metadata, utf8(METADATA_LOCATION_KEY), metadata_location);
-        simple_map::add(&mut metadata, utf8(METADATA_HASH_KEY), metadata_hash);
+        metadata.add(utf8(METADATA_LOCATION_KEY), metadata_location);
+        metadata.add(utf8(METADATA_HASH_KEY), metadata_hash);
         metadata
     }
 
@@ -769,7 +741,7 @@ module aptos_framework::aptos_governance {
     public entry fun create_proposal_for_test(
         proposer: &signer,
         multi_step: bool,
-    ) acquires GovernanceConfig, GovernanceEvents {
+    ) acquires GovernanceConfig {
         let execution_hash = vector[1];
         if (multi_step) {
             create_proposal_v2(
@@ -800,7 +772,7 @@ module aptos_framework::aptos_governance {
     ): signer acquires ApprovedExecutionHashes, GovernanceResponsbility {
         if (multi_step) {
             let execution_hash = vector::empty<u8>();
-            vector::push_back(&mut execution_hash, 1);
+            execution_hash.push_back(1);
 
             if (finish_multi_step_execution) {
                 resolve_multi_step_proposal(proposal_id, signer_address, vector::empty<u8>())
@@ -826,7 +798,7 @@ module aptos_framework::aptos_governance {
         no_voter: signer,
         multi_step: bool,
         use_generic_resolve_function: bool,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_partial_voting(&aptos_framework, &proposer, &yes_voter, &no_voter);
 
         let execution_hash = vector[1];
@@ -854,14 +826,14 @@ module aptos_framework::aptos_governance {
         // Add approved script hash.
         add_approved_script_hash(0);
         let approved_hashes = borrow_global<ApprovedExecutionHashes>(@aptos_framework).hashes;
-        assert!(*simple_map::borrow(&approved_hashes, &0) == execution_hash, 0);
+        assert!(*approved_hashes.borrow(&0) == execution_hash, 0);
 
         // Resolve the proposal.
         let account = resolve_proposal_for_test(0, @aptos_framework, use_generic_resolve_function, true);
         assert!(signer::address_of(&account) == @aptos_framework, 1);
         assert!(voting::is_resolved<GovernanceProposal>(@aptos_framework, 0), 2);
         let approved_hashes = borrow_global<ApprovedExecutionHashes>(@aptos_framework).hashes;
-        assert!(!simple_map::contains_key(&approved_hashes, &0), 3);
+        assert!(!approved_hashes.contains_key(&0), 3);
     }
 
     #[test(aptos_framework = @aptos_framework, proposer = @0x123, yes_voter = @0x234, no_voter = @345)]
@@ -870,7 +842,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         yes_voter: signer,
         no_voter: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         test_voting_generic(aptos_framework, proposer, yes_voter, no_voter, false, false);
     }
 
@@ -880,7 +852,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         yes_voter: signer,
         no_voter: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         test_voting_generic(aptos_framework, proposer, yes_voter, no_voter, true, true);
     }
 
@@ -891,7 +863,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         yes_voter: signer,
         no_voter: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         test_voting_generic(aptos_framework, proposer, yes_voter, no_voter, true, false);
     }
 
@@ -901,7 +873,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         yes_voter: signer,
         no_voter: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         test_voting_generic(aptos_framework, proposer, yes_voter, no_voter, false, true);
     }
 
@@ -912,7 +884,7 @@ module aptos_framework::aptos_governance {
         yes_voter: signer,
         no_voter: signer,
         multi_step: bool,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_partial_voting(&aptos_framework, &proposer, &yes_voter, &no_voter);
 
         create_proposal_for_test(&proposer, multi_step);
@@ -927,10 +899,10 @@ module aptos_framework::aptos_governance {
         if (multi_step) {
             let execution_hash = vector::empty<u8>();
             let next_execution_hash = vector::empty<u8>();
-            vector::push_back(&mut execution_hash, 1);
+            execution_hash.push_back(1);
             voting::resolve_proposal_v2<GovernanceProposal>(@aptos_framework, 0, next_execution_hash);
             assert!(voting::is_resolved<GovernanceProposal>(@aptos_framework, 0), 0);
-            if (vector::length(&next_execution_hash) == 0) {
+            if (next_execution_hash.length() == 0) {
                 remove_approved_hash(0);
             } else {
                 add_approved_script_hash(0)
@@ -941,7 +913,7 @@ module aptos_framework::aptos_governance {
             remove_approved_hash(0);
         };
         let approved_hashes = borrow_global<ApprovedExecutionHashes>(@aptos_framework).hashes;
-        assert!(!simple_map::contains_key(&approved_hashes, &0), 1);
+        assert!(!approved_hashes.contains_key(&0), 1);
     }
 
     #[test(aptos_framework = @aptos_framework, proposer = @0x123, yes_voter = @0x234, no_voter = @345)]
@@ -950,7 +922,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         yes_voter: signer,
         no_voter: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         test_can_remove_approved_hash_if_executed_directly_via_voting_generic(
             aptos_framework,
             proposer,
@@ -966,7 +938,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         yes_voter: signer,
         no_voter: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         test_can_remove_approved_hash_if_executed_directly_via_voting_generic(
             aptos_framework,
             proposer,
@@ -983,7 +955,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_voting(&aptos_framework, &proposer, &voter_1, &voter_2);
 
         create_proposal(
@@ -1006,7 +978,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_partial_voting_with_initialized_stake(&aptos_framework, &proposer, &voter_1, &voter_2);
 
         create_proposal(
@@ -1031,7 +1003,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_partial_voting_with_initialized_stake(&aptos_framework, &proposer, &voter_1, &voter_2);
 
         create_proposal(
@@ -1053,7 +1025,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_voting(&aptos_framework, &proposer, &voter_1, &voter_2);
 
         create_proposal(
@@ -1076,7 +1048,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_partial_voting(&aptos_framework, &proposer, &voter_1, &voter_2);
         let execution_hash = vector[1];
         let proposer_addr = signer::address_of(&proposer);
@@ -1103,7 +1075,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_partial_voting(&aptos_framework, &proposer, &voter_1, &voter_2);
         let execution_hash = vector[1];
         let proposer_addr = signer::address_of(&proposer);
@@ -1128,7 +1100,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         features::change_feature_flags_for_testing(&aptos_framework, vector[features::get_coin_to_fungible_asset_migration_feature()], vector[]);
         setup_partial_voting(&aptos_framework, &proposer, &voter_1, &voter_2);
         let execution_hash = vector[1];
@@ -1146,7 +1118,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         features::change_feature_flags_for_testing(&aptos_framework, vector[features::get_coin_to_fungible_asset_migration_feature()], vector[]);
         setup_partial_voting(&aptos_framework, &proposer, &voter_1, &voter_2);
         let execution_hash = vector[1];
@@ -1164,7 +1136,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires ApprovedExecutionHashes, GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_partial_voting(&aptos_framework, &proposer, &voter_1, &voter_2);
         let execution_hash = vector[1];
         let proposer_addr = signer::address_of(&proposer);
@@ -1190,7 +1162,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         voter_1: signer,
         voter_2: signer,
-    ) acquires GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires GovernanceConfig, GovernanceResponsbility, VotingRecords, VotingRecordsV2 {
         setup_partial_voting_with_initialized_stake(&aptos_framework, &proposer, &voter_1, &voter_2);
         let proposer_addr = signer::address_of(&proposer);
         let voter_1_addr = signer::address_of(&voter_1);
@@ -1245,9 +1217,9 @@ module aptos_framework::aptos_governance {
 
         // Initialize the stake pools for proposer and voters.
         let active_validators = vector::empty<address>();
-        vector::push_back(&mut active_validators, signer::address_of(proposer));
-        vector::push_back(&mut active_validators, signer::address_of(yes_voter));
-        vector::push_back(&mut active_validators, signer::address_of(no_voter));
+        active_validators.push_back(signer::address_of(proposer));
+        active_validators.push_back(signer::address_of(yes_voter));
+        active_validators.push_back(signer::address_of(no_voter));
         let (_sk_1, pk_1, _pop_1) = stake::generate_identity();
         let (_sk_2, pk_2, _pop_2) = stake::generate_identity();
         let (_sk_3, pk_3, _pop_3) = stake::generate_identity();
@@ -1340,7 +1312,7 @@ module aptos_framework::aptos_governance {
     #[test(aptos_framework = @aptos_framework)]
     public entry fun test_update_governance_config(
         aptos_framework: signer,
-    ) acquires GovernanceConfig, GovernanceEvents {
+    ) acquires GovernanceConfig {
         account::create_account_for_test(signer::address_of(&aptos_framework));
         initialize(&aptos_framework, 1, 2, 3);
         update_governance_config(&aptos_framework, 10, 20, 30);
@@ -1354,7 +1326,7 @@ module aptos_framework::aptos_governance {
     #[test(account = @0x123)]
     #[expected_failure(abort_code = 0x50003, location = aptos_framework::system_addresses)]
     public entry fun test_update_governance_config_unauthorized_should_fail(
-        account: signer) acquires GovernanceConfig, GovernanceEvents {
+        account: signer) acquires GovernanceConfig {
         initialize(&account, 1, 2, 3);
         update_governance_config(&account, 10, 20, 30);
     }
@@ -1365,7 +1337,7 @@ module aptos_framework::aptos_governance {
         proposer: signer,
         yes_voter: signer,
         no_voter: signer,
-    ) acquires GovernanceResponsbility, GovernanceConfig, ApprovedExecutionHashes, VotingRecords, VotingRecordsV2, GovernanceEvents {
+    ) acquires GovernanceResponsbility, GovernanceConfig, ApprovedExecutionHashes, VotingRecords, VotingRecordsV2 {
         setup_partial_voting(&aptos_framework, &proposer, &yes_voter, &no_voter);
 
         create_proposal_for_test(&proposer, true);
@@ -1379,19 +1351,19 @@ module aptos_framework::aptos_governance {
         // Resolve the proposal.
         let execution_hash = vector::empty<u8>();
         let next_execution_hash = vector::empty<u8>();
-        vector::push_back(&mut execution_hash, 1);
-        vector::push_back(&mut next_execution_hash, 10);
+        execution_hash.push_back(1);
+        next_execution_hash.push_back(10);
 
         voting::resolve_proposal_v2<GovernanceProposal>(@aptos_framework, 0, next_execution_hash);
 
-        if (vector::length(&next_execution_hash) == 0) {
+        if (next_execution_hash.length() == 0) {
             remove_approved_hash(0);
         } else {
             add_approved_script_hash(0)
         };
 
         let approved_hashes = borrow_global<ApprovedExecutionHashes>(@aptos_framework).hashes;
-        assert!(*simple_map::borrow(&approved_hashes, &0) == vector[10u8, ], 1);
+        assert!(*approved_hashes.borrow(&0) == vector[10u8, ], 1);
     }
 
     #[test_only]

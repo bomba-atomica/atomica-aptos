@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::config::{
     config_optimizer::ConfigOptimizer, config_sanitizer::ConfigSanitizer,
@@ -104,6 +103,9 @@ pub struct MempoolConfig {
     pub enable_max_load_balancing_at_any_load: bool,
     /// Maximum number of orderless transactions allowed in the Mempool per user
     pub orderless_txn_capacity_per_user: usize,
+    /// Maximum rate of inbound transactions (TPS) per peer (note: client
+    /// submission is not affected). If None, no rate limit is applied.
+    pub inbound_rate_limit_tps_per_peer: Option<u64>,
 }
 
 impl Default for MempoolConfig {
@@ -169,7 +171,8 @@ impl Default for MempoolConfig {
                 },
             ],
             enable_max_load_balancing_at_any_load: false,
-            orderless_txn_capacity_per_user: 1000,
+            orderless_txn_capacity_per_user: 5000,
+            inbound_rate_limit_tps_per_peer: None,
         }
     }
 }

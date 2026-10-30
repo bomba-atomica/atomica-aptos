@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     counters::{
@@ -135,16 +134,40 @@ impl AptosDBBackend {
         }
 
         if result.len() < self.window_size && !hit_end {
-            error!(
-                "We are not fetching far enough in history, we filtered from {} to {}, but asked for {}. Target ({}, {}), received from {:?} to {:?}.",
-                events.len(),
-                result.len(),
-                self.window_size,
-                target_epoch,
-                target_round,
-                events.last().map_or((0, 0), |e| (e.event.epoch(), e.event.round())),
-                events.first().map_or((0, 0), |e| (e.event.epoch(), e.event.round())),
-            );
+            // We asked for `window_size` events at or below `target_round` but got fewer,
+            // even though older events exist in the DB (`!hit_end`). Two reasons:
+            // - The events DB only goes back so far (pruned / never backfilled). The real
+            //   problem -> error.
+            // - We are electing for a round well behind the storage tip, so most of the
+            //   fetched events are newer than `target_round` and get filtered out, leaving
+            //   too few. Happens while catching up (state sync / block retrieval advanced
+            //   storage past the round driver); expected and transient -> warn.
+            // `events.len() - result.len()` is how far the tip is ahead of `target_round`;
+            // beyond `seek_len` (the buffer this fetch is sized for) we are in the second case.
+            let behind_tip = events.len() - result.len();
+            if behind_tip > self.seek_len {
+                warn!(
+                    "Electing for a round behind the storage tip (likely catching up), so the history window is short: filtered from {} to {}, but asked for {}. Target ({}, {}), received from {:?} to {:?}.",
+                    events.len(),
+                    result.len(),
+                    self.window_size,
+                    target_epoch,
+                    target_round,
+                    events.last().map_or((0, 0), |e| (e.event.epoch(), e.event.round())),
+                    events.first().map_or((0, 0), |e| (e.event.epoch(), e.event.round())),
+                );
+            } else {
+                error!(
+                    "We are not fetching far enough in history, we filtered from {} to {}, but asked for {}. Target ({}, {}), received from {:?} to {:?}.",
+                    events.len(),
+                    result.len(),
+                    self.window_size,
+                    target_epoch,
+                    target_round,
+                    events.last().map_or((0, 0), |e| (e.event.epoch(), e.event.round())),
+                    events.first().map_or((0, 0), |e| (e.event.epoch(), e.event.round())),
+                );
+            }
         }
 
         if result.is_empty() {

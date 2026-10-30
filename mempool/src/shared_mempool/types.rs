@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Objects used by/related to shared mempool
 use crate::{
@@ -20,11 +19,13 @@ use aptos_crypto::HashValue;
 use aptos_infallible::{Mutex, RwLock};
 use aptos_network::application::interface::NetworkClientInterface;
 use aptos_storage_interface::DbReader;
+use aptos_token_bucket::TokenBucket;
 use aptos_types::{
     account_address::AccountAddress, mempool_status::MempoolStatus, transaction::SignedTransaction,
     vm_status::DiscardedVMStatus,
 };
 use aptos_vm_validator::vm_validator::TransactionValidation;
+use dashmap::DashMap;
 use futures::{
     channel::{mpsc, mpsc::UnboundedSender, oneshot},
     future::Future,
@@ -57,6 +58,8 @@ pub(crate) struct SharedMempool<NetworkClient, TransactionValidator> {
     pub broadcast_within_validator_network: Arc<RwLock<bool>>,
     pub use_case_history: Arc<Mutex<UseCaseHistory>>,
     pub transaction_filter_config: TransactionFilterConfig,
+    /// Per-peer inbound rate limiters. Only used when inbound rate limiting is configured.
+    pub inbound_peer_rate_limiters: Arc<DashMap<PeerNetworkId, TokenBucket>>,
 }
 
 impl<
@@ -90,6 +93,7 @@ impl<
             broadcast_within_validator_network: Arc::new(RwLock::new(true)),
             use_case_history: Arc::new(Mutex::new(use_case_history)),
             transaction_filter_config,
+            inbound_peer_rate_limiters: Arc::new(DashMap::new()),
         }
     }
 
@@ -286,24 +290,6 @@ impl PeerSyncState {
     }
 }
 
-/// Identifier for a broadcasted batch of txns.
-/// For BatchId(`start_id`, `end_id`), (`start_id`, `end_id`) is the range of timeline IDs read from
-/// the core mempool timeline index that produced the txns in this batch.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-struct BatchId(pub u64, pub u64);
-
-impl PartialOrd for BatchId {
-    fn partial_cmp(&self, other: &BatchId) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for BatchId {
-    fn cmp(&self, other: &BatchId) -> std::cmp::Ordering {
-        (other.0, other.1).cmp(&(self.0, self.1))
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct MultiBucketTimelineIndexIds {
     pub id_per_bucket: Vec<TimelineId>,
@@ -422,7 +408,8 @@ impl Ord for MempoolMessageId {
                 return ordering;
             }
         }
-        Ordering::Equal
+        // If all compared elements are equal, compare by length for total ordering
+        self.0.len().cmp(&other.0.len())
     }
 }
 
@@ -468,6 +455,19 @@ mod test {
         let left = MempoolMessageId(vec![(sender, 3), (1 | sender, 3), (2, 3)]);
         let right = MempoolMessageId(vec![(2 | sender, 5), (1 | sender, 4), (2, 3)]);
         assert!(right > left);
+
+        // Test different length vectors (total ordering requirement)
+        let left = MempoolMessageId(vec![(0, 0)]);
+        let right = MempoolMessageId(vec![(0, 0), (0, 0)]);
+        assert!(left < right);
+
+        let left = MempoolMessageId(vec![(1, 2), (3, 4)]);
+        let right = MempoolMessageId(vec![(3, 4)]);
+        assert!(left > right);
+
+        let left = MempoolMessageId(vec![]);
+        let right = MempoolMessageId(vec![(0, 0)]);
+        assert!(left < right);
     }
 }
 

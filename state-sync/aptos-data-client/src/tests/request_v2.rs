@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     client::AptosDataClient,
@@ -831,15 +831,15 @@ fn create_transaction() -> Transaction {
 
 /// Creates a test transaction info
 fn create_transaction_info() -> TransactionInfo {
-    TransactionInfo::new(
-        HashValue::random(),
-        HashValue::random(),
-        HashValue::random(),
-        Some(HashValue::random()),
-        0,
-        ExecutionStatus::Success,
-        Some(HashValue::random()),
-    )
+    TransactionInfo::builder_v0()
+        .transaction_hash(HashValue::random())
+        .state_change_hash(HashValue::random())
+        .event_root_hash(HashValue::random())
+        .state_checkpoint_hash(HashValue::random())
+        .gas_used(0)
+        .status(ExecutionStatus::Success)
+        .auxiliary_info_hash(HashValue::random())
+        .build()
 }
 
 /// Creates a transaction list with proof (with the specified number of transactions)

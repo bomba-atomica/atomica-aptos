@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     data_notification,
@@ -34,6 +33,8 @@ use aptos_data_client::{
 use aptos_id_generator::{IdGenerator, U64IdGenerator};
 use aptos_infallible::Mutex;
 use aptos_logger::prelude::*;
+#[cfg(test)]
+use aptos_storage_interface::StateKind;
 use aptos_time_service::{TimeService, TimeServiceTrait};
 use futures::{channel::mpsc, stream::FusedStream, SinkExt, Stream};
 use std::{
@@ -354,9 +355,10 @@ impl<T: AptosDataClientInterface + Send + Clone + 'static> DataStream<T> {
 
             // Exponentially increase the timeout based on the number of
             // previous failures (but bounded by the max timeout).
+            let timeout_multiplier = 2u64.saturating_pow(self.request_failure_count as u32);
             let request_timeout_ms = min(
                 max_response_timeout_ms,
-                response_timeout_ms * (u32::pow(2, self.request_failure_count as u32) as u64),
+                response_timeout_ms.saturating_mul(timeout_multiplier),
             );
 
             // Update the retry counter and log the request
@@ -732,7 +734,7 @@ impl<T: AptosDataClientInterface + Send + Clone + 'static> DataStream<T> {
         data_client_request: &DataClientRequest,
     ) -> Result<(), Error> {
         // Increment the number of client failures for this request
-        self.request_failure_count += 1;
+        self.request_failure_count = self.request_failure_count.saturating_add(1);
 
         // Resend the client request
         let pending_client_response = self.send_client_request(true, data_client_request.clone());
@@ -880,12 +882,12 @@ impl<T: AptosDataClientInterface + Send + Clone + 'static> DataStream<T> {
     /// Returns the number of pending requests in the sent data requests queue
     /// that have already completed (i.e., are no longer in-flight).
     fn get_num_complete_pending_requests(&mut self) -> Result<u64, Error> {
-        let mut num_complete_pending_requests = 0;
+        let mut num_complete_pending_requests: u64 = 0;
         for sent_data_request in self.get_sent_data_requests()? {
             if let Some(client_response) = sent_data_request.lock().client_response.as_ref() {
                 if client_response.is_ok() {
                     // Only count successful responses as complete. Failures will be retried
-                    num_complete_pending_requests += 1;
+                    num_complete_pending_requests = num_complete_pending_requests.saturating_add(1);
                 }
             }
         }
@@ -1133,6 +1135,7 @@ fn create_missing_state_values_request(
                         version: request.version,
                         start_index,
                         end_index: request.end_index,
+                        state_kind: request.state_kind,
                     },
                 )))
             } else {
@@ -1512,15 +1515,16 @@ async fn get_states_values_with_proof<T: AptosDataClientInterface + Send + Clone
     request: StateValuesWithProofRequest,
     request_timeout_ms: u64,
 ) -> Result<Response<ResponsePayload>, aptos_data_client::error::Error> {
-    let client_response = aptos_data_client.get_state_values_with_proof(
-        request.version,
-        request.start_index,
-        request.end_index,
-        request_timeout_ms,
-    );
-    client_response
-        .await
-        .map(|response| response.map(ResponsePayload::from))
+    let client_response = aptos_data_client
+        .get_state_values_with_proof(
+            request.version,
+            request.start_index,
+            request.end_index,
+            request_timeout_ms,
+            request.state_kind,
+        )
+        .await?;
+    Ok(client_response.map(ResponsePayload::StateValuesWithProof))
 }
 
 async fn get_epoch_ending_ledger_infos<T: AptosDataClientInterface + Send + Clone + 'static>(
@@ -1593,11 +1597,10 @@ async fn get_number_of_states<T: AptosDataClientInterface + Send + Clone + 'stat
     request: NumberOfStatesRequest,
     request_timeout_ms: u64,
 ) -> Result<Response<ResponsePayload>, aptos_data_client::error::Error> {
-    let client_response =
-        aptos_data_client.get_number_of_states(request.version, request_timeout_ms);
-    client_response
-        .await
-        .map(|response| response.map(ResponsePayload::from))
+    let client_response = aptos_data_client
+        .get_number_of_states(request.version, request_timeout_ms, request.state_kind)
+        .await?;
+    Ok(client_response.map(ResponsePayload::NumberOfStates))
 }
 
 async fn get_transaction_outputs_with_proof<
@@ -1731,8 +1734,10 @@ mod test {
     #[tokio::test]
     async fn completed_request_notifies_streaming_service() {
         // Create a data client request
-        let data_client_request =
-            DataClientRequest::NumberOfStates(NumberOfStatesRequest { version: 0 });
+        let data_client_request = DataClientRequest::NumberOfStates(NumberOfStatesRequest {
+            version: 0,
+            state_kind: StateKind::MainState,
+        });
 
         // Create a mock data client
         let data_client_config = AptosDataClientConfig::default();

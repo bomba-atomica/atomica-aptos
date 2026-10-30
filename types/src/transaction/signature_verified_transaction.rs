@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     contract_event::ContractEvent,
@@ -10,10 +10,10 @@ use crate::{
     },
     write_set::WriteOp,
 };
-use aptos_crypto::{hash::CryptoHash, HashValue};
+use aptos_crypto::HashValue;
 use move_core_types::{account_address::AccountAddress, language_storage::StructTag};
 use serde::{Deserialize, Serialize};
-use std::fmt::Debug;
+use std::{collections::BTreeSet, fmt::Debug};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum SignatureVerifiedTransaction {
@@ -74,8 +74,8 @@ impl SignatureVerifiedTransaction {
 
     pub fn hash(&self) -> HashValue {
         match self {
-            SignatureVerifiedTransaction::Valid(txn) => txn.hash(),
-            SignatureVerifiedTransaction::Invalid(txn) => txn.hash(),
+            SignatureVerifiedTransaction::Valid(txn) => txn.committed_hash(),
+            SignatureVerifiedTransaction::Invalid(txn) => txn.committed_hash(),
         }
     }
 
@@ -123,6 +123,16 @@ impl BlockExecutableTransaction for SignatureVerifiedTransaction {
         fee_distribution: FeeDistribution,
     ) -> Self {
         Transaction::block_epilogue_v1(block_id, block_end_info, fee_distribution).into()
+    }
+
+    fn block_epilogue_v2(
+        block_id: HashValue,
+        block_end_info: BlockEndInfo,
+        fee_distribution: FeeDistribution,
+        to_make_hot: BTreeSet<Self::Key>,
+    ) -> Self {
+        Transaction::block_epilogue_v2(block_id, block_end_info, fee_distribution, to_make_hot)
+            .into()
     }
 }
 

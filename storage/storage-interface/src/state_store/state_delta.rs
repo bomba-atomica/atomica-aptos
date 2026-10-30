@@ -1,13 +1,11 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::state_store::state::State;
+use aptos_crypto::HashValue;
 use aptos_experimental_layered_map::LayeredMap;
 use aptos_types::{
-    state_store::{
-        hot_state::HOT_STATE_MAX_ITEMS_PER_SHARD, state_key::StateKey, state_slot::StateSlot,
-        NUM_STATE_SHARDS,
-    },
+    state_store::{state_key::StateKey, state_slot::StateSlot, NUM_STATE_SHARDS},
     transaction::Version,
 };
 use std::sync::Arc;
@@ -23,7 +21,7 @@ use std::sync::Arc;
 pub struct StateDelta {
     pub base: State,
     pub current: State,
-    pub shards: Arc<[LayeredMap<StateKey, StateSlot>; NUM_STATE_SHARDS]>,
+    pub shards: Arc<[LayeredMap<HashValue, StateSlot>; NUM_STATE_SHARDS]>,
 }
 
 impl StateDelta {
@@ -52,28 +50,14 @@ impl StateDelta {
     /// Get the state update for a given state key.
     /// `None` indicates the key is not updated in the delta.
     pub fn get_state_slot(&self, state_key: &StateKey) -> Option<StateSlot> {
-        self.shards[state_key.get_shard_id()].get(state_key)
+        self.shards[state_key.get_shard_id()].get(state_key.crypto_hash_ref())
     }
 
-    pub(crate) fn num_free_hot_slots(&self) -> [usize; NUM_STATE_SHARDS] {
-        std::array::from_fn(|shard_id| {
-            let num_items = self.current.num_hot_items(shard_id);
-            assert!(
-                num_items <= HOT_STATE_MAX_ITEMS_PER_SHARD,
-                "Number of hot state items {} exceeded max size {} in shard {}.",
-                num_items,
-                HOT_STATE_MAX_ITEMS_PER_SHARD,
-                shard_id,
-            );
-            HOT_STATE_MAX_ITEMS_PER_SHARD - num_items
-        })
-    }
-
-    pub fn latest_hot_key(&self, shard_id: usize) -> Option<StateKey> {
+    pub fn latest_hot_key(&self, shard_id: usize) -> Option<HashValue> {
         self.current.latest_hot_key(shard_id)
     }
 
-    pub fn oldest_hot_key(&self, shard_id: usize) -> Option<StateKey> {
+    pub fn oldest_hot_key(&self, shard_id: usize) -> Option<HashValue> {
         self.current.oldest_hot_key(shard_id)
     }
 }

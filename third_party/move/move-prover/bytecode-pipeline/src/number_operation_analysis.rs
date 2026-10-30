@@ -1,20 +1,57 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-//! Analysis on partitioning temp variables, struct fields and function parameters according to involved operations (arithmetic or bitwise)
-//
-// The result of this analysis will be used when generating the boogie code
+//! # Number Operation Dataflow Analysis
+//!
+//! This module implements a dataflow analysis that propagates NumOperation classifications
+//! throughout the program to determine whether each variable, field, and expression should
+//! use mathematical integers or bitvectors in the generated Boogie code.
+//!
+//! ## Analysis Strategy
+//!
+//! 1. **Initialization**: Seed classifications from `pragma bv` annotations (see number_operation.rs)
+//! 2. **Propagation**: Run dataflow analysis to propagate operations through:
+//!    - Assignment statements
+//!    - Arithmetic/bitwise operations
+//!    - Function calls (bidirectional: actual ↔ formal parameters)
+//!    - Struct pack/unpack operations
+//!    - Spec expressions
+//! 3. **Fixed Point**: Iterate until no more changes occur
+//! 4. **Conflict Detection**: Report errors when values are used in both arithmetic and bitwise contexts
+//!
+//! ## Key Principles
+//!
+//! - **Bitwise operations** (&, |, ^) force the *destination* to Bitwise classification; sources
+//!   are not forced directly — they acquire Bitwise through fixed-point iteration when produced by
+//!   bitwise ops themselves or annotated via `pragma bv`
+//! - **Arithmetic and shift operations** (+, -, *, /, %, <<, >>) propagate the existing
+//!   classification without forcing Bitwise; in the generated code they share the same match arm
+//! - **Function calls** unify actual and formal parameter types
+//! - **Struct operations** ensure fields have consistent types across all uses
+//!
+//! ## Example Propagation
+//!
+//! ```move
+//! fun example(x: u8) {  // x starts as Bottom
+//!     let y = x & 0xFF;  // Forces x and y to Bitwise
+//!     let z = y + 1;     // z becomes Bitwise (propagated from y)
+//!     // x, y, z all end up as Bitwise
+//! }
+//! ```
 
 use crate::number_operation::{
-    GlobalNumberOperationState, NumOperation,
+    BvInternalBoundaryProps, GlobalNumberOperationState, NumOperation,
     NumOperation::{Arithmetic, Bitwise, Bottom},
+    BV_INTERNAL_SPEC_BITWISE_MSG,
 };
 use itertools::Either;
 use move_binary_format::file_format::CodeOffset;
 use move_model::{
     ast::{Exp, ExpData, Operation as ASTOperation, TempIndex},
-    model::{FieldId, FunId, GlobalEnv, ModuleId, Parameter, StructId},
+    model::{FieldId, FunId, FunctionEnv, GlobalEnv, ModuleId, Parameter, StructId},
+    pragmas::BV_INTERNAL_PRAGMA,
     ty::{PrimitiveType, Type},
 };
 use move_stackless_bytecode::{
@@ -27,13 +64,21 @@ use move_stackless_bytecode::{
     stackless_bytecode::{AttrId, Bytecode, Operation},
     stackless_control_flow_graph::StacklessControlFlowGraph,
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    str,
-};
+use std::{collections::BTreeMap, str};
 
+/// Error message shown when a value is used in conflicting contexts (both arithmetic and bitwise).
 static CONFLICT_ERROR_MSG: &str = "cannot appear in both arithmetic and bitwise operation, please refer to https://aptos.dev/en/build/smart-contracts/prover/spec-lang#bitwise-operators for more information";
 
+/// A `bv_internal` contract depending on bitvector-classified entities.
+static BV_INTERNAL_SPEC_LEAK_MSG: &str = "the specification of a `bv_internal` function cannot \
+     depend on bitvector-classified spec functions or struct fields";
+
+/// Bitwise values escaping a `bv_internal` function through a struct field.
+static BV_INTERNAL_FIELD_MSG: &str = "inside a `bv_internal` function, bitwise-classified values \
+     cannot flow through struct fields; exchange them as plain parameters and return values";
+
+/// Main processor that orchestrates the number operation analysis.
+/// This runs as part of the bytecode pipeline and iterates until reaching a fixed point.
 pub struct NumberOperationProcessor {}
 
 impl NumberOperationProcessor {
@@ -53,7 +98,19 @@ impl NumberOperationProcessor {
         env.set_extension(global_state);
     }
 
-    /// Entry point of the analysis
+    /// Entry point of the analysis. Iterates over all functions in reverse topological order
+    /// (callees before callers) until reaching a fixed point where no more types change.
+    ///
+    /// `sort_in_reverse_topological_order` returns two kinds of items:
+    /// - `Either::Left(fid)` — a single function with no cycles
+    /// - `Either::Right(scc)` — a strongly connected component (mutual recursion)
+    ///
+    /// For non-DAG call graphs (i.e., when SCCs are present), all functions in the SCC are
+    /// analyzed together in each outer loop iteration. Because `NumOperation` is a finite
+    /// lattice that only increases (Bottom → Arithmetic/Bitwise), each variable's
+    /// classification can change at most twice, so the outer fixed-point loop is guaranteed
+    /// to terminate. Changes within one SCC member propagate to the others in the next
+    /// outer iteration.
     fn analyze<'a>(&self, env: &'a GlobalEnv, targets: &'a FunctionTargetsHolder) {
         self.create_initial_exp_oper_state(env);
         let fun_env_vec = FunctionTargetPipeline::sort_in_reverse_topological_order(env, targets);
@@ -67,7 +124,7 @@ impl NumberOperationProcessor {
                 match item {
                     Either::Left(fid) => {
                         let func_env = env.get_function(*fid);
-                        if func_env.is_inline() {
+                        if func_env.is_not_prover_target() {
                             continue;
                         }
                         for (_, target) in targets.get_targets(&func_env) {
@@ -80,7 +137,7 @@ impl NumberOperationProcessor {
                     Either::Right(scc) => {
                         for fid in scc {
                             let func_env = env.get_function(*fid);
-                            if func_env.is_inline() {
+                            if func_env.is_not_prover_target() {
                                 continue;
                             }
                             for (_, target) in targets.get_targets(&func_env) {
@@ -132,13 +189,17 @@ impl FunctionTargetProcessor for NumberOperationProcessor {
     }
 }
 
+/// Per-function analysis state for the dataflow analysis.
 struct NumberOperationAnalysis<'a> {
     func_target: FunctionTarget<'a>,
 }
 
+/// Local analysis state tracking whether changes occurred during this pass.
+/// Used by the dataflow framework to determine when a fixed point is reached.
 #[derive(Debug, Clone, Eq, PartialEq, PartialOrd)]
 struct NumberOperationState {
-    // Flag to mark whether the global state has been changed in one pass
+    /// Flag indicating whether the global state changed during this pass.
+    /// If true, another iteration is needed.
     pub changed: bool,
 }
 
@@ -149,7 +210,9 @@ impl NumberOperationState {
     }
 }
 
-fn vector_table_funs_name_propogate_to_dest(callee_name: &str) -> bool {
+/// Check if a vector/table function propagates element type to its destination (return value).
+/// These functions return elements from the collection, so the return type should match the element type.
+fn vector_table_funs_name_propagate_to_dest(callee_name: &str) -> bool {
     callee_name.contains("borrow")
         || callee_name.contains("borrow_mut")
         || callee_name.contains("pop_back")
@@ -159,7 +222,9 @@ fn vector_table_funs_name_propogate_to_dest(callee_name: &str) -> bool {
         || callee_name.contains("spec_get")
 }
 
-fn vector_funs_name_propogate_to_srcs(callee_name: &str) -> bool {
+/// Check if a vector function propagates element type from source arguments.
+/// These functions add elements to the vector, so the element type should match the argument type.
+fn vector_funs_name_propagate_to_srcs(callee_name: &str) -> bool {
     callee_name == "contains"
         || callee_name == "index_of"
         || callee_name == "append"
@@ -167,15 +232,247 @@ fn vector_funs_name_propogate_to_srcs(callee_name: &str) -> bool {
         || callee_name == "insert"
 }
 
-fn table_funs_name_propogate_to_srcs(callee_name: &str) -> bool {
+/// Check if a table function propagates value type from source arguments.
+/// These functions insert values into the table, so the value type should match the argument type.
+fn table_funs_name_propagate_to_srcs(callee_name: &str) -> bool {
     callee_name == "add"
         || callee_name == "borrow_mut_with_default"
         || callee_name == "borrow_with_default"
         || callee_name == "upsert"
 }
 
+/// Whether the function declares its bitwise representation internal via `pragma bv_internal`.
+fn is_bv_internal(func_env: &FunctionEnv) -> bool {
+    func_env.is_pragma_true(BV_INTERNAL_PRAGMA, || false)
+}
+
 impl NumberOperationAnalysis<'_> {
-    /// Analyze the expression in the spec
+    /// Helper to get current function's module and function IDs
+    fn func_ids(&self) -> (ModuleId, FunId) {
+        (
+            self.func_target.func_env.module_env.get_id(),
+            self.func_target.func_env.get_id(),
+        )
+    }
+
+    /// Helper to check if this is a baseline variant
+    fn is_baseline(&self) -> bool {
+        self.func_target.data.variant == FunctionVariant::Baseline
+    }
+
+    /// Whether the current function declares `pragma bv_internal`.
+    fn is_cur_bv_internal(&self) -> bool {
+        is_bv_internal(self.func_target.func_env)
+    }
+
+    /// Helper to get the operation for a temp index
+    fn get_temp_oper(
+        &self,
+        idx: TempIndex,
+        global_state: &GlobalNumberOperationState,
+    ) -> NumOperation {
+        let (mid, fid) = self.func_ids();
+        *global_state
+            .get_temp_index_oper(mid, fid, idx, self.is_baseline())
+            .unwrap_or(&Bottom)
+    }
+
+    /// Helper to update temp index operation and track if it changed
+    fn update_temp_oper(
+        &self,
+        idx: TempIndex,
+        oper: NumOperation,
+        global_state: &mut GlobalNumberOperationState,
+        state: &mut NumberOperationState,
+    ) {
+        let (mid, fid) = self.func_ids();
+        let current_oper = self.get_temp_oper(idx, global_state);
+        if current_oper != oper {
+            state.changed = true;
+            *global_state
+                .get_mut_temp_index_oper(mid, fid, idx, self.is_baseline())
+                .unwrap() = oper;
+        }
+    }
+
+    /// Helper to merge and update two temp indices to have the same operation
+    fn merge_temp_opers(
+        &self,
+        idx1: TempIndex,
+        idx2: TempIndex,
+        global_state: &mut GlobalNumberOperationState,
+        state: &mut NumberOperationState,
+    ) {
+        let oper1 = self.get_temp_oper(idx1, global_state);
+        let oper2 = self.get_temp_oper(idx2, global_state);
+        let merged = oper1.merge(&oper2);
+
+        if merged != oper1 {
+            self.update_temp_oper(idx1, merged, global_state, state);
+        }
+        if merged != oper2 {
+            self.update_temp_oper(idx2, merged, global_state, state);
+        }
+    }
+
+    /// Handle vector/table function calls in spec expressions.
+    /// Propagates NumOperation between collection instances and their elements.
+    ///
+    /// # Parameters
+    /// - `callee_name`: Name of the vector/table function being called
+    /// - `args`: Arguments to the function call
+    /// - `result_node_id`: Node ID of the function call result
+    /// - `global_state`: Global state to update
+    /// - `state`: Local state tracking changes
+    /// - `allow_merge`: Whether to allow merging operations
+    fn handle_vector_table_spec_call(
+        &self,
+        callee_name: &str,
+        args: &[Exp],
+        result_node_id: move_model::model::NodeId,
+        global_state: &mut GlobalNumberOperationState,
+        state: &mut NumberOperationState,
+        allow_merge: bool,
+    ) {
+        if args.is_empty() {
+            return;
+        }
+
+        let (cur_mid, cur_fid) = self.func_ids();
+        let baseline_flag = self.is_baseline();
+
+        // Helper to update a temporary variable from an expression
+        let update_temporary = |arg: &Exp,
+                                oper: &NumOperation,
+                                global_state: &mut GlobalNumberOperationState,
+                                state: &mut NumberOperationState| {
+            if let ExpData::Temporary(_, idx) = arg.as_ref() {
+                let cur_oper = global_state
+                    .get_temp_index_oper(cur_mid, cur_fid, *idx, baseline_flag)
+                    .unwrap_or(&Bottom);
+                if *cur_oper != *oper {
+                    state.changed = true;
+                    *global_state
+                        .get_mut_temp_index_oper(cur_mid, cur_fid, *idx, baseline_flag)
+                        .unwrap() = *oper;
+                }
+            }
+        };
+
+        // Get the operation of the first argument (the collection instance)
+        let oper_first = global_state.get_node_num_oper(args[0].node_id());
+
+        // Functions that return elements from the collection propagate the collection's element type to the result
+        if vector_table_funs_name_propagate_to_dest(callee_name) {
+            global_state.update_node_oper(result_node_id, oper_first, true);
+        } else {
+            global_state.update_node_oper(result_node_id, Bottom, allow_merge);
+        }
+
+        // Special handling for borrow_mut_with_default which provides a default value
+        // The default value (3rd argument) must match the collection's element type
+        if callee_name.contains("borrow_mut_with_default") && args.len() >= 3 {
+            update_temporary(&args[2], &oper_first, global_state, state);
+        }
+    }
+
+    /// Handle vector/table function calls in bytecode.
+    /// Propagates NumOperation between collection instances and their elements,
+    /// with bidirectional propagation when Bitwise is involved.
+    ///
+    /// # Parameters
+    /// - `module_env`: Module environment of the callee
+    /// - `callee_name`: Name of the vector/table function being called
+    /// - `srcs`: Source temp indices (arguments)
+    /// - `dests`: Destination temp indices (return values)
+    /// - `global_state`: Global state to update
+    /// - `state`: Local state tracking changes
+    fn handle_vector_table_bytecode_call(
+        &self,
+        module_env: &move_model::model::ModuleEnv,
+        callee_name: &str,
+        srcs: &[TempIndex],
+        dests: &[TempIndex],
+        global_state: &mut GlobalNumberOperationState,
+        state: &mut NumberOperationState,
+    ) {
+        if srcs.is_empty() {
+            return;
+        }
+
+        let (cur_mid, cur_fid) = self.func_ids();
+        let baseline_flag = self.is_baseline();
+
+        // Helper closure to update a temp index to Bitwise if it's not already
+        let check_and_update_bitwise =
+            |idx: &TempIndex,
+             global_state: &mut GlobalNumberOperationState,
+             state: &mut NumberOperationState| {
+                let cur_oper = global_state
+                    .get_temp_index_oper(cur_mid, cur_fid, *idx, baseline_flag)
+                    .unwrap();
+
+                if *cur_oper != Bitwise {
+                    state.changed = true;
+                    *global_state
+                        .get_mut_temp_index_oper(cur_mid, cur_fid, *idx, baseline_flag)
+                        .unwrap() = Bitwise;
+                }
+            };
+
+        // Get the operation of the first argument (the collection instance)
+        let first_oper = *global_state
+            .get_temp_index_oper(cur_mid, cur_fid, srcs[0], baseline_flag)
+            .unwrap();
+
+        // If the function returns elements and the collection has Bitwise elements,
+        // propagate Bitwise to all return values
+        if vector_table_funs_name_propagate_to_dest(callee_name) && first_oper == Bitwise {
+            for dest in dests.iter() {
+                check_and_update_bitwise(dest, global_state, state);
+            }
+        }
+
+        // Determine which source argument contains the element being added to the collection
+        let mut second_oper = first_oper;
+        let mut src_idx = 0;
+
+        if module_env.is_std_vector() && vector_funs_name_propagate_to_srcs(callee_name) {
+            // For vector functions like push_back, the element is the 2nd argument (index 1)
+            assert!(srcs.len() > 1);
+            second_oper = *global_state
+                .get_temp_index_oper(cur_mid, cur_fid, srcs[1], baseline_flag)
+                .unwrap();
+            src_idx = 1;
+        } else if table_funs_name_propagate_to_srcs(callee_name) {
+            // For table functions like add, the value is the 3rd argument (index 2)
+            assert!(srcs.len() > 2);
+            second_oper = *global_state
+                .get_temp_index_oper(cur_mid, cur_fid, srcs[2], baseline_flag)
+                .unwrap();
+            src_idx = 2;
+        }
+
+        // Bidirectional propagation: if either the collection or the element is Bitwise,
+        // both must be Bitwise for consistency
+        if first_oper == Bitwise || second_oper == Bitwise {
+            check_and_update_bitwise(&srcs[0], global_state, state);
+            check_and_update_bitwise(&srcs[src_idx], global_state, state);
+        }
+    }
+
+    /// Analyze and propagate NumOperation through a spec expression.
+    /// This recursively visits all sub-expressions and:
+    /// - Propagates operations through operators (arithmetic, bitwise, comparison)
+    /// - Handles special operations (Cast, Index, Select, Pack, SpecFunction calls)
+    /// - Detects conflicts between arithmetic and bitwise usage
+    /// - Updates the global state with inferred types
+    ///
+    /// # Parameters
+    /// - `attr_id`: Source location for error reporting
+    /// - `e`: The expression to analyze
+    /// - `global_state`: Global state to update with inferred operations
+    /// - `state`: Local state tracking if changes occurred
     fn handle_exp(
         &self,
         attr_id: AttrId,
@@ -183,7 +480,7 @@ impl NumberOperationAnalysis<'_> {
         global_state: &mut GlobalNumberOperationState,
         state: &mut NumberOperationState,
     ) {
-        // TODO(tengzhang): add logic to support converting int to bv in the spec
+        // Currently we don't support automatic int-to-bv conversion in specs
         let allow_merge = false;
         let opers_for_propagation = |oper: &move_model::ast::Operation| {
             use move_model::ast::Operation::*;
@@ -213,10 +510,21 @@ impl NumberOperationAnalysis<'_> {
         let baseline_flag = self.func_target.data.variant == FunctionVariant::Baseline;
         let cur_mid = self.func_target.func_env.module_env.get_id();
         let cur_fid = self.func_target.func_env.get_id();
+        // Boundary view: a `bv_internal` contract stays in integer world; the backend
+        // reconciles with `$bv2int` at operand positions. Keyed per Prop, so props about
+        // body locals keep the body's classification.
+        let severed = self
+            .func_target
+            .global_env()
+            .get_extension::<BvInternalBoundaryProps>()
+            .is_some_and(|ext| ext.contains(cur_mid, cur_fid, baseline_flag, attr_id));
         let update_temporary = |arg: &Exp,
                                 oper: &NumOperation,
                                 global_state: &mut GlobalNumberOperationState,
                                 state: &mut NumberOperationState| {
+            if severed {
+                return;
+            }
             if let ExpData::Temporary(_, idx) = arg.as_ref() {
                 let cur_oper = global_state
                     .get_temp_index_oper(cur_mid, cur_fid, *idx, baseline_flag)
@@ -232,6 +540,10 @@ impl NumberOperationAnalysis<'_> {
         let visitor = &mut |exp: &ExpData| {
             match exp {
                 ExpData::Temporary(id, idx) => {
+                    if severed {
+                        // The temporary still renders as a bitvector; only the node is int.
+                        return true;
+                    }
                     let baseline_flag = self.func_target.data.variant == FunctionVariant::Baseline;
                     let oper = global_state
                         .get_temp_index_oper(cur_mid, cur_fid, *idx, baseline_flag)
@@ -298,36 +610,80 @@ impl NumberOperationAnalysis<'_> {
                         },
                         // Update node for return value
                         move_model::ast::Operation::Result(i) => {
-                            let oper = global_state
-                                .get_ret_map()
-                                .get(&(cur_mid, cur_fid))
-                                .unwrap()
-                                .get(i)
-                                .unwrap_or(&Bottom);
-                            global_state.update_node_oper(*id, *oper, true);
+                            if !severed {
+                                let oper = global_state
+                                    .get_ret_map()
+                                    .get(&(cur_mid, cur_fid))
+                                    .unwrap()
+                                    .get(i)
+                                    .unwrap_or(&Bottom);
+                                global_state.update_node_oper(*id, *oper, true);
+                            }
                         },
                         // Update node for field operation
                         move_model::ast::Operation::Select(mid, sid, field_id)
                         | move_model::ast::Operation::UpdateField(mid, sid, field_id) => {
                             let field_oper =
-                                global_state.get_num_operation_field(mid, sid, field_id);
-                            global_state.update_node_oper(*id, *field_oper, true);
+                                *global_state.get_num_operation_field(mid, sid, field_id);
+                            if severed && field_oper == Bitwise {
+                                self.func_target.global_env().error(
+                                    &self.func_target.get_bytecode_loc(attr_id),
+                                    BV_INTERNAL_SPEC_LEAK_MSG,
+                                );
+                            } else {
+                                global_state.update_node_oper(*id, field_oper, true);
+                            }
                         },
                         move_model::ast::Operation::SelectVariants(mid, sid, field_ids) => {
                             for field_id in field_ids {
                                 let field_oper =
-                                    global_state.get_num_operation_field(mid, sid, field_id);
-                                global_state.update_node_oper(*id, *field_oper, true);
+                                    *global_state.get_num_operation_field(mid, sid, field_id);
+                                if severed && field_oper == Bitwise {
+                                    self.func_target.global_env().error(
+                                        &self.func_target.get_bytecode_loc(attr_id),
+                                        BV_INTERNAL_SPEC_LEAK_MSG,
+                                    );
+                                } else {
+                                    global_state.update_node_oper(*id, field_oper, true);
+                                }
                             }
                         },
                         move_model::ast::Operation::Cast => {
                             // Obtained the updated num_oper of the expression
                             let num_oper = global_state.get_node_num_oper(args[0].node_id());
+                            // Casts to a signed integer or `Num` cross a bv→int boundary:
+                            // signed types and `Num` are always represented as Boogie `int`,
+                            // so a `Bitwise` source must not propagate past the cast. The
+                            // boundary itself is then materialized as `$bv2int.N(...)` by
+                            // `translate_cast` in the spec backend. Unsigned-target casts
+                            // keep the source classification: a bit-operation consumer
+                            // legitimately re-demands `Bitwise` on them.
+                            let target_ty = self.func_target.global_env().get_node_type(*id);
+                            let cast_oper = if target_ty.skip_reference().is_signed_int()
+                                || matches!(
+                                    target_ty.skip_reference(),
+                                    Type::Primitive(PrimitiveType::Num)
+                                ) {
+                                if num_oper == Bitwise {
+                                    Arithmetic
+                                } else {
+                                    num_oper
+                                }
+                            } else {
+                                num_oper
+                            };
                             // Update the node of cast
-                            global_state.update_node_oper(*id, num_oper, true);
+                            global_state.update_node_oper(*id, cast_oper, true);
                         },
                         move_model::ast::Operation::Int2Bv => {
-                            global_state.update_node_oper(*id, Bitwise, true);
+                            if severed {
+                                self.func_target.global_env().error(
+                                    &self.func_target.get_bytecode_loc(attr_id),
+                                    BV_INTERNAL_SPEC_BITWISE_MSG,
+                                );
+                            } else {
+                                global_state.update_node_oper(*id, Bitwise, true);
+                            }
                         },
                         move_model::ast::Operation::Bv2Int => {
                             global_state.update_node_oper(*id, Arithmetic, true);
@@ -340,30 +696,24 @@ impl NumberOperationAnalysis<'_> {
                                 .display(self.func_target.global_env().symbol_pool())
                                 .to_string();
                             if module_env.is_std_vector() || module_env.is_table() {
-                                if !args.is_empty() {
-                                    let oper_first =
-                                        global_state.get_node_num_oper(args[0].node_id());
-                                    // First argument is the target vector and the return type has the same NumberOperation type
-                                    if vector_table_funs_name_propogate_to_dest(&callee_name) {
-                                        global_state.update_node_oper(*id, oper_first, true);
-                                    } else {
-                                        global_state.update_node_oper(*id, Bottom, allow_merge);
-                                    }
-                                    // Handle the case of borrow_mut_with_default
-                                    if callee_name.contains("borrow_mut_with_default") {
-                                        assert!(args.len() >= 3);
-                                        update_temporary(
-                                            &args[2],
-                                            &oper_first,
-                                            global_state,
-                                            state,
-                                        );
-                                    }
-                                }
+                                self.handle_vector_table_spec_call(
+                                    &callee_name,
+                                    args,
+                                    *id,
+                                    global_state,
+                                    state,
+                                    allow_merge,
+                                );
                             } else {
                                 // Analysis for general spec functions.
                                 let module = &self.func_target.global_env().get_module(*mid);
                                 let callee_spec_fun = module.get_spec_fun(*sid);
+                                // `num` guards below must evaluate on the
+                                // instantiated parameter types: a generic
+                                // parameter instantiated at `num` is a sink
+                                // just like a declared `num` parameter.
+                                let callee_inst =
+                                    self.func_target.global_env().get_node_instantiation(*id);
                                 // Try to get num_oper for signatures
                                 // If not exists, compute num_oper for this spec fun and update the exp_operation_map and spec_fun_map
                                 if let std::collections::btree_map::Entry::Vacant(_) =
@@ -374,8 +724,27 @@ impl NumberOperationAnalysis<'_> {
                                     // Default num oper is determined by the actual arguments
                                     para_vec.append(&mut arg_oper);
                                     ret_vec.push(Bottom);
-                                    if callee_spec_fun.body.is_some() {
-                                        let body_exp = callee_spec_fun.body.as_ref().unwrap();
+                                    // Widthless `num` parameters are Arithmetic sinks: they
+                                    // always render as int, so a bitwise-classified argument
+                                    // crosses a representational boundary at the call (the
+                                    // argument renders as a bitvector, materialized by
+                                    // `$bv2int.N` at the argument position) and `Bitwise`
+                                    // must not seed the parameter slot and infect the
+                                    // callee's spec expressions.
+                                    for (i, Parameter(_, ty, _)) in
+                                        callee_spec_fun.params.iter().enumerate()
+                                    {
+                                        if i < para_vec.len()
+                                            && para_vec[i] == Bitwise
+                                            && matches!(
+                                                ty.instantiate(&callee_inst).skip_reference(),
+                                                Type::Primitive(PrimitiveType::Num)
+                                            )
+                                        {
+                                            para_vec[i] = Arithmetic;
+                                        }
+                                    }
+                                    if let Some(body_exp) = &callee_spec_fun.body {
                                         let local_map = body_exp.bound_local_vars_with_node_id();
                                         for (i, Parameter(sym, _, loc)) in
                                             callee_spec_fun.params.iter().enumerate()
@@ -431,11 +800,26 @@ impl NumberOperationAnalysis<'_> {
                                         .unwrap()
                                         .0;
                                     assert_eq!(para_oper_vec.len(), arg_oper.len());
-                                    for (formal_oper, actual_oper) in
-                                        para_oper_vec.iter().zip(arg_oper.iter())
+                                    for (i, (formal_oper, actual_oper)) in
+                                        para_oper_vec.iter().zip(arg_oper.iter()).enumerate()
                                     {
+                                        // A widthless `num` parameter is an Arithmetic sink
+                                        // (see the seeding clamp above); a bitwise-classified
+                                        // argument is reconciled by `$bv2int.N` at the
+                                        // argument position, not a conflict.
+                                        let num_param = matches!(
+                                            callee_spec_fun.params.get(i),
+                                            Some(Parameter(_, ty, _))
+                                                if matches!(
+                                                    ty.instantiate(&callee_inst).skip_reference(),
+                                                    Type::Primitive(PrimitiveType::Num)
+                                                )
+                                        );
                                         // For simplicity, only check compatibility
-                                        if !allow_merge && formal_oper.conflict(actual_oper) {
+                                        if !allow_merge
+                                            && !num_param
+                                            && formal_oper.conflict(actual_oper)
+                                        {
                                             self.func_target.global_env().error(
                                                 &self.func_target.get_bytecode_loc(attr_id),
                                                 CONFLICT_ERROR_MSG,
@@ -450,11 +834,15 @@ impl NumberOperationAnalysis<'_> {
                                     .unwrap()
                                     .1;
                                 if !ret_num_oper_vec.is_empty() {
-                                    global_state.update_node_oper(
-                                        *id,
-                                        ret_num_oper_vec[0],
-                                        allow_merge,
-                                    );
+                                    let ret_oper = ret_num_oper_vec[0];
+                                    if severed && ret_oper == Bitwise {
+                                        self.func_target.global_env().error(
+                                            &self.func_target.get_bytecode_loc(attr_id),
+                                            BV_INTERNAL_SPEC_LEAK_MSG,
+                                        );
+                                    } else {
+                                        global_state.update_node_oper(*id, ret_oper, allow_merge);
+                                    }
                                 }
                             }
                         },
@@ -486,10 +874,35 @@ impl NumberOperationAnalysis<'_> {
                                     .insert(field.get_id(), merged);
                             }
                         },
+                        move_model::ast::Operation::Vector | move_model::ast::Operation::Tuple => {
+                            // Aggregate constructors: the node's
+                            // classification is the join of its elements',
+                            // so a bitwise element makes the recorded
+                            // signature render the aggregate's elements as
+                            // bitvectors.
+                            let mut merged = Bottom;
+                            for num_oper in &arg_oper {
+                                if !allow_merge && num_oper.conflict(&merged) {
+                                    self.func_target.global_env().error(
+                                        &self.func_target.get_bytecode_loc(attr_id),
+                                        CONFLICT_ERROR_MSG,
+                                    );
+                                }
+                                merged = num_oper.merge(&merged);
+                            }
+                            global_state.update_node_oper(*id, merged, true);
+                        },
                         _ => {
                             // All args must have compatible number operations
                             // TODO(tengzhang): support converting int to bv
                             if opers_for_propagation(oper) {
+                                if severed && bitwise_oper(oper) {
+                                    self.func_target.global_env().error(
+                                        &self.func_target.get_bytecode_loc(attr_id),
+                                        BV_INTERNAL_SPEC_BITWISE_MSG,
+                                    );
+                                    return true;
+                                }
                                 let mut merged = if bitwise_oper(oper) { Bitwise } else { Bottom };
                                 for num_oper in &arg_oper {
                                     if !allow_merge && num_oper.conflict(&merged) {
@@ -523,12 +936,24 @@ impl NumberOperationAnalysis<'_> {
                                                 | move_model::ast::Operation::Shr
                                         );
                                         // For shift operation, we don't need to check compatibility between the two operands
-                                        let concrete_num_ty = if if_shift {
+                                        let mut concrete_num_ty = if if_shift {
                                             Some(concrete_num_ty_oper_0.clone())
                                         } else {
                                             concrete_num_ty_oper_0
                                                 .is_compatible_num_type(&concrete_num_ty_oper_1)
                                         };
+                                        if concrete_num_ty.is_none() {
+                                            // Unsuffixed spec-mode literals default to
+                                            // u256/i256; treat them as `num` wildcards
+                                            // before erroring.
+                                            concrete_num_ty = adopt_spec_defaulted_literal_type(
+                                                self.func_target.global_env(),
+                                                &args[0],
+                                                &concrete_num_ty_oper_0,
+                                                &args[1],
+                                                &concrete_num_ty_oper_1,
+                                            );
+                                        }
                                         if concrete_num_ty.is_none() {
                                             self.func_target.global_env().error(
                                                     &self.func_target.global_env().get_node_loc(exp.node_id()),
@@ -560,6 +985,13 @@ impl NumberOperationAnalysis<'_> {
                                             | ExpData::LocalVar(..)
                                             | ExpData::Value(..)
                                             | ExpData::Call(_, ASTOperation::Cast, _) => true,
+                                            // An empty aggregate carries no classification
+                                            // and takes that of its context.
+                                            ExpData::Call(_, ASTOperation::Vector, elems)
+                                                if elems.is_empty() =>
+                                            {
+                                                true
+                                            },
                                             ExpData::Call(
                                                 _,
                                                 ASTOperation::SpecFunction(mid, sid, _),
@@ -601,112 +1033,52 @@ impl NumberOperationAnalysis<'_> {
         e.visit_post_order(visitor);
     }
 
-    /// Check whether operation of dest and src conflict, if not propagate the merged operation
-    fn check_and_propagate(
-        &self,
-        state: &mut NumberOperationState,
-        dest: &TempIndex,
-        src: &TempIndex,
-        mid: ModuleId,
-        fid: FunId,
-        global_state: &mut GlobalNumberOperationState,
-        baseline_flag: bool,
-    ) {
-        // Each TempIndex has a default operation in the map, can unwrap
-        let dest_oper = global_state
-            .get_temp_index_oper(mid, fid, *dest, baseline_flag)
-            .unwrap();
-        let src_oper = global_state
-            .get_temp_index_oper(mid, fid, *src, baseline_flag)
-            .unwrap();
-        let merged_oper = dest_oper.merge(src_oper);
-        if merged_oper != *dest_oper || merged_oper != *src_oper {
-            state.changed = true;
-        }
-        *global_state
-            .get_mut_temp_index_oper(mid, fid, *dest, baseline_flag)
-            .unwrap() = merged_oper;
-        *global_state
-            .get_mut_temp_index_oper(mid, fid, *src, baseline_flag)
-            .unwrap() = merged_oper;
-    }
-
-    /// Update operation in dests and srcs using oper
-    fn check_and_update_oper(
-        &self,
-        state: &mut NumberOperationState,
-        dests: &[TempIndex],
-        srcs: &[TempIndex],
-        oper: NumOperation,
-        mid: ModuleId,
-        fid: FunId,
-        global_state: &mut GlobalNumberOperationState,
-        baseline_flag: bool,
-    ) {
-        let op_srcs_0 = global_state
-            .get_temp_index_oper(mid, fid, srcs[0], baseline_flag)
-            .unwrap();
-        let op_srcs_1 = global_state
-            .get_temp_index_oper(mid, fid, srcs[1], baseline_flag)
-            .unwrap();
-        let op_dests_0 = global_state
-            .get_temp_index_oper(mid, fid, dests[0], baseline_flag)
-            .unwrap();
-        // Check conflicts among dests and srcs
-        let mut state_set = BTreeSet::new();
-        state_set.insert(op_srcs_0);
-        state_set.insert(op_srcs_1);
-        state_set.insert(op_dests_0);
-        if oper != *op_srcs_0 || oper != *op_srcs_1 || oper != *op_dests_0 {
-            state.changed = true;
-        }
-        *global_state
-            .get_mut_temp_index_oper(mid, fid, srcs[0], baseline_flag)
-            .unwrap() = oper;
-        *global_state
-            .get_mut_temp_index_oper(mid, fid, srcs[1], baseline_flag)
-            .unwrap() = oper;
-        *global_state
-            .get_mut_temp_index_oper(mid, fid, dests[0], baseline_flag)
-            .unwrap() = oper;
-    }
-
-    fn check_and_update_oper_dest(
-        &self,
-        state: &mut NumberOperationState,
-        dests: &[TempIndex],
-        oper: NumOperation,
-        mid: ModuleId,
-        fid: FunId,
-        global_state: &mut GlobalNumberOperationState,
-        baseline_flag: bool,
-    ) {
-        let op_dests_0 = global_state
-            .get_temp_index_oper(mid, fid, dests[0], baseline_flag)
-            .unwrap();
-        if oper != *op_dests_0 {
-            state.changed = true;
-        }
-        *global_state
-            .get_mut_temp_index_oper(mid, fid, dests[0], baseline_flag)
-            .unwrap() = oper;
-    }
-
     /// Generate default num_oper for all non-parameter locals
     fn populate_non_param_oper(&self, global_state: &mut GlobalNumberOperationState) {
-        let mid = self.func_target.func_env.module_env.get_id();
-        let fid = self.func_target.func_env.get_id();
+        let (mid, fid) = self.func_ids();
         let non_param_range = self.func_target.get_non_parameter_locals();
-        let baseline_flag = self.func_target.data.variant == FunctionVariant::Baseline;
+        let local_map = global_state.get_mut_non_param_local_map(mid, fid, self.is_baseline());
+
         for i in non_param_range {
-            if !global_state
-                .get_non_param_local_map(mid, fid, baseline_flag)
-                .contains_key(&i)
-            {
-                global_state
-                    .get_mut_non_param_local_map(mid, fid, baseline_flag)
-                    .insert(i, Bottom);
-            }
+            local_map.entry(i).or_insert(Bottom);
+        }
+    }
+
+    /// Handle pack/unpack operations - merge field types with temporary variables
+    fn handle_pack_unpack(
+        &self,
+        attr_id: AttrId,
+        msid: ModuleId,
+        sid: StructId,
+        field_id: FieldId,
+        temp_idx: TempIndex,
+        state: &mut NumberOperationState,
+        global_state: &mut GlobalNumberOperationState,
+    ) {
+        let field_oper = *global_state.get_num_operation_field(&msid, &sid, &field_id);
+        let temp_oper = self.get_temp_oper(temp_idx, global_state);
+
+        // Field slots are program-wide; raising one here would leak the representation.
+        if self.is_cur_bv_internal() && temp_oper == Bitwise && field_oper != Bitwise {
+            self.func_target.global_env().error(
+                &self.func_target.get_bytecode_loc(attr_id),
+                BV_INTERNAL_FIELD_MSG,
+            );
+            return;
+        }
+
+        let merged = field_oper.merge(&temp_oper);
+
+        if merged != field_oper {
+            state.changed = true;
+            global_state
+                .struct_operation_map
+                .get_mut(&(msid, sid))
+                .unwrap()
+                .insert(field_id, merged);
+        }
+        if merged != temp_oper {
+            self.update_temp_oper(temp_idx, merged, global_state, state);
         }
     }
 }
@@ -716,7 +1088,18 @@ impl TransferFunctions for NumberOperationAnalysis<'_> {
 
     const BACKWARD: bool = false;
 
-    /// Update global state of num_operation by analyzing each instruction
+    /// Core transfer function: propagate NumOperation through a single bytecode instruction.
+    ///
+    /// Handles different instruction types:
+    /// - **Assign**: Propagate from source to destination
+    /// - **Ret**: Unify return values with function return type
+    /// - **Arithmetic ops** (Add, Sub, Mul, Div, Mod): Propagate and merge all operands
+    /// - **Bitwise ops** (BitOr, BitAnd, Xor): Force all operands to Bitwise
+    /// - **Shift ops** (Shl, Shr): Propagate without forcing Bitwise
+    /// - **Comparison ops**: Unify compared values
+    /// - **Pack/Unpack**: Unify field types with struct field declarations
+    /// - **GetField/BorrowField**: Propagate field type to destination
+    /// - **Function calls**: Unify actual and formal parameters bidirectionally
     fn execute(&self, state: &mut NumberOperationState, instr: &Bytecode, _offset: CodeOffset) {
         use Bytecode::*;
         use Operation::*;
@@ -725,155 +1108,68 @@ impl TransferFunctions for NumberOperationAnalysis<'_> {
             .global_env()
             .get_cloned_extension::<GlobalNumberOperationState>();
         self.populate_non_param_oper(&mut global_state);
-        let baseline_flag = self.func_target.data.variant == FunctionVariant::Baseline;
-        let cur_mid = self.func_target.func_env.module_env.get_id();
-        let cur_fid = self.func_target.func_env.get_id();
+        let (cur_mid, cur_fid) = self.func_ids();
+        let baseline_flag = self.is_baseline();
+
         match instr {
             Assign(_, dest, src, _) => {
-                self.check_and_propagate(
-                    state,
-                    dest,
-                    src,
-                    cur_mid,
-                    cur_fid,
-                    &mut global_state,
-                    baseline_flag,
-                );
+                self.merge_temp_opers(*dest, *src, &mut global_state, state);
             },
             // Check and update operations of rets in temp_index_operation_map and operations in ret_operation_map
             Ret(_, rets) => {
                 let ret_types = self.func_target.get_return_types();
                 for ((i, _), ret) in ret_types.iter().enumerate().zip(rets) {
-                    let ret_oper = global_state
+                    let ret_oper = *global_state
                         .get_ret_map()
                         .get(&(cur_mid, cur_fid))
                         .unwrap()
                         .get(&i)
                         .unwrap();
-                    let idx_oper = global_state
-                        .get_temp_index_oper(cur_mid, cur_fid, *ret, baseline_flag)
-                        .unwrap();
+                    let idx_oper = self.get_temp_oper(*ret, &global_state);
+                    let merged = idx_oper.merge(&ret_oper);
 
-                    let merged = idx_oper.merge(ret_oper);
-                    if merged != *idx_oper || merged != *ret_oper {
-                        state.changed = true;
+                    if merged != idx_oper {
+                        self.update_temp_oper(*ret, merged, &mut global_state, state);
                     }
-                    *global_state
-                        .get_mut_temp_index_oper(cur_mid, cur_fid, *ret, baseline_flag)
-                        .unwrap() = merged;
-                    global_state
-                        .get_mut_ret_map()
-                        .get_mut(&(cur_mid, cur_fid))
-                        .unwrap()
-                        .insert(i, merged);
+                    if merged != ret_oper {
+                        state.changed = true;
+                        global_state
+                            .get_mut_ret_map()
+                            .get_mut(&(cur_mid, cur_fid))
+                            .unwrap()
+                            .insert(i, merged);
+                    }
                 }
             },
-            Call(_, dests, oper, srcs, _) => {
-                let handle_pack_unpack =
-                    |msid: &ModuleId,
-                     sid: &StructId,
-                     i: usize,
-                     field_id: FieldId,
-                     state: &mut NumberOperationState,
-                     global_state: &mut GlobalNumberOperationState,
-                     temps: &[TempIndex]| {
-                        let current_field_oper =
-                            global_state.get_num_operation_field(msid, sid, &field_id);
-                        let pack_oper = global_state
-                            .get_temp_index_oper(cur_mid, cur_fid, temps[i], baseline_flag)
-                            .unwrap();
-                        let merged = current_field_oper.merge(pack_oper);
-                        if merged != *current_field_oper || merged != *pack_oper {
-                            state.changed = true;
-                        }
-                        *global_state
-                            .get_mut_temp_index_oper(cur_mid, cur_fid, temps[i], baseline_flag)
-                            .unwrap() = merged;
-                        global_state
-                            .struct_operation_map
-                            .get_mut(&(*msid, *sid))
-                            .unwrap()
-                            .insert(field_id, merged);
-                    };
+            Call(attr_id, dests, oper, srcs, _) => {
                 match oper {
                     BorrowLoc | ReadRef | CastU8 | CastU16 | CastU32 | CastU64 | CastU128
                     | CastU256 => {
-                        self.check_and_propagate(
-                            state,
-                            &dests[0],
-                            &srcs[0],
-                            cur_mid,
-                            cur_fid,
-                            &mut global_state,
-                            baseline_flag,
-                        );
+                        self.merge_temp_opers(dests[0], srcs[0], &mut global_state, state);
                     },
                     WriteRef | Lt | Le | Gt | Ge | Eq | Neq => {
-                        self.check_and_propagate(
-                            state,
-                            &srcs[0],
-                            &srcs[1],
-                            cur_mid,
-                            cur_fid,
-                            &mut global_state,
-                            baseline_flag,
-                        );
+                        self.merge_temp_opers(srcs[0], srcs[1], &mut global_state, state);
                     },
-                    Add | Sub | Mul | Div | Mod => {
-                        let op_srcs_0 = global_state
-                            .get_temp_index_oper(cur_mid, cur_fid, srcs[0], baseline_flag)
-                            .unwrap();
-                        let op_srcs_1 = global_state
-                            .get_temp_index_oper(cur_mid, cur_fid, srcs[1], baseline_flag)
-                            .unwrap();
-                        let op_dests_0 = global_state
-                            .get_temp_index_oper(cur_mid, cur_fid, dests[0], baseline_flag)
-                            .unwrap();
-                        // If there is conflict among operations, merged will not be used for updating
-                        let num_oper = op_srcs_0.merge(op_srcs_1).merge(op_dests_0);
-                        self.check_and_update_oper(
-                            state,
-                            dests,
-                            srcs,
-                            num_oper,
-                            cur_mid,
-                            cur_fid,
-                            &mut global_state,
-                            baseline_flag,
-                        );
+                    Add | Sub | Mul | Div | Mod | Shl | Shr => {
+                        // Merge operations of all operands (dest, src1, src2)
+                        let op_srcs_0 = self.get_temp_oper(srcs[0], &global_state);
+                        let op_srcs_1 = self.get_temp_oper(srcs[1], &global_state);
+                        let op_dests_0 = self.get_temp_oper(dests[0], &global_state);
+                        let merged = op_srcs_0.merge(&op_srcs_1).merge(&op_dests_0);
+
+                        self.update_temp_oper(dests[0], merged, &mut global_state, state);
+                        self.update_temp_oper(srcs[0], merged, &mut global_state, state);
+                        self.update_temp_oper(srcs[1], merged, &mut global_state, state);
                     },
 
-                    BitOr | BitAnd | Xor => self.check_and_update_oper_dest(
-                        state,
-                        dests,
-                        Bitwise,
-                        cur_mid,
-                        cur_fid,
-                        &mut global_state,
-                        baseline_flag,
-                    ),
-                    Shl | Shr => {
-                        let op_srcs_0 = global_state
-                            .get_temp_index_oper(cur_mid, cur_fid, srcs[0], baseline_flag)
-                            .unwrap();
-                        let op_srcs_1 = global_state
-                            .get_temp_index_oper(cur_mid, cur_fid, srcs[1], baseline_flag)
-                            .unwrap();
-                        let op_dests_0 = global_state
-                            .get_temp_index_oper(cur_mid, cur_fid, dests[0], baseline_flag)
-                            .unwrap();
-                        // If there is conflict among operations, merged will not be used for updating
-                        let merged = op_srcs_0.merge(op_srcs_1).merge(op_dests_0);
-                        self.check_and_update_oper(
-                            state,
-                            dests,
-                            srcs,
-                            merged,
-                            cur_mid,
-                            cur_fid,
-                            &mut global_state,
-                            baseline_flag,
-                        );
+                    BitOr | BitAnd | Xor => {
+                        // Bitwise operations force the destination to Bitwise. Sources are not
+                        // forced here: update_temp_oper overwrites rather than merges, so forcing
+                        // sources to Bitwise unconditionally would corrupt variables that have
+                        // their own independent types. Sources get Bitwise classification naturally
+                        // through fixed-point iteration when they are themselves produced by
+                        // bitwise ops or annotated via pragma bv.
+                        self.update_temp_oper(dests[0], Bitwise, &mut global_state, state);
                     },
                     // Checking and operations in the struct_operation_map when packing
                     Pack(msid, sid, _) => {
@@ -883,14 +1179,14 @@ impl TransferFunctions for NumberOperationAnalysis<'_> {
                             .get_module(*msid)
                             .into_struct(*sid);
                         for (i, field) in struct_env.get_fields().enumerate() {
-                            handle_pack_unpack(
-                                msid,
-                                sid,
-                                i,
+                            self.handle_pack_unpack(
+                                *attr_id,
+                                *msid,
+                                *sid,
                                 field.get_id(),
+                                srcs[i],
                                 state,
                                 &mut global_state,
-                                srcs,
                             );
                         }
                     },
@@ -909,14 +1205,14 @@ impl TransferFunctions for NumberOperationAnalysis<'_> {
                                     pool.string(field.get_name()).as_str(),
                                 )));
                             if srcs.len() > i {
-                                handle_pack_unpack(
-                                    msid,
-                                    sid,
-                                    i,
+                                self.handle_pack_unpack(
+                                    *attr_id,
+                                    *msid,
+                                    *sid,
                                     new_field_id,
+                                    srcs[i],
                                     state,
                                     &mut global_state,
-                                    srcs,
                                 );
                             }
                         }
@@ -929,14 +1225,14 @@ impl TransferFunctions for NumberOperationAnalysis<'_> {
                             .get_module(*msid)
                             .into_struct(*sid);
                         for (i, field) in struct_env.get_fields().enumerate() {
-                            handle_pack_unpack(
-                                msid,
-                                sid,
-                                i,
+                            self.handle_pack_unpack(
+                                *attr_id,
+                                *msid,
+                                *sid,
                                 field.get_id(),
+                                dests[i],
                                 state,
                                 &mut global_state,
-                                dests,
                             );
                         }
                     },
@@ -955,51 +1251,36 @@ impl TransferFunctions for NumberOperationAnalysis<'_> {
                                     pool.string(field.get_name()).as_str(),
                                 )));
                             if dests.len() > i {
-                                handle_pack_unpack(
-                                    msid,
-                                    sid,
-                                    i,
+                                self.handle_pack_unpack(
+                                    *attr_id,
+                                    *msid,
+                                    *sid,
                                     new_field_id,
+                                    dests[i],
                                     state,
                                     &mut global_state,
-                                    dests,
                                 );
                             }
                         }
                     },
                     GetField(msid, sid, _, offset) | BorrowField(msid, sid, _, offset) => {
-                        let dests_oper = global_state
-                            .get_temp_index_oper(cur_mid, cur_fid, dests[0], baseline_flag)
-                            .unwrap();
-                        let field_id = &self
+                        let field_id = self
                             .func_target
-                            .func_env
-                            .module_env
-                            .get_struct(*sid)
+                            .global_env()
+                            .get_module(*msid)
+                            .into_struct(*sid)
                             .get_field_by_offset(*offset)
                             .get_id();
-                        let field_oper = global_state.get_num_operation_field(msid, sid, field_id);
 
-                        let merged_oper = dests_oper.merge(field_oper);
-                        if merged_oper != *field_oper || merged_oper != *dests_oper {
-                            state.changed = true;
-                        }
-                        *global_state
-                            .get_mut_temp_index_oper(cur_mid, cur_fid, dests[0], baseline_flag)
-                            .unwrap() = merged_oper;
-                        global_state
-                            .struct_operation_map
-                            .get_mut(&(*msid, *sid))
-                            .unwrap()
-                            .insert(
-                                self.func_target
-                                    .func_env
-                                    .module_env
-                                    .get_struct(*sid)
-                                    .get_field_by_offset(*offset)
-                                    .get_id(),
-                                merged_oper,
-                            );
+                        self.handle_pack_unpack(
+                            *attr_id,
+                            *msid,
+                            *sid,
+                            field_id,
+                            dests[0],
+                            state,
+                            &mut global_state,
+                        );
                     },
                     GetVariantField(msid, sid, variants, _, offset)
                     | BorrowVariantField(msid, sid, variants, _, offset) => {
@@ -1026,6 +1307,19 @@ impl TransferFunctions for NumberOperationAnalysis<'_> {
                             .unwrap();
                         let field_oper =
                             global_state.get_num_operation_field(msid, sid, &new_field_id);
+
+                        // Same field-boundary rule as `handle_pack_unpack`.
+                        if self.is_cur_bv_internal()
+                            && *dests_oper == Bitwise
+                            && *field_oper != Bitwise
+                        {
+                            self.func_target.global_env().error(
+                                &self.func_target.get_bytecode_loc(*attr_id),
+                                BV_INTERNAL_FIELD_MSG,
+                            );
+                            self.func_target.global_env().set_extension(global_state);
+                            return;
+                        }
 
                         let merged_oper = dests_oper.merge(field_oper);
                         if merged_oper != *field_oper || merged_oper != *dests_oper {
@@ -1056,8 +1350,14 @@ impl TransferFunctions for NumberOperationAnalysis<'_> {
                     },
                     Function(msid, fsid, _) => {
                         let module_env = &self.func_target.global_env().get_module(*msid);
-                        // Vector functions are handled separately
-                        if !module_env.is_std_vector() && !module_env.is_table() {
+                        let callee_env = module_env.get_function(*fsid);
+                        if callee_env.is_struct_api() {
+                            // Struct API calls are already translated to native ops by
+                            // stackless_bytecode_generator; nothing to do here.
+                        } else if is_bv_internal(&callee_env) {
+                            // `bv_internal` callee: a representation boundary, so nothing
+                            // crosses between caller temps and callee slots.
+                        } else if !module_env.is_std_vector() && !module_env.is_table() {
                             for (i, src) in srcs.iter().enumerate() {
                                 let cur_oper = global_state
                                     .get_temp_index_oper(cur_mid, cur_fid, *src, baseline_flag)
@@ -1101,78 +1401,17 @@ impl TransferFunctions for NumberOperationAnalysis<'_> {
                                     .insert(i, merged);
                             }
                         } else {
+                            // Handle vector/table function calls
                             let callee = module_env.get_function(*fsid);
                             let callee_name = callee.get_name_str();
-                            let check_and_update_bitwise =
-                                |idx: &TempIndex,
-                                 global_state: &mut GlobalNumberOperationState,
-                                 state: &mut NumberOperationState| {
-                                    let cur_oper = global_state
-                                        .get_temp_index_oper(cur_mid, cur_fid, *idx, baseline_flag)
-                                        .unwrap();
-
-                                    if *cur_oper != Bitwise {
-                                        state.changed = true;
-                                        *global_state
-                                            .get_mut_temp_index_oper(
-                                                cur_mid,
-                                                cur_fid,
-                                                *idx,
-                                                baseline_flag,
-                                            )
-                                            .unwrap() = Bitwise;
-                                    }
-                                };
-                            if !srcs.is_empty() {
-                                // First element
-                                let first_oper = *global_state
-                                    .get_temp_index_oper(cur_mid, cur_fid, srcs[0], baseline_flag)
-                                    .unwrap();
-                                // Bitwise is specified explicitly in the fun or struct spec
-                                if vector_table_funs_name_propogate_to_dest(&callee_name)
-                                    && first_oper == Bitwise
-                                {
-                                    // Do not consider the method remove_return_key where the first return value is k
-                                    for dest in dests.iter() {
-                                        check_and_update_bitwise(dest, &mut global_state, state);
-                                    }
-                                }
-                                let mut second_oper = first_oper;
-                                let mut src_idx = 0;
-                                if module_env.is_std_vector()
-                                    && vector_funs_name_propogate_to_srcs(&callee_name)
-                                {
-                                    assert!(srcs.len() > 1);
-                                    second_oper = *global_state
-                                        .get_temp_index_oper(
-                                            cur_mid,
-                                            cur_fid,
-                                            srcs[1],
-                                            baseline_flag,
-                                        )
-                                        .unwrap();
-                                    src_idx = 1;
-                                } else if table_funs_name_propogate_to_srcs(&callee_name) {
-                                    assert!(srcs.len() > 2);
-                                    second_oper = *global_state
-                                        .get_temp_index_oper(
-                                            cur_mid,
-                                            cur_fid,
-                                            srcs[2],
-                                            baseline_flag,
-                                        )
-                                        .unwrap();
-                                    src_idx = 2;
-                                }
-                                if first_oper == Bitwise || second_oper == Bitwise {
-                                    check_and_update_bitwise(&srcs[0], &mut global_state, state);
-                                    check_and_update_bitwise(
-                                        &srcs[src_idx],
-                                        &mut global_state,
-                                        state,
-                                    );
-                                }
-                            } // empty, do nothing
+                            self.handle_vector_table_bytecode_call(
+                                module_env,
+                                &callee_name,
+                                srcs,
+                                dests,
+                                &mut global_state,
+                                state,
+                            );
                         }
                     },
                     // TODO(#14349): add support for enum type related operation and
@@ -1200,4 +1439,78 @@ impl AbstractDomain for NumberOperationState {
         }
         result
     }
+}
+
+/// Retype an integer literal carrying the spec-mode default type (u256/i256)
+/// to its sibling operand's concrete integer type when the value fits;
+/// returns the adopted type. Sibling types are always covered by mono
+/// analysis.
+fn adopt_spec_defaulted_literal_type(
+    env: &GlobalEnv,
+    arg0: &Exp,
+    ty0: &Type,
+    arg1: &Exp,
+    ty1: &Type,
+) -> Option<Type> {
+    use move_model::ast::Value as AstValue;
+    let is_defaulted_literal = |e: &Exp, ty: &Type| {
+        matches!(
+            ty.skip_reference(),
+            Type::Primitive(PrimitiveType::U256) | Type::Primitive(PrimitiveType::I256)
+        ) && matches!(e.as_ref(), ExpData::Value(_, AstValue::Number(_)))
+            // Explicitly suffixed literals (e.g. `1u256`) must keep the
+            // mismatch diagnostic; only builder-defaulted ones adapt.
+            && env
+                .get_extension::<move_model::model::SpecDefaultedNumLocs>()
+                .is_some_and(|s| s.0.contains(&env.get_node_loc(e.node_id())))
+    };
+    let fits = |v: &num::BigInt, ty: &Type| -> bool {
+        use num::bigint::Sign;
+        let Type::Primitive(p) = ty.skip_reference() else {
+            return false;
+        };
+        let (bits, signed) = match p {
+            PrimitiveType::U8 => (8u64, false),
+            PrimitiveType::U16 => (16, false),
+            PrimitiveType::U32 => (32, false),
+            PrimitiveType::U64 => (64, false),
+            PrimitiveType::U128 => (128, false),
+            PrimitiveType::U256 => (256, false),
+            PrimitiveType::I8 => (8, true),
+            PrimitiveType::I16 => (16, true),
+            PrimitiveType::I32 => (32, true),
+            PrimitiveType::I64 => (64, true),
+            PrimitiveType::I128 => (128, true),
+            PrimitiveType::I256 => (256, true),
+            _ => return false,
+        };
+        if signed {
+            let bound = num::BigInt::from(1u8) << (bits - 1);
+            v >= &(-bound.clone()) && v < &bound
+        } else {
+            v.sign() != Sign::Minus && v.bits() <= bits
+        }
+    };
+    let try_adopt = |lit: &Exp, lit_ty: &Type, other_ty: &Type| -> Option<Type> {
+        let other = other_ty.skip_reference();
+        // Concrete integer siblings only (`num` has no fixed width). Signed
+        // siblings are safe: the backend renders Bitwise-classified signed
+        // values as `int`, so the adopted literal renders as a plain int
+        // literal alongside them.
+        if !is_defaulted_literal(lit, lit_ty)
+            || !(other.is_unsigned_int() || other.is_signed_int())
+            || lit_ty.skip_reference() == other
+        {
+            return None;
+        }
+        let ExpData::Value(id, AstValue::Number(v)) = lit.as_ref() else {
+            return None;
+        };
+        if !fits(v, other) {
+            return None;
+        }
+        env.update_node_type(*id, other.clone());
+        Some(other.clone())
+    };
+    try_adopt(arg0, ty0, ty1).or_else(|| try_adopt(arg1, ty1, ty0))
 }

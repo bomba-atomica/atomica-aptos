@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::unit_arg)]
 #![allow(clippy::arc_with_non_send_sync)]
@@ -65,7 +66,11 @@ pub enum VMStatus {
     },
 
     /// Indicates an `abort` from inside Move code. Contains the location of the abort and the code
-    MoveAbort(AbortLocation, /* code */ u64),
+    MoveAbort {
+        location: AbortLocation,
+        code: u64,
+        message: Option<String>,
+    },
 
     /// Indicates an failure from inside Move code, where the VM could not continue exection, e.g.
     /// dividing by zero or a missing resource
@@ -90,7 +95,11 @@ pub fn err_msg<S: Into<String>>(s: S) -> Option<String> {
 pub enum KeptVMStatus {
     Executed,
     OutOfGas,
-    MoveAbort(AbortLocation, /* code */ u64),
+    MoveAbort {
+        location: AbortLocation,
+        code: u64,
+        message: Option<String>,
+    },
     ExecutionFailure {
         location: AbortLocation,
         function: u16,
@@ -145,7 +154,7 @@ impl VMStatus {
     pub fn status_code(&self) -> StatusCode {
         match self {
             Self::Executed => StatusCode::EXECUTED,
-            Self::MoveAbort(_, _) => StatusCode::ABORTED,
+            Self::MoveAbort { .. } => StatusCode::ABORTED,
             Self::ExecutionFailure { status_code, .. } => *status_code,
             Self::Error {
                 status_code: code, ..
@@ -163,16 +172,16 @@ impl VMStatus {
             Self::Error { sub_status, .. } | Self::ExecutionFailure { sub_status, .. } => {
                 *sub_status
             },
-            Self::Executed | Self::MoveAbort(..) => None,
+            Self::Executed | Self::MoveAbort { .. } => None,
         }
     }
 
     /// Returns the message associated with the `VMStatus`, if any.
     pub fn message(&self) -> Option<&String> {
         match self {
-            Self::Error { message, .. } | Self::ExecutionFailure { message, .. } => {
-                message.as_ref()
-            },
+            Self::Error { message, .. }
+            | Self::MoveAbort { message, .. }
+            | Self::ExecutionFailure { message, .. } => message.as_ref(),
             _ => None,
         }
     }
@@ -180,7 +189,7 @@ impl VMStatus {
     /// Returns the Move abort code if the status is `MoveAbort`, and `None` otherwise
     pub fn move_abort_code(&self) -> Option<u64> {
         match self {
-            Self::MoveAbort(_, code) => Some(*code),
+            Self::MoveAbort { code, .. } => Some(*code),
             Self::Error { .. } | Self::ExecutionFailure { .. } | Self::Executed => None,
         }
     }
@@ -196,10 +205,23 @@ impl VMStatus {
         self,
         function_values_enabled: bool,
         memory_limit_exceeded_as_miscellaneous_error: bool,
+        abort_messages_enabled: bool,
     ) -> Result<KeptVMStatus, DiscardedVMStatus> {
         match self {
             VMStatus::Executed => Ok(KeptVMStatus::Executed),
-            VMStatus::MoveAbort(location, code) => Ok(KeptVMStatus::MoveAbort(location, code)),
+            VMStatus::MoveAbort {
+                location,
+                code,
+                message,
+            } => Ok(KeptVMStatus::MoveAbort {
+                location,
+                code,
+                message: if abort_messages_enabled {
+                    message
+                } else {
+                    None
+                },
+            }),
             VMStatus::ExecutionFailure {
                 status_code: StatusCode::OUT_OF_GAS,
                 ..
@@ -315,7 +337,7 @@ impl fmt::Display for VMStatus {
         let status_type = self.status_type();
         let mut status = format!("status {:#?} of type {}", self.status_code(), status_type);
 
-        if let VMStatus::MoveAbort(_, code) = self {
+        if let VMStatus::MoveAbort { code, .. } = self {
             status = format!("{} with sub status {}", status, code);
         }
 
@@ -334,9 +356,13 @@ impl fmt::Display for KeptVMStatus {
             KeptVMStatus::Executed => write!(f, "EXECUTED"),
             KeptVMStatus::OutOfGas => write!(f, "OUT_OF_GAS"),
             KeptVMStatus::MiscellaneousError => write!(f, "MISCELLANEOUS_ERROR"),
-            KeptVMStatus::MoveAbort(location, code) => {
-                write!(f, "ABORTED with code {} in {}", code, location)
-            },
+            KeptVMStatus::MoveAbort { location, code, message } => {
+                if let Some(message) = message {
+                    write!(f, "ABORTED with code {} and message {} in {}", code, message, location)
+                } else {
+                    write!(f, "ABORTED with code {} in {}", code, location)
+                }
+            }
             KeptVMStatus::ExecutionFailure {
                 location,
                 function,
@@ -365,9 +391,14 @@ impl fmt::Debug for VMStatus {
                 .field("sub_status", sub_status)
                 .field("message", message)
                 .finish(),
-            VMStatus::MoveAbort(location, code) => f
+            VMStatus::MoveAbort {
+                location,
+                code,
+                message,
+            } => f
                 .debug_struct("ABORTED")
                 .field("code", code)
+                .field("message", message)
                 .field("location", location)
                 .finish(),
             VMStatus::ExecutionFailure {
@@ -395,9 +426,14 @@ impl fmt::Debug for KeptVMStatus {
         match self {
             KeptVMStatus::Executed => write!(f, "EXECUTED"),
             KeptVMStatus::OutOfGas => write!(f, "OUT_OF_GAS"),
-            KeptVMStatus::MoveAbort(location, code) => f
+            KeptVMStatus::MoveAbort {
+                location,
+                code,
+                message,
+            } => f
                 .debug_struct("ABORTED")
                 .field("code", code)
+                .field("message", message)
                 .field("location", location)
                 .finish(),
             KeptVMStatus::ExecutionFailure {
@@ -627,13 +663,34 @@ pub enum StatusCode {
     EMPTY_PAYLOAD_PROVIDED = 43,
     TRANSACTION_EXPIRATION_TOO_FAR_IN_FUTURE = 44,
     INVALID_NUMBER_OF_AUTHENTICATION_PROOFS = 45,
+    // Fee payer is not the owner of the specified stake pool.
+    NOT_STAKE_POOL_OWNER = 46,
+    // Fee payer is not the delegated voter of the specified stake pool.
+    NOT_DELEGATED_VOTER = 47,
+    // Fee payer's committed stake is insufficient for the requested multiplier tier.
+    INSUFFICIENT_STAKE = 48,
+    // Multiplier must be > 100 (> 1x).
+    INVALID_HIGH_TXN_LIMITS_MULTIPLIER = 49,
+    // No stake pool exists at the specified address.
+    STAKE_POOL_NOT_FOUND = 50,
+    // No delegation pool exists at the specified address.
+    DELEGATION_POOL_NOT_FOUND = 51,
+    // Requested multiplier is not available in any configured tier.
+    MULTIPLIER_NOT_AVAILABLE = 52,
+    // Gas unit price is below the scaled minimum for high-limit transactions.
+    HIGH_LIMIT_TXN_GAS_UNIT_PRICE_BELOW_MIN_BOUND = 53,
+    // Encrypted transaction gas unit price is below the minimum required.
+    ENCRYPTED_TXN_GAS_UNIT_PRICE_BELOW_MIN_BOUND = 54,
+    // A high-limit request was attached to a transaction that was the approved
+    // governance proposal.
+    TXN_LIMITS_REQUEST_NOT_ALLOWED_FOR_GOVERNANCE_SCRIPT = 55,
+    // Stake pool is not in the current-epoch validator set.
+    STAKE_POOL_NOT_IN_VALIDATOR_SET = 56,
 
     // Reserved error code for future use
-    RESERVED_VALIDATION_ERROR_11 = 46,
-    RESERVED_VALIDATION_ERROR_12 = 47,
-    RESERVED_VALIDATION_ERROR_13 = 48,
-    RESERVED_VALIDATION_ERROR_14 = 49,
-    RESERVED_VALIDATION_ERROR_15 = 50,
+    RESERVED_VALIDATION_ERROR_2 = 57,
+    RESERVED_VALIDATION_ERROR_3 = 58,
+    RESERVED_VALIDATION_ERROR_4 = 59,
 
 
     // When a code module/script is published it is verified. These are the
@@ -789,12 +846,15 @@ pub enum StatusCode {
     // When publishing a module bundle, all friends declared there must be in this bundle. If it is
     // not the case, an error with this status code is returned.
     FRIEND_NOT_FOUND_IN_MODULE_BUNDLE = 1135,
+    // The struct API code does not have the correct implementation.
+    // for instance, function attribute #[pack] must only be attached to the corresponding pack$S API.
+    INVALID_STRUCT_API_CODE = 1136,
 
     // Reserved error code for future use
-    RESERVED_VERIFICATION_ERROR_1 = 1136,
-    RESERVED_VERIFICATION_ERROR_2 = 1137,
-    RESERVED_VERIFICATION_ERROR_3 = 1138,
-    RESERVED_VERIFICATION_ERROR_4 = 1139,
+    RESERVED_VERIFICATION_ERROR_1 = 1137,
+    RESERVED_VERIFICATION_ERROR_2 = 1138,
+    RESERVED_VERIFICATION_ERROR_3 = 1139,
+    RESERVED_VERIFICATION_ERROR_4 = 1140,
 
     // These are errors that the VM might raise if a violation of internal
     // invariants takes place.
@@ -867,9 +927,9 @@ pub enum StatusCode {
     VALUE_DESERIALIZATION_ERROR = 3023,
     CODE_DESERIALIZATION_ERROR = 3024,
     INVALID_FLAG_BITS = 3025,
-    // Returned when a function value is trying to capture an option. This is not allowed
-    // until the feature flag ENABLE_CAPTURE_OPTION is on.
-    UNABLE_TO_CAPTURE_OPTION_TYPE = 3026,
+    // Was used when a function value was trying to capture an option. Feature is now permanently
+    // enabled, so this status code is no longer used.
+    _UNABLE_TO_CAPTURE_OPTION_TYPE = 3026,
 
     // Reserved error code for future use
     RESERVED_DESERIALIZAION_ERROR_1 = 3027,
@@ -925,11 +985,15 @@ pub enum StatusCode {
     // Returned when a function value is trying to capture a delayed field. This is not allowed
     // because layouts for values with delayed fields are not serializable.
     UNABLE_TO_CAPTURE_DELAYED_FIELDS = 4041,
+    // The abort message is not a valid UTF-8 string.
+    INVALID_ABORT_MESSAGE = 4042,
+    // The abort message exceeded the size limit.
+    ABORT_MESSAGE_LIMIT_EXCEEDED = 4043,
 
     // Reserved error code for future use. Always keep this buffer of well-defined new codes.
-    RESERVED_RUNTIME_ERROR_1 = 4042,
-    RESERVED_RUNTIME_ERROR_2 = 4043,
-    RESERVED_RUNTIME_ERROR_3 = 4044,
+    RESERVED_RUNTIME_ERROR_1 = 4044,
+    RESERVED_RUNTIME_ERROR_2 = 4045,
+    RESERVED_RUNTIME_ERROR_3 = 4046,
 
     // A reserved status to represent an unknown vm status.
     // this is u64::MAX, but we can't pattern match on that, so put the hardcoded value in
@@ -1086,6 +1150,9 @@ pub mod sub_status {
 
         /// Dynamic reference safety checks failure
         pub const EREFERENCE_SAFETY_FAILURE: u64 = 0x3;
+
+        /// Tagged IndexedRef saw an enum variant change
+        pub const EINDEXED_REF_TAG_MISMATCH: u64 = 0x4;
     }
 
     pub mod type_resolution_failure {

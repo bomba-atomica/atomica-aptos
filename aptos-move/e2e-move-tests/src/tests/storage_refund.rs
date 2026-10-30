@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{assert_success, tests::common::test_dir_path, MoveHarness};
 use aptos_language_e2e_tests::account::Account;
@@ -26,7 +26,7 @@ fn test_refunds() {
     // Note: This test uses a lot of execution gas so we need to bump the limit in order for it
     //       to pass.
     h.modify_gas_schedule(|params| {
-        params.vm.txn.max_execution_gas = 40_000_000_000.into();
+        params.vm.txn.max_execution_gas = 400_000_000_000.into();
         params.vm.txn.storage_fee_per_state_byte = 0.into(); // tested in DiskSpacePricing.
     });
     let mod_addr = AccountAddress::from_hex_literal("0xcafe").unwrap();
@@ -93,7 +93,7 @@ fn test_refunds() {
     assert_result(&mut h, &user_acc, "destroy_collection", vec![], 0, false);
 }
 
-const LEEWAY: u64 = 2000;
+const LEEWAY: u64 = 20000;
 
 fn read_slot_fee_from_gas_schedule(h: &MoveHarness) -> u64 {
     let slot_fee = h

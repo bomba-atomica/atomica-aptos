@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::redundant_static_lifetimes)]
 #![allow(clippy::needless_return)]
@@ -20,19 +20,20 @@
 use crate::pvss::{traits, Player};
 use aptos_crypto::arkworks::{
     random::{sample_field_element, UniformRand},
-    shamir::{ShamirShare, ThresholdConfig},
+    shamir::{Reconstructable, ShamirShare, ShamirThresholdConfig},
 };
-pub use aptos_crypto::blstrs::{G1_PROJ_NUM_BYTES, G2_PROJ_NUM_BYTES, SCALAR_NUM_BYTES};
-use ark_ec::pairing::Pairing;
+pub use aptos_crypto::{
+    blstrs as algebra,
+    blstrs::{G1_PROJ_NUM_BYTES, G2_PROJ_NUM_BYTES, SCALAR_NUM_BYTES},
+};
+use ark_ff::{Fp, FpConfig, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use more_asserts::{assert_ge, assert_le};
 use rand::Rng;
 pub use utils::random::DST_RAND_CORE_HELL;
 
-pub mod algebra;
 pub mod dlog;
 pub(crate) mod fiat_shamir;
-pub mod ibe;
 pub mod pcs;
 pub mod pvss;
 pub mod range_proofs;
@@ -41,6 +42,8 @@ pub mod utils;
 pub mod weighted_vuf;
 
 /// A wrapper around `E::ScalarField` to prevent overlapping trait implementations.
+/// (Can be avoided by directly implementing traits on `Fp<P,N>`, which we
+/// sometimes do.)
 ///
 /// Without this wrapper, implementing a trait both for `blstrs::Scalar` and for
 /// `E::ScalarField` would cause conflicts. For example, Rust would reject:
@@ -55,67 +58,69 @@ pub mod weighted_vuf;
 /// `E::ScalarField`.
 #[repr(transparent)]
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Scalar<E: Pairing>(pub E::ScalarField); // TODO: Maybe this should be Scalar<F: PrimeField> ?? (PrimeField is needed for ThresholdConfig below)
+pub struct Scalar<F: PrimeField>(pub F);
 
-impl<E: Pairing> Scalar<E> {
+impl<F: PrimeField> Scalar<F> {
     /// Converts a `&[Scalar<E>]` into a `&[E::ScalarField]`; could do this without copying
     /// (and similarly for the other functions below) by using `#[repr(transparent)]` and
     /// unsafe Rust, but we want to avoid that
-    pub fn slice_as_inner(slice: &[Self]) -> Vec<E::ScalarField>
-    where
-        E::ScalarField: Clone,
-    {
-        slice.iter().map(|s| s.0.clone()).collect()
+    pub fn slice_as_inner(slice: &[Self]) -> Vec<F> {
+        slice.iter().map(|s| s.0).collect()
     }
 
     /// Converts a `Vec<Scalar<E>>` into a `Vec<E::ScalarField>` safely.
-    pub fn vec_into_inner(v: Vec<Self>) -> Vec<E::ScalarField> {
+    pub fn vec_into_inner(v: Vec<Self>) -> Vec<F> {
         v.into_iter().map(|s| s.0).collect()
     }
 
     /// Converts a `Vec<E::ScalarField>` into a `Vec<Scalar<E>>` safely.
-    pub fn vec_from_inner(v: Vec<E::ScalarField>) -> Vec<Self> {
+    pub fn vec_from_inner(v: Vec<F>) -> Vec<Self> {
         v.into_iter().map(Self).collect()
     }
 
     /// Converts a `Vec<Vec<E::ScalarField>>` into a `Vec<Vec<Scalar<E>>>` safely.
-    pub fn vecvec_from_inner(vv: Vec<Vec<E::ScalarField>>) -> Vec<Vec<Self>> {
+    pub fn vecvec_from_inner(vv: Vec<Vec<F>>) -> Vec<Vec<Self>> {
         vv.into_iter().map(Self::vec_from_inner).collect()
     }
 
     /// Converts a `&[E::ScalarField]` into a `Vec<Scalar<E>>` safely.
-    pub fn vec_from_inner_slice(slice: &[E::ScalarField]) -> Vec<Self> {
+    pub fn vec_from_inner_slice(slice: &[F]) -> Vec<Self> {
         slice.iter().copied().map(Self).collect()
+    }
+
+    /// Converts a `Vec<Vec<Vec<E::ScalarField>>>` into a `Vec<Vec<Vec<Scalar<E>>>>` safely.
+    pub fn vecvecvec_from_inner(vvv: Vec<Vec<Vec<F>>>) -> Vec<Vec<Vec<Self>>> {
+        vvv.into_iter().map(Self::vecvec_from_inner).collect()
+    }
+
+    pub fn into_fr(&self) -> F {
+        self.0
     }
 }
 
-impl<E: Pairing> UniformRand for Scalar<E> {
+impl<F: PrimeField> UniformRand for Scalar<F> {
     fn rand<R: Rng>(rng: &mut R) -> Self {
         Scalar(sample_field_element(rng))
     }
 }
 
-impl<E: Pairing> traits::Reconstructable<ThresholdConfig<E::ScalarField>> for Scalar<E> {
-    type Share = Scalar<E>;
+impl<const N: usize, P: FpConfig<N>> Reconstructable<ShamirThresholdConfig<Fp<P, N>>>
+    for Scalar<Fp<P, N>>
+{
+    type ShareValue = Scalar<Fp<P, N>>;
 
-    // TODO: converting between Vec<(Player, Self::Share)> and Vec<ShamirShare<E::ScalarField>> feels bulky,
-    // one of them needs to go
     fn reconstruct(
-        sc: &ThresholdConfig<E::ScalarField>,
-        shares: &Vec<(Player, Self::Share)>,
-    ) -> Self {
+        sc: &ShamirThresholdConfig<Fp<P, N>>,
+        shares: &[ShamirShare<Self::ShareValue>],
+    ) -> anyhow::Result<Self> {
         assert_ge!(shares.len(), sc.get_threshold());
         assert_le!(shares.len(), sc.get_total_num_players());
 
-        // Convert shares to a Vec of ShamirShare // TODO: get rid of this?
-        let shamir_shares: Vec<ShamirShare<E::ScalarField>> = shares
+        let shares_destructured: Vec<(Player, Fp<P, N>)> = shares
             .iter()
-            .map(|(p, share)| ShamirShare {
-                x: E::ScalarField::from(p.id as u64),
-                y: share.0,
-            })
+            .map(|(player, scalar)| (*player, scalar.0))
             .collect();
 
-        Scalar(sc.reconstruct(&shamir_shares).unwrap())
+        Ok(Scalar(Fp::<P, N>::reconstruct(sc, &shares_destructured)?))
     }
 }

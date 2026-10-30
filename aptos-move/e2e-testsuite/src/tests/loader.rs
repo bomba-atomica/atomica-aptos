@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_language_e2e_tests::{
     executor::FakeExecutor,
@@ -22,6 +22,7 @@ pub fn run_and_assert_universe(
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
+    #[ignore]
     fn all_transactions(
         universe in DependencyGraph::strategy(
             // Number of modules

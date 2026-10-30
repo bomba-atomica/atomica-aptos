@@ -1,21 +1,26 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
-    instr::Instruction,
-    loader::{access_specifier_loader::load_access_specifier, Module, Script},
+    loader::{Module, Script},
     module_traversal::TraversalContext,
     native_functions::{NativeFunction, NativeFunctions, UnboxedNativeFunction},
-    storage::{loader::traits::Loader, ty_layout_converter::LayoutConverter},
+    storage::{
+        loader::traits::Loader, ty_layout_converter::LayoutConverter,
+        ty_tag_converter::ty_tag_pseudo_gas_cost,
+    },
+    RuntimeEnvironment,
 };
 use better_any::{Tid, TidAble, TidExt};
 use lazy_static::lazy_static;
 use move_binary_format::{
     access::ModuleAccess,
-    binary_views::BinaryIndexedView,
     errors::{Location, PartialVMError, PartialVMResult, VMResult},
-    file_format::{CompiledModule, FunctionAttribute, FunctionDefinitionIndex, Visibility},
+    file_format::{
+        CompiledModule, FunctionAttribute, FunctionDefinitionIndex, MemberCount, Visibility,
+    },
 };
 use move_core_types::{
     ability::AbilitySet,
@@ -26,12 +31,11 @@ use move_core_types::{
     value::MoveTypeLayout,
     vm_status::StatusCode,
 };
+use move_vm_profiler::ProfilerFunction;
 use move_vm_types::{
     gas::DependencyGasMeter,
-    loaded_data::{
-        runtime_access_specifier::AccessSpecifier,
-        runtime_types::{StructIdentifier, Type},
-    },
+    instr::Instruction,
+    loaded_data::runtime_types::Type,
     module_id_interner::InternedModuleId,
     ty_interner::TypeVecId,
     values::{AbstractFunction, SerializedFunctionData},
@@ -83,10 +87,28 @@ pub struct Function {
     // compatible).
     pub(crate) local_tys: Vec<Type>,
     pub(crate) param_tys: Vec<Type>,
-    pub(crate) access_specifier: AccessSpecifier,
     pub(crate) is_persistent: bool,
     pub(crate) has_module_reentrancy_lock: bool,
     pub(crate) is_trusted: bool,
+    /// Non-`None` when the function is a compiler-synthesized struct/enum API that requires
+    /// special treatment during bytecode validation or execution.  At most one variant can apply
+    /// to any given function.
+    pub(crate) struct_api: Option<StructApiKind>,
+}
+
+/// Classifies the struct/enum API role of a compiler-synthesized function.
+///
+/// Exactly one of these roles is assigned to a function that carries a struct API attribute;
+/// ordinary functions leave `Function::struct_api` as `None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StructApiKind {
+    /// Function packs a non-private struct or enum variant
+    /// (`FunctionAttribute::Pack` / `FunctionAttribute::PackVariant`).
+    Pack,
+    /// Function mutably borrows a field of a non-private struct or enum
+    /// (`FunctionAttribute::BorrowFieldMutable`).
+    /// The value is the zero-based field offset used to bypass the runtime ref-check.
+    BorrowFieldMut(MemberCount),
 }
 
 /// For loaded function representation, specifies the owner: a script or a module.
@@ -141,6 +163,13 @@ pub struct LoadedFunction {
     pub ty_args_id: TypeVecId,
     // Definition of the loaded function.
     pub function: Arc<Function>,
+}
+
+impl ProfilerFunction for LoadedFunction {
+    #[inline]
+    fn name(&self) -> String {
+        self.name_as_pretty_string()
+    }
 }
 
 impl LoadedFunction {
@@ -218,6 +247,10 @@ impl GenericFunctionPtr {
 #[derive(Clone, Tid)]
 pub(crate) struct LazyLoadedFunction {
     pub(crate) state: Rc<RefCell<LazyLoadedFunctionState>>,
+    /// Pseudo-gas cost of the function's type arguments. Kept outside the `RefCell` so that
+    /// reading it never takes a borrow: values are visited while `as_resolved` may hold a mutable
+    /// one. Re-resolution reuses the same type argument tags, so the memo stays valid.
+    pub(crate) ty_args_pseudo_gas_cost: u64,
 }
 
 #[derive(Clone)]
@@ -240,13 +273,36 @@ pub(crate) enum LazyLoadedFunctionState {
         // closures at construction time. Non-storable closures just have None as they will not be
         // serialized anyway.
         captured_layouts: Option<Vec<MoveTypeLayout>>,
+        // Hash of the defining module when resolved; a mismatch with the module's current hash
+        // triggers re-resolution so a stored closure never binds to pre-upgrade code. Recorded
+        // only for persistent functions (the only closures that are storable and can thus observe
+        // a republish); [None] otherwise (including scripts, which cannot be captured), which
+        // forces one re-resolution on the next call.
+        module_hash: Option<[u8; 32]>,
     },
 }
 
 impl LazyLoadedFunction {
-    pub(crate) fn new_unresolved(data: SerializedFunctionData) -> Self {
+    pub(crate) fn compute_ty_args_pseudo_gas_cost(
+        runtime_environment: &RuntimeEnvironment,
+        ty_args: &[TypeTag],
+    ) -> u64 {
+        let vm_config = runtime_environment.vm_config();
+        if !vm_config.meter_closure_ty_args {
+            return 0;
+        }
+        ty_args.iter().fold(0, |cost, ty_arg| {
+            cost.saturating_add(ty_tag_pseudo_gas_cost(ty_arg, vm_config))
+        })
+    }
+
+    pub(crate) fn new_unresolved(
+        data: SerializedFunctionData,
+        ty_args_pseudo_gas_cost: u64,
+    ) -> Self {
         Self {
             state: Rc::new(RefCell::new(LazyLoadedFunctionState::Unresolved { data })),
+            ty_args_pseudo_gas_cost,
         }
     }
 
@@ -289,13 +345,57 @@ impl LazyLoadedFunction {
             })
             .transpose()?;
 
+        // Record the version (hash) of the defining module so that later calls can detect if the
+        // module was republished within the same transaction, and re-resolve. Only needed for
+        // persistent functions: non-persistent closures always keep their pack-time binding.
+        let module_hash = match fun.module_id() {
+            Some(module_id)
+                if fun.function.is_persistent()
+                    && runtime_environment.vm_config().revalidate_resolved_closures =>
+            {
+                let (hash, _) = layout_converter.unmetered_get_module_hash_and_size(module_id)?;
+                Some(hash)
+            },
+            _ => None,
+        };
+
+        let ty_args_pseudo_gas_cost =
+            Self::compute_ty_args_pseudo_gas_cost(runtime_environment, &ty_args);
         Ok(Self {
             state: Rc::new(RefCell::new(LazyLoadedFunctionState::Resolved {
                 fun,
                 ty_args,
                 mask,
                 captured_layouts,
+                module_hash,
             })),
+            ty_args_pseudo_gas_cost,
+        })
+    }
+
+    pub(crate) fn new_resolved_not_capturing(
+        runtime_environment: &RuntimeEnvironment,
+        fun: Rc<LoadedFunction>,
+        // Hash of the defining module at resolution time, or [None] if the caller could not
+        // compute it (which forces one re-resolution on the first call).
+        module_hash: Option<[u8; 32]>,
+    ) -> PartialVMResult<Self> {
+        let ty_args = fun
+            .ty_args
+            .iter()
+            .map(|t| runtime_environment.ty_to_ty_tag(t))
+            .collect::<PartialVMResult<Vec<_>>>()?;
+        let ty_args_pseudo_gas_cost =
+            Self::compute_ty_args_pseudo_gas_cost(runtime_environment, &ty_args);
+        Ok(Self {
+            state: Rc::new(RefCell::new(LazyLoadedFunctionState::Resolved {
+                fun,
+                ty_args,
+                mask: ClosureMask::empty(),
+                captured_layouts: Some(vec![]),
+                module_hash,
+            })),
+            ty_args_pseudo_gas_cost,
         })
     }
 
@@ -322,7 +422,6 @@ impl LazyLoadedFunction {
                         gas_meter,
                         traversal_context,
                         ty,
-                        true,
                     )?
                 } else {
                     let ty = ty_builder.create_ty_with_subst(ty, &fun.ty_args)?;
@@ -330,7 +429,6 @@ impl LazyLoadedFunction {
                         gas_meter,
                         traversal_context,
                         &ty,
-                        true,
                     )?
                 };
 
@@ -378,7 +476,9 @@ impl LazyLoadedFunction {
     }
 
     /// If the function hasn't been resolved (loaded) yet, loads it. The gas is also charged for
-    /// function loading and any other module accesses.
+    /// function loading and any other module accesses. If the function has been resolved before,
+    /// but its defining module was republished since (i.e., upgraded within the same transaction),
+    /// it is re-resolved so that it binds to the module version currently visible to the loader.
     pub(crate) fn as_resolved(
         &self,
         loader: &impl Loader,
@@ -386,35 +486,128 @@ impl LazyLoadedFunction {
         traversal_context: &mut TraversalContext,
     ) -> PartialVMResult<Rc<LoadedFunction>> {
         let mut state = self.state.borrow_mut();
-        Ok(match &mut *state {
-            LazyLoadedFunctionState::Resolved { fun, .. } => fun.clone(),
-            LazyLoadedFunctionState::Unresolved {
-                data:
-                    SerializedFunctionData {
-                        format_version: _,
-                        module_id,
-                        fun_id,
-                        ty_args,
-                        mask,
-                        captured_layouts,
+
+        if let LazyLoadedFunctionState::Resolved {
+            fun, module_hash, ..
+        } = &*state
+        {
+            // The memoized resolution is stale if the defining module was republished since the
+            // function was resolved. Only persistent functions are revalidated:
+            //   - closures over non-persistent functions are not storable,
+            //   - script-owned functions cannot be republished.
+            let is_stale = loader
+                .runtime_environment()
+                .vm_config()
+                .revalidate_resolved_closures
+                && fun.function.is_persistent()
+                && match (fun.module_id(), module_hash) {
+                    (None, _) => false,
+                    // Resolution version unknown: re-resolve to be safe.
+                    (Some(_), None) => true,
+                    (Some(module_id), Some(resolved_hash)) => {
+                        let (current_hash, _) = loader
+                            .unmetered_get_module_hash_and_size(
+                                module_id.address(),
+                                module_id.name(),
+                            )
+                            .map_err(|err| err.to_partial())?;
+                        &current_hash != resolved_hash
                     },
-            } => {
-                let fun = loader.load_closure(
-                    gas_meter,
-                    traversal_context,
-                    module_id,
-                    fun_id,
-                    ty_args,
-                )?;
-                *state = LazyLoadedFunctionState::Resolved {
-                    fun: fun.clone(),
-                    ty_args: mem::take(ty_args),
-                    mask: *mask,
-                    captured_layouts: Some(mem::take(captured_layouts)),
                 };
-                fun
-            },
-        })
+            if !is_stale {
+                return Ok(fun.clone());
+            }
+        }
+
+        // First resolution, or the memoized resolution is stale: load the function from the
+        // module version currently visible to the loader. Note that the state is not modified
+        // until all fallible operations have succeeded.
+        let (fun, module_hash) = {
+            let (module_id, fun_id, ty_args) = match &*state {
+                LazyLoadedFunctionState::Unresolved { data } => (
+                    &data.module_id,
+                    data.fun_id.as_ident_str(),
+                    data.ty_args.as_slice(),
+                ),
+                LazyLoadedFunctionState::Resolved { fun, ty_args, .. } => {
+                    let module_id = fun.module_id().ok_or_else(|| {
+                        PartialVMError::new_invariant_violation(
+                            "Script functions cannot be re-resolved",
+                        )
+                    })?;
+                    (module_id, fun.name_id(), ty_args.as_slice())
+                },
+            };
+
+            let fun =
+                loader.load_closure(gas_meter, traversal_context, module_id, fun_id, ty_args)?;
+
+            // A closure can only be stored if its function is persistent (public
+            // or has #[persistent] attribute). Persistent functions have their
+            // signatures frozen by the upgrade compatibility check, so captured
+            // argument types are guaranteed to match across different upgraded
+            // module versions.
+            // Here, we check that loaded function is indeed persistent. It might not
+            // be the case for `init_module` that stores a closure:
+            //   1. Function `foo` is private in original module A.
+            //   2. Module B is published which calls now public `foo`.
+            // As a result, there is a speculative resource write which resolves
+            // to older (still private) function because Block-STM makes module
+            // upgrades visible only at commit. Such behavior should be caught
+            // immediately because private function can change signature, so there
+            // is some room for type confusion via captured arguments.
+            if !fun.function.is_persistent() {
+                return Err(PartialVMError::new_invariant_violation(format!(
+                    "Stored closure references non-persistent function `{}::{}`",
+                    module_id.short_str_lossless(),
+                    fun_id
+                )));
+            }
+
+            let module_hash = if loader
+                .runtime_environment()
+                .vm_config()
+                .revalidate_resolved_closures
+            {
+                let (hash, _) = loader
+                    .unmetered_get_module_hash_and_size(module_id.address(), module_id.name())
+                    .map_err(|err| err.to_partial())?;
+                Some(hash)
+            } else {
+                None
+            };
+            (fun, module_hash)
+        };
+
+        let (ty_args, mask, captured_layouts) = match &mut *state {
+            LazyLoadedFunctionState::Unresolved { data } => (
+                mem::take(&mut data.ty_args),
+                data.mask,
+                Some(mem::take(&mut data.captured_layouts)),
+            ),
+            LazyLoadedFunctionState::Resolved {
+                ty_args,
+                mask,
+                captured_layouts,
+                ..
+            } => (
+                mem::take(ty_args),
+                *mask,
+                // Persistent function signatures are frozen by the upgrade compatibility check, so
+                // the captured-argument layouts stay compatible with the values they hold across
+                // upgrades. They may be out of date (e.g. missing enum variants added later) but
+                // remain valid for the already-captured data, so reusing them is sound.
+                captured_layouts.take(),
+            ),
+        };
+        *state = LazyLoadedFunctionState::Resolved {
+            fun: fun.clone(),
+            ty_args,
+            mask,
+            captured_layouts,
+            module_hash,
+        };
+        Ok(fun)
     }
 }
 
@@ -444,6 +637,10 @@ impl AbstractFunction for LazyLoadedFunction {
 
     fn clone_dyn(&self) -> PartialVMResult<Box<dyn AbstractFunction>> {
         Ok(Box::new(self.clone()))
+    }
+
+    fn ty_args_pseudo_gas_cost(&self) -> u64 {
+        self.ty_args_pseudo_gas_cost
     }
 
     fn to_canonical_string(&self) -> String {
@@ -563,7 +760,7 @@ impl LoadedFunction {
         self.function.get_native()
     }
 
-    pub(crate) fn index(&self) -> FunctionDefinitionIndex {
+    pub fn index(&self) -> FunctionDefinitionIndex {
         self.function.index
     }
 
@@ -573,10 +770,6 @@ impl LoadedFunction {
 
     pub(crate) fn code_size(&self) -> usize {
         self.function.code.len()
-    }
-
-    pub(crate) fn access_specifier(&self) -> &AccessSpecifier {
-        &self.function.access_specifier
     }
 
     pub(crate) fn name_as_pretty_string(&self) -> String {
@@ -601,12 +794,28 @@ impl Debug for Function {
 }
 
 impl Function {
+    fn load_struct_api_kind(
+        handle: &move_binary_format::file_format::FunctionHandle,
+    ) -> Option<StructApiKind> {
+        for attr in &handle.attributes {
+            match attr {
+                FunctionAttribute::Pack | FunctionAttribute::PackVariant(_) => {
+                    return Some(StructApiKind::Pack)
+                },
+                FunctionAttribute::BorrowFieldMutable(offset) => {
+                    return Some(StructApiKind::BorrowFieldMut(*offset))
+                },
+                _ => {},
+            }
+        }
+        None
+    }
+
     pub(crate) fn new(
         natives: &NativeFunctions,
         index: FunctionDefinitionIndex,
         module: &CompiledModule,
         signature_table: &[Vec<Type>],
-        struct_names: &[StructIdentifier],
     ) -> PartialVMResult<Self> {
         let def = module.function_def_at(index);
         let handle = module.function_handle_at(def.function);
@@ -631,7 +840,11 @@ impl Function {
 
         // Native functions do not have a code unit
         let code = match &def.code {
-            Some(code) => code.code.iter().map(|b| b.clone().into()).collect(),
+            Some(code) => code
+                .code
+                .iter()
+                .map(|b| Instruction::try_from(b.clone()))
+                .collect::<PartialVMResult<Vec<_>>>()?,
             None => vec![],
         };
         let ty_param_abilities = handle.type_parameters.clone();
@@ -645,13 +858,6 @@ impl Function {
             vec![]
         };
         let param_tys = signature_table[handle.parameters.0 as usize].clone();
-
-        let access_specifier = load_access_specifier(
-            BinaryIndexedView::Module(module),
-            signature_table,
-            struct_names,
-            &handle.access_specifiers,
-        )?;
 
         Ok(Self {
             file_format_version: module.version(),
@@ -667,10 +873,10 @@ impl Function {
             local_tys,
             return_tys,
             param_tys,
-            access_specifier,
             is_persistent: handle.attributes.contains(&FunctionAttribute::Persistent),
             has_module_reentrancy_lock: handle.attributes.contains(&FunctionAttribute::ModuleLock),
             is_trusted,
+            struct_api: Self::load_struct_api_kind(handle),
         })
     }
 
@@ -717,6 +923,13 @@ impl Function {
         self.is_persistent || self.is_public()
     }
 
+    pub fn borrow_field_mut_api_at_offset(&self) -> Option<MemberCount> {
+        match self.struct_api {
+            Some(StructApiKind::BorrowFieldMut(offset)) => Some(offset),
+            _ => None,
+        }
+    }
+
     pub fn has_module_lock(&self) -> bool {
         self.has_module_reentrancy_lock
     }
@@ -727,6 +940,10 @@ impl Function {
 
     pub fn is_public(&self) -> bool {
         matches!(self.visibility, Visibility::Public)
+    }
+
+    pub fn is_pack_or_pack_variant(&self) -> bool {
+        matches!(self.struct_api, Some(StructApiKind::Pack))
     }
 
     pub fn is_friend(&self) -> bool {

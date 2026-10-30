@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This is a crate providing unified infrastructure for transaction simulation.
 //!
@@ -31,9 +31,7 @@ mod state_store;
 pub use account::{
     Account, AccountData, AccountPublicKey, CoinStore, FungibleStore, TransactionBuilder,
 };
-pub use genesis::{
-    GENESIS_CHANGE_SET_HEAD, GENESIS_CHANGE_SET_MAINNET, GENESIS_CHANGE_SET_TESTNET,
-};
+pub use genesis::GENESIS_CHANGE_SET_HEAD;
 pub use state_store::{
     DeltaStateStore, EitherStateView, EmptyStateView, InMemoryStateStore, SimulationStateStore,
 };

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     config::ValidatorConfiguration,
@@ -30,8 +30,8 @@ use aptos_types::{
     jwks::patch::IssuerJWK,
     keyless::Groth16VerificationKey,
     on_chain_config::{
-        Features, GasScheduleV2, OnChainConsensusConfig, OnChainExecutionConfig,
-        OnChainJWKConsensusConfig, OnChainRandomnessConfig,
+        Features, GasScheduleV2, OnChainChunkyDKGConfig, OnChainConsensusConfig,
+        OnChainExecutionConfig, OnChainJWKConsensusConfig, OnChainRandomnessConfig,
     },
     transaction::Transaction,
     waypoint::Waypoint,
@@ -442,9 +442,12 @@ pub struct GenesisConfiguration {
     pub gas_schedule: GasScheduleV2,
     pub initial_features_override: Option<Features>,
     pub randomness_config_override: Option<OnChainRandomnessConfig>,
+    pub chunky_dkg_config_override: Option<OnChainChunkyDKGConfig>,
     pub jwk_consensus_config_override: Option<OnChainJWKConsensusConfig>,
     pub initial_jwks: Vec<IssuerJWK>,
     pub keyless_groth16_vk: Option<Groth16VerificationKey>,
+    /// See `aptos_vm_genesis::GenesisConfiguration::initialize_decryption_at_genesis`.
+    pub initialize_decryption_at_genesis: bool,
 }
 
 pub type InitConfigFn = Arc<dyn Fn(usize, &mut NodeConfig, &mut NodeConfig) + Send + Sync>;
@@ -665,9 +668,11 @@ impl Builder {
             gas_schedule: default_gas_schedule(),
             initial_features_override: None,
             randomness_config_override: None,
+            chunky_dkg_config_override: None,
             jwk_consensus_config_override: None,
             initial_jwks: vec![],
             keyless_groth16_vk: None,
+            initialize_decryption_at_genesis: true,
         };
         if let Some(init_genesis_config) = &self.init_genesis_config {
             (init_genesis_config)(&mut genesis_config);

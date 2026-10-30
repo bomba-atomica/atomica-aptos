@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // Copyright (c) The Diem Core Contributors
 // Copyright (c) The Move Contributors
@@ -9,6 +9,8 @@ pub mod bcs;
 pub mod cmp;
 pub mod hash;
 pub mod mem;
+pub mod reflect;
+pub mod result;
 pub mod signer;
 pub mod string;
 #[cfg(feature = "testing")]
@@ -38,6 +40,7 @@ pub fn all_natives(
         add_natives!("cmp", cmp::make_all(builder));
         add_natives!("hash", hash::make_all(builder));
         add_natives!("mem", mem::make_all(builder));
+        add_natives!("reflect", reflect::make_all(builder));
         add_natives!("signer", signer::make_all(builder));
         add_natives!("string", string::make_all(builder));
         add_natives!("vector", vector::make_all(builder));

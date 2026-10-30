@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::suites::{
     state_sync::state_sync_config_execute_transactions,
@@ -8,14 +7,9 @@ use crate::suites::{
         PROGRESS_THRESHOLD_20_6, RELIABLE_PROGRESS_THRESHOLD, SYSTEM_12_CORES_10GB_THRESHOLD,
     },
 };
-use aptos_forge::{
-    success_criteria::SuccessCriteria, EmitJobMode, EmitJobRequest, ForgeConfig, NetworkTest,
-};
+use aptos_forge::{success_criteria::SuccessCriteria, EmitJobMode, EmitJobRequest, ForgeConfig};
 use aptos_testcases::{
     modifiers::{ExecutionDelayConfig, ExecutionDelayTest},
-    multi_region_network_test::{
-        MultiRegionNetworkEmulationConfig, MultiRegionNetworkEmulationTest,
-    },
     performance_test::PerformanceBenchmark,
     three_region_simulation_test::ThreeRegionSameCloudSimulationTest,
     CompositeNetworkTest,
@@ -103,13 +97,4 @@ pub(crate) fn three_region_simulation() -> ForgeConfig {
                 .add_wait_for_catchup_s(240)
                 .add_chain_progress(PROGRESS_THRESHOLD_20_6.clone()),
         )
-}
-
-pub fn wrap_with_two_region_env<T: NetworkTest + 'static>(test: T) -> CompositeNetworkTest {
-    CompositeNetworkTest::new(
-        MultiRegionNetworkEmulationTest::new_with_config(
-            MultiRegionNetworkEmulationConfig::two_region(),
-        ),
-        test,
-    )
 }

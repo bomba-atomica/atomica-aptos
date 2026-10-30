@@ -1,6 +1,6 @@
 
 ============ disassembled file-format ==================
-// Bytecode version v9
+// Bytecode version v10
 module 0xcafe::Module0
 enum E has copy + drop
   V1
@@ -42,7 +42,7 @@ struct S has copy + drop
     st_loc l4
 l1: borrow_loc l4
     pop
-l2: ret
+    ret
     // @20
     ld_false
     st_loc l4
@@ -52,13 +52,13 @@ l0: move_loc l1
     // @25
     ld_true
     st_loc l6
-l3: borrow_loc l6
+l2: borrow_loc l6
     pop
-    branch l2
+    ret
     // @30
     ld_false
     st_loc l6
-    branch l3
+    branch l2
 
 
 ============ bytecode verification succeeded ========

@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -28,7 +27,8 @@ use aptos_logger::prelude::*;
 use aptos_metrics_core::{IntGaugeVecHelper, TimerHelper};
 use aptos_storage_interface::{
     state_store::{
-        state_summary::ProvableStateSummary, state_view::cached_state_view::CachedStateView,
+        state_summary::{ProvablePositionStateSummary, ProvableStateSummary},
+        state_view::cached_state_view::CachedStateView,
     },
     DbReaderWriter,
 };
@@ -109,7 +109,9 @@ where
         self.inner
             .read()
             .as_ref()
-            .expect("BlockExecutor is not reset")
+            .ok_or_else(|| ExecutorError::InternalError {
+                error: "BlockExecutor is not reset".into(),
+            })?
             .execute_and_update_state(block, parent_block_id, onchain_config)
     }
 
@@ -135,7 +137,9 @@ where
         self.inner
             .read()
             .as_ref()
-            .expect("BlockExecutor is not reset")
+            .ok_or_else(|| ExecutorError::InternalError {
+                error: "BlockExecutor is not reset".into(),
+            })?
             .pre_commit_block(block_id)
     }
 
@@ -145,7 +149,9 @@ where
         self.inner
             .read()
             .as_ref()
-            .expect("BlockExecutor is not reset")
+            .ok_or_else(|| ExecutorError::InternalError {
+                error: "BlockExecutor is not reset".into(),
+            })?
             .commit_ledger(ledger_info_with_sigs)
     }
 
@@ -215,6 +221,19 @@ where
             "execute_block"
         );
         let committed_block_id = self.committed_block_id();
+
+        // Record ExecutionStart for traced transactions.
+        // block_txns is populated at proposal time (round_manager::process_proposal).
+        {
+            let store = aptos_transaction_tracing::store::TransactionTraceStore::global();
+            if store.is_enabled() {
+                store.record_block_stage(
+                    &block_id,
+                    aptos_transaction_tracing::types::TransactionStage::ExecutionStart,
+                );
+            }
+        }
+
         let execution_output =
             if parent_block_id != committed_block_id && parent_output.has_reconfiguration() {
                 // ignore reconfiguration suffix, even if the block is non-empty
@@ -246,10 +265,30 @@ where
                     auxiliary_info,
                     parent_output.result_state(),
                     state_view,
-                    onchain_config.clone(),
+                    onchain_config,
                     TransactionSliceMetadata::block(parent_block_id, block_id),
                 )?
             };
+
+        // Record Executed(Keep/Retry/Discard) for traced txns in this block.
+        {
+            let store = aptos_transaction_tracing::store::TransactionTraceStore::global();
+            if store.is_enabled() {
+                let retry_hashes: Vec<HashValue> = execution_output
+                    .to_retry
+                    .transactions
+                    .iter()
+                    .map(|t| t.committed_hash())
+                    .collect();
+                let discard_hashes: Vec<HashValue> = execution_output
+                    .to_discard
+                    .transactions
+                    .iter()
+                    .map(|t| t.committed_hash())
+                    .collect();
+                store.record_execution_result(&block_id, &retry_hashes, &discard_hashes);
+            }
+        }
 
         let output = PartialStateComputeResult::new(execution_output);
         let _ = self
@@ -313,12 +352,25 @@ where
                 fail_point!("executor::block_state_checkpoint", |_| {
                     Err(anyhow::anyhow!("Injected error in block state checkpoint."))
                 });
-                output.set_state_checkpoint_output(DoStateCheckpoint::run(
-                    &output.execution_output,
-                    parent_block.output.ensure_result_state_summary()?,
-                    &ProvableStateSummary::new_persisted(self.db.reader.as_ref())?,
-                    None,
-                )?);
+                let parent_state_summary = parent_block.output.ensure_result_state_summary()?;
+                let position_persisted = output
+                    .execution_output
+                    .compute_trading_native_state_roots
+                    .then(|| ProvablePositionStateSummary::new_persisted(self.db.reader.as_ref()))
+                    .transpose()?;
+                let parent_position_summary =
+                    parent_block.output.ensure_result_position_state_summary()?;
+                output.set_state_checkpoint_output(
+                    DoStateCheckpoint::run()
+                        .execution_output(&output.execution_output)
+                        .parent_state_summary(parent_state_summary)
+                        .persisted_state_summary(&ProvableStateSummary::new_persisted(
+                            self.db.reader.as_ref(),
+                        )?)
+                        .maybe_parent_position_state_summary(parent_position_summary)
+                        .maybe_persisted_position_state_summary(position_persisted.as_ref())
+                        .build()?,
+                );
                 output.set_ledger_update_output(DoLedgerUpdate::run(
                     &output.execution_output,
                     output.ensure_state_checkpoint_output()?,

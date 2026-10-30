@@ -3,7 +3,62 @@
 All notable changes to the Aptos CLI will be captured in this file. This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format set out by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 # Unreleased
+
+## [9.5.0]
+- Compiler now uses receiver style calls for macro-generated code.
+- Point `aptos update movefmt` at the new `aptos-labs/movefmt` repo and bump default movefmt version to 1.5.3.
+
+## [9.4.0]
+- Set language version 2.4 and bytecode version v10 as default.
+
+## [9.3.0]
+- Replaced `aptos node verify-digest-key` with two commands: `aptos node validate-digest-key` and `aptos node validate-public-parameters`. Both compute and report a blake3 checksum (instead of SHA-256) along with the file size, and verify that the blob deserializes to the corresponding type. The JSON output field is renamed from `sha256` to `blake3`.
+
+## [9.2.0]
+- Update boogie from 3.5.1 to 3.5.6.
+- Update z3 from 4.11.2 to 4.13.0.
+
+## [9.1.0]
+- Added support for confidential transactions locally
+- Updated default formatter version to 1.5.1.
+- `aptos move simulate` now supports `--show-details` to include both `events` and `changes` in simulation output.
+
+## [9.0.0]
+- Add linter rules `unused_function`, `unused_struct`, and `unused_constant` to detect unused items.
+
+## [8.1.0]
+- Transaction Simulation Session: add gas profiler support
+- Transaction Simulation Session: add `new-block` and `advance-epoch` commands
+- Gas Profiler: major UI overhaul for HTML reports with sortable tables, CSV export, collapsible sections, and lazy-loaded execution traces
+
+## [8.0.0]
+- [**Breaking Change**] (Breaking only for the localnet) Updated localnet indexer processors to aptos-indexer-processors-v2.3.0 and processor SDK to aptos-indexer-processor-sdk-v2.1.4. This removes the events processor and upgrades diesel to v2.3. Also updated Hasura metadata accordingly. This is breaking because old v1 tables are now gone (e.g. `events`).
+
+## [7.14.2]
+- Transaction Simulation Session: fix support for simulating transactions that use on-chain randomness (local mode only)
+
+## [7.14.1]
+- Transaction simulation: fix bug in `fund_apt_fungible_store`
+
+## [7.14.0]
+- Add support for code object deployment and upgrade in Transaction Simulation Sessions
+
+## [7.13.0]
+- Set language version 2.3 and bytecode version v9 as default, adding support for signed integer types.
+- Update default version of formatter to 1.4.5 and move mutation tests to 2.2.0.
+
+## [7.12.1]
+- Fix link time optimization issues with Aptos CLI released via homebrew.
+
+## [7.12.0]
+- Add support for passing signed integer transaction arguments through the Aptos CLI.
+
+## [7.11.1]
+- When Move unit tests detect that the legacy struct-based Option module is being loaded, replace it with the pre-compiled binary version.
+
+## [7.11.0]
 - When using `--bind-to 0.0.0.0`, clients created by the localnet will try to connect at 127.0.0.1, not 0.0.0.0.
+- Add `--docker-network` flag to allow specifying existing Docker network.
 
 ## [7.10.2]
 - Fix backward compatibility issue of enum-based option module

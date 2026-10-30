@@ -12,27 +12,36 @@ publish = { workspace = true }
 repository = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+default = []
+fuzzing = ["aptos-config/fuzzing", "aptos-crypto/fuzzing", "aptos-types/fuzzing"]
+
 [dependencies]
 anyhow = { workspace = true }
 aptos-aggregator = { workspace = true }
+aptos-api = { workspace = true }
 aptos-block-executor = { workspace = true }
 aptos-block-partitioner = { workspace = true }
 aptos-config = { workspace = true }
 aptos-crypto = { workspace = true }
 aptos-db = { workspace = true }
+aptos-db-indexer = { workspace = true }
 aptos-executor = { workspace = true }
 aptos-executor-service = { workspace = true }
 aptos-executor-types = { workspace = true }
 aptos-experimental-ptx-executor = { workspace = true }
 aptos-experimental-runtimes = { workspace = true }
 aptos-genesis = { workspace = true, features = ["testing"] }
+aptos-indexer-grpc-fullnode = { workspace = true }
+aptos-indexer-grpc-table-info = { workspace = true }
 aptos-infallible = { workspace = true }
 aptos-jellyfish-merkle = { workspace = true }
 aptos-logger = { workspace = true }
 aptos-metrics-core = { workspace = true }
 aptos-mvhashmap = { workspace = true }
 aptos-node-resource-metrics = { workspace = true }
-aptos-push-metrics =  { workspace = true }
+aptos-protos = { workspace = true }
+aptos-push-metrics = { workspace = true }
 aptos-sdk = { workspace = true }
 aptos-storage-interface = { workspace = true }
 aptos-transaction-generator-lib = { workspace = true }
@@ -49,6 +58,7 @@ chrono = { workspace = true }
 clap = { workspace = true }
 dashmap = { workspace = true }
 derivative = { workspace = true }
+futures = { workspace = true }
 indicatif = { workspace = true }
 itertools = { workspace = true }
 move-core-types = { workspace = true }
@@ -62,14 +72,11 @@ serde_json = { workspace = true }
 thread_local = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
+tonic = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
+aptos-jemalloc = { workspace = true }
 aptos-profiler = { workspace = true }
-jemallocator = { workspace = true }
 
 [dev-dependencies]
 aptos-temppath = { workspace = true }
-
-[features]
-default = []
-fuzzing = ["aptos-config/fuzzing", "aptos-crypto/fuzzing", "aptos-types/fuzzing"]

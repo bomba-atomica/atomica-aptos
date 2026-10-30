@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // Instrumentation pass which injects global invariants into the bytecode.
 
@@ -26,7 +27,7 @@ use move_stackless_bytecode::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-const GLOBAL_INVARIANT_FAILS_MESSAGE: &str = "global memory invariant does not hold";
+pub const GLOBAL_INVARIANT_FAILS_MESSAGE: &str = "global memory invariant does not hold";
 
 /// A transposed view of `PerFunctionRelevance` from the point of per function instantiations
 #[derive(Default)]
@@ -115,7 +116,7 @@ impl FunctionTargetProcessor for GlobalInvariantInstrumentationProcessor {
         data: FunctionData,
         _scc_opt: Option<&[FunctionEnv]>,
     ) -> FunctionData {
-        if fun_env.is_native() || fun_env.is_intrinsic() {
+        if fun_env.no_verified_bytecode() {
             // nothing to do
             return data;
         }
@@ -126,6 +127,7 @@ impl FunctionTargetProcessor for GlobalInvariantInstrumentationProcessor {
         debug_assert!(matches!(
             data.variant,
             FunctionVariant::Verification(VerificationFlavor::Regular)
+                | FunctionVariant::Verification(VerificationFlavor::Split(..))
         ));
 
         // retrieve and transpose the analysis result
@@ -197,6 +199,58 @@ impl<'env> Instrumenter<'env> {
             }
         }
 
+        // Entrypoint assumptions re-established after loop-header memory
+        // havocs (`HavocGlobal`): an invariant mentioning havocked memory —
+        // assumed at entry and asserted at every write on the loop's body
+        // path — holds at every concrete arrival at the header, so it may be
+        // re-assumed over the havocked state. Excluded are invariants whose
+        // checking is deferred to the exitpoint (suspended in this function's
+        // body), which are not maintained across iterations, and invariants
+        // not touching the havocked memory, which lose no knowledge. One
+        // re-assume is emitted per run of havocs, keyed by the run's last
+        // offset.
+        let mut xlated_havoc_reassume: BTreeMap<CodeOffset, TranslatedSpec> = BTreeMap::new();
+        let mut havoc_run_mems = BTreeSet::new();
+        // Loop headers emit assumptions (e.g. well-formedness) between the
+        // havocs of a run, so a run ends at a havoc only if no further
+        // `HavocGlobal` follows before the next non-assumption instruction.
+        // Re-assuming an invariant mid-run — over partially havocked memory —
+        // would exclude reachable states.
+        let another_havoc_follows = |mut j: usize| loop {
+            match old_code.get(j) {
+                Some(Bytecode::Prop(_, PropKind::Assume, _)) => j += 1,
+                Some(Bytecode::Call(_, _, Operation::HavocGlobal(..), _, _)) => break true,
+                _ => break false,
+            }
+        };
+        for (i, bc) in old_code.iter().enumerate() {
+            if let Bytecode::Call(_, _, Operation::HavocGlobal(mid, sid, _), _, _) = bc {
+                havoc_run_mems.insert(mid.qualified(*sid));
+                if !another_havoc_follows(i + 1) {
+                    let mems = std::mem::take(&mut havoc_run_mems);
+                    let relevant: BTreeMap<_, _> = {
+                        let env = self.builder.global_env();
+                        pack.entrypoint_assumptions
+                            .iter()
+                            .filter(|(inv_id, _)| !pack.exitpoint_assertions.contains_key(inv_id))
+                            .filter(|(inv_id, _)| {
+                                env.get_global_invariant(**inv_id).is_some_and(|inv| {
+                                    inv.mem_usage
+                                        .iter()
+                                        .any(|mem| mems.contains(&mem.to_qualified_id()))
+                                })
+                            })
+                            .map(|(inv_id, insts)| (*inv_id, insts.clone()))
+                            .collect()
+                    };
+                    if !relevant.is_empty() {
+                        xlated_havoc_reassume
+                            .insert(i as CodeOffset, self.translate_invariants(&relevant));
+                    }
+                }
+            }
+        }
+
         // Step 1: emit entrypoint assumptions
         self.assert_or_assume_translated_invariants(&xlated_entrypoint, PropKind::Assume);
 
@@ -231,6 +285,11 @@ impl<'env> Instrumenter<'env> {
 
             // the bytecode itself
             self.builder.emit(bc);
+
+            // re-assume relevant entrypoint invariants over havocked loop memory
+            if let Some(xlated) = xlated_havoc_reassume.get(&code_offset) {
+                self.assert_or_assume_translated_invariants(xlated, PropKind::Assume);
+            }
 
             // post-instrumentation for assertions
             if let Some(xlated) = xlated_inlined.get(&code_offset) {

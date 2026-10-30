@@ -1,12 +1,13 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     built_package::{BuildOptions, BuiltPackage},
     path_relative_to_crate,
-    release_bundle::{ReleaseBundle, ReleasePackage},
+    release_bundle::new_release_package,
 };
 use anyhow::{anyhow, Context};
+use aptos_release_bundle::ReleaseBundle;
 use aptos_sdk_builder::rust;
 use aptos_types::transaction::EntryABI;
 use clap::Parser;
@@ -85,7 +86,7 @@ impl ReleaseOptions {
                         )
                     })?;
             }
-            let released = ReleasePackage::new(built)?;
+            let released = new_release_package(built)?;
             let size = bcs::to_bytes(&released)?.len();
             println!(
                 "Including package `{}` size {}k",

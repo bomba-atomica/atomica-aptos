@@ -1,18 +1,16 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
 mod aptos;
 
 pub use aptos::*;
-use std::io::{Read, Write};
+use std::io::Write;
 
 mod built_package;
+pub use aptos_framework_natives as natives;
 pub use built_package::*;
-
-pub mod natives;
 mod release_builder;
 pub use release_builder::*;
 pub mod chunked_publish;
@@ -20,11 +18,11 @@ pub mod docgen;
 pub mod extended_checks;
 pub mod prover;
 mod release_bundle;
-mod released_framework;
 
-use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+pub use aptos_framework_natives::{unzip_metadata, unzip_metadata_str};
+pub use aptos_release_bundle::*;
+use flate2::{write::GzEncoder, Compression};
 pub use release_bundle::*;
-pub use released_framework::*;
 use std::path::PathBuf;
 
 pub fn path_in_crate<S>(relative: S) -> PathBuf
@@ -47,17 +45,4 @@ pub fn zip_metadata(data: &[u8]) -> anyhow::Result<Vec<u8>> {
 
 pub fn zip_metadata_str(s: &str) -> anyhow::Result<Vec<u8>> {
     zip_metadata(s.as_bytes())
-}
-
-pub fn unzip_metadata(data: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let mut d = GzDecoder::new(data);
-    let mut res = vec![];
-    d.read_to_end(&mut res)?;
-    Ok(res)
-}
-
-pub fn unzip_metadata_str(data: &[u8]) -> anyhow::Result<String> {
-    let r = unzip_metadata(data)?;
-    let s = String::from_utf8(r)?;
-    Ok(s)
 }

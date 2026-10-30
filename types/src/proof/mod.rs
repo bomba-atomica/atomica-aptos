@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub mod accumulator;
 pub mod definition;
@@ -81,10 +80,7 @@ impl<H: CryptoHasher> CryptoHash for MerkleTreeInternalNode<H> {
     type Hasher = H;
 
     fn hash(&self) -> HashValue {
-        let mut state = Self::Hasher::default();
-        state.update(self.left_child.as_ref());
-        state.update(self.right_child.as_ref());
-        state.finish()
+        H::hash_two_children(&self.left_child, &self.right_child)
     }
 }
 
@@ -122,9 +118,6 @@ impl CryptoHash for SparseMerkleLeafNode {
     type Hasher = SparseMerkleLeafNodeHasher;
 
     fn hash(&self) -> HashValue {
-        let mut state = Self::Hasher::default();
-        state.update(self.key.as_ref());
-        state.update(self.value_hash.as_ref());
-        state.finish()
+        Self::Hasher::hash_two_children(&self.key, &self.value_hash)
     }
 }

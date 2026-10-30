@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use libtest_mimic::{Arguments, Trial};
 use move_bytecode_verifier::{verifier::VerificationScope, VerifierConfig};
@@ -35,7 +36,7 @@ struct TestConfig {
 
 /// Note that any config which has different output for a test directory *must* be added to the
 /// [SEPARATE_BASELINE] array below, so that a special output file `test.foo.exp` will be used for
-/// outputs comparison when running `test.move` or `test.mvir` for config "foo".
+/// outputs comparison when running `test.move` or `test.masm` for config "foo".
 static TEST_CONFIGS: Lazy<Vec<TestConfig>> = Lazy::new(|| {
     vec![
         TestConfig {
@@ -59,9 +60,11 @@ static TEST_CONFIGS: Lazy<Vec<TestConfig>> = Lazy::new(|| {
             include: &[
                 // Note: for functions values the difference between generated files are stack
                 // traces only (attached for in-place checks, set to None for async checks).
+                "/limits/",
                 "/function_values_safety/",
-                "/trusted_code/",
                 "/paranoid-tests/",
+                "/stack_size/",
+                "/trusted_code/",
             ],
             exclude: &[],
             tracing: true,
@@ -76,9 +79,11 @@ static TEST_CONFIGS: Lazy<Vec<TestConfig>> = Lazy::new(|| {
                 VerifierConfig::unbounded().set_scope(VerificationScope::Nothing),
             ),
             include: &[
+                "/limits/",
                 "/function_values_safety/",
-                "/trusted_code/",
                 "/paranoid-tests/",
+                "/stack_size/",
+                "/trusted_code/",
             ],
             exclude: &[],
             tracing: false,
@@ -92,16 +97,19 @@ static TEST_CONFIGS: Lazy<Vec<TestConfig>> = Lazy::new(|| {
                 paranoid_type_checks: true,
                 enable_lazy_loading: false,
                 enable_enum_option: false,
-                ..VMConfig::default()
+                ..VMConfig::default_for_test()
             },
             include: &[],
             exclude: &[
-                "/lazy_loading/",
-                "/paranoid-tests/",
                 "/function_values_safety/",
-                "/trusted_code/",
-                "/tracing/",
+                "/lazy_loading/",
+                "/limits/",
+                "/paranoid-tests/",
                 "/runtime_ref_checks/",
+                "/stack_size/",
+                "/tracing/",
+                "/trusted_code/",
+                "/struct_api/",
             ],
             tracing: false,
         },
@@ -140,7 +148,7 @@ fn vm_config_for_tests(verifier_config: VerifierConfig) -> VMConfig {
         optimize_trusted_code: true,
         verifier_config,
         enable_enum_option: false,
-        ..VMConfig::default()
+        ..VMConfig::default_for_test()
     }
 }
 
@@ -152,10 +160,12 @@ fn vm_config_for_tests(verifier_config: VerifierConfig) -> VMConfig {
 /// "foo" will have a separate baseline output file `test.foo.exp`.
 const SEPARATE_BASELINE: &[&str] = &[
     "/function_values_safety/",
+    "/limits/",
     "/module_publishing/",
     "/re_entrancy/",
-    "/trusted_code/",
     "/runtime_ref_checks/",
+    "/stack_size/",
+    "/trusted_code/",
 ];
 
 fn get_config_by_name(name: &str) -> TestConfig {
@@ -182,7 +192,6 @@ fn run(path: &Path, config: TestConfig) -> datatest_stable::Result<()> {
         language_version: config.language_version,
         experiments,
         vm_config: config.vm_config,
-        use_masm: true,
         echo: true,
         cross_compilation_targets: BTreeSet::new(),
         tracing: config.tracing,
@@ -199,7 +208,7 @@ fn main() {
         .flatten()
         .filter_map(|e| {
             let p = e.path().display().to_string();
-            if p.ends_with(".move") || p.ends_with(".mvir") || p.ends_with(".masm") {
+            if p.ends_with(".move") || p.ends_with(".masm") {
                 Some(p)
             } else {
                 None

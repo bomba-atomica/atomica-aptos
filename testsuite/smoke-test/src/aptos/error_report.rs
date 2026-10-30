@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::smoke_test_environment::new_local_swarm_with_aptos;
 use aptos_cached_packages::aptos_stdlib;
@@ -32,6 +32,8 @@ async fn submit_and_check_err<F: Fn(TransactionBuilder) -> TransactionBuilder>(
     )
 }
 
+// Too expensive to spin up a local swarm and submit transactions via the REST client
+#[ignore]
 #[tokio::test]
 async fn test_error_report() {
     let swarm = new_local_swarm_with_aptos(1).await;

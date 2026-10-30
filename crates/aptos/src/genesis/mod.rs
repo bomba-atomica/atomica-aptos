@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub mod git;
 pub mod keys;
@@ -34,7 +34,7 @@ use aptos_genesis::{
 use aptos_logger::info;
 use aptos_types::{
     account_address::{AccountAddress, AccountAddressWithChecks},
-    on_chain_config::{OnChainConsensusConfig, OnChainExecutionConfig, OnChainRandomnessConfig},
+    on_chain_config::{OnChainConsensusConfig, OnChainExecutionConfig},
 };
 use aptos_vm_genesis::{default_gas_schedule, AccountBalance, EmployeePool};
 use async_trait::async_trait;
@@ -258,17 +258,12 @@ pub fn fetch_mainnet_genesis_info(git_options: GitOptions) -> CliTypedResult<Mai
             execution_config: OnChainExecutionConfig::default_for_genesis(),
             gas_schedule: default_gas_schedule(),
             initial_features_override: None,
-            randomness_config_override: layout.randomness_config.as_ref().and_then(|s| {
-                match s.as_str() {
-                    "Off" => Some(OnChainRandomnessConfig::Off),
-                    "V1" => Some(OnChainRandomnessConfig::default_for_genesis()),
-                    "V2" => Some(OnChainRandomnessConfig::default_enabled()),
-                    _ => None,
-                }
-            }),
+            randomness_config_override: None,
+            chunky_dkg_config_override: None,
             jwk_consensus_config_override: None,
             initial_jwks: vec![],
             keyless_groth16_vk: None,
+            initialize_decryption_at_genesis: true,
         },
     )?)
 }
@@ -309,18 +304,13 @@ pub fn fetch_genesis_info(git_options: GitOptions) -> CliTypedResult<GenesisInfo
             consensus_config: layout.on_chain_consensus_config,
             execution_config: layout.on_chain_execution_config,
             gas_schedule: default_gas_schedule(),
-            initial_features_override: None,
-            randomness_config_override: layout.randomness_config.as_ref().and_then(|s| {
-                match s.as_str() {
-                    "Off" => Some(OnChainRandomnessConfig::Off),
-                    "V1" => Some(OnChainRandomnessConfig::default_for_genesis()),
-                    "V2" => Some(OnChainRandomnessConfig::default_enabled()),
-                    _ => None,
-                }
-            }),
+            initial_features_override: layout.initial_features_override.clone(),
+            randomness_config_override: layout.randomness_config_override.clone(),
+            chunky_dkg_config_override: layout.chunky_dkg_config_override.clone(),
             jwk_consensus_config_override: layout.jwk_consensus_config_override.clone(),
             initial_jwks: layout.initial_jwks.clone(),
             keyless_groth16_vk: layout.keyless_groth16_vk_override.clone(),
+            initialize_decryption_at_genesis: true,
         },
     )?)
 }

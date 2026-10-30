@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! DO NOT USE OUTSIDE OF SMOKE_TEST CRATE
 //!
@@ -18,7 +17,14 @@ const WORKSPACE_BUILD_ERROR_MSG: &str = r#"
 "#;
 
 // Global flag indicating if all binaries in the workspace have been built.
+// When SMOKE_TEST_PREBUILD_BINARIES=1 is set (e.g. in CI with nextest archives),
+// skip the cargo build and assume binaries are already present.
 static WORKSPACE_BUILT: Lazy<bool> = Lazy::new(|| {
+    if env::var("SMOKE_TEST_PREBUILD_BINARIES").is_ok() {
+        info!("Skipping workspace build: SMOKE_TEST_PREBUILD_BINARIES is set");
+        return true;
+    }
+
     info!("Building project binaries");
     let mut args = cargo_build_common_args();
     args.append(&mut vec!["--all", "--bins", "--exclude", "aptos-node"]);
@@ -41,15 +47,23 @@ static WORKSPACE_BUILT: Lazy<bool> = Lazy::new(|| {
 pub fn workspace_root() -> PathBuf {
     let mut path = build_dir();
     while !path.ends_with("target") {
-        path.pop();
+        if !path.pop() {
+            panic!(
+                "Could not find 'target' directory ascending from {:?}",
+                build_dir()
+            );
+        }
     }
     path.pop();
     path
 }
 
 // Path to the directory where build artifacts live.
-//TODO maybe add an Environment Variable which points to built binaries
+// When SMOKE_TEST_BIN_DIR is set, use that directory instead of inferring from current_exe.
 fn build_dir() -> PathBuf {
+    if let Ok(dir) = env::var("SMOKE_TEST_BIN_DIR") {
+        return PathBuf::from(dir);
+    }
     env::current_exe()
         .ok()
         .map(|mut path| {
@@ -60,6 +74,11 @@ fn build_dir() -> PathBuf {
             path
         })
         .expect("Can't find the build directory. Cannot continue running tests")
+}
+
+// Returns a `Command` for invoking the `aptos-debugger` binary.
+pub fn get_aptos_debugger_command() -> Command {
+    Command::new(get_bin("aptos-debugger"))
 }
 
 // Path to a specified binary

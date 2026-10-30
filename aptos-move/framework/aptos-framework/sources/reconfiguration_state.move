@@ -3,7 +3,6 @@
 /// WARNING: `reconfiguration_state::initialize()` is required before `RECONFIGURE_WITH_DKG` can be enabled.
 module aptos_framework::reconfiguration_state {
     use std::error;
-    use std::string;
     use aptos_std::copyable_any;
     use aptos_std::copyable_any::Any;
     use aptos_framework::system_addresses;
@@ -21,7 +20,7 @@ module aptos_framework::reconfiguration_state {
         /// Currently the variant type is one of the following.
         /// - `ReconfigStateInactive`
         /// - `ReconfigStateActive`
-        variant: Any,
+        variant: Any
     }
 
     /// A state variant indicating no reconfiguration is in progress.
@@ -29,7 +28,7 @@ module aptos_framework::reconfiguration_state {
 
     /// A state variant indicating a reconfiguration is in progress.
     struct StateActive has copy, drop, store {
-        start_time_secs: u64,
+        start_time_secs: u64
     }
 
     public fun is_initialized(): bool {
@@ -39,9 +38,12 @@ module aptos_framework::reconfiguration_state {
     public fun initialize(fx: &signer) {
         system_addresses::assert_aptos_framework(fx);
         if (!exists<State>(@aptos_framework)) {
-            move_to(fx, State {
-                variant: copyable_any::pack(StateInactive {})
-            })
+            move_to(
+                fx,
+                State {
+                    variant: copyable_any::pack(StateInactive {})
+                }
+            )
         }
     }
 
@@ -56,7 +58,7 @@ module aptos_framework::reconfiguration_state {
         };
 
         let state = borrow_global<State>(@aptos_framework);
-        let variant_type_name = *string::bytes(copyable_any::type_name(&state.variant));
+        let variant_type_name = *state.variant.type_name().bytes();
         variant_type_name == b"0x1::reconfiguration_state::StateActive"
     }
 
@@ -67,11 +69,11 @@ module aptos_framework::reconfiguration_state {
     public(friend) fun on_reconfig_start() acquires State {
         if (exists<State>(@aptos_framework)) {
             let state = borrow_global_mut<State>(@aptos_framework);
-            let variant_type_name = *string::bytes(copyable_any::type_name(&state.variant));
+            let variant_type_name = *state.variant.type_name().bytes();
             if (variant_type_name == b"0x1::reconfiguration_state::StateInactive") {
-                state.variant = copyable_any::pack(StateActive {
-                    start_time_secs: timestamp::now_seconds()
-                });
+                state.variant = copyable_any::pack(
+                    StateActive { start_time_secs: timestamp::now_seconds() }
+                );
             }
         };
     }
@@ -80,9 +82,9 @@ module aptos_framework::reconfiguration_state {
     /// Abort if the reconfiguration state is not "in progress".
     public(friend) fun start_time_secs(): u64 acquires State {
         let state = borrow_global<State>(@aptos_framework);
-        let variant_type_name = *string::bytes(copyable_any::type_name(&state.variant));
+        let variant_type_name = *state.variant.type_name().bytes();
         if (variant_type_name == b"0x1::reconfiguration_state::StateActive") {
-            let active = copyable_any::unpack<StateActive>(state.variant);
+            let active = state.variant.unpack<StateActive>();
             active.start_time_secs
         } else {
             abort(error::invalid_state(ERECONFIG_NOT_IN_PROGRESS))
@@ -94,7 +96,7 @@ module aptos_framework::reconfiguration_state {
     public(friend) fun on_reconfig_finish() acquires State {
         if (exists<State>(@aptos_framework)) {
             let state = borrow_global_mut<State>(@aptos_framework);
-            let variant_type_name = *string::bytes(copyable_any::type_name(&state.variant));
+            let variant_type_name = *state.variant.type_name().bytes();
             if (variant_type_name == b"0x1::reconfiguration_state::StateActive") {
                 state.variant = copyable_any::pack(StateInactive {});
             } else {

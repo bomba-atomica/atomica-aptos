@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::ungrouped::{
     mixed_emit_job, PROGRESS_THRESHOLD_20_6, RELIABLE_REAL_ENV_PROGRESS_THRESHOLD,
@@ -37,7 +36,7 @@ pub(crate) fn individual_workload_tests(test_name: String) -> ForgeConfig {
                 let account_creation_type = TransactionType::AccountGeneration {
                     add_created_accounts_to_pool: true,
                     max_account_working_set: 20_000_000,
-                    creation_balance: 200_000_000,
+                    creation_balance: 2_000_000_000,
                 };
                 let write_type = TransactionType::CallCustomModules {
                     entry_point: Box::new(EntryPoints::BytesMakeOrChange {
@@ -134,7 +133,7 @@ pub(crate) fn mainnet_like_simulation_test() -> ForgeConfig {
                 .txn_expiration_time_secs(5 * 60),
         )
         .add_network_test(CompositeNetworkTest::new(
-            MultiRegionNetworkEmulationTest::default_for_validator_count(num_validators),
+            MultiRegionNetworkEmulationTest::mainnet_calibrated_for_validator_count(num_validators),
             CpuChaosTest::default(),
         ))
         .with_genesis_helm_config_fn(Arc::new(|helm_values| {

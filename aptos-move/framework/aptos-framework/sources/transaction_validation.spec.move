@@ -28,16 +28,12 @@ spec aptos_framework::transaction_validation {
         pragma aborts_if_is_strict;
     }
 
-    spec grant_gas_permission(
-        master: &signer,
-        permissioned: &signer,
-        gas_amount: u64
-    ) {
-        pragma aborts_if_is_partial;
+    spec grant_gas_permission {
+        aborts_if true;
     }
 
-    spec revoke_gas_permission(permissioned: &signer) {
-        pragma aborts_if_is_partial;
+    spec revoke_gas_permission {
+        aborts_if true;
     }
 
     /// Ensure caller is `aptos_framework`.
@@ -90,6 +86,7 @@ spec aptos_framework::transaction_validation {
         txn_expiration_time: u64,
         chain_id: u8,
         is_simulation: bool,
+        txn_limits_request: Option<UserTxnLimitsRequest>,
     ) {
         // TODO(fa_migration)
         pragma verify = false;
@@ -162,7 +159,7 @@ spec aptos_framework::transaction_validation {
             !account::spec_exists_at(secondary_signer_addresses[i]);
         aborts_if exists i in 0..num_secondary_signers:
             !can_skip(features::spec_simulation_enhancement_enabled(), is_simulation, secondary_signer_public_key_hashes[i]) &&
-                option::is_some(secondary_signer_public_key_hashes[i]) && option::spec_borrow(
+                option::is_some(secondary_signer_public_key_hashes[i]) && option::borrow(
                 secondary_signer_public_key_hashes[i]
             ) !=
                     account::spec_get_authentication_key(secondary_signer_addresses[i]);
@@ -170,7 +167,7 @@ spec aptos_framework::transaction_validation {
         ensures forall i in 0..num_secondary_signers:
             account::spec_exists_at(secondary_signer_addresses[i]);
         ensures forall i in 0..num_secondary_signers:
-            option::is_none(secondary_signer_public_key_hashes[i]) || option::spec_borrow(
+            option::is_none(secondary_signer_public_key_hashes[i]) || option::borrow(
                 secondary_signer_public_key_hashes[i]
             ) ==
                 account::spec_get_authentication_key(secondary_signer_addresses[i])
@@ -208,7 +205,6 @@ spec aptos_framework::transaction_validation {
         chain_id: u8,
         is_simulation: bool,
     ) {
-        pragma verify_duration_estimate = 120;
         let gas_payer = sender;
         // TODO(fa_migration)
         pragma verify = false;
@@ -442,6 +438,15 @@ spec aptos_framework::transaction_validation {
         pragma verify = false;
     }
 
+    spec versioned_prologue(sender: signer, fee_payer: signer, args: PrologueArgs) {
+        // TODO: temporary mockup
+        pragma verify = false;
+    }
+
+    spec versioned_epilogue(sender: signer, fee_payer: signer, args: EpilogueArgs) {
+        // TODO: temporary mockup
+        pragma verify = false;
+    }
 
     spec schema EpilogueGasPayerAbortsIf {
         use std::option;
@@ -487,10 +492,10 @@ spec aptos_framework::transaction_validation {
         let apt_addr = type_info::type_of<AptosCoin>().account_address;
         let maybe_apt_supply = global<CoinInfo<AptosCoin>>(apt_addr).supply;
         let total_supply_enabled = option::is_some(maybe_apt_supply);
-        let apt_supply = option::spec_borrow(maybe_apt_supply);
+        let apt_supply = option::borrow(maybe_apt_supply);
         let apt_supply_value = optional_aggregator::optional_aggregator_value(apt_supply);
         let post post_maybe_apt_supply = global<CoinInfo<AptosCoin>>(apt_addr).supply;
-        let post post_apt_supply = option::spec_borrow(post_maybe_apt_supply);
+        let post post_apt_supply = option::borrow(post_maybe_apt_supply);
         let post post_apt_supply_value = optional_aggregator::optional_aggregator_value(post_apt_supply);
 
         aborts_if amount_to_burn > 0 && !exists<AptosCoinCapabilities>(@aptos_framework);

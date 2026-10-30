@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     accont_manager::{Account, AccountManager},
@@ -7,10 +7,12 @@ use crate::{
 };
 use anyhow::Context;
 use aptos::{
-    account::fund::FundWithFaucet,
-    common::types::{CliCommand, MovePackageOptions, ScriptFunctionArguments, TransactionOptions},
+    account::fund::FundWithFaucet, common::types::CliCommand, create_move_env,
     governance::CompileScriptFunction,
-    move_tool::{CompileScript, RunScript},
+};
+use aptos_cli_common::TransactionOptions;
+use aptos_move_cli::{
+    CompileScript, MovePackageOptions, RunScript, ScriptFunctionArguments, WithMoveEnv,
 };
 use aptos_protos::{
     indexer::v1::{raw_data_client::RawDataClient, GetTransactionsRequest},
@@ -94,33 +96,16 @@ impl ScriptTransactions {
         // Compile the setup script.
         let script_current_dir = std::env::current_dir().unwrap();
         let cmd = create_compile_script_cmd(script_current_dir.clone());
-        let _ = cmd.execute().await.context(format!(
+        let compile_output = cmd.execute().await.context(format!(
             "Failed to compile the script: {:?}",
             &script_current_dir
         ))?;
 
-        // Read the content of the TOML file. This is to get the package name.
-        let content = std::fs::read_to_string(script_current_dir.join("Move.toml"))
-            .expect("Failed to read TOML file");
-        let value = content
-            .parse::<toml::Value>()
-            .expect("Failed to parse TOML");
-        let package_name = value
-            .get("package")
-            .context("Malformed Move.toml file: No package.")?
-            .get("name")
-            .context("Malformed Move.toml file: No package name.")?
-            .as_str()
-            .context("Malformed package name.")?;
+        // Use the script location from CompileScript output (script.mv in package root).
+        // This is more reliable than the build directory path which may not always exist.
+        let compiled_script_path = compile_output.script_location;
 
-        // Run the compiled script.
-        let compiled_build_path = script_current_dir
-            .join("build")
-            .join(package_name)
-            .join("bytecode_scripts")
-            .join("main_0.mv");
-
-        let cmd = create_run_script_cmd(compiled_build_path);
+        let cmd = create_run_script_cmd(compiled_script_path);
         let transaction_summary = cmd.execute().await.context(format!(
             "Failed to run the script: {:?}",
             &script_current_dir
@@ -213,12 +198,13 @@ impl ScriptTransactions {
 }
 
 fn create_compile_script_cmd(package_dir: PathBuf) -> CompileScript {
-    let mut move_package_dir = MovePackageOptions::default();
-    move_package_dir.package_dir = Some(package_dir);
-
     CompileScript {
         output_file: None,
-        move_options: move_package_dir,
+        move_options: MovePackageOptions {
+            package_dir: Some(package_dir),
+            ..Default::default()
+        },
+        env: Default::default(),
     }
 }
 
@@ -233,7 +219,9 @@ fn create_run_script_cmd(script_path: PathBuf) -> RunScript {
             ..CompileScriptFunction::default()
         },
         script_function_args: ScriptFunctionArguments::default(),
+        env: Default::default(),
     }
+    .attach_env(create_move_env())
 }
 
 fn create_fund_cmd(amount: u64, account: &Account) -> FundWithFaucet {

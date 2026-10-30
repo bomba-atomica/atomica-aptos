@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::pipeline::{
     execution_wait_phase::ExecutionWaitRequest, pipeline_phase::StatelessPipeline,
@@ -64,6 +64,9 @@ impl StatelessPipeline for ExecutionSchedulePhase {
         for b in &ordered_blocks {
             if let Some(tx) = b.pipeline_tx().lock().as_mut() {
                 tx.rand_tx.take().map(|tx| tx.send(b.randomness().cloned()));
+                tx.secret_shared_key_tx
+                    .take()
+                    .map(|tx| tx.send(b.secret_shared_key().cloned()));
             }
         }
 

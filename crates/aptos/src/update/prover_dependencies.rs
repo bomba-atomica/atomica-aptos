@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     cli_build_information,
@@ -27,7 +27,7 @@ pub(crate) const REPO_NAME: &str = "prover-dependency";
 pub(crate) const REPO_OWNER: &str = "aptos-labs";
 
 pub(crate) const BOOGIE_BINARY_NAME: &str = "boogie";
-pub(crate) const TARGET_BOOGIE_VERSION: &str = "3.5.1";
+pub(crate) const TARGET_BOOGIE_VERSION: &str = "3.5.6";
 
 pub(crate) const BOOGIE_EXE_ENV: &str = "BOOGIE_EXE";
 #[cfg(target_os = "windows")]
@@ -36,7 +36,7 @@ pub(crate) const BOOGIE_EXE: &str = "boogie.exe";
 pub(crate) const BOOGIE_EXE: &str = "boogie";
 
 const Z3_BINARY_NAME: &str = "z3";
-const TARGET_Z3_VERSION: &str = "4.11.2";
+const TARGET_Z3_VERSION: &str = "4.13.0";
 
 const Z3_EXE_ENV: &str = "Z3_EXE";
 #[cfg(target_os = "windows")]

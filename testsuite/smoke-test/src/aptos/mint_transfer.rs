@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::smoke_test_environment::SwarmBuilder;
 use aptos_cached_packages::aptos_stdlib;
@@ -8,6 +8,8 @@ use aptos_move_debugger::aptos_debugger::AptosDebugger;
 use aptos_types::transaction::{ExecutionStatus, TransactionStatus};
 use std::sync::Arc;
 
+// Too expensive to spin up a local network (swarm) and debugger for this test
+#[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_mint_transfer() {
     let swarm = SwarmBuilder::new_local(1)

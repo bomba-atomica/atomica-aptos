@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -20,7 +20,9 @@ pub struct LedgerUpdateOutput {
     inner: Arc<DropHelper<Inner>>,
 }
 
+#[bon::bon]
 impl LedgerUpdateOutput {
+    #[builder(finish_fn = build)]
     pub fn new(
         transaction_infos: Vec<TransactionInfo>,
         transaction_info_hashes: Vec<HashValue>,

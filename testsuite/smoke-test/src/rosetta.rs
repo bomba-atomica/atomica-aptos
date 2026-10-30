@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::smoke_test_environment::SwarmBuilder;
 use anyhow::anyhow;
@@ -38,7 +38,7 @@ use aptos_types::{
     account_address::AccountAddress,
     account_config::CORE_CODE_ADDRESS,
     chain_id::ChainId,
-    on_chain_config::{GasScheduleV2, OnChainRandomnessConfig},
+    on_chain_config::{GasScheduleV2, OnChainChunkyDKGConfig, OnChainRandomnessConfig},
     transaction::SignedTransaction,
 };
 use serde_json::json;
@@ -89,6 +89,9 @@ async fn setup_test(
         .with_init_genesis_config(Arc::new(|genesis_config| {
             genesis_config.epoch_duration_secs = EPOCH_DURATION_S;
             genesis_config.randomness_config_override = Some(OnChainRandomnessConfig::Off);
+            // Chunky DKG depends on randomness; keep it off.
+            genesis_config.chunky_dkg_config_override =
+                Some(OnChainChunkyDKGConfig::default_disabled());
         }))
         .with_init_config(config_fn)
         .with_aptos()

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{LedgerInfo, U64};
 use aptos_config::config::RoleType;
@@ -26,6 +26,9 @@ pub struct IndexResponse {
     /// Git hash of the build of the API endpoint.  Can be used to determine the exact
     /// software version used by the API endpoint.
     pub git_hash: Option<String>,
+    /// Per-epoch transaction encryption key (hex-encoded)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_key: Option<String>,
 }
 
 impl IndexResponse {
@@ -33,6 +36,7 @@ impl IndexResponse {
         ledger_info: LedgerInfo,
         node_role: RoleType,
         git_hash: Option<String>,
+        encryption_key: Option<String>,
     ) -> IndexResponse {
         Self {
             chain_id: ledger_info.chain_id,
@@ -44,6 +48,7 @@ impl IndexResponse {
             block_height: ledger_info.block_height,
             node_role,
             git_hash,
+            encryption_key,
         }
     }
 }

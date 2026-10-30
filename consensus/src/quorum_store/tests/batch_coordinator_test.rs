@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     network::NetworkSender,
@@ -51,7 +51,7 @@ async fn test_handle_batches_msg_filter_disabled() {
     // Create a single batch with some transactions
     let transactions = create_signed_transactions(10);
     let account_address = AccountAddress::random();
-    let batch = Batch::new(
+    let batch = Batch::new_v1(
         BatchId::new_for_test(100),
         transactions.clone(),
         1,
@@ -101,7 +101,7 @@ async fn test_handle_batches_msg_filter_enabled() {
 
     // Create a single batch
     let account_address = AccountAddress::random();
-    let batch = Batch::new(
+    let batch = Batch::new_v1(
         BatchId::new_for_test(109),
         transactions.clone(),
         1,
@@ -135,8 +135,9 @@ fn create_batch_coordinator(
         consensus_network_sender,
         sender_to_proof_manager,
         sender_to_batch_generator,
-        Arc::new(batch_store),
+        batch_store,
         10_000,
+        64,
         10_000,
         10_000,
         10_000,
@@ -146,7 +147,7 @@ fn create_batch_coordinator(
 }
 
 /// Creates and returns a mock batch store
-fn create_batch_store() -> BatchStore {
+fn create_batch_store() -> Arc<BatchStore> {
     let qs_storage = Arc::new(MockQuorumStoreDB::new());
     let validator_signer = ValidatorSigner::random(None);
     BatchStore::new(0, false, 0, qs_storage, 0, 0, 0, validator_signer, 0)

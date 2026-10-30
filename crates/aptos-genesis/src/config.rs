@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_config::config::HANDSHAKE_VERSION;
 use aptos_crypto::{bls12381, ed25519::Ed25519PublicKey, x25519};
@@ -9,7 +9,10 @@ use aptos_types::{
     jwks::patch::IssuerJWK,
     keyless::Groth16VerificationKey,
     network_address::{DnsName, NetworkAddress, Protocol},
-    on_chain_config::{OnChainConsensusConfig, OnChainExecutionConfig, OnChainJWKConsensusConfig},
+    on_chain_config::{
+        Features, OnChainChunkyDKGConfig, OnChainConsensusConfig, OnChainExecutionConfig,
+        OnChainJWKConsensusConfig, OnChainRandomnessConfig,
+    },
     transaction::authenticator::AuthenticationKey,
 };
 use aptos_vm_genesis::{AccountBalance, EmployeePool, Validator, ValidatorWithCommissionRate};
@@ -88,11 +91,15 @@ pub struct Layout {
     #[serde(default)]
     pub keyless_groth16_vk_override: Option<Groth16VerificationKey>,
 
-    /// Randomness config to enable DKG and on-chain randomness.
-    /// Valid values: "Off", "V1", "V2" (default: "Off")
-    /// "V2" enables dual-output DKG (randomness + IBE).
+    /// An optional randomness config to use, instead of the default.
     #[serde(default)]
-    pub randomness_config: Option<String>,
+    pub randomness_config_override: Option<OnChainRandomnessConfig>,
+    /// An optional chunky DKG config to use, instead of the default.
+    #[serde(default)]
+    pub chunky_dkg_config_override: Option<OnChainChunkyDKGConfig>,
+    /// An optional initial features override.
+    #[serde(default)]
+    pub initial_features_override: Option<Features>,
 }
 
 impl Layout {
@@ -135,7 +142,9 @@ impl Default for Layout {
             jwk_consensus_config_override: None,
             initial_jwks: vec![],
             keyless_groth16_vk_override: None,
-            randomness_config: None,
+            randomness_config_override: None,
+            chunky_dkg_config_override: None,
+            initial_features_override: None,
         }
     }
 }

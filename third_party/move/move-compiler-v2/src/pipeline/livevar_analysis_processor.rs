@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Implements a live-variable analysis processor, annotating lifetime information about locals.
 //! See also <https://en.wikipedia.org/wiki/Live-variable_analysis>
@@ -365,8 +364,11 @@ impl TransferFunctions for LiveVarAnalysis<'_> {
                     state.livevars.insert(*src, self.livevar_info(id, offset));
                 }
             },
-            Abort(id, src) => {
-                state.livevars.insert(*src, self.livevar_info(id, offset));
+            Abort(id, src0, src1) => {
+                state.livevars.insert(*src0, self.livevar_info(id, offset));
+                if let Some(src1) = src1 {
+                    state.livevars.insert(*src1, self.livevar_info(id, offset));
+                }
             },
             Branch(id, _, _, src) => {
                 state.insert_or_update(*src, self.livevar_info(id, offset), self.track_all_usages);

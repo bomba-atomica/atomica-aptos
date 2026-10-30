@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::Context;
 use aptos::node::local_testnet::{
@@ -59,6 +59,7 @@ impl ManagedNode {
             node_dir.clone(),
             true,
             DEFAULT_GRPC_STREAM_PORT,
+            false,
             false,
         )
         .context("Failed to start node service manager")?;

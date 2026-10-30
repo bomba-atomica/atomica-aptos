@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_logger::info;
 use aptos_types::{
@@ -96,6 +96,26 @@ pub fn create_transaction_shuffler(
                 "Using use case aware transaction shuffling."
             );
             Arc::new(use_case_aware::UseCaseAwareShuffler { config })
+        },
+        UseCaseAndEncryptedTxnsAware {
+            sender_spread_factor,
+            platform_use_case_spread_factor,
+            user_use_case_spread_factor,
+        } => {
+            let config = use_case_aware::Config {
+                sender_spread_factor,
+                platform_use_case_spread_factor,
+                user_use_case_spread_factor,
+            };
+            info!(
+                config = ?config,
+                "Using use case and encrypted txns aware transaction shuffling."
+            );
+            Arc::new(
+                use_case_aware::encrypted_txns_aware::UseCaseAndEncryptedTxnsAwareShuffler {
+                    config,
+                },
+            )
         },
     }
 }

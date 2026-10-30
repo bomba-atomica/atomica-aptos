@@ -9,16 +9,20 @@ license = "Apache-2.0"
 publish = false
 edition = { workspace = true }
 
+[lib]
+doctest = false
+
+[features]
+default = []
+
 [dependencies]
 anyhow = { workspace = true }
 bcs = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
-codespan = { workspace = true }
 codespan-reporting = { workspace = true, features = ["serde", "serialization"] }
 move-binary-format = { workspace = true }
 move-bytecode-source-map = { workspace = true }
 move-bytecode-verifier = { workspace = true }
-move-command-line-common = { workspace = true }
 move-model = { workspace = true }
 move-stackless-bytecode = { workspace = true }
 
@@ -31,12 +35,6 @@ once_cell = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
 
-[features]
-default = []
-
 [[test]]
 name = "testsuite"
 harness = false
-
-[lib]
-doctest = false

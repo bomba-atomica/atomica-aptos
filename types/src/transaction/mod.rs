@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::arc_with_non_send_sync)]
 
@@ -12,19 +11,22 @@ use crate::{
     keyless::{KeylessPublicKey, KeylessSignature},
     ledger_info::LedgerInfo,
     proof::{TransactionInfoListWithProof, TransactionInfoWithProof},
-    transaction::authenticator::{
-        AASigningData, AccountAuthenticator, AnyPublicKey, AnySignature, SingleKeyAuthenticator,
-        TransactionAuthenticator,
+    transaction::{
+        authenticator::{
+            AASigningData, AccountAuthenticator, AnyPublicKey, AnySignature,
+            SingleKeyAuthenticator, TransactionAuthenticator,
+        },
+        encrypted_payload::{DecryptionFailureReason, EncryptedPayload},
     },
     vm_status::{DiscardedVMStatus, KeptVMStatus, StatusCode, StatusType, VMStatus},
-    write_set::{HotStateOp, WriteSet},
+    write_set::WriteSet,
 };
 use anyhow::{ensure, format_err, Context, Error, Result};
 use aptos_crypto::{
     ed25519::*,
     hash::CryptoHash,
     multi_ed25519::{MultiEd25519PublicKey, MultiEd25519Signature},
-    secp256k1_ecdsa,
+    secp256k1_ecdsa, slh_dsa_sha2_128s,
     traits::{signing_message, SigningKey},
     CryptoMaterialError, HashValue,
 };
@@ -36,7 +38,6 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::BTreeMap,
     convert::TryFrom,
     fmt::{self, Debug, Display, Formatter},
 };
@@ -46,12 +47,15 @@ pub mod authenticator;
 pub mod block_epilogue;
 mod block_output;
 mod change_set;
+pub mod encrypted_payload;
 mod module;
 mod multisig;
 mod script;
+pub mod session_id;
 pub mod signature_verified_transaction;
 pub mod use_case;
 pub mod user_transaction_context;
+pub mod validation;
 pub mod webauthn;
 
 pub use self::block_epilogue::{
@@ -70,7 +74,7 @@ use crate::{
     validator_txn::ValidatorTransaction,
     write_set::TransactionWrite,
 };
-pub use block_output::BlockOutput;
+pub use block_output::{BlockError, BlockExecutionResult, BlockOutput};
 pub use change_set::ChangeSet;
 pub use module::{Module, ModuleBundle};
 pub use move_core_types::transaction_argument::TransactionArgument;
@@ -85,12 +89,14 @@ pub use script::{
     TypeArgumentABI,
 };
 use serde::de::DeserializeOwned;
+pub use session_id::SessionId;
 use std::{
     collections::BTreeSet,
     hash::Hash,
     ops::Deref,
     sync::{atomic::AtomicU64, Arc},
 };
+pub use validation::{EpilogueArgs, PrologueArgs};
 
 pub type Version = u64; // Height - also used for MVCC in StateDB
 pub type AtomicVersion = AtomicU64;
@@ -153,6 +159,8 @@ impl ReplayProtector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aptos_crypto::hash::CryptoHash;
+
     #[test]
     fn test_replay_protector_order() {
         let nonce = ReplayProtector::Nonce(1);
@@ -166,6 +174,94 @@ mod tests {
         let sequence_number1 = ReplayProtector::SequenceNumber(3);
         let sequence_number2 = ReplayProtector::SequenceNumber(4);
         assert!(sequence_number1 < sequence_number2);
+    }
+
+    #[test]
+    fn test_committed_hash_matches_crypto_hash() {
+        // In test mode, Transaction derives BCSCryptoHash, so we can compare
+        // committed_hash() against CryptoHash::hash() to ensure they match.
+        // This test will fail if the manual implementation in compute_transaction_hash()
+        // ever diverges from the CryptoHash trait implementation.
+
+        // Test StateCheckpoint variant
+        let state_checkpoint = Transaction::StateCheckpoint(HashValue::random());
+        assert_eq!(
+            state_checkpoint.committed_hash(),
+            state_checkpoint.hash(),
+            "StateCheckpoint committed_hash should match CryptoHash::hash()"
+        );
+
+        // Test BlockMetadata variant
+        let block_metadata = Transaction::BlockMetadata(BlockMetadata::new(
+            HashValue::random(),
+            1,                        // epoch
+            1,                        // round
+            AccountAddress::random(), // proposer
+            vec![0],                  // previous_block_votes_bitvec
+            vec![],                   // failed_proposer_indices
+            12345,                    // timestamp_usecs
+        ));
+        assert_eq!(
+            block_metadata.committed_hash(),
+            block_metadata.hash(),
+            "BlockMetadata committed_hash should match CryptoHash::hash()"
+        );
+
+        // Test UserTransaction variant - this also tests the caching in SignedTransaction
+        let sender = AccountAddress::random();
+        let raw_txn = RawTransaction::new_script(
+            sender,
+            0,
+            Script::new(vec![0u8], vec![], vec![]),
+            100,
+            1,
+            u64::MAX,
+            ChainId::test(),
+        );
+        let signed_txn = SignedTransaction::new_single_sender(
+            raw_txn,
+            AccountAuthenticator::NoAccountAuthenticator,
+        );
+        let user_txn = Transaction::UserTransaction(signed_txn);
+        assert_eq!(
+            user_txn.committed_hash(),
+            user_txn.hash(),
+            "UserTransaction committed_hash should match CryptoHash::hash()"
+        );
+    }
+
+    #[test]
+    fn test_user_transaction_committed_hash_is_cached() {
+        // Verify that SignedTransaction caches the committed_hash
+        let sender = AccountAddress::random();
+        let raw_txn = RawTransaction::new_script(
+            sender,
+            0,
+            Script::new(vec![0u8], vec![], vec![]),
+            100,
+            1,
+            u64::MAX,
+            ChainId::test(),
+        );
+        let signed_txn = SignedTransaction::new_single_sender(
+            raw_txn,
+            AccountAuthenticator::NoAccountAuthenticator,
+        );
+
+        // First call computes and caches the hash
+        let hash1 = signed_txn.committed_hash();
+        // Second call should return the cached value
+        let hash2 = signed_txn.committed_hash();
+
+        assert_eq!(hash1, hash2, "Cached hash should be consistent");
+
+        // Verify it matches the CryptoHash::hash() (available in test mode via BCSCryptoHash derive)
+        let user_txn = Transaction::UserTransaction(signed_txn.clone());
+        assert_eq!(
+            hash1,
+            user_txn.hash(),
+            "Cached hash should match CryptoHash::hash()"
+        );
     }
 }
 
@@ -530,6 +626,21 @@ impl RawTransaction {
         ))
     }
 
+    /// Signs the given `RawTransaction` using SLH-DSA-SHA2-128s. Note that this consumes the `RawTransaction` and turns it
+    /// into a `SignatureCheckedTransaction`.
+    ///
+    /// For a transaction that has just been signed, its signature is expected to be valid.
+    pub fn sign_slh_dsa_sha2_128s(
+        self,
+        private_key: &slh_dsa_sha2_128s::PrivateKey,
+        public_key: slh_dsa_sha2_128s::PublicKey,
+    ) -> Result<SignatureCheckedTransaction> {
+        let signature = private_key.sign(&self)?;
+        Ok(SignatureCheckedTransaction(
+            SignedTransaction::new_slh_dsa_sha2_128s(self, public_key, signature),
+        ))
+    }
+
     #[cfg(any(test, feature = "fuzzing"))]
     pub fn multi_sign_for_testing(
         self,
@@ -544,6 +655,10 @@ impl RawTransaction {
 
     pub fn into_payload(self) -> TransactionPayload {
         self.payload
+    }
+
+    pub fn payload_ref(&self) -> &TransactionPayload {
+        &self.payload
     }
 
     pub fn executable_ref(&self) -> Result<TransactionExecutableRef<'_>> {
@@ -574,6 +689,32 @@ impl RawTransaction {
     /// Return the signing message for creating transaction signature.
     pub fn signing_message(&self) -> Result<Vec<u8>, CryptoMaterialError> {
         signing_message(self)
+    }
+
+    /// Converts a RawTransaction with an EncryptedPayload into a variant that uses
+    /// TransactionExecutable::Encrypted for signature verification.
+    /// This is needed because signatures are verified over the executable, not the encrypted ciphertext.
+    pub fn as_encrypted_variant(&self) -> Cow<'_, Self> {
+        match &self.payload {
+            TransactionPayload::EncryptedPayload(EncryptedPayload::Decrypted {
+                original, ..
+            })
+            | TransactionPayload::EncryptedPayload(EncryptedPayload::FailedDecryption {
+                original,
+                ..
+            }) => Cow::Owned(RawTransaction {
+                sender: self.sender,
+                sequence_number: self.sequence_number,
+                payload: TransactionPayload::EncryptedPayload(EncryptedPayload::Encrypted(
+                    original.clone(),
+                )),
+                max_gas_amount: self.max_gas_amount,
+                gas_unit_price: self.gas_unit_price,
+                expiration_timestamp_secs: self.expiration_timestamp_secs,
+                chain_id: self.chain_id,
+            }),
+            _ => Cow::Borrowed(self),
+        }
     }
 }
 
@@ -679,6 +820,8 @@ pub enum TransactionPayload {
     /// Contains an executable (script/entry function) along with extra configuration.
     /// Once this new format is fully rolled out, above payload variants will be deprecated.
     Payload(TransactionPayloadInner),
+    /// Represents an encrypted transaction payload
+    EncryptedPayload(EncryptedPayload),
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -694,6 +837,7 @@ pub enum TransactionExecutable {
     Script(Script),
     EntryFunction(EntryFunction),
     Empty,
+    Encrypted,
 }
 
 impl TransactionExecutable {
@@ -716,6 +860,7 @@ impl TransactionExecutable {
             },
             TransactionExecutable::Script(script) => TransactionExecutableRef::Script(script),
             TransactionExecutable::Empty => TransactionExecutableRef::Empty,
+            TransactionExecutable::Encrypted => TransactionExecutableRef::Encrypted,
         }
     }
 }
@@ -725,6 +870,7 @@ pub enum TransactionExecutableRef<'a> {
     Script(&'a Script),
     EntryFunction(&'a EntryFunction),
     Empty,
+    Encrypted,
 }
 
 impl TransactionExecutableRef<'_> {
@@ -741,6 +887,84 @@ impl TransactionExecutableRef<'_> {
     }
 }
 
+/// Multipliers for higher transaction limits, expressed as percent of the base
+/// limit (100 = 1x, 200 = 2x, 250 = 2.5x).
+///
+/// INVARIANT: must match Move representation for BCS serialization.
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RequestedMultipliers {
+    V1 {
+        /// Execution-gas multiplier as percent of the base limit where 100 is 1x.
+        execution_multiplier_percent: u64,
+        /// IO-gas multiplier as percent of the base limit where 100 is 1x.
+        io_multiplier_percent: u64,
+    },
+}
+
+impl RequestedMultipliers {
+    /// Returns the execution-gas multiplier as percent (100 is 1x).
+    pub fn execution_multiplier_percent(&self) -> u64 {
+        match self {
+            Self::V1 {
+                execution_multiplier_percent,
+                ..
+            } => *execution_multiplier_percent,
+        }
+    }
+
+    /// Returns the IO-gas multiplier as percent (100 is 1x).
+    pub fn io_multiplier_percent(&self) -> u64 {
+        match self {
+            Self::V1 {
+                io_multiplier_percent,
+                ..
+            } => *io_multiplier_percent,
+        }
+    }
+}
+
+/// Request for higher transaction execution limits, carried in the transaction
+/// payload. Backed by staking proof (pool ownership, delegated voter, or
+/// delegation pool delegator). BCS-serialized and deserialized by the Move
+/// prologue.
+///
+/// INVARIANT: must match Move representation for BCS serialization.
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
+pub enum UserTxnLimitsRequest {
+    /// Fee payer owns a stake pool.
+    StakePoolOwner { multipliers: RequestedMultipliers },
+    /// Fee payer is the delegated voter of the specified stake pool.
+    DelegatedVoter {
+        pool_address: AccountAddress,
+        multipliers: RequestedMultipliers,
+    },
+    /// Fee payer is a delegator in the specified delegation pool.
+    DelegationPoolDelegator {
+        pool_address: AccountAddress,
+        multipliers: RequestedMultipliers,
+    },
+}
+
+impl UserTxnLimitsRequest {
+    pub fn multipliers(&self) -> &RequestedMultipliers {
+        match self {
+            Self::StakePoolOwner { multipliers, .. }
+            | Self::DelegatedVoter { multipliers, .. }
+            | Self::DelegationPoolDelegator { multipliers, .. } => multipliers,
+        }
+    }
+}
+
+/// VM-internal higher-limit request.
+/// This is NOT serialized in the transaction payload.
+#[derive(Clone, Debug)]
+pub enum TxnLimitsRequest {
+    /// An approved governance proposal script.
+    ApprovedGovernanceScript,
+    /// A user-submitted staking-backed request.
+    Staking(UserTxnLimitsRequest),
+}
+
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TransactionExtraConfig {
     V1 {
@@ -749,9 +973,30 @@ pub enum TransactionExtraConfig {
         // Some(nonce) for orderless transactions
         replay_protection_nonce: Option<u64>,
     },
+    V2 {
+        multisig_address: Option<AccountAddress>,
+        replay_protection_nonce: Option<u64>,
+        /// If set, the transaction requests increased gas limits backed by
+        /// staking proof.
+        txn_limits_request: Option<UserTxnLimitsRequest>,
+    },
 }
 
 impl TransactionPayload {
+    /// The SHA3-256 hash of a script payload's code; empty for every other
+    /// payload kind.
+    pub fn script_hash(&self) -> Vec<u8> {
+        match self.executable_ref() {
+            Ok(TransactionExecutableRef::Script(script)) => {
+                HashValue::sha3_256_of(script.code()).to_vec()
+            },
+            Ok(TransactionExecutableRef::EntryFunction(_))
+            | Ok(TransactionExecutableRef::Empty)
+            | Ok(TransactionExecutableRef::Encrypted)
+            | Err(_) => vec![],
+        }
+    }
+
     pub fn is_multisig(&self) -> bool {
         match self {
             TransactionPayload::EntryFunction(_) => false,
@@ -760,6 +1005,9 @@ impl TransactionPayload {
             TransactionPayload::Multisig(_) => true,
             TransactionPayload::Payload(TransactionPayloadInner::V1 { extra_config, .. }) => {
                 extra_config.is_multisig()
+            },
+            TransactionPayload::EncryptedPayload(encrypted_payload) => {
+                encrypted_payload.extra_config().is_multisig()
             },
         }
     }
@@ -772,12 +1020,7 @@ impl TransactionPayload {
     }
 
     pub fn replay_protection_nonce(&self) -> Option<u64> {
-        match self {
-            Self::Payload(TransactionPayloadInner::V1 { extra_config, .. }) => {
-                extra_config.replay_protection_nonce()
-            },
-            _ => None,
-        }
+        self.extra_config().replay_protection_nonce()
     }
 
     pub fn executable(&self) -> Result<TransactionExecutable> {
@@ -792,6 +1035,9 @@ impl TransactionPayload {
             },
             TransactionPayload::ModuleBundle(_) => {
                 Err(format_err!("ModuleBundle variant is deprecated"))
+            },
+            TransactionPayload::EncryptedPayload(encrypted_payload) => {
+                encrypted_payload.executable()
             },
         }
     }
@@ -808,6 +1054,9 @@ impl TransactionPayload {
             },
             TransactionPayload::ModuleBundle(_) => {
                 Err(format_err!("ModuleBundle variant is deprecated"))
+            },
+            TransactionPayload::EncryptedPayload(encrypted_payload) => {
+                encrypted_payload.executable_ref()
             },
         }
     }
@@ -827,6 +1076,16 @@ impl TransactionPayload {
             TransactionPayload::Payload(TransactionPayloadInner::V1 { extra_config, .. }) => {
                 extra_config.clone()
             },
+            TransactionPayload::EncryptedPayload(encrypted_payload) => {
+                encrypted_payload.extra_config().clone()
+            },
+        }
+    }
+
+    pub fn decryption_failure_reason(&self) -> Option<&DecryptionFailureReason> {
+        match self {
+            TransactionPayload::EncryptedPayload(ep) => ep.decryption_failure_reason(),
+            _ => None,
         }
     }
 
@@ -844,6 +1103,7 @@ impl TransactionPayload {
             .into(),
             Ok(TransactionExecutableRef::Script(_)) => "script".into(),
             Ok(TransactionExecutableRef::Empty) => "empty".into(),
+            Ok(TransactionExecutableRef::Encrypted) => "encrypted".into(),
             Err(_) => "deprecated_payload".into(),
         }
     }
@@ -884,6 +1144,16 @@ impl TransactionPayload {
                         replay_protection_nonce: replay_protection_nonce
                             .or_else(|| Some(replay_nonce_f())),
                     },
+                    TransactionExtraConfig::V2 {
+                        multisig_address,
+                        replay_protection_nonce,
+                        txn_limits_request,
+                    } => TransactionExtraConfig::V2 {
+                        multisig_address,
+                        replay_protection_nonce: replay_protection_nonce
+                            .or_else(|| Some(replay_nonce_f())),
+                        txn_limits_request,
+                    },
                 }
             }
             TransactionPayload::Payload(TransactionPayloadInner::V1 {
@@ -913,11 +1183,44 @@ impl TransactionPayload {
                     replay_protection_nonce: Some(replay_protection_nonce),
                 }
             },
+            TransactionExtraConfig::V2 {
+                multisig_address,
+                replay_protection_nonce: old_replay_protection_nonce,
+                txn_limits_request,
+            } => {
+                assert!(
+                    old_replay_protection_nonce.is_none(),
+                    "trying to set replay protection nonce twice."
+                );
+                TransactionExtraConfig::V2 {
+                    multisig_address,
+                    replay_protection_nonce: Some(replay_protection_nonce),
+                    txn_limits_request,
+                }
+            },
         };
         TransactionPayload::Payload(TransactionPayloadInner::V1 {
             executable,
             extra_config,
         })
+    }
+
+    pub fn is_encrypted_variant(&self) -> bool {
+        matches!(self, Self::EncryptedPayload(_))
+    }
+
+    pub fn as_encrypted_payload(&self) -> Option<&EncryptedPayload> {
+        match self {
+            Self::EncryptedPayload(payload) => Some(payload),
+            _ => None,
+        }
+    }
+
+    pub fn as_encrypted_payload_mut(&mut self) -> Option<&mut EncryptedPayload> {
+        match self {
+            Self::EncryptedPayload(payload) => Some(payload),
+            _ => None,
+        }
     }
 }
 
@@ -931,6 +1234,10 @@ impl TransactionExtraConfig {
             Self::V1 {
                 replay_protection_nonce,
                 ..
+            }
+            | Self::V2 {
+                replay_protection_nonce,
+                ..
             } => *replay_protection_nonce,
         }
     }
@@ -942,9 +1249,20 @@ impl TransactionExtraConfig {
     pub fn multisig_address(&self) -> Option<AccountAddress> {
         match self {
             Self::V1 {
-                multisig_address,
-                replay_protection_nonce: _,
+                multisig_address, ..
+            }
+            | Self::V2 {
+                multisig_address, ..
             } => *multisig_address,
+        }
+    }
+
+    pub fn txn_limits_request(&self) -> Option<&UserTxnLimitsRequest> {
+        match self {
+            Self::V1 { .. } => None,
+            Self::V2 {
+                txn_limits_request, ..
+            } => txn_limits_request.as_ref(),
         }
     }
 }
@@ -1131,6 +1449,18 @@ impl SignedTransaction {
         Self::new_single_sender(raw_txn, authenticator)
     }
 
+    pub fn new_slh_dsa_sha2_128s(
+        raw_txn: RawTransaction,
+        public_key: slh_dsa_sha2_128s::PublicKey,
+        signature: slh_dsa_sha2_128s::Signature,
+    ) -> SignedTransaction {
+        let authenticator = AccountAuthenticator::single_key(SingleKeyAuthenticator::new(
+            AnyPublicKey::slh_dsa_sha2_128s(public_key),
+            AnySignature::slh_dsa_sha2_128s(signature),
+        ));
+        Self::new_single_sender(raw_txn, authenticator)
+    }
+
     pub fn new_keyless(
         raw_txn: RawTransaction,
         public_key: KeylessPublicKey,
@@ -1227,7 +1557,13 @@ impl SignedTransaction {
 
     pub fn raw_txn_bytes_len(&self) -> usize {
         *self.raw_txn_size.get_or_init(|| {
-            bcs::serialized_size(&self.raw_txn).expect("Unable to serialize RawTransaction")
+            if self.is_encrypted_txn() {
+                let enc_raw_txn = self.raw_txn.as_encrypted_variant();
+                bcs::serialized_size(enc_raw_txn.as_ref())
+                    .expect("Unable to serialize RawTransaction")
+            } else {
+                bcs::serialized_size(&self.raw_txn).expect("Unable to serialize RawTransaction")
+            }
         })
     }
 
@@ -1251,6 +1587,30 @@ impl SignedTransaction {
         Ok(())
     }
 
+    /// Check the encrypted payload representation allowed at mempool admission
+    /// and batch creation. Internal Decrypted and FailedDecryption states are
+    /// never valid submissions, even when their signatures verify.
+    pub fn verify_encrypted_payload_for_submission(&self) -> Result<()> {
+        let Some(payload) = self.payload().as_encrypted_payload() else {
+            return Ok(());
+        };
+        ensure!(
+            payload.is_encrypted(),
+            "Encrypted transaction not in Encrypted state"
+        );
+        ensure!(
+            !payload.extra_config().is_multisig(),
+            "Encrypted transactions do not support multisig"
+        );
+        let signer_auth_keys = self
+            .authenticator_ref()
+            .all_signer_auth_keys(self.sender())
+            .context("Encrypted transactions are not supported with this authenticator type")?;
+        payload
+            .verify(self.sender(), signer_auth_keys)
+            .context("Encrypted transaction ciphertext verification failed")
+    }
+
     pub fn contains_duplicate_signers(&self) -> bool {
         let mut all_signer_addresses = self.authenticator.secondary_signer_addresses();
         all_signer_addresses.push(self.sender());
@@ -1267,13 +1627,40 @@ impl SignedTransaction {
 
     /// Returns the hash when the transaction is committed onchain.
     pub fn committed_hash(&self) -> HashValue {
-        *self
-            .committed_hash
-            .get_or_init(|| Transaction::UserTransaction(self.clone()).hash())
+        *self.committed_hash.get_or_init(|| {
+            if self.is_encrypted_txn() {
+                compute_transaction_hash(&Transaction::UserTransaction(
+                    self.clone().into_encrypted_variant(),
+                ))
+            } else {
+                compute_transaction_hash(&Transaction::UserTransaction(self.clone()))
+            }
+        })
     }
 
     pub fn replay_protector(&self) -> ReplayProtector {
         self.raw_txn.replay_protector()
+    }
+
+    pub fn is_encrypted_txn(&self) -> bool {
+        self.payload().is_encrypted_variant()
+    }
+
+    pub fn payload_mut(&mut self) -> &mut TransactionPayload {
+        &mut self.raw_txn.payload
+    }
+
+    /// Converts a SignedTransaction with an EncryptedPayload into a variant that uses
+    /// TransactionExecutable::Encrypted for signature verification.
+    /// This is needed because signatures are verified over the executable, not the encrypted ciphertext.
+    pub fn into_encrypted_variant(self) -> Self {
+        SignedTransaction {
+            raw_txn: self.raw_txn.as_encrypted_variant().into_owned(),
+            authenticator: self.authenticator,
+            raw_txn_size: OnceCell::new(),
+            authenticator_size: OnceCell::new(),
+            committed_hash: OnceCell::new(),
+        }
     }
 }
 
@@ -1341,7 +1728,7 @@ impl TransactionWithProof {
     }
 
     pub fn verify(&self, ledger_info: &LedgerInfo) -> Result<()> {
-        let txn_hash = self.transaction.hash();
+        let txn_hash = self.transaction.committed_hash();
         ensure!(
             txn_hash == self.proof.transaction_info().transaction_hash(),
             "Transaction hash ({}) not expected ({}).",
@@ -1441,10 +1828,17 @@ impl From<KeptVMStatus> for ExecutionStatus {
         match kept_status {
             KeptVMStatus::Executed => ExecutionStatus::Success,
             KeptVMStatus::OutOfGas => ExecutionStatus::OutOfGas,
-            KeptVMStatus::MoveAbort(location, code) => ExecutionStatus::MoveAbort {
+            KeptVMStatus::MoveAbort {
                 location,
                 code,
-                info: None,
+                message,
+            } => ExecutionStatus::MoveAbort {
+                location,
+                code,
+                info: message.map(|message| AbortInfo {
+                    reason_name: "".to_string(), // will be populated later
+                    description: message,
+                }),
             },
             KeptVMStatus::ExecutionFailure {
                 location: loc,
@@ -1546,6 +1940,7 @@ impl TransactionStatus {
         match vm_status.keep_or_discard(
             features.is_enabled(FeatureFlag::ENABLE_FUNCTION_VALUES),
             memory_limit_exceeded_as_miscellaneous_error,
+            features.is_enabled(FeatureFlag::VM_BINARY_FORMAT_V10),
         ) {
             Ok(recorded) => match recorded {
                 // TODO(bowu):status code should be removed from transaction status
@@ -1658,17 +2053,12 @@ pub struct TransactionAuxiliaryDataV1 {
     pub detail_error_message: Option<VMErrorDetail>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "fuzzing"), derive(Arbitrary))]
 pub enum TransactionAuxiliaryData {
+    #[default]
     None,
     V1(TransactionAuxiliaryDataV1),
-}
-
-impl Default for TransactionAuxiliaryData {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl TransactionAuxiliaryData {
@@ -1738,6 +2128,10 @@ impl TransactionOutput {
 
     pub fn write_set(&self) -> &WriteSet {
         &self.write_set
+    }
+
+    pub fn convert_write_set_to_v1(&mut self) {
+        self.write_set = std::mem::take(&mut self.write_set).into_v1();
     }
 
     // This is a special function to update the total supply in the write set. 'TransactionOutput'
@@ -1842,6 +2236,12 @@ impl TransactionOutput {
             expected_events,
         );
 
+        // TODO(trading-native): this comparator ignores the checkpoint hashes
+        // (state/hot-state and `position_state_checkpoint_hash`), so replay-verify
+        // tooling (e.g. db-tool's `replay_on_archive`) can report a successful
+        // replay even when the authenticated position state root diverges from
+        // local execution. Validate the checkpoint hashes here before enabling
+        // COMPUTE_TRADING_NATIVE_STATE_ROOTS.
         Ok(())
     }
 
@@ -1863,7 +2263,7 @@ impl TransactionOutput {
         self.write_set.state_update_refs()
     }
 
-    pub fn add_hotness(&mut self, hotness: BTreeMap<StateKey, HotStateOp>) {
+    pub fn add_hotness(&mut self, hotness: BTreeSet<StateKey>) {
         self.write_set.add_hotness(hotness);
     }
 }
@@ -1874,10 +2274,13 @@ impl TransactionOutput {
 #[cfg_attr(any(test, feature = "fuzzing"), derive(Arbitrary))]
 pub enum TransactionInfo {
     V0(TransactionInfoV0),
+    V1(TransactionInfoV1),
 }
 
+#[bon::bon]
 impl TransactionInfo {
-    pub fn new(
+    #[builder(finish_fn = build)]
+    pub fn builder_v0(
         transaction_hash: HashValue,
         state_change_hash: HashValue,
         event_root_hash: HashValue,
@@ -1897,48 +2300,134 @@ impl TransactionInfo {
         ))
     }
 
+    #[builder(finish_fn = build)]
+    pub fn builder_v1(
+        transaction_hash: HashValue,
+        state_change_hash: HashValue,
+        event_root_hash: HashValue,
+        state_checkpoint_hash: Option<HashValue>,
+        hot_state_checkpoint_hash: Option<HashValue>,
+        gas_used: u64,
+        status: ExecutionStatus,
+        auxiliary_info_hash: Option<HashValue>,
+        position_state_checkpoint_hash: Option<HashValue>,
+    ) -> Self {
+        Self::V1(TransactionInfoV1::new(
+            transaction_hash,
+            state_change_hash,
+            event_root_hash,
+            state_checkpoint_hash,
+            hot_state_checkpoint_hash,
+            gas_used,
+            status,
+            auxiliary_info_hash,
+            position_state_checkpoint_hash,
+        ))
+    }
+
     #[cfg(any(test, feature = "fuzzing"))]
     pub fn new_placeholder(
         gas_used: u64,
         state_checkpoint_hash: Option<HashValue>,
         status: ExecutionStatus,
     ) -> Self {
-        Self::new(
-            HashValue::default(),
-            HashValue::default(),
-            HashValue::default(),
-            state_checkpoint_hash,
-            gas_used,
-            status,
-            Some(HashValue::default()),
-        )
+        Self::builder_v0()
+            .transaction_hash(HashValue::default())
+            .state_change_hash(HashValue::default())
+            .event_root_hash(HashValue::default())
+            .maybe_state_checkpoint_hash(state_checkpoint_hash)
+            .gas_used(gas_used)
+            .status(status)
+            .auxiliary_info_hash(HashValue::default())
+            .build()
     }
 
     #[cfg(any(test, feature = "fuzzing"))]
     fn dummy() -> Self {
-        Self::new(
-            HashValue::default(),
-            HashValue::default(),
-            HashValue::default(),
-            None,
-            0,
-            ExecutionStatus::Success,
-            Some(HashValue::default()),
-        )
+        Self::builder_v0()
+            .transaction_hash(HashValue::default())
+            .state_change_hash(HashValue::default())
+            .event_root_hash(HashValue::default())
+            .gas_used(0)
+            .status(ExecutionStatus::Success)
+            .auxiliary_info_hash(HashValue::default())
+            .build()
     }
-}
 
-impl Deref for TransactionInfo {
-    type Target = TransactionInfoV0;
-
-    fn deref(&self) -> &Self::Target {
+    pub fn transaction_hash(&self) -> HashValue {
         match self {
-            Self::V0(txn_info) => txn_info,
+            Self::V0(v) => v.transaction_hash,
+            Self::V1(v) => v.transaction_hash,
+        }
+    }
+
+    pub fn state_change_hash(&self) -> HashValue {
+        match self {
+            Self::V0(v) => v.state_change_hash,
+            Self::V1(v) => v.state_change_hash,
+        }
+    }
+
+    pub fn event_root_hash(&self) -> HashValue {
+        match self {
+            Self::V0(v) => v.event_root_hash,
+            Self::V1(v) => v.event_root_hash,
+        }
+    }
+
+    pub fn state_checkpoint_hash(&self) -> Option<HashValue> {
+        match self {
+            Self::V0(v) => v.state_checkpoint_hash,
+            Self::V1(v) => v.state_checkpoint_hash,
+        }
+    }
+
+    pub fn has_state_checkpoint_hash(&self) -> bool {
+        self.state_checkpoint_hash().is_some()
+    }
+
+    pub fn ensure_state_checkpoint_hash(&self) -> Result<HashValue> {
+        self.state_checkpoint_hash()
+            .ok_or_else(|| format_err!("State checkpoint hash not present in TransactionInfo"))
+    }
+
+    pub fn hot_state_checkpoint_hash(&self) -> Option<HashValue> {
+        match self {
+            Self::V0(_) => None,
+            Self::V1(v) => v.hot_state_checkpoint_hash,
+        }
+    }
+
+    pub fn position_state_checkpoint_hash(&self) -> Option<HashValue> {
+        match self {
+            Self::V0(_) => None,
+            Self::V1(v) => v.position_state_checkpoint_hash,
+        }
+    }
+
+    pub fn auxiliary_info_hash(&self) -> Option<HashValue> {
+        match self {
+            Self::V0(v) => v.auxiliary_info_hash,
+            Self::V1(v) => v.auxiliary_info_hash,
+        }
+    }
+
+    pub fn gas_used(&self) -> u64 {
+        match self {
+            Self::V0(v) => v.gas_used,
+            Self::V1(v) => v.gas_used,
+        }
+    }
+
+    pub fn status(&self) -> &ExecutionStatus {
+        match self {
+            Self::V0(v) => &v.status,
+            Self::V1(v) => &v.status,
         }
     }
 }
 
-#[derive(Clone, CryptoHasher, BCSCryptoHash, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "fuzzing"), derive(Arbitrary))]
 pub struct TransactionInfoV0 {
     /// The amount of gas used.
@@ -1988,42 +2477,61 @@ impl TransactionInfoV0 {
             auxiliary_info_hash,
         }
     }
+}
 
-    pub fn transaction_hash(&self) -> HashValue {
-        self.transaction_hash
-    }
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "fuzzing"), derive(Arbitrary))]
+pub struct TransactionInfoV1 {
+    gas_used: u64,
+    status: ExecutionStatus,
+    transaction_hash: HashValue,
+    event_root_hash: HashValue,
+    state_change_hash: HashValue,
+    state_checkpoint_hash: Option<HashValue>,
+    hot_state_checkpoint_hash: Option<HashValue>,
+    auxiliary_info_hash: Option<HashValue>,
 
-    pub fn state_change_hash(&self) -> HashValue {
-        self.state_change_hash
-    }
+    /// Repurposed reserved field; `None` matches the prior BCS encoding.
+    position_state_checkpoint_hash: Option<HashValue>,
+    placeholder1: Option<HashValue>,
+    placeholder2: Option<HashValue>,
+    placeholder3: Option<HashValue>,
+    placeholder4: Option<HashValue>,
+    placeholder5: Option<HashValue>,
+    placeholder6: Option<HashValue>,
+    placeholder7: Option<HashValue>,
+}
 
-    pub fn has_state_checkpoint_hash(&self) -> bool {
-        self.state_checkpoint_hash().is_some()
-    }
-
-    pub fn state_checkpoint_hash(&self) -> Option<HashValue> {
-        self.state_checkpoint_hash
-    }
-
-    pub fn auxiliary_info_hash(&self) -> Option<HashValue> {
-        self.auxiliary_info_hash
-    }
-
-    pub fn ensure_state_checkpoint_hash(&self) -> Result<HashValue> {
-        self.state_checkpoint_hash
-            .ok_or_else(|| format_err!("State checkpoint hash not present in TransactionInfo"))
-    }
-
-    pub fn event_root_hash(&self) -> HashValue {
-        self.event_root_hash
-    }
-
-    pub fn gas_used(&self) -> u64 {
-        self.gas_used
-    }
-
-    pub fn status(&self) -> &ExecutionStatus {
-        &self.status
+impl TransactionInfoV1 {
+    pub fn new(
+        transaction_hash: HashValue,
+        state_change_hash: HashValue,
+        event_root_hash: HashValue,
+        state_checkpoint_hash: Option<HashValue>,
+        hot_state_checkpoint_hash: Option<HashValue>,
+        gas_used: u64,
+        status: ExecutionStatus,
+        auxiliary_info_hash: Option<HashValue>,
+        position_state_checkpoint_hash: Option<HashValue>,
+    ) -> Self {
+        Self {
+            gas_used,
+            status,
+            transaction_hash,
+            event_root_hash,
+            state_change_hash,
+            state_checkpoint_hash,
+            hot_state_checkpoint_hash,
+            auxiliary_info_hash,
+            position_state_checkpoint_hash,
+            placeholder1: None,
+            placeholder2: None,
+            placeholder3: None,
+            placeholder4: None,
+            placeholder5: None,
+            placeholder6: None,
+            placeholder7: None,
+        }
     }
 }
 
@@ -2031,8 +2539,22 @@ impl Display for TransactionInfo {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(
             f,
-            "TransactionInfo: [txn_hash: {}, state_change_hash: {}, event_root_hash: {}, state_checkpoint_hash: {:?}, gas_used: {}, recorded_status: {:?}]",
-            self.transaction_hash(), self.state_change_hash(), self.event_root_hash(), self.state_checkpoint_hash(), self.gas_used(), self.status(),
+            "TransactionInfo: [\
+                txn_hash: {}, \
+                state_change_hash: {}, \
+                event_root_hash: {}, \
+                state_checkpoint_hash: {:?}, \
+                hot_state_checkpoint_hash: {:?}, \
+                gas_used: {}, \
+                recorded_status: {:?}\
+            ]",
+            self.transaction_hash(),
+            self.state_change_hash(),
+            self.event_root_hash(),
+            self.state_checkpoint_hash(),
+            self.hot_state_checkpoint_hash(),
+            self.gas_used(),
+            self.status(),
         )
     }
 }
@@ -2237,7 +2759,7 @@ impl TransactionListWithProof {
             .par_iter()
             .zip_eq(self.proof.transaction_infos.par_iter())
             .map(|(txn, txn_info)| {
-                let txn_hash = CryptoHash::hash(txn);
+                let txn_hash = txn.committed_hash();
                 ensure!(
                     txn_hash == txn_info.transaction_hash(),
                     "The hash of transaction does not match the transaction info in proof. \
@@ -2522,7 +3044,7 @@ impl TransactionOutputListWithProof {
             );
 
             // Verify the transaction hashes match those of the transaction infos
-            let txn_hash = txn.hash();
+            let txn_hash = txn.committed_hash();
             ensure!(
                 txn_hash == txn_info.transaction_hash(),
                 "The transaction hash does not match the hash in transaction info. \
@@ -2745,7 +3267,8 @@ fn verify_auxiliary_infos_against_transaction_infos(
         .zip_eq(transaction_infos.par_iter())
         .map(|(aux_info, txn_info)| {
             match aux_info {
-                PersistedAuxiliaryInfo::None => {
+                PersistedAuxiliaryInfo::None
+                | PersistedAuxiliaryInfo::TimestampNotYetAssignedV1 { .. } => {
                     ensure!(
                         txn_info.auxiliary_info_hash().is_none(),
                         "The transaction info has an auxiliary info hash: {:?}, \
@@ -2852,6 +3375,16 @@ impl AccountOrderedTransactionsWithProof {
     }
 }
 
+/// Computes the hash of a Transaction using BCS serialization.
+/// This is the single source of truth for Transaction hash computation.
+fn compute_transaction_hash(txn: &Transaction) -> HashValue {
+    use aptos_crypto::hash::CryptoHasher;
+    let bytes = bcs::to_bytes(txn).expect("Transaction serialization should not fail");
+    let mut hasher = TransactionHasher::default();
+    hasher.update(&bytes);
+    hasher.finish()
+}
+
 /// `Transaction` will be the transaction type used internally in the aptos node to represent the
 /// transaction to be processed and persisted.
 ///
@@ -2859,7 +3392,8 @@ impl AccountOrderedTransactionsWithProof {
 /// transaction.
 #[allow(clippy::large_enum_variant)]
 #[cfg_attr(any(test, feature = "fuzzing"), derive(Arbitrary))]
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, CryptoHasher, BCSCryptoHash)]
+#[cfg_attr(any(test, feature = "fuzzing"), derive(BCSCryptoHash))]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, CryptoHasher)]
 pub enum Transaction {
     /// Transaction submitted by the user. e.g: P2P payment transaction, publishing module
     /// transaction, etc.
@@ -2919,6 +3453,20 @@ impl Transaction {
             block_id,
             block_end_info,
             fee_distribution,
+        })
+    }
+
+    pub fn block_epilogue_v2(
+        block_id: HashValue,
+        block_end_info: BlockEndInfo,
+        fee_distribution: FeeDistribution,
+        to_make_hot: BTreeSet<StateKey>,
+    ) -> Self {
+        Self::BlockEpilogue(BlockEpiloguePayload::V2 {
+            block_id,
+            block_end_info,
+            fee_distribution,
+            to_make_hot,
         })
     }
 
@@ -2988,6 +3536,15 @@ impl Transaction {
             | Transaction::ValidatorTransaction(_) => false,
         }
     }
+
+    /// Returns the hash used when the transaction is committed to the ledger.
+    /// For user transactions, this leverages the cached hash in SignedTransaction.
+    pub fn committed_hash(&self) -> HashValue {
+        match self {
+            Transaction::UserTransaction(txn) => txn.committed_hash(),
+            _ => compute_transaction_hash(self),
+        }
+    }
 }
 
 impl TryFrom<Transaction> for SignedTransaction {
@@ -3042,6 +3599,15 @@ pub trait BlockExecutableTransaction: Sync + Send + Clone + 'static {
         _block_id: HashValue,
         _block_end_info: TBlockEndInfoExt<Self::Key>,
         _fee_distribution: FeeDistribution,
+    ) -> Self {
+        unimplemented!()
+    }
+
+    fn block_epilogue_v2(
+        _block_id: HashValue,
+        _block_end_info: BlockEndInfo,
+        _fee_distribution: FeeDistribution,
+        _to_make_hot: BTreeSet<Self::Key>,
     ) -> Self {
         unimplemented!()
     }
@@ -3145,7 +3711,8 @@ impl AuxiliaryInfo {
     pub fn persisted_info_hash(&self) -> Option<HashValue> {
         match self.persisted_info {
             PersistedAuxiliaryInfo::V1 { .. } => Some(self.persisted_info.hash()),
-            PersistedAuxiliaryInfo::None => None,
+            PersistedAuxiliaryInfo::None
+            | PersistedAuxiliaryInfo::TimestampNotYetAssignedV1 { .. } => None,
         }
     }
 }
@@ -3155,6 +3722,30 @@ impl Default for AuxiliaryInfo {
         Self {
             persisted_info: PersistedAuxiliaryInfo::None, // Use None by default for compatibility
             ephemeral_info: None,
+        }
+    }
+}
+
+impl AuxiliaryInfo {
+    pub fn new_timestamp_not_yet_assigned(transaction_index: u32) -> Self {
+        Self {
+            persisted_info: PersistedAuxiliaryInfo::TimestampNotYetAssignedV1 { transaction_index },
+            ephemeral_info: None,
+        }
+    }
+
+    pub fn transaction_index_kind(
+        &self,
+    ) -> crate::transaction::user_transaction_context::TransactionIndexKind {
+        use crate::transaction::user_transaction_context::TransactionIndexKind;
+        match self.persisted_info {
+            PersistedAuxiliaryInfo::V1 { transaction_index } => {
+                TransactionIndexKind::BlockExecution { transaction_index }
+            },
+            PersistedAuxiliaryInfo::TimestampNotYetAssignedV1 { transaction_index } => {
+                TransactionIndexKind::ValidationOrSimulation { transaction_index }
+            },
+            PersistedAuxiliaryInfo::None => TransactionIndexKind::NotAvailable,
         }
     }
 }
@@ -3169,7 +3760,10 @@ impl AuxiliaryInfoTrait for AuxiliaryInfo {
 
     fn transaction_index(&self) -> Option<u32> {
         match self.persisted_info {
-            PersistedAuxiliaryInfo::V1 { transaction_index } => Some(transaction_index),
+            PersistedAuxiliaryInfo::V1 { transaction_index }
+            | PersistedAuxiliaryInfo::TimestampNotYetAssignedV1 { transaction_index } => {
+                Some(transaction_index)
+            },
             PersistedAuxiliaryInfo::None => None,
         }
     }
@@ -3199,6 +3793,11 @@ pub enum PersistedAuxiliaryInfo {
     // Note that this would be slightly different from the index of transactions that get committed
     // onchain, as this considers transactions that may get discarded.
     V1 { transaction_index: u32 },
+    // When we are doing a simulation or validation of transactions, the transaction is not executed
+    // within the context of a block. The timestamp is not yet assigned, but we still track the
+    // transaction index for multi-transaction simulations. For single transaction simulation or
+    // validation, the transaction index is set to 0.
+    TimestampNotYetAssignedV1 { transaction_index: u32 },
 }
 
 pub trait AuxiliaryInfoTrait: Clone {
@@ -3213,4 +3812,16 @@ pub struct EphemeralAuxiliaryInfo {
     // TODO(grao): After execution pool is implemented we might want this information be persisted
     // onchain?
     pub proposer_index: u64,
+}
+
+/// A block of consecutive transactions.
+#[derive(Serialize, Deserialize)]
+pub struct TransactionBlock {
+    /// The version of the first transaction in the block.
+    pub begin_version: Version,
+    /// Non-empty list of transactions in a block.
+    pub transactions: Vec<Transaction>,
+    /// Persisted auxiliary info for each transaction, aligned with `transactions`.
+    #[serde(default = "Vec::new")]
+    pub persisted_auxiliary_infos: Vec<PersistedAuxiliaryInfo>,
 }

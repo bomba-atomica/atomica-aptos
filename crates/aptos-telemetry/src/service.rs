@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     constants::*, core_metrics::create_core_metric_telemetry_event, metrics,
@@ -128,7 +128,10 @@ pub fn start_telemetry_service(
     }
 
     // Create the telemetry runtime
-    let telemetry_runtime = aptos_runtimes::spawn_named_runtime("telemetry".into(), None);
+    let telemetry_runtime = aptos_runtimes::spawn_named_runtime(
+        "telemetry".into(),
+        node_config.telemetry_service.num_threads,
+    );
     telemetry_runtime.handle().spawn(spawn_telemetry_service(
         node_config,
         chain_id,

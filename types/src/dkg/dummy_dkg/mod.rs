@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     dkg::{DKGSessionMetadata, DKGTrait},
@@ -19,6 +19,7 @@ pub struct DummyDKG {}
 
 impl DKGTrait for DummyDKG {
     type DealerPrivateKey = bls12381::PrivateKey;
+    type DealerPublicKey = bls12381::PublicKey;
     type DealtPubKeyShare = ();
     type DealtSecret = DummySecret;
     type DealtSecretShare = DummySecret;
@@ -48,6 +49,7 @@ impl DKGTrait for DummyDKG {
         input_secret: &Self::InputSecret,
         my_index: u64,
         _sk: &Self::DealerPrivateKey,
+        _pk: &Self::DealerPublicKey,
     ) -> Self::Transcript {
         DummyDKGTranscript {
             secret: *input_secret,
@@ -121,6 +123,12 @@ impl DKGTrait for DummyDKG {
 
     fn get_dealers(transcript: &DummyDKGTranscript) -> BTreeSet<u64> {
         transcript.contributions_by_dealer.keys().copied().collect()
+    }
+
+    fn expected_max_transcript_size(_params: &Self::PublicParams) -> usize {
+        // DummyDKGTranscript = DummySecret(u64) + BTreeMap<u64, DummySecret>; trivially small.
+        // Generous fixed bound covering any reasonable validator-set size in tests.
+        64 * 1024
     }
 }
 

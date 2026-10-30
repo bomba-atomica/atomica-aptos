@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::AptosDB;
 use anyhow::anyhow;
@@ -8,7 +8,7 @@ use aptos_crypto::HashValue;
 use aptos_db_indexer::db_indexer::InternalIndexerDB;
 use aptos_infallible::RwLock;
 use aptos_storage_interface::{
-    chunk_to_commit::ChunkToCommit, DbReader, DbWriter, Result, StateSnapshotReceiver,
+    chunk_to_commit::ChunkToCommit, DbReader, DbWriter, Result, StateKind, StateSnapshotReceiver,
 };
 use aptos_types::{
     ledger_info::LedgerInfoWithSignatures,
@@ -50,10 +50,10 @@ impl FastSyncStorageWrapper {
             /*readonly=*/ false,
             config.storage.storage_pruner_config,
             config.storage.rocksdb_configs,
-            config.storage.enable_indexer,
             config.storage.buffered_state_target_items,
             config.storage.max_num_nodes_per_lru_cache_shard,
             internal_indexer_db,
+            config.storage.hot_state_config,
         )
         .map_err(|err| anyhow!("fast sync DB failed to open {}", err))?;
         if let Some(sender) = update_sender {
@@ -80,10 +80,10 @@ impl FastSyncStorageWrapper {
                 /*readonly=*/ false,
                 config.storage.storage_pruner_config,
                 config.storage.rocksdb_configs,
-                config.storage.enable_indexer,
                 config.storage.buffered_state_target_items,
                 config.storage.max_num_nodes_per_lru_cache_shard,
                 None,
+                config.storage.hot_state_config,
             )
             .map_err(|err| anyhow!("Secondary DB failed to open {}", err))?;
 
@@ -143,10 +143,15 @@ impl DbWriter for FastSyncStorageWrapper {
         &self,
         version: Version,
         expected_root_hash: HashValue,
+        kind: StateKind,
     ) -> Result<Box<dyn StateSnapshotReceiver<StateKey, StateValue>>> {
-        *self.fast_sync_status.write() = FastSyncStatus::STARTED;
+        // The main-state receiver marks the start of a fast sync; any later
+        // snapshot stage must not reset that status.
+        if kind == StateKind::MainState {
+            *self.fast_sync_status.write() = FastSyncStatus::STARTED;
+        }
         self.get_aptos_db_write_ref()
-            .get_state_snapshot_receiver(version, expected_root_hash)
+            .get_state_snapshot_receiver(version, expected_root_hash, kind)
     }
 
     fn finalize_state_snapshot(
