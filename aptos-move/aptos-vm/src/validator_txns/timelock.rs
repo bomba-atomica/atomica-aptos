@@ -133,7 +133,7 @@ fn validate_share_encoding(shares: &[Vec<u8>]) -> Result<(), usize> {
         return Err(0);
     }
     for (i, share) in shares.iter().enumerate() {
-        ibe::decode_g1(share).map_err(|_| i)?;
+        let _point = ibe::decode_g1(share).map_err(|_| i)?;
     }
     Ok(())
 }
@@ -374,7 +374,9 @@ impl AptosVM {
                 "Timelock share check failed: author {}, timelock {}: {}",
                 author, timelock_id, e.0
             );
-            return Err(ExecutionFailure::Expected(ExpectedFailure::ShareCheckFailed));
+            return Err(ExecutionFailure::Expected(
+                ExpectedFailure::ShareCheckFailed,
+            ));
         }
 
         // 4. Reveal, once verified weight reached the threshold.
@@ -418,10 +420,7 @@ impl AptosVM {
                             module_storage,
                             log_context,
                             FINALIZE_TIMELOCK_REVEAL_FUNCTION,
-                            vec![
-                                MoveValue::U64(timelock_id),
-                                MoveValue::vector_u8(dk),
-                            ],
+                            vec![MoveValue::U64(timelock_id), MoveValue::vector_u8(dk)],
                         )?,
                         0,
                     )?;
@@ -472,7 +471,6 @@ mod tests {
     fn id() -> [u8; 32] {
         compute_identity(4, 3, 11, 1_700_000_000_000_000)
     }
-
 
     #[test]
     fn single_player_key_rebuilds_and_passes_pairing_check() {
@@ -535,9 +533,15 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(4);
         let s = random_scalar(&mut rng);
         let good = encode_g1(&derive_decryption_key(&s, &id()).unwrap()).to_vec();
-        assert_eq!(validate_share_encoding(&[good.clone(), good.clone()]), Ok(()));
+        assert_eq!(
+            validate_share_encoding(&[good.clone(), good.clone()]),
+            Ok(())
+        );
         assert_eq!(validate_share_encoding(&[]), Err(0));
-        assert_eq!(validate_share_encoding(&[good.clone(), vec![0u8; 47]]), Err(1));
+        assert_eq!(
+            validate_share_encoding(&[good.clone(), vec![0u8; 47]]),
+            Err(1)
+        );
         // All zero bytes is not a valid compressed point. The compressed identity (0xc0 then zeros)
         // is a valid encoding of the identity and must be refused.
         let mut identity = vec![0u8; 48];

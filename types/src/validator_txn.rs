@@ -160,11 +160,19 @@ mod tests {
     fn timelock_share_bcs_roundtrip_and_golden_bytes() {
         let txn = ValidatorTransaction::TimelockShare(share());
         let bytes = bcs::to_bytes(&txn).unwrap();
-        assert_eq!(bcs::from_bytes::<ValidatorTransaction>(&bytes).unwrap(), txn);
+        assert_eq!(
+            bcs::from_bytes::<ValidatorTransaction>(&bytes).unwrap(),
+            txn
+        );
         // tag, epoch u64 LE, timelock_id u64 LE, author (32 bytes), share count, first share length.
         assert_eq!(&bytes[1..9], &7u64.to_le_bytes());
         assert_eq!(&bytes[9..17], &9u64.to_le_bytes());
-        assert_eq!(&bytes[17..49], &AccountAddress::from_hex_literal("0xa11ce").unwrap().to_vec()[..]);
+        assert_eq!(
+            &bytes[17..49],
+            &AccountAddress::from_hex_literal("0xa11ce")
+                .unwrap()
+                .to_vec()[..]
+        );
         assert_eq!(bytes[49], 3);
         assert_eq!(bytes[50], TIMELOCK_SHARE_LEN as u8);
         assert_eq!(bytes.len(), 50 + 3 * (1 + TIMELOCK_SHARE_LEN));
@@ -188,10 +196,31 @@ mod tests {
 
     #[test]
     fn timelock_topic_is_per_timelock_and_epoch() {
-        let a = Topic::TimelockShare { epoch: 1, timelock_id: 1 };
-        assert_eq!(a, Topic::TimelockShare { epoch: 1, timelock_id: 1 });
-        assert_ne!(a, Topic::TimelockShare { epoch: 2, timelock_id: 1 });
-        assert_ne!(a, Topic::TimelockShare { epoch: 1, timelock_id: 2 });
+        let a = Topic::TimelockShare {
+            epoch: 1,
+            timelock_id: 1,
+        };
+        assert_eq!(
+            a,
+            Topic::TimelockShare {
+                epoch: 1,
+                timelock_id: 1
+            }
+        );
+        assert_ne!(
+            a,
+            Topic::TimelockShare {
+                epoch: 2,
+                timelock_id: 1
+            }
+        );
+        assert_ne!(
+            a,
+            Topic::TimelockShare {
+                epoch: 1,
+                timelock_id: 2
+            }
+        );
         assert_ne!(a, Topic::ChunkyDKG);
     }
 }
