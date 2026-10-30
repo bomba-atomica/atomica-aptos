@@ -498,6 +498,27 @@ module aptos_framework::ibe_config {
         finalize_internal(timelock_id, dk, key_ok)
     }
 
+    /// Called by the handler when the key it rebuilt in Rust failed the pairing check. Sets
+    /// `Expired(key-check-failed)` and drops the stored shares. There is no retry.
+    public(friend) fun fail_timelock_key_check(timelock_id: u64) acquires TimelockRegistry, TimelockEpochConfig {
+        get_reconstruction_inputs(timelock_id);
+        finalize_internal(timelock_id, vector::empty(), false);
+    }
+
+    /// True when the timelock is `Pending` in the current epoch and verified weight reached the threshold.
+    /// The handler uses it to decide whether to rebuild the key after storing a share.
+    public fun is_reconstructable(timelock_id: u64): bool acquires TimelockRegistry {
+        if (!exists<TimelockRegistry>(@aptos_framework)) {
+            return false
+        };
+        let registry = &TimelockRegistry[@aptos_framework];
+        if (!registry.timelocks.contains(timelock_id)) {
+            return false
+        };
+        let info = registry.timelocks.borrow(timelock_id);
+        (effective_status(info) is TimelockStatus::Pending) && info.share_count >= info.reveal_threshold
+    }
+
     fun finalize_internal(timelock_id: u64, dk: vector<u8>, key_ok: bool): bool acquires TimelockRegistry {
         let registry = &mut TimelockRegistry[@aptos_framework];
         assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
@@ -743,6 +764,11 @@ module aptos_framework::ibe_config {
     public fun finalize_for_testing(timelock_id: u64, dk: vector<u8>, key_ok: bool): bool
     acquires TimelockRegistry {
         finalize_internal(timelock_id, dk, key_ok)
+    }
+
+    #[test_only]
+    public fun fail_key_check_for_testing(timelock_id: u64) acquires TimelockRegistry, TimelockEpochConfig {
+        fail_timelock_key_check(timelock_id);
     }
 
     #[test_only]

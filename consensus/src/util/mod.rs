@@ -22,6 +22,9 @@ pub fn is_vtxn_expected(
         ValidatorTransaction::DKGResult(_) => randomness_config.randomness_enabled(),
         ValidatorTransaction::ObservedJWKUpdate(_) => jwk_consensus_config.jwk_consensus_enabled(),
         ValidatorTransaction::ChunkyDKGResult(_) => chunky_dkg_config.chunky_dkg_enabled(),
+        // The timelock secret comes from its own chunky DKG session, so shares are only expected
+        // while chunky DKG is enabled. Randomness and JWK settings do not matter here.
+        ValidatorTransaction::TimelockShare(_) => chunky_dkg_config.chunky_dkg_enabled(),
     }
 }
 

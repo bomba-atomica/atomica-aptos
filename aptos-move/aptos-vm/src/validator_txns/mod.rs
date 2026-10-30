@@ -39,6 +39,13 @@ impl AptosVM {
                 session_id,
                 dkg_output,
             ),
+            ValidatorTransaction::TimelockShare(timelock_share) => self.process_timelock_share(
+                resolver,
+                module_storage,
+                log_context,
+                session_id,
+                timelock_share,
+            ),
         }
     }
 }
@@ -46,3 +53,8 @@ impl AptosVM {
 mod chunky_dkg;
 mod dkg;
 mod jwk;
+mod timelock;
+
+pub use timelock::{
+    set_timelock_share_verifier, ShareCheckError, ShareCheckRequest, TimelockShareVerifier,
+};
