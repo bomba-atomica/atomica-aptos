@@ -14,16 +14,16 @@ use anyhow::{anyhow, Result};
 use aptos_bounded_executor::BoundedExecutor;
 use aptos_channels::{aptos_channel, message_queues::QueueStyle};
 use aptos_config::config::{ReliableBroadcastConfig, SafetyRulesConfig};
+use aptos_dkg::pvss::Player;
 use aptos_event_notifications::{
     EventNotification, EventNotificationListener, ReconfigNotification,
     ReconfigNotificationListener,
 };
+use aptos_infallible::RwLock;
 use aptos_logger::{error, info, warn};
 use aptos_network::{application::interface::NetworkClient, protocols::network::Event};
 use aptos_reliable_broadcast::ReliableBroadcast;
 use aptos_safety_rules::{safety_rules_manager::storage, PersistentSafetyStorage};
-use aptos_dkg::pvss::Player;
-use aptos_infallible::RwLock;
 use aptos_types::{
     account_address::AccountAddress,
     account_config::ChainIdResource,
@@ -218,10 +218,13 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                     if let Some(tx) = self.timelock_dkg_start_event_tx.as_ref() {
                         match TimelockDKGStartEvent::try_from(&event) {
                             Ok(start_event) => {
-                                let _ = tx.push((), ChunkyDKGStartEvent {
-                                    session_metadata: start_event.session_metadata,
-                                    start_time_us: start_event.start_time_us,
-                                });
+                                let _ = tx.push(
+                                    (),
+                                    ChunkyDKGStartEvent {
+                                        session_metadata: start_event.session_metadata,
+                                        start_time_us: start_event.start_time_us,
+                                    },
+                                );
                             },
                             Err(e) => {
                                 error!("[DKG] Failed conversion to TimelockDKGStartEvent: {}", e);
@@ -618,7 +621,10 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         match &state {
             TimelockServiceState::Ready { .. } => {
                 counters::TIMELOCK_SERVICE_READY.set(1);
-                info!(epoch = epoch, "[TimelockDKG] timelock service ready: shares match the verification keys.");
+                info!(
+                    epoch = epoch,
+                    "[TimelockDKG] timelock service ready: shares match the verification keys."
+                );
             },
             TimelockServiceState::Refused { reason, .. } => {
                 counters::TIMELOCK_SERVICE_READY.set(0);
@@ -627,7 +633,11 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                         warn!(epoch = epoch, "[TimelockDKG] no timelock key this epoch.");
                     },
                     other => {
-                        error!(epoch = epoch, "[TimelockDKG] node refuses to serve the timelock this epoch: {}", other);
+                        error!(
+                            epoch = epoch,
+                            "[TimelockDKG] node refuses to serve the timelock this epoch: {}",
+                            other
+                        );
                     },
                 }
             },

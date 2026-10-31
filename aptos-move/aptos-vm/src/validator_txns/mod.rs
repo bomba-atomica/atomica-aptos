@@ -63,7 +63,6 @@ mod jwk;
 mod timelock;
 mod timelock_dkg;
 
-pub use timelock_dkg::{check_timelock_dkg_result, CheckedTimelockResult, ResultRejection};
 pub use timelock::{
     install_boneh_franklin_share_verifier, set_timelock_share_verifier, BonehFranklinShareVerifier,
     ShareCheckError, ShareCheckRequest, TimelockShareVerifier,

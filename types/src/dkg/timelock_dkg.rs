@@ -21,18 +21,18 @@
 use crate::{
     aggregate_signature::AggregateSignature,
     chain_id::ChainId,
-    dkg::{
-        chunky_dkg::{
-            AggregatedSubtranscript, CertifiedAggregatedChunkySubtranscript,
-            ChunkyDKGPublicParameters, ChunkyDKGSessionMetadata, ChunkyDKGThresholdConfig,
-            ChunkyDecryptPrivKey, ChunkySubtranscript,
-        },
+    dkg::chunky_dkg::{
+        chunky_threshold_config, AggregatedSubtranscript, CertifiedAggregatedChunkySubtranscript,
+        ChunkyDKGPublicParameters, ChunkyDKGSessionMetadata, ChunkyDKGThresholdConfig,
+        ChunkyDecryptPrivKey, ChunkySubtranscript,
     },
     on_chain_config::OnChainConfig,
     validator_verifier::ValidatorVerifier,
 };
 use anyhow::{anyhow, ensure, Context, Result};
-use aptos_crypto::{bls12381, hash::CryptoHash, HashValue, SigningKey, Signature as _, TSecretSharingConfig};
+use aptos_crypto::{
+    bls12381, hash::CryptoHash, HashValue, Signature as _, SigningKey, TSecretSharingConfig,
+};
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
 use aptos_dkg::{
     ibe::{
@@ -105,7 +105,9 @@ impl ChunkyDKGSessionKind {
                 .sign(aggregated)
                 .map_err(|e| anyhow!("failed to sign subtranscript: {:?}", e)),
             Self::Timelock => ssk
-                .sign(&TimelockSubtranscriptSigningMessage::new(chain_id, aggregated))
+                .sign(&TimelockSubtranscriptSigningMessage::new(
+                    chain_id, aggregated,
+                ))
                 .map_err(|e| anyhow!("failed to sign timelock subtranscript: {:?}", e)),
         }
     }
@@ -319,7 +321,10 @@ pub fn set_timelock_public_parameters_path(path: PathBuf) {
 /// Where the timelock parameters come from on this node.
 #[derive(Debug)]
 pub enum TimelockParametersSource {
-    WillLoadFromFile { path: PathBuf, file_size: u64 },
+    WillLoadFromFile {
+        path: PathBuf,
+        file_size: u64,
+    },
     /// Built-in test parameters (test chain only).
     TestKeyFallback,
     /// No parameters: this node cannot take part in the timelock session.
@@ -421,6 +426,9 @@ pub enum TimelockKeyError {
     ShareMismatch { virtual_player: usize },
     /// The claimed `mpk` differs from the rederived one.
     ClaimedMpkMismatch,
+    /// Decrypting the shares failed (a wrong key or a malformed ciphertext). The upstream decryption
+    /// panics in that case. The node catches it and refuses the timelock for the epoch.
+    DecryptionFailed,
 }
 
 impl std::fmt::Display for TimelockKeyError {
@@ -492,7 +500,9 @@ pub fn derive_timelock_config(
         decode_g2(&mpk_bytes).map_err(|e| TimelockKeyError::InvalidPoint(format!("mpk: {e}")))?;
     check_mpk_matches_verification_keys(&mpk, &points, threshold_config.get_threshold_weight())
         .map_err(TimelockKeyError::MpkMismatch)?;
-    debug_assert!(verification_keys.iter().all(|k| k.len() == G2_COMPRESSED_LEN));
+    debug_assert!(verification_keys
+        .iter()
+        .all(|k| k.len() == G2_COMPRESSED_LEN));
     Ok(TimelockDerivedConfig {
         mpk: mpk_bytes.to_vec(),
         verification_keys,
@@ -530,7 +540,12 @@ pub fn derive_own_shares(
     dk: &ChunkyDecryptPrivKey,
     pp: &ChunkyDKGPublicParameters,
 ) -> Result<TimelockOwnShares, TimelockKeyError> {
-    let (sk_shares, pk_shares) = subtranscript.decrypt_own_share(threshold_config, player, dk, pp);
+    // `decrypt_own_share` panics ("dlog_vec failed") when the key does not decrypt a ciphertext. A node
+    // must not die on data from chain state, so the panic becomes an error.
+    let (sk_shares, pk_shares) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        subtranscript.decrypt_own_share(threshold_config, player, dk, pp)
+    }))
+    .map_err(|_| TimelockKeyError::DecryptionFailed)?;
     if sk_shares.len() != pk_shares.len() {
         return Err(TimelockKeyError::ShapeMismatch(
             "share and key count differ".to_string(),
@@ -552,11 +567,96 @@ pub fn derive_own_shares(
 
 /// What the `TimelockDKGResult` handler computes from a certified result: the checks of spec section 4.
 /// `dealer_epoch` of the aggregate and the metadata epoch are checked by the caller.
-pub fn check_claimed_mpk(derived: &TimelockDerivedConfig, claimed_mpk: &[u8]) -> Result<(), TimelockKeyError> {
+pub fn check_claimed_mpk(
+    derived: &TimelockDerivedConfig,
+    claimed_mpk: &[u8],
+) -> Result<(), TimelockKeyError> {
     if derived.mpk.as_slice() != claimed_mpk {
         return Err(TimelockKeyError::ClaimedMpkMismatch);
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Acceptance of a certified result (the check of the `TimelockDKGResult` handler)
+// ---------------------------------------------------------------------------------------------
+
+/// Why a certified timelock DKG result is refused. The transaction is discarded and nothing changes.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResultRejection {
+    EpochNotCurrent,
+    NotEnoughVotingPower,
+    TranscriptDeserializationFailed,
+    MultiSigVerificationFailed,
+    /// The shape or a point of the subtranscript is invalid, or `V0` is not the interpolation of the
+    /// verification keys.
+    KeyDerivationFailed(String),
+    ClaimedMpkMismatch,
+    ParametersHashMismatch,
+}
+
+/// A result that passed every check, with the values the Move side stores.
+#[derive(Debug)]
+pub struct CheckedTimelockResult {
+    pub aggregated: AggregatedSubtranscript,
+    pub derived: TimelockDerivedConfig,
+    pub subtranscript_hash: HashValue,
+}
+
+/// All checks of a certified timelock DKG result against chain state. No VM, no I/O.
+///
+/// `local_params_hash` is the hash of this node's validated timelock parameters blob, `None` on a node
+/// without it (a fullnode). Like the mempool handler, such a node trusts consensus for that one check.
+pub fn check_timelock_dkg_result(
+    output: &CertifiedTimelockDKGOutput,
+    current_epoch: u64,
+    session_metadata: &ChunkyDKGSessionMetadata,
+    chain_id: ChainId,
+    verifier: &ValidatorVerifier,
+    local_params_hash: Option<HashValue>,
+) -> Result<CheckedTimelockResult, ResultRejection> {
+    let certified = &output.certified_transcript;
+    if certified.metadata.epoch != current_epoch || session_metadata.dealer_epoch != current_epoch {
+        return Err(ResultRejection::EpochNotCurrent);
+    }
+
+    let authors = certified
+        .signature
+        .get_signers_addresses(&verifier.get_ordered_account_addresses());
+    verifier
+        .check_voting_power(authors.iter(), true)
+        .map_err(|_| ResultRejection::NotEnoughVotingPower)?;
+
+    let aggregated: AggregatedSubtranscript = bcs::from_bytes(&certified.transcript_bytes)
+        .map_err(|_| ResultRejection::TranscriptDeserializationFailed)?;
+    if aggregated.dealer_epoch != certified.metadata.epoch {
+        return Err(ResultRejection::EpochNotCurrent);
+    }
+
+    // The timelock hash domain. A mempool certificate fails here.
+    ChunkyDKGSessionKind::Timelock
+        .verify_multi_signatures(chain_id, verifier, &aggregated, &certified.signature)
+        .map_err(|_| ResultRejection::MultiSigVerificationFailed)?;
+
+    // Rederive mpk and the verification keys from the subtranscript, check V0 against the
+    // interpolated keys, then compare with the claimed mpk.
+    let threshold_config = chunky_threshold_config(session_metadata);
+    let derived = derive_timelock_config(&aggregated.subtranscript, &threshold_config)
+        .map_err(|e| ResultRejection::KeyDerivationFailed(e.to_string()))?;
+    check_claimed_mpk(&derived, &output.mpk).map_err(|_| ResultRejection::ClaimedMpkMismatch)?;
+
+    if let Some(local) = local_params_hash {
+        if local != output.public_parameters_hash {
+            return Err(ResultRejection::ParametersHashMismatch);
+        }
+    }
+
+    let subtranscript_hash = aggregated.hash();
+    Ok(CheckedTimelockResult {
+        aggregated,
+        derived,
+        subtranscript_hash,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -614,7 +714,10 @@ pub enum TimelockServiceState {
         shares: TimelockOwnShares,
     },
     /// The node does not serve the timelock in this epoch.
-    Refused { epoch: u64, reason: TimelockServiceRefusal },
+    Refused {
+        epoch: u64,
+        reason: TimelockServiceRefusal,
+    },
 }
 
 impl TimelockServiceState {
@@ -646,7 +749,9 @@ pub fn derive_timelock_service_state(
         return refuse(TimelockServiceRefusal::NoParameters);
     };
     if let Err(e) = check_blob_hash_against_config(params, &config.public_parameters_hash) {
-        return refuse(TimelockServiceRefusal::ParametersHashMismatch(e.to_string()));
+        return refuse(TimelockServiceRefusal::ParametersHashMismatch(
+            e.to_string(),
+        ));
     }
     let Some(session) = state.maybe_last_complete(epoch) else {
         return refuse(TimelockServiceRefusal::SubtranscriptMismatch(
@@ -666,7 +771,7 @@ pub fn derive_timelock_service_state(
             "subtranscript hash differs from the epoch config".to_string(),
         ));
     }
-    let threshold_config = crate::dkg::chunky_dkg::chunky_threshold_config(&session.metadata);
+    let threshold_config = chunky_threshold_config(&session.metadata);
     match derive_timelock_config(&aggregated.subtranscript, &threshold_config) {
         Ok(derived) => {
             if derived.verification_keys != config.verification_keys || derived.mpk != config.mpk {

@@ -173,7 +173,7 @@ impl ChunkyDKGManager {
     ) -> Self {
         Self::new_with_kind(
             ChunkyDKGSessionKind::Mempool,
-            ChainId::new(0),
+            ChainId::test(),
             ssk,
             spk,
             my_index,
@@ -542,7 +542,7 @@ impl ChunkyDKGManager {
     }
 
     /// On a locally aggregated transcript, start validation and update inner states.
-    async fn process_aggregated_subtranscript(
+    pub(crate) async fn process_aggregated_subtranscript(
         &mut self,
         agg_with_hashes: AggregatedSubtranscriptWithHashes,
     ) -> Result<()> {
@@ -598,7 +598,7 @@ impl ChunkyDKGManager {
         Ok(())
     }
 
-    async fn process_certified_aggregated_subtranscript(
+    pub(crate) async fn process_certified_aggregated_subtranscript(
         &mut self,
         certified_agg_subtrx: CertifiedAggregatedSubtranscript,
     ) -> Result<()> {
@@ -724,7 +724,10 @@ impl ChunkyDKGManager {
         Ok(())
     }
 
-    async fn process_dkg_start_event(&mut self, event: ChunkyDKGStartEvent) -> Result<()> {
+    pub(crate) async fn process_dkg_start_event(
+        &mut self,
+        event: ChunkyDKGStartEvent,
+    ) -> Result<()> {
         info!(
             epoch = self.epoch_state.epoch,
             my_addr = self.my_addr,
@@ -751,7 +754,7 @@ impl ChunkyDKGManager {
     }
 
     /// Process an RPC request from DKG peers.
-    async fn process_peer_rpc_msg(&mut self, req: IncomingRpcRequest) -> Result<()> {
+    pub(crate) async fn process_peer_rpc_msg(&mut self, req: IncomingRpcRequest) -> Result<()> {
         let IncomingRpcRequest {
             msg,
             response_sender,
@@ -1123,7 +1126,11 @@ impl ChunkyDKGManager {
         if local_aggregated_transcript.hash() == req.subtranscript_hash {
             let signature = dkg_config
                 .kind
-                .sign_subtranscript(dkg_config.chain_id, &ssk, local_aggregated_transcript.as_ref())
+                .sign_subtranscript(
+                    dkg_config.chain_id,
+                    &ssk,
+                    local_aggregated_transcript.as_ref(),
+                )
                 .context("failed to sign subtranscript validation")?;
             return Ok(DKGMessage::SubtranscriptSignatureResponse(
                 ChunkyDKGSubtranscriptSignatureResponse::new(
@@ -1172,7 +1179,7 @@ impl ChunkyDKGManager {
             aptos_channel::new(QueueStyle::KLAST, 1, None);
         Self {
             kind: ChunkyDKGSessionKind::Mempool,
-            chain_id: ChainId::new(0),
+            chain_id: ChainId::test(),
             ssk,
             spk,
             my_addr,

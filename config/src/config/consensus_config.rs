@@ -110,6 +110,12 @@ pub struct ConsensusConfig {
     /// Path to the public parameters blob file (BCS-serialized PublicParameters).
     /// Required for validators on non-test chains. For test chains, falls back to TEST_PUBLIC_PARAMETERS.
     pub public_parameters_blob_path: Option<PathBuf>,
+    /// Path to the timelock public parameters blob (BCS-serialized PublicParameters of the timelock
+    /// chunky DKG session). Loaded with full validation: every point checked, `G_2` equal to the standard
+    /// BLS12-381 G2 generator. Its SHA3-256 must equal `TimelockEpochConfig.public_parameters_hash`, or the
+    /// node does not serve the timelock. Not required: a node without it cannot take part in the timelock
+    /// session, and the epoch change does not depend on it. Test chains fall back to test parameters.
+    pub timelock_public_parameters_blob_path: Option<PathBuf>,
     pub num_bounded_executor_tasks: u64,
     pub enable_pre_commit: bool,
     pub max_pending_rounds_in_commit_vote_cache: u64,
@@ -409,6 +415,7 @@ impl Default for ConsensusConfig {
             secret_share_request_delay_ms: 300,
             digest_key_blob_path: None,
             public_parameters_blob_path: None,
+            timelock_public_parameters_blob_path: None,
             num_bounded_executor_tasks: 16,
             enable_pre_commit: true,
             max_pending_rounds_in_commit_vote_cache: 100,

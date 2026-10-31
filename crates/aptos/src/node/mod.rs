@@ -83,6 +83,7 @@ pub enum NodeTool {
     UpdateValidatorNetworkAddresses(UpdateValidatorNetworkAddresses),
     ValidateDigestKey(ValidateDigestKey),
     ValidatePublicParameters(ValidatePublicParameters),
+    ValidateTimelockPublicParameters(ValidateTimelockPublicParameters),
 }
 
 impl NodeTool {
@@ -112,6 +113,7 @@ impl NodeTool {
             UpdateValidatorNetworkAddresses(tool) => tool.execute_serialized().await,
             ValidateDigestKey(tool) => tool.execute_serialized().await,
             ValidatePublicParameters(tool) => tool.execute_serialized().await,
+            ValidateTimelockPublicParameters(tool) => tool.execute_serialized().await,
         }
     }
 }
@@ -1615,6 +1617,74 @@ impl CliCommand<BlobValidationResult> for ValidatePublicParameters {
         Ok(BlobValidationResult {
             file_size_bytes,
             blake3,
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub struct TimelockParametersValidationResult {
+    pub file_size_bytes: u64,
+    /// SHA3-256 of the blob, the value stored on chain as `public_parameters_hash`.
+    pub sha3_256: String,
+    pub hash_matches_expected: Option<bool>,
+}
+
+/// Validate a timelock PublicParameters blob file
+///
+/// Runs the real validation, not only parse and size: every point of the ElGamal bases, the commitment
+/// base and the DeKART prover key is checked (on curve, prime-order subgroup, not the identity), the `G_2`
+/// commitment base must equal the standard BLS12-381 G2 generator, and the dlog table must match the
+/// ElGamal base. With `--expected-hash` the SHA3-256 of the file must equal the given hex value, for
+/// example the `public_parameters_hash` of the `TimelockEpochConfig` on chain. The command reports the
+/// blob as valid only when all of that passes.
+#[derive(Parser)]
+pub struct ValidateTimelockPublicParameters {
+    /// Path to the BCS-serialized timelock PublicParameters blob file
+    #[clap(value_parser)]
+    pub file: PathBuf,
+
+    /// Expected SHA3-256 of the blob, as hex (with or without 0x)
+    #[clap(long)]
+    pub expected_hash: Option<String>,
+}
+
+#[async_trait]
+impl CliCommand<TimelockParametersValidationResult> for ValidateTimelockPublicParameters {
+    fn command_name(&self) -> &'static str {
+        "ValidateTimelockPublicParameters"
+    }
+
+    async fn execute(self) -> CliTypedResult<TimelockParametersValidationResult> {
+        use aptos_types::dkg::timelock_dkg::validate_timelock_public_parameters_blob;
+        use std::time::Instant;
+
+        let bytes = std::fs::read(&self.file).map_err(|e| {
+            CliError::IO(format!("Failed to read {}: {}", self.file.display(), e), e)
+        })?;
+        let expected = match &self.expected_hash {
+            Some(h) => Some(
+                hex::decode(h.trim_start_matches("0x"))
+                    .map_err(|e| CliError::CommandArgumentError(format!("--expected-hash: {e}")))?,
+            ),
+            None => None,
+        };
+        println!(
+            "Validating timelock PublicParameters ({} bytes)...",
+            bytes.len()
+        );
+        let t = Instant::now();
+        let report = validate_timelock_public_parameters_blob(&bytes, expected.as_deref())
+            .map_err(|e| {
+                CliError::UnexpectedError(format!("Timelock PublicParameters are NOT valid: {e:#}"))
+            })?;
+        println!(
+            "Timelock PublicParameters are valid (all points validated, standard G2 base). Took {:.2?}",
+            t.elapsed()
+        );
+        Ok(TimelockParametersValidationResult {
+            file_size_bytes: report.blob_bytes as u64,
+            sha3_256: report.sha3_256,
+            hash_matches_expected: report.hash_matches_expected,
         })
     }
 }
