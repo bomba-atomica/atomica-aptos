@@ -43,7 +43,7 @@ Checks code formatting and runs Clippy lints.
 
 **Features:**
 
-- `cargo fmt --check` for formatting validation
+- `cargo +nightly fmt -- --check` for formatting validation (rustfmt.toml needs nightly options)
 - `cargo clippy` with warnings as errors
 - Fast feedback on code quality issues
 
