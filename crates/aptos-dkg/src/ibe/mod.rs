@@ -110,6 +110,8 @@ pub enum IbeError {
     DecryptionFailed,
     /// Randomness or encryption failure.
     EncryptionFailed,
+    /// The master public key is not the G2 interpolation of the virtual players' verification keys.
+    MpkVerificationKeyMismatch,
 }
 
 impl std::fmt::Display for IbeError {
@@ -364,6 +366,95 @@ pub fn reconstruct_dk(
     G1Projective::msm(shares, &lagrange)
         .map(|p| p.into_affine())
         .map_err(|_| IbeError::InvalidWeightedConfig("msm length mismatch".to_string()))
+}
+
+/// Weighted Lagrange interpolation at zero in G2, over already validated points.
+///
+/// Same layout as [`reconstruct_dk`]: `player_ids` index the virtual players (flat, validator order).
+pub fn interpolate_g2_at_zero(
+    player_ids: &[usize],
+    points: &[G2Affine],
+    threshold_weight: usize,
+    total_weight: usize,
+) -> Result<G2Affine, IbeError> {
+    if player_ids.len() != points.len() || points.len() < threshold_weight {
+        return Err(IbeError::BelowThreshold {
+            have: points.len().min(player_ids.len()),
+            need: threshold_weight,
+        });
+    }
+    if total_weight == 0 || total_weight > MAX_TOTAL_WEIGHT {
+        return Err(IbeError::InvalidWeightedConfig(format!(
+            "total weight {} outside 1..={}",
+            total_weight, MAX_TOTAL_WEIGHT
+        )));
+    }
+    if threshold_weight == 0 || threshold_weight > total_weight {
+        return Err(IbeError::InvalidWeightedConfig(format!(
+            "threshold {} outside 1..={}",
+            threshold_weight, total_weight
+        )));
+    }
+    let mut seen = HashSet::with_capacity(player_ids.len());
+    for &id in player_ids {
+        if id >= total_weight {
+            return Err(IbeError::PlayerOutOfBounds {
+                index: id as u64,
+                num_players: total_weight,
+            });
+        }
+        if !seen.insert(id) {
+            return Err(IbeError::DuplicatePlayer(id as u64));
+        }
+    }
+    let config = ShamirThresholdConfig::<Fr>::new(threshold_weight, total_weight);
+    let lagrange = config.lagrange_for_subset(player_ids);
+    G2Projective::msm(points, &lagrange)
+        .map(|p| p.into_affine())
+        .map_err(|_| IbeError::InvalidWeightedConfig("msm length mismatch".to_string()))
+}
+
+/// Checks that `mpk` (`V0`) equals the G2 interpolation of threshold sets of the verification keys.
+///
+/// Three threshold sets are interpolated: the first `t` virtual players, the last `t`, and `t`
+/// players spread across the whole range. The spread set takes every `k`-th player for the largest
+/// `k` that still leaves `t` players, so it mixes validators. A subtranscript whose `V0` and `Vs`
+/// disagree fails at least one of them unless the shares lie on one polynomial of degree below `t`
+/// that passes through `V0`. The whole-polynomial question stays open for the cryptographer (see the
+/// review packet).
+pub fn check_mpk_matches_verification_keys(
+    mpk: &G2Affine,
+    verification_keys: &[G2Affine],
+    threshold_weight: usize,
+) -> Result<(), IbeError> {
+    let total = verification_keys.len();
+    if threshold_weight == 0 || threshold_weight > total {
+        return Err(IbeError::InvalidWeightedConfig(format!(
+            "threshold {} outside 1..={}",
+            threshold_weight, total
+        )));
+    }
+    let t = threshold_weight;
+    let first: Vec<usize> = (0..t).collect();
+    let last: Vec<usize> = (total - t..total).collect();
+    let stride = (total / t).max(1);
+    let mut spread: Vec<usize> = (0..total).step_by(stride).take(t).collect();
+    // Fill from the front when the stride left fewer than `t` players.
+    let mut next = 0usize;
+    while spread.len() < t {
+        if !spread.contains(&next) {
+            spread.push(next);
+        }
+        next += 1;
+    }
+    for ids in [first, last, spread] {
+        let points: Vec<G2Affine> = ids.iter().map(|&i| verification_keys[i]).collect();
+        let v0 = interpolate_g2_at_zero(&ids, &points, t, total)?;
+        if &v0 != mpk {
+            return Err(IbeError::MpkVerificationKeyMismatch);
+        }
+    }
+    Ok(())
 }
 
 /// Byte level reconstruction used by the `ibe::reconstruct_ibe_dk` native.

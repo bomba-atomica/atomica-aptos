@@ -22,10 +22,17 @@ use aptos_logger::{error, info, warn};
 use aptos_network::{application::interface::NetworkClient, protocols::network::Event};
 use aptos_reliable_broadcast::ReliableBroadcast;
 use aptos_safety_rules::{safety_rules_manager::storage, PersistentSafetyStorage};
+use aptos_dkg::pvss::Player;
+use aptos_infallible::RwLock;
 use aptos_types::{
     account_address::AccountAddress,
+    account_config::ChainIdResource,
     dkg::{
-        chunky_dkg::{ChunkyDKGStartEvent, ChunkyDKGState},
+        chunky_dkg::{ChunkyDKGStartEvent, ChunkyDKGState, ChunkyDecryptPrivKey},
+        timelock_dkg::{
+            derive_timelock_service_state, TimelockDKGStartEvent, TimelockDKGState,
+            TimelockEpochConfigResource, TimelockServiceState, TIMELOCK_PUBLIC_PARAMETERS,
+        },
         DKGStartEvent, DKGState, DefaultDKG,
     },
     epoch_state::EpochState,
@@ -43,6 +50,11 @@ use tokio_retry::strategy::ExponentialBackoff;
 
 const DKG_START_EVENT_TYPE_TAG: &str = "0x1::dkg::DKGStartEvent";
 const CHUNKY_DKG_START_EVENT_TYPE_TAG: &str = "0x1::chunky_dkg::ChunkyDKGStartEvent";
+const TIMELOCK_DKG_START_EVENT_TYPE_TAG: &str = "0x1::timelock_dkg::TimelockDKGStartEvent";
+
+/// The timelock service state of the current epoch. A later share-submitting service reads it. It holds
+/// no persisted secret: shares are derived again at every epoch start.
+pub type TimelockServiceHandle = Arc<RwLock<Option<Arc<TimelockServiceState>>>>;
 
 pub struct EpochManager<P: OnChainConfigProvider> {
     // Some useful metadata
@@ -65,6 +77,14 @@ pub struct EpochManager<P: OnChainConfigProvider> {
         Option<aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
     chunky_dkg_manager_close_tx: Option<oneshot::Sender<oneshot::Sender<()>>>,
     chunky_dkg_start_event_tx: Option<aptos_channel::Sender<(), ChunkyDKGStartEvent>>,
+
+    // The second chunky DKG session of the epoch: the timelock secret.
+    timelock_dkg_rpc_msg_tx:
+        Option<aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
+    timelock_dkg_manager_close_tx: Option<oneshot::Sender<oneshot::Sender<()>>>,
+    // The manager is shared with the mempool session, so the event is converted to the same shape.
+    timelock_dkg_start_event_tx: Option<aptos_channel::Sender<(), ChunkyDKGStartEvent>>,
+    timelock_service: TimelockServiceHandle,
 
     // Network utils
     self_sender: aptos_channels::Sender<Event<DKGMessage>>,
@@ -107,11 +127,20 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             chunky_dkg_manager_close_tx: None,
             chunky_dkg_rpc_msg_tx: None,
             chunky_dkg_start_event_tx: None,
+            timelock_dkg_rpc_msg_tx: None,
+            timelock_dkg_manager_close_tx: None,
+            timelock_dkg_start_event_tx: None,
+            timelock_service: Arc::new(RwLock::new(None)),
             rb_config,
             randomness_override_seq_num,
             chunky_dkg_override_seq_num,
             key_storage: storage(safety_rules_config),
         }
+    }
+
+    /// The timelock service state of the current epoch, for the share-submitting service.
+    pub fn timelock_service_handle(&self) -> TimelockServiceHandle {
+        self.timelock_service.clone()
     }
 
     fn process_rpc_request(
@@ -120,6 +149,14 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         dkg_request: IncomingRpcRequest,
     ) -> Result<()> {
         if Some(dkg_request.msg.epoch()) != self.epoch_state.as_ref().map(|s| s.epoch) {
+            return Ok(());
+        }
+
+        // Requests of the timelock session go to the timelock manager. Nothing else does.
+        if matches!(&dkg_request.msg, DKGMessage::TimelockRequest(_)) {
+            if let Some(tx) = &self.timelock_dkg_rpc_msg_tx {
+                let _ = tx.push(peer_id, (peer_id, dkg_request));
+            }
             return Ok(());
         }
 
@@ -173,6 +210,21 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                             },
                             Err(e) => {
                                 error!("[DKG] Failed conversion to ChunkyDKGStartEvent: {}", e);
+                            },
+                        }
+                    }
+                },
+                TIMELOCK_DKG_START_EVENT_TYPE_TAG => {
+                    if let Some(tx) = self.timelock_dkg_start_event_tx.as_ref() {
+                        match TimelockDKGStartEvent::try_from(&event) {
+                            Ok(start_event) => {
+                                let _ = tx.push((), ChunkyDKGStartEvent {
+                                    session_metadata: start_event.session_metadata,
+                                    start_time_us: start_event.start_time_us,
+                                });
+                            },
+                            Err(e) => {
+                                error!("[DKG] Failed conversion to TimelockDKGStartEvent: {}", e);
                             },
                         }
                     }
@@ -341,6 +393,28 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 my_index,
                 &payload,
                 rb,
+                network_sender.clone(),
+            )
+            .await?;
+
+            // The second session runs beside the mempool session, for the same dealers and the same
+            // target validator set. It only reacts to its own start event, which the chain emits only
+            // while `timelock_dkg` is enabled.
+            let timelock_rb = Arc::new(ReliableBroadcast::new(
+                "timelock_dkg",
+                self.my_addr,
+                epoch_state.verifier.get_ordered_account_addresses(),
+                network_sender.clone(),
+                rb_backoff_policy(),
+                aptos_time_service::TimeService::real(),
+                Duration::from_millis(rb_config.rpc_timeout_ms),
+                BoundedExecutor::new(8, tokio::runtime::Handle::current()),
+            ));
+            self.start_timelock_dkg_manager(
+                epoch_state.clone(),
+                my_index,
+                &payload,
+                timelock_rb,
                 network_sender,
             )
             .await?;
@@ -454,6 +528,113 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         Ok(())
     }
 
+    async fn start_timelock_dkg_manager(
+        &mut self,
+        epoch_state: Arc<EpochState>,
+        my_index: usize,
+        payload: &OnChainConfigPayload<P>,
+        rb: Arc<ReliableBroadcast<DKGMessage, ExponentialBackoff>>,
+        network_sender: Arc<NetworkSender>,
+    ) -> Result<()> {
+        let timelock_state = payload.get::<TimelockDKGState>().unwrap_or_default();
+        let chain_id = payload
+            .get::<ChainIdResource>()
+            .map_err(|e| anyhow!("timelock dkg: chain id not readable: {e}"))?
+            .chain_id();
+
+        let my_pk = epoch_state
+            .verifier
+            .get_public_key(&self.my_addr)
+            .ok_or_else(|| anyhow!("my pk not found in validator set"))?;
+        let dealer_sk = self
+            .key_storage
+            .consensus_sk_by_pk(my_pk.clone())
+            .map_err(|e| {
+                anyhow!("timelock dkg new epoch handling failed with consensus sk lookup err: {e}")
+            })?;
+
+        // Derive the node's timelock shares for this epoch from chain state and its consensus key.
+        // The service refuses (and says why) unless the blob hash matches the epoch config and every
+        // share matches its verification key.
+        self.derive_timelock_service(
+            payload,
+            &timelock_state,
+            &epoch_state,
+            my_index,
+            ChunkyDecryptPrivKey::from(&dealer_sk),
+        );
+
+        let (start_event_tx, start_event_rx) = aptos_channel::new(QueueStyle::KLAST, 1, None);
+        self.timelock_dkg_start_event_tx = Some(start_event_tx);
+        let (rpc_msg_tx, rpc_msg_rx) = aptos_channel::new::<
+            AccountAddress,
+            (AccountAddress, IncomingRpcRequest),
+        >(QueueStyle::FIFO, 100, None);
+        self.timelock_dkg_rpc_msg_tx = Some(rpc_msg_tx);
+        let (close_tx, close_rx) = oneshot::channel();
+        self.timelock_dkg_manager_close_tx = Some(close_tx);
+
+        let manager = ChunkyDKGManager::new_timelock(
+            chain_id,
+            Arc::new(dealer_sk),
+            Arc::new(my_pk),
+            my_index,
+            self.my_addr,
+            epoch_state,
+            self.vtxn_pool.clone(),
+            rb,
+            network_sender,
+        );
+        // The manager is built with the mempool-shaped session state type, which has the same layout.
+        let in_progress = timelock_state.in_progress.map(|s| {
+            aptos_types::dkg::chunky_dkg::ChunkyDKGSessionState {
+                metadata: s.metadata,
+                start_time_us: s.start_time_us,
+                transcript: s.transcript,
+            }
+        });
+        tokio::spawn(manager.run(in_progress, start_event_rx, rpc_msg_rx, close_rx));
+        Ok(())
+    }
+
+    fn derive_timelock_service(
+        &self,
+        payload: &OnChainConfigPayload<P>,
+        timelock_state: &TimelockDKGState,
+        epoch_state: &EpochState,
+        my_index: usize,
+        dk: ChunkyDecryptPrivKey,
+    ) {
+        let epoch = epoch_state.epoch;
+        let config = payload.get::<TimelockEpochConfigResource>().ok();
+        let state = derive_timelock_service_state(
+            epoch,
+            config.as_ref(),
+            timelock_state,
+            TIMELOCK_PUBLIC_PARAMETERS.as_deref(),
+            &Player { id: my_index },
+            &dk,
+        );
+        match &state {
+            TimelockServiceState::Ready { .. } => {
+                counters::TIMELOCK_SERVICE_READY.set(1);
+                info!(epoch = epoch, "[TimelockDKG] timelock service ready: shares match the verification keys.");
+            },
+            TimelockServiceState::Refused { reason, .. } => {
+                counters::TIMELOCK_SERVICE_READY.set(0);
+                match reason {
+                    aptos_types::dkg::timelock_dkg::TimelockServiceRefusal::NoKeyThisEpoch => {
+                        warn!(epoch = epoch, "[TimelockDKG] no timelock key this epoch.");
+                    },
+                    other => {
+                        error!(epoch = epoch, "[TimelockDKG] node refuses to serve the timelock this epoch: {}", other);
+                    },
+                }
+            },
+        }
+        *self.timelock_service.write() = Some(Arc::new(state));
+    }
+
     async fn on_new_epoch(&mut self, reconfig_notification: ReconfigNotification<P>) -> Result<()> {
         self.shutdown_current_processor().await;
         self.start_new_epoch(reconfig_notification.on_chain_configs)
@@ -472,6 +653,14 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             tx.send(ack_tx).unwrap();
             ack_rx.await.unwrap();
         }
+        if let Some(tx) = self.timelock_dkg_manager_close_tx.take() {
+            let (ack_tx, ack_rx) = oneshot::channel();
+            tx.send(ack_tx).unwrap();
+            ack_rx.await.unwrap();
+        }
+        self.timelock_dkg_rpc_msg_tx = None;
+        self.timelock_dkg_start_event_tx = None;
+        *self.timelock_service.write() = None;
     }
 
     fn create_network_sender(&self) -> NetworkSender {

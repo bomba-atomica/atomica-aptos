@@ -5,18 +5,21 @@ use crate::{
     chunky::types::CertifiedAggregatedSubtranscript,
     counters,
     types::{
-        ChunkyDKGSubtranscriptSignatureRequest, ChunkyDKGSubtranscriptSignatureResponse, DKGMessage,
+        ChunkyDKGSubtranscriptSignatureRequest, ChunkyDKGSubtranscriptSignatureResponse,
+        DKGMessage, TimelockSignatureRequest,
     },
 };
 use anyhow::{anyhow, ensure, Context};
 use aptos_channels::aptos_channel::Sender;
 use aptos_consensus_types::common::Author;
-use aptos_crypto::{bls12381::Signature, hash::CryptoHash, HashValue, Signature as _};
+use aptos_crypto::{bls12381::Signature, hash::CryptoHash, HashValue};
 use aptos_infallible::Mutex;
 use aptos_logger::info;
 use aptos_reliable_broadcast::{BroadcastStatus, ReliableBroadcast};
 use aptos_types::{
-    dkg::chunky_dkg::AggregatedSubtranscript, epoch_state::EpochState,
+    chain_id::ChainId,
+    dkg::{chunky_dkg::AggregatedSubtranscript, timelock_dkg::ChunkyDKGSessionKind},
+    epoch_state::EpochState,
     validator_verifier::VerifyError,
 };
 use futures::future::AbortHandle;
@@ -34,6 +37,8 @@ pub fn start_chunky_subtranscript_certification(
     aggregated_subtranscript: Arc<AggregatedSubtranscript>,
     dealer_transcript_hashes: Vec<HashValue>,
     certified_agg_subtx_tx: Option<Sender<(), CertifiedAggregatedSubtranscript>>,
+    kind: ChunkyDKGSessionKind,
+    chain_id: ChainId,
 ) -> AbortHandle {
     let epoch = epoch_state.epoch;
     let rb = reliable_broadcast.clone();
@@ -43,11 +48,13 @@ pub fn start_chunky_subtranscript_certification(
         aggregated_subtranscript.dealer_bitmask.clone(),
         dealer_transcript_hashes,
     );
-    let validation_state = Arc::new(ChunkySubtranscriptCertificationState::new(
+    let validation_state = Arc::new(ChunkySubtranscriptCertificationState::new_with_kind(
         start_time,
         my_addr,
         epoch_state.clone(),
         aggregated_subtranscript.clone(),
+        kind,
+        chain_id,
     ));
     let task = async move {
         // Stagger certification broadcasts across validators to avoid
@@ -58,10 +65,16 @@ pub fn start_chunky_subtranscript_certification(
         );
         tokio::time::sleep(jitter).await;
 
-        let validated_trx = rb
-            .broadcast(req, validation_state)
-            .await
-            .expect("broadcast cannot fail");
+        let validated_trx = match kind {
+            ChunkyDKGSessionKind::Mempool => rb
+                .broadcast(req, validation_state)
+                .await
+                .expect("broadcast cannot fail"),
+            ChunkyDKGSessionKind::Timelock => rb
+                .broadcast(TimelockSignatureRequest(req), AsTimelock(validation_state))
+                .await
+                .expect("broadcast cannot fail"),
+        };
         info!(
             epoch = epoch,
             my_addr = my_addr,
@@ -97,17 +110,60 @@ pub struct ChunkySubtranscriptCertificationState {
     epoch_state: Arc<EpochState>,
     aggregated_subtranscript: Arc<AggregatedSubtranscript>,
     expected_subtranscript_hash: HashValue,
+    kind: ChunkyDKGSessionKind,
+    chain_id: ChainId,
+}
+
+/// Adapter that runs the same certification state for the timelock session. Only the request type differs.
+#[derive(Clone)]
+pub struct AsTimelock<S>(pub S);
+
+impl BroadcastStatus<DKGMessage> for AsTimelock<Arc<ChunkySubtranscriptCertificationState>> {
+    type Aggregated = CertifiedAggregatedSubtranscript;
+    type Message = TimelockSignatureRequest;
+    type Response = ChunkyDKGSubtranscriptSignatureResponse;
+
+    fn add(
+        &self,
+        sender: Author,
+        response: ChunkyDKGSubtranscriptSignatureResponse,
+    ) -> anyhow::Result<Option<Self::Aggregated>> {
+        BroadcastStatus::<DKGMessage>::add(&self.0, sender, response)
+    }
 }
 
 impl ChunkySubtranscriptCertificationState {
+    /// The mempool session.
     pub fn new(
         start_time: Duration,
         my_addr: AccountAddress,
         epoch_state: Arc<EpochState>,
         aggregated_subtranscript: Arc<AggregatedSubtranscript>,
     ) -> Self {
+        Self::new_with_kind(
+            start_time,
+            my_addr,
+            epoch_state,
+            aggregated_subtranscript,
+            ChunkyDKGSessionKind::Mempool,
+            ChainId::new(0),
+        )
+    }
+
+    /// `kind` decides the hash domain every signature is checked in. `chain_id` is used by the timelock
+    /// domain only.
+    pub fn new_with_kind(
+        start_time: Duration,
+        my_addr: AccountAddress,
+        epoch_state: Arc<EpochState>,
+        aggregated_subtranscript: Arc<AggregatedSubtranscript>,
+        kind: ChunkyDKGSessionKind,
+        chain_id: ChainId,
+    ) -> Self {
         let expected_subtranscript_hash = aggregated_subtranscript.hash();
         Self {
+            kind,
+            chain_id,
             start_time,
             my_addr,
             sig_aggregator: Mutex::new(ChunkySubtranscriptSignatureAggregator::default()),
@@ -173,8 +229,13 @@ impl BroadcastStatus<DKGMessage> for Arc<ChunkySubtranscriptCertificationState> 
             .get_public_key(&sender)
             .ok_or_else(|| anyhow!("peer public key not found"))?;
 
-        signature
-            .verify(&self.aggregated_subtranscript, &peer_pk)
+        self.kind
+            .verify_subtranscript_signature(
+                self.chain_id,
+                &self.aggregated_subtranscript,
+                &signature,
+                &peer_pk,
+            )
             .context("subtranscript validation signature verification failed")?;
 
         // All checks passed. Adding signature.
@@ -207,9 +268,12 @@ impl BroadcastStatus<DKGMessage> for Arc<ChunkySubtranscriptCertificationState> 
                 .epoch_state
                 .verifier
                 .aggregate_signatures(sig_aggregator.signatures.iter())?;
-            self.epoch_state
-                .verifier
-                .verify_multi_signatures(&self.aggregated_subtranscript, &aggregate_signature)?;
+            self.kind.verify_multi_signatures(
+                self.chain_id,
+                &self.epoch_state.verifier,
+                &self.aggregated_subtranscript,
+                &aggregate_signature,
+            )?;
 
             Some(CertifiedAggregatedSubtranscript {
                 aggregated_subtranscript: self.aggregated_subtranscript.clone(),

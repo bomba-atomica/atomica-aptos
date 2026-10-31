@@ -4,7 +4,7 @@
 use crate::{chunky::types::ChunkyTranscriptWithHash, counters, monitor};
 use anyhow::{anyhow, ensure, Context};
 use aptos_crypto::HashValue;
-use aptos_dkg::pvss::traits::transcript::{HasAggregatableSubtranscript, Transcript};
+use aptos_dkg::pvss::traits::transcript::Transcript;
 use aptos_types::{
     dkg::chunky_dkg::{ChunkyDKGSession, ChunkyTranscript, DealerPublicKey},
     epoch_state::EpochState,
@@ -50,14 +50,7 @@ pub fn deserialize_chunky_transcript_and_verify(
     // Verify the transcript cryptographically.
     monitor!(
         "chunky_validate_transcript_verify",
-        transcript.verify(
-            &dkg_config.threshold_config,
-            &dkg_config.public_parameters,
-            signing_pubkeys,
-            &dkg_config.eks,
-            &dkg_config.session_metadata,
-            &mut rng,
-        )
+        dkg_config.verify_transcript(&transcript, signing_pubkeys, &mut rng)
     )
     .context("chunky transcript verification failed")?;
 

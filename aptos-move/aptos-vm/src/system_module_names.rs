@@ -50,6 +50,9 @@ pub static RECONFIGURATION_WITH_DKG_MODULE: Lazy<ModuleId> = Lazy::new(|| {
 
 pub const FINISH_WITH_DKG_RESULT: &IdentStr = ident_str!("finish_with_dkg_result");
 pub const FINISH_WITH_CHUNKY_DKG_RESULT: &IdentStr = ident_str!("finish_with_chunky_dkg_result");
+pub const FINISH_WITH_TIMELOCK_DKG_RESULT: &IdentStr =
+    ident_str!("finish_with_timelock_dkg_result");
+pub const GET_EPOCH_INTERVAL_SECS: &IdentStr = ident_str!("get_epoch_interval_secs");
 
 pub static IBE_CONFIG_MODULE: Lazy<ModuleId> = Lazy::new(|| {
     ModuleId::new(

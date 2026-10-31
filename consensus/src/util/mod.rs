@@ -25,6 +25,8 @@ pub fn is_vtxn_expected(
         // The timelock secret comes from its own chunky DKG session, so shares are only expected
         // while chunky DKG is enabled. Randomness and JWK settings do not matter here.
         ValidatorTransaction::TimelockShare(_) => chunky_dkg_config.chunky_dkg_enabled(),
+        // The second session runs beside the mempool session, so it needs chunky DKG enabled too.
+        ValidatorTransaction::TimelockDKGResult(_) => chunky_dkg_config.chunky_dkg_enabled(),
     }
 }
 

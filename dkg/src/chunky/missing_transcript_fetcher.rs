@@ -8,6 +8,7 @@ use crate::{
         types::{ChunkyTranscriptWithHash, MissingTranscriptRequest},
     },
     network::NetworkSender,
+    types::TimelockMissingTranscriptRequest,
     DKGMessage,
 };
 use anyhow::{anyhow, ensure, Result};
@@ -15,7 +16,10 @@ use aptos_crypto::HashValue;
 use aptos_infallible::RwLock;
 use aptos_logger::warn;
 use aptos_types::{
-    dkg::chunky_dkg::{ChunkyDKGSession, DealerPublicKey},
+    dkg::{
+        chunky_dkg::{ChunkyDKGSession, DealerPublicKey},
+        timelock_dkg::ChunkyDKGSessionKind,
+    },
     epoch_state::EpochState,
 };
 use futures_util::{stream::FuturesUnordered, StreamExt};
@@ -166,16 +170,18 @@ impl TranscriptFetcher {
         delay: Option<Duration>,
     ) -> RpcFuture {
         let peer = self.sender;
+        let kind = self.dkg_config.kind;
         let epoch = self.epoch;
         let timeout = self.rpc_timeout;
         Box::pin(async move {
             if let Some(d) = delay {
                 tokio::time::sleep(d).await;
             }
-            let request = DKGMessage::MissingTranscriptRequest(MissingTranscriptRequest::new(
-                epoch,
-                dealer_addr,
-            ));
+            let plain = MissingTranscriptRequest::new(epoch, dealer_addr);
+            let request = match kind {
+                ChunkyDKGSessionKind::Mempool => DKGMessage::MissingTranscriptRequest(plain),
+                ChunkyDKGSessionKind::Timelock => TimelockMissingTranscriptRequest(plain).into(),
+            };
             let result = network_sender.send_rpc(peer, request, timeout).await;
             (dealer_addr, attempt, result)
         })

@@ -4,7 +4,10 @@
 #[cfg(any(test, feature = "fuzzing"))]
 use crate::dkg::DKGTranscriptMetadata;
 use crate::{
-    dkg::{chunky_dkg::CertifiedChunkyDKGOutput, DKGTranscript},
+    dkg::{
+        chunky_dkg::CertifiedChunkyDKGOutput, timelock_dkg::CertifiedTimelockDKGOutput,
+        DKGTranscript,
+    },
     jwks,
     validator_verifier::ValidatorVerifier,
 };
@@ -22,6 +25,8 @@ pub enum ValidatorTransaction {
     /// Appended at tag 3. The fork's pre-1.49.6 `TimelockShare` used tag 2, which upstream now gives
     /// to `ChunkyDKGResult`. Never reorder these variants: the tag is part of the BCS wire format.
     TimelockShare(TimelockShare),
+    /// Appended at tag 4: the certified result of the timelock chunky DKG session. Never reorder.
+    TimelockDKGResult(CertifiedTimelockDKGOutput),
 }
 
 /// Upper bound on the number of shares in one `TimelockShare` (one per virtual player of the author).
@@ -90,6 +95,9 @@ impl ValidatorTransaction {
             },
             ValidatorTransaction::ChunkyDKGResult(_) => "validator_transaction__chunky_dkg_result",
             ValidatorTransaction::TimelockShare(_) => "validator_transaction__timelock_share",
+            ValidatorTransaction::TimelockDKGResult(_) => {
+                "validator_transaction__timelock_dkg_result"
+            },
         }
     }
 
@@ -101,6 +109,10 @@ impl ValidatorTransaction {
             ValidatorTransaction::ObservedJWKUpdate(_) => Ok(()),
             ValidatorTransaction::ChunkyDKGResult(_) => {
                 // TODO: Implement verification for ChunkyDKGResult
+                Ok(())
+            },
+            ValidatorTransaction::TimelockDKGResult(_) => {
+                // The certificate and the derived keys are checked by the VM handler against chain state.
                 Ok(())
             },
             ValidatorTransaction::TimelockShare(share) => {
@@ -126,6 +138,8 @@ pub enum Topic {
         kid: jwks::KID,
     },
     ChunkyDKG,
+    /// The timelock chunky DKG result. Own topic, so it never replaces the mempool result in the pool.
+    TimelockDKG,
     /// One pooled share transaction per timelock and epoch.
     TimelockShare {
         epoch: u64,
@@ -222,5 +236,6 @@ mod tests {
             }
         );
         assert_ne!(a, Topic::ChunkyDKG);
+        assert_ne!(Topic::TimelockDKG, Topic::ChunkyDKG);
     }
 }

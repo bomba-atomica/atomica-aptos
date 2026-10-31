@@ -21,7 +21,7 @@ mod weighted_transcript_v2;
 pub use input_secret::InputSecret;
 pub use keys::{DecryptPrivKey, EncryptPubKey};
 pub use public_parameters::{
-    PublicParameters, DEFAULT_ELL_FOR_DEPLOYMENT, DEFAULT_ELL_FOR_TESTING,
+    PublicParameters, PublicParametersError, DEFAULT_ELL_FOR_DEPLOYMENT, DEFAULT_ELL_FOR_TESTING,
 };
 pub use subtranscript::Subtranscript as WeightedSubtranscript;
 pub use verify_common::SokContext;
