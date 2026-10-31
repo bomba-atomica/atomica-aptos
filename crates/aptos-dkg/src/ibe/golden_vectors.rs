@@ -850,7 +850,7 @@ module aptos_framework::ibe_golden_vector_fixtures {{\n\
         mpk = mv_bytes(&dealing["mpk"]),
         dk = mv_bytes(&dealing["dk"]),
         odk = mv_bytes(&dealing["other_dk"]),
-        vks = mv_nested(&dealing["verification_keys"]).replace("\n        ]", "\n        ]"),
+        vks = mv_nested(&dealing["verification_keys"]),
         sh = mv_nested(&dealing["dk_shares"]),
         osh = mv_nested(&dealing["other_dk_shares"]),
     ));
