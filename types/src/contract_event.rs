@@ -6,7 +6,9 @@ use crate::{
         DepositEvent, NewBlockEvent, NewEpochEvent, WithdrawEvent, NEW_EPOCH_EVENT_MOVE_TYPE_TAG,
         NEW_EPOCH_EVENT_V2_MOVE_TYPE_TAG,
     },
-    dkg::{chunky_dkg::ChunkyDKGStartEvent, DKGStartEvent},
+    dkg::{
+        chunky_dkg::ChunkyDKGStartEvent, timelock_dkg::TimelockDKGStartEvent, DKGStartEvent,
+    },
     event::EventKey,
     jwks::ObservedJWKsUpdated,
     transaction::Version,
@@ -335,6 +337,23 @@ impl TryFrom<&ContractEvent> for ChunkyDKGStartEvent {
         ensure!(
             event.type_tag == TypeTag::Struct(Box::new(Self::struct_tag())),
             "Unexpected event type tag for ChunkyDKGStartEvent: {}",
+            event.type_tag.to_canonical_string(),
+        );
+        Ok(bcs::from_bytes(&event.event_data)?)
+    }
+}
+
+impl TryFrom<&ContractEvent> for TimelockDKGStartEvent {
+    type Error = Error;
+
+    fn try_from(event: &ContractEvent) -> Result<Self> {
+        let ContractEvent::V2(event) = event else {
+            bail!("Only ContractEvent::V2 is supported for TimelockDKGStartEvent");
+        };
+
+        ensure!(
+            event.type_tag == TypeTag::Struct(Box::new(Self::struct_tag())),
+            "Unexpected event type tag for TimelockDKGStartEvent: {}",
             event.type_tag.to_canonical_string(),
         );
         Ok(bcs::from_bytes(&event.event_data)?)

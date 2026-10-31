@@ -816,6 +816,7 @@ pub enum ValidatorTransaction {
     DkgResult(DKGResultTransaction),
     ChunkyDKGResult(ChunkyDKGResultTransaction),
     TimelockShare(TimelockShareTransaction),
+    TimelockDKGResult(TimelockDKGResultTransaction),
 }
 
 impl ValidatorTransaction {
@@ -827,6 +828,9 @@ impl ValidatorTransaction {
             ValidatorTransaction::DkgResult(_) => "validator_transaction__dkg_result",
             ValidatorTransaction::ChunkyDKGResult(_) => "validator_transaction__chunky_dkg_result",
             ValidatorTransaction::TimelockShare(_) => "validator_transaction__timelock_share",
+            ValidatorTransaction::TimelockDKGResult(_) => {
+                "validator_transaction__timelock_dkg_result"
+            },
         }
     }
 
@@ -836,6 +840,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::DkgResult(t) => &t.info,
             ValidatorTransaction::ChunkyDKGResult(t) => &t.info,
             ValidatorTransaction::TimelockShare(t) => &t.info,
+            ValidatorTransaction::TimelockDKGResult(t) => &t.info,
         }
     }
 
@@ -845,6 +850,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::DkgResult(t) => &mut t.info,
             ValidatorTransaction::ChunkyDKGResult(t) => &mut t.info,
             ValidatorTransaction::TimelockShare(t) => &mut t.info,
+            ValidatorTransaction::TimelockDKGResult(t) => &mut t.info,
         }
     }
 
@@ -854,6 +860,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::DkgResult(t) => t.timestamp,
             ValidatorTransaction::ChunkyDKGResult(t) => t.timestamp,
             ValidatorTransaction::TimelockShare(t) => t.timestamp,
+            ValidatorTransaction::TimelockDKGResult(t) => t.timestamp,
         }
     }
 
@@ -863,6 +870,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::DkgResult(t) => &t.events,
             ValidatorTransaction::ChunkyDKGResult(t) => &t.events,
             ValidatorTransaction::TimelockShare(t) => &t.events,
+            ValidatorTransaction::TimelockDKGResult(t) => &t.events,
         }
     }
 }
@@ -918,6 +926,18 @@ impl
                     timelock_id: share.timelock_id.into(),
                     author: share.author.into(),
                     shares: share.shares.into_iter().map(HexEncodedBytes::from).collect(),
+                })
+            },
+            aptos_types::validator_txn::ValidatorTransaction::TimelockDKGResult(output) => {
+                Self::TimelockDKGResult(TimelockDKGResultTransaction {
+                    info,
+                    events,
+                    timestamp: U64::from(timestamp),
+                    certified_subtrx: output.certified_transcript.into(),
+                    mpk: HexEncodedBytes::from(output.mpk),
+                    public_parameters_hash: HexEncodedBytes::from(
+                        output.public_parameters_hash.to_vec(),
+                    ),
                 })
             },
         }
@@ -1040,6 +1060,19 @@ pub struct TimelockShareTransaction {
     pub timelock_id: U64,
     pub author: Address,
     pub shares: Vec<HexEncodedBytes>,
+}
+
+/// API form of `aptos_types::dkg::timelock_dkg::CertifiedTimelockDKGOutput`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct TimelockDKGResultTransaction {
+    #[serde(flatten)]
+    #[oai(flatten)]
+    pub info: TransactionInfo,
+    pub events: Vec<Event>,
+    pub timestamp: U64,
+    pub certified_subtrx: ExportedCertifiedAggregatedChunkySubtranscript,
+    pub mpk: HexEncodedBytes,
+    pub public_parameters_hash: HexEncodedBytes,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]

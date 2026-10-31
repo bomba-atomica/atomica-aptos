@@ -8,6 +8,7 @@ use crate::{
         real_dkg::rounding::{
             DKGRoundingProfile, DEFAULT_RECONSTRUCT_THRESHOLD, DEFAULT_SECRECY_THRESHOLD,
         },
+        timelock_dkg::{ChunkyDKGSessionKind, TIMELOCK_PUBLIC_PARAMETERS},
         DKGTranscriptMetadata,
     },
     on_chain_config::{ChunkyDKGConfigMoveStruct, OnChainChunkyDKGConfig, OnChainConfig},
@@ -340,68 +341,188 @@ pub struct ChunkyDKGSession {
     pub public_parameters: Arc<ChunkyDKGPublicParameters>,
     pub session_metadata: ChunkyDKGSessionMetadata,
     pub eks: Vec<ChunkyEncryptPubKey>,
+    /// Which of the two chunky DKG sessions of an epoch this is. Decides the session id every dealer
+    /// binds into its proof, and the hash domain of the subtranscript certificate.
+    pub kind: ChunkyDKGSessionKind,
+    /// Chain id. Part of the timelock session id. Ignored by the mempool session.
+    pub chain_id: ChainId,
 }
 
-impl ChunkyDKGSession {
-    /// Create a new DKG session from on-chain session metadata.
-    pub fn new(dkg_session_metadata: &ChunkyDKGSessionMetadata) -> Arc<ChunkyDKGSession> {
-        let onchain_config = dkg_session_metadata
-            .into_on_chain_chunky_dkg_config()
-            .unwrap_or_else(OnChainChunkyDKGConfig::default_disabled);
-        let secrecy_threshold = onchain_config
-            .secrecy_threshold()
-            .unwrap_or_else(|| *DEFAULT_SECRECY_THRESHOLD);
-        let reconstruct_threshold = onchain_config
-            .reconstruct_threshold()
-            .unwrap_or_else(|| *DEFAULT_RECONSTRUCT_THRESHOLD);
-        let reconstruct_threshold = max(reconstruct_threshold, secrecy_threshold + U64F64::DELTA);
+/// The weighted threshold config of a session, from its metadata alone (no `PublicParameters` needed).
+pub fn chunky_threshold_config(
+    dkg_session_metadata: &ChunkyDKGSessionMetadata,
+) -> ChunkyDKGThresholdConfig {
+    let onchain_config = dkg_session_metadata
+        .into_on_chain_chunky_dkg_config()
+        .unwrap_or_else(OnChainChunkyDKGConfig::default_disabled);
+    let secrecy_threshold = onchain_config
+        .secrecy_threshold()
+        .unwrap_or_else(|| *DEFAULT_SECRECY_THRESHOLD);
+    let reconstruct_threshold = onchain_config
+        .reconstruct_threshold()
+        .unwrap_or_else(|| *DEFAULT_RECONSTRUCT_THRESHOLD);
+    let reconstruct_threshold = max(reconstruct_threshold, secrecy_threshold + U64F64::DELTA);
 
-        let target_validators = dkg_session_metadata.target_validator_consensus_infos_cloned();
-        let validator_stakes: Vec<u64> =
-            target_validators.iter().map(|vi| vi.voting_power).collect();
+    let target_validators = dkg_session_metadata.target_validator_consensus_infos_cloned();
+    let validator_stakes: Vec<u64> = target_validators.iter().map(|vi| vi.voting_power).collect();
 
-        let eks: Vec<ChunkyEncryptPubKey> = target_validators
-            .iter()
-            .map(|vi| (&vi.public_key).into())
-            .collect();
-
-        let profile = DKGRoundingProfile::new(
+    let profile = DKGRoundingProfile::new(
+        &validator_stakes,
+        secrecy_threshold,
+        reconstruct_threshold,
+        None,
+    )
+    .unwrap_or_else(|_| {
+        DKGRoundingProfile::infallible(
             &validator_stakes,
             secrecy_threshold,
             reconstruct_threshold,
             None,
         )
-        .unwrap_or_else(|_| {
-            DKGRoundingProfile::infallible(
-                &validator_stakes,
-                secrecy_threshold,
-                reconstruct_threshold,
-                None,
-            )
-        });
+    });
 
-        // Create WeightedConfigArkworks<Fr> from the computed weights
-        let threshold_config = ChunkyDKGThresholdConfig::new(
-            profile.reconstruct_threshold_in_weights as usize,
-            profile
-                .validator_weights
-                .iter()
-                .map(|w| *w as usize)
-                .collect(),
-        )
-        .expect("Failed to create WeightedConfigArkworks");
+    // Create WeightedConfigArkworks<Fr> from the computed weights
+    ChunkyDKGThresholdConfig::new(
+        profile.reconstruct_threshold_in_weights as usize,
+        profile
+            .validator_weights
+            .iter()
+            .map(|w| *w as usize)
+            .collect(),
+    )
+    .expect("Failed to create WeightedConfigArkworks")
+}
 
+impl ChunkyDKGSession {
+    /// Create the mempool DKG session from on-chain session metadata.
+    pub fn new(dkg_session_metadata: &ChunkyDKGSessionMetadata) -> Arc<ChunkyDKGSession> {
         let public_parameters = PUBLIC_PARAMETERS
             .as_ref()
             .expect("PublicParameters not initialized; call initialize_public_parameters first")
             .clone();
+        Self::from_parts(
+            dkg_session_metadata,
+            public_parameters,
+            ChunkyDKGSessionKind::Mempool,
+            ChainId::new(0),
+        )
+    }
 
+    /// Create the timelock DKG session from on-chain session metadata. It uses the timelock
+    /// `PublicParameters` and the timelock session id. Fails when this node has no valid timelock
+    /// parameters.
+    pub fn new_timelock(
+        dkg_session_metadata: &ChunkyDKGSessionMetadata,
+        chain_id: ChainId,
+    ) -> anyhow::Result<Arc<ChunkyDKGSession>> {
+        let params = TIMELOCK_PUBLIC_PARAMETERS.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("timelock PublicParameters are not available on this node")
+        })?;
+        Ok(Self::from_parts(
+            dkg_session_metadata,
+            params.pp.clone(),
+            ChunkyDKGSessionKind::Timelock,
+            chain_id,
+        ))
+    }
+
+    fn from_parts(
+        dkg_session_metadata: &ChunkyDKGSessionMetadata,
+        public_parameters: Arc<ChunkyDKGPublicParameters>,
+        kind: ChunkyDKGSessionKind,
+        chain_id: ChainId,
+    ) -> Arc<ChunkyDKGSession> {
+        let threshold_config = chunky_threshold_config(dkg_session_metadata);
+        let eks: Vec<ChunkyEncryptPubKey> = dkg_session_metadata
+            .target_validator_consensus_infos_cloned()
+            .iter()
+            .map(|vi| (&vi.public_key).into())
+            .collect();
         Arc::new(ChunkyDKGSession {
             threshold_config,
             public_parameters,
             session_metadata: dkg_session_metadata.clone(),
             eks,
+            kind,
+            chain_id,
         })
+    }
+
+    /// The BCS bytes of the session id every dealer binds into its proof. For the mempool session this is
+    /// the session metadata, as upstream. For the timelock session it is a `TimelockDKGSessionId`.
+    pub fn session_id_bytes(&self) -> Vec<u8> {
+        match self.kind {
+            ChunkyDKGSessionKind::Mempool => bcs::to_bytes(&self.session_metadata),
+            ChunkyDKGSessionKind::Timelock => bcs::to_bytes(&TimelockDKGSessionId::new(
+                self.chain_id,
+                self.session_metadata.clone(),
+            )),
+        }
+        .expect("session id serializes")
+    }
+
+    /// Deals a transcript under the session id of this session.
+    pub fn deal<R: rand::RngCore + rand::CryptoRng>(
+        &self,
+        ssk: &DealerPrivateKey,
+        spk: &DealerPublicKey,
+        input_secret: &ChunkyInputSecret,
+        dealer: &aptos_dkg::pvss::Player,
+        rng: &mut R,
+    ) -> ChunkyTranscript {
+        use aptos_dkg::pvss::traits::transcript::Transcript;
+        match self.kind {
+            ChunkyDKGSessionKind::Mempool => ChunkyTranscript::deal(
+                &self.threshold_config,
+                &self.public_parameters,
+                ssk,
+                spk,
+                &self.eks,
+                input_secret,
+                &self.session_metadata,
+                dealer,
+                rng,
+            ),
+            ChunkyDKGSessionKind::Timelock => ChunkyTranscript::deal(
+                &self.threshold_config,
+                &self.public_parameters,
+                ssk,
+                spk,
+                &self.eks,
+                input_secret,
+                &TimelockDKGSessionId::new(self.chain_id, self.session_metadata.clone()),
+                dealer,
+                rng,
+            ),
+        }
+    }
+
+    /// Verifies a transcript under the session id of this session.
+    pub fn verify_transcript<R: rand::RngCore + rand::CryptoRng>(
+        &self,
+        transcript: &ChunkyTranscript,
+        spks: &[DealerPublicKey],
+        rng: &mut R,
+    ) -> anyhow::Result<()> {
+        use aptos_dkg::pvss::traits::transcript::HasAggregatableSubtranscript;
+        match self.kind {
+            ChunkyDKGSessionKind::Mempool => transcript.verify(
+                &self.threshold_config,
+                &self.public_parameters,
+                spks,
+                &self.eks,
+                &self.session_metadata,
+                rng,
+            ),
+            ChunkyDKGSessionKind::Timelock => transcript.verify(
+                &self.threshold_config,
+                &self.public_parameters,
+                spks,
+                &self.eks,
+                &TimelockDKGSessionId::new(self.chain_id, self.session_metadata.clone()),
+                rng,
+            ),
+        }
     }
 
     /// BCS wire-size upper bound for an inbound `ChunkyTranscript`. Used as a structural
@@ -599,6 +720,8 @@ mod transcript_size_bound_tests {
                 target_validator_set: vec![],
             },
             eks,
+            kind: ChunkyDKGSessionKind::Mempool,
+            chain_id: ChainId::test(),
         };
         let bound = session.expected_max_transcript_size();
         let mut rng = thread_rng();

@@ -97,6 +97,7 @@ pub fn create_event_subscription_service(
             .subscribe_to_events(vec![], vec![
                 "0x1::dkg::DKGStartEvent".to_string(),
                 "0x1::chunky_dkg::ChunkyDKGStartEvent".to_string(),
+                "0x1::timelock_dkg::TimelockDKGStartEvent".to_string(),
             ])
             .expect("Consensus must subscribe to DKG events");
         Some((reconfig_events, dkg_start_events))

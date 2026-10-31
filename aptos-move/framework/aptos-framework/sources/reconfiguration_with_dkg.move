@@ -22,6 +22,7 @@ module aptos_framework::reconfiguration_with_dkg {
     use aptos_framework::reconfiguration_state;
     use aptos_framework::stake::{Self, validator_consensus_infos_from_validator_set};
     use aptos_framework::system_addresses;
+    use aptos_framework::timelock_dkg;
     use aptos_framework::timestamp;
     friend aptos_framework::block;
     friend aptos_framework::aptos_governance;
@@ -53,6 +54,10 @@ module aptos_framework::reconfiguration_with_dkg {
         if (chunky_dkg::incomplete_session().is_some()) {
             let framework = create_signer::create_signer(@aptos_framework);
             chunky_dkg::try_clear_incomplete_session(&framework);
+        };
+        if (timelock_dkg::incomplete_session().is_some()) {
+            let framework = create_signer::create_signer(@aptos_framework);
+            timelock_dkg::try_clear_incomplete_session(&framework);
         };
 
         reconfiguration_state::on_reconfig_start();
@@ -87,6 +92,13 @@ module aptos_framework::reconfiguration_with_dkg {
             dealer_validator_set,
             target_validator_set,
         );
+        // Second chunky DKG session for the timelock secret. No-op while the feature is off.
+        timelock_dkg::start(
+            cur_epoch,
+            chunky_dkg_config::current(),
+            dealer_validator_set,
+            target_validator_set,
+        );
     }
 
     /// Clear incomplete DKG session, if it exists.
@@ -97,6 +109,7 @@ module aptos_framework::reconfiguration_with_dkg {
         system_addresses::assert_aptos_framework(framework);
         dkg::try_clear_incomplete_session(framework);
         chunky_dkg::try_clear_incomplete_session(framework);
+        timelock_dkg::try_clear_incomplete_session(framework);
         consensus_config::on_new_epoch(framework);
         execution_config::on_new_epoch(framework);
         gas_schedule::on_new_epoch(framework);
@@ -113,6 +126,9 @@ module aptos_framework::reconfiguration_with_dkg {
         epoch_timeout_config::on_new_epoch(framework);
         decryption::on_new_epoch(framework, reconfiguration::current_epoch() + 1);
         reconfiguration::reconfigure();
+        // After the epoch change: writes the TimelockEpochConfig of the new epoch, if the timelock
+        // DKG completed. Otherwise the new epoch has no timelock key.
+        timelock_dkg::on_new_epoch(framework);
     }
 
     /// Single decision point for completing the in-progress reconfig.
@@ -167,6 +183,15 @@ module aptos_framework::reconfiguration_with_dkg {
             };
         };
 
+        // Timelock DKG: wait for it only until its grace period ends. It never blocks the epoch change.
+        let timelock_session = timelock_dkg::incomplete_session();
+        if (timelock_session.is_some()) {
+            let start_time_us = timelock_dkg::session_start_time(timelock_session.borrow());
+            if (timestamp::now_microseconds() - start_time_us < timelock_dkg::grace_period_us()) {
+                return
+            };
+        };
+
         finish(account);
     }
 
@@ -190,6 +215,36 @@ module aptos_framework::reconfiguration_with_dkg {
         chunky_dkg::finish(chunky_dkg_result);
         let next_epoch = reconfiguration::current_epoch() + 1;
         decryption::set_for_next_epoch(next_epoch, encryption_key);
+        try_finalize_reconfig(account);
+    }
+
+    /// Complete the current timelock DKG session with the given result. The VM handler derives every
+    /// argument from the certified subtranscript, so the Move side stores them as given.
+    /// No-op if the timelock DKG is not enabled.
+    fun finish_with_timelock_dkg_result(
+        account: &signer,
+        timelock_dkg_result: vector<u8>,
+        mpk: vector<u8>,
+        reconstruct_threshold_weight: u64,
+        weights: vector<u64>,
+        epoch_interval_us: u64,
+        public_parameters_hash: vector<u8>,
+        subtranscript_hash: vector<u8>,
+        verification_keys: vector<vector<u8>>
+    ) {
+        if (!timelock_dkg::is_enabled()) {
+            return;
+        };
+        timelock_dkg::finish(
+            timelock_dkg_result,
+            mpk,
+            reconstruct_threshold_weight,
+            weights,
+            epoch_interval_us,
+            public_parameters_hash,
+            subtranscript_hash,
+            verification_keys
+        );
         try_finalize_reconfig(account);
     }
 

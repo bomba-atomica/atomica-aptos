@@ -895,3 +895,53 @@ fn measure_share_check_cost() {
         );
     }
 }
+
+// ---- V0 versus interpolated verification keys (timelock DKG result acceptance) ----
+
+#[test]
+fn mpk_matches_interpolated_verification_keys() {
+    let d = deal(&[3, 2, 1, 4], 5, 21);
+    assert_eq!(
+        check_mpk_matches_verification_keys(&d.mpk, &d.vks, d.threshold),
+        Ok(())
+    );
+    // Interpolating any threshold set gives mpk.
+    let ids = [9usize, 0, 4, 7, 2];
+    let pts: Vec<G2Affine> = ids.iter().map(|&i| d.vks[i]).collect();
+    assert_eq!(
+        interpolate_g2_at_zero(&ids, &pts, d.threshold, d.total),
+        Ok(d.mpk)
+    );
+}
+
+#[test]
+fn mismatched_mpk_is_rejected() {
+    let d = deal(&[3, 2, 1, 4], 5, 21);
+    // An unrelated master public key, as in a subtranscript whose V0 belongs to another dealing.
+    let other = deal(&[3, 2, 1, 4], 5, 22);
+    assert_eq!(
+        check_mpk_matches_verification_keys(&other.mpk, &d.vks, d.threshold),
+        Err(IbeError::MpkVerificationKeyMismatch)
+    );
+    // One corrupted verification key breaks at least the set that contains it. Player 0 is in
+    // the first set, the last player is in the last set.
+    for bad in [0usize, d.total - 1] {
+        let mut vks = d.vks.clone();
+        vks[bad] = master_public_key(&Fr::from(12345u64));
+        assert_eq!(
+            check_mpk_matches_verification_keys(&d.mpk, &vks, d.threshold),
+            Err(IbeError::MpkVerificationKeyMismatch),
+            "corrupted key {bad}"
+        );
+    }
+}
+
+#[test]
+fn interpolation_rejects_bad_inputs() {
+    let d = deal(&[2, 2], 3, 5);
+    assert!(interpolate_g2_at_zero(&[0, 0, 1], &d.vks[..3], 3, 4).is_err());
+    assert!(interpolate_g2_at_zero(&[0, 1, 9], &d.vks[..3], 3, 4).is_err());
+    assert!(interpolate_g2_at_zero(&[0, 1], &d.vks[..2], 3, 4).is_err());
+    assert!(check_mpk_matches_verification_keys(&d.mpk, &d.vks, 0).is_err());
+    assert!(check_mpk_matches_verification_keys(&d.mpk, &d.vks, 5).is_err());
+}

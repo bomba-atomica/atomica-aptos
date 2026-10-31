@@ -280,7 +280,9 @@ fn block_has_epoch_end_vtxn(block: &Block) -> bool {
         vtxns.iter().any(|v| {
             matches!(
                 v,
-                ValidatorTransaction::DKGResult(_) | ValidatorTransaction::ChunkyDKGResult(_)
+                ValidatorTransaction::DKGResult(_)
+                    | ValidatorTransaction::ChunkyDKGResult(_)
+                    | ValidatorTransaction::TimelockDKGResult(_)
             )
         })
     })

@@ -20,21 +20,24 @@ use crate::{
 };
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use aptos_channels::{aptos_channel, message_queues::QueueStyle};
-use aptos_crypto::{bls12381, hash::CryptoHash, HashValue, SigningKey, Uniform};
-use aptos_dkg::pvss::{
-    traits::{transcript::Aggregatable, Transcript},
-    Player,
-};
+use aptos_crypto::{bls12381, hash::CryptoHash, HashValue, Uniform};
+use aptos_dkg::pvss::{traits::transcript::Aggregatable, Player};
 use aptos_infallible::{duration_since_epoch, RwLock};
 use aptos_logger::{debug, error, info, warn};
 use aptos_reliable_broadcast::{DropGuard, ReliableBroadcast};
 use aptos_types::{
+    chain_id::ChainId,
     dkg::{
         chunky_dkg::{
-            AggregatedSubtranscript, CertifiedAggregatedChunkySubtranscript,
-            CertifiedChunkyDKGOutput, ChunkyDKGSession, ChunkyDKGSessionMetadata,
-            ChunkyDKGSessionState, ChunkyDKGStartEvent, ChunkyDKGTranscript, ChunkyInputSecret,
-            ChunkySubtranscript, ChunkyTranscript, DealerPrivateKey, DealerPublicKey,
+            chunky_threshold_config, AggregatedSubtranscript,
+            CertifiedAggregatedChunkySubtranscript, CertifiedChunkyDKGOutput, ChunkyDKGSession,
+            ChunkyDKGSessionMetadata, ChunkyDKGSessionState, ChunkyDKGStartEvent,
+            ChunkyDKGTranscript, ChunkyInputSecret, ChunkySubtranscript, DealerPrivateKey,
+            DealerPublicKey,
+        },
+        timelock_dkg::{
+            derive_timelock_config, CertifiedTimelockDKGOutput, ChunkyDKGSessionKind,
+            TIMELOCK_PUBLIC_PARAMETERS,
         },
         DKGTranscriptMetadata,
     },
@@ -116,6 +119,11 @@ impl InnerState {
 }
 
 pub struct ChunkyDKGManager {
+    /// Which of the two sessions of the epoch this manager runs. A manager never handles the other
+    /// session's requests, deals under the other session's id, or signs in the other's hash domain.
+    kind: ChunkyDKGSessionKind,
+    /// Used by the timelock session id and the timelock signing domain. Ignored for the mempool session.
+    chain_id: ChainId,
     ssk: Arc<DealerPrivateKey>,
     spk: Arc<DealerPublicKey>,
     my_index: usize,
@@ -152,7 +160,60 @@ pub struct ChunkyDKGManager {
 }
 
 impl ChunkyDKGManager {
+    /// The mempool session manager (upstream behavior).
     pub fn new(
+        ssk: Arc<DealerPrivateKey>,
+        spk: Arc<DealerPublicKey>,
+        my_index: usize,
+        my_addr: AccountAddress,
+        epoch_state: Arc<EpochState>,
+        vtxn_pool: VTxnPoolState,
+        reliable_broadcast: Arc<ReliableBroadcast<DKGMessage, ExponentialBackoff>>,
+        network_sender: Arc<NetworkSender>,
+    ) -> Self {
+        Self::new_with_kind(
+            ChunkyDKGSessionKind::Mempool,
+            ChainId::new(0),
+            ssk,
+            spk,
+            my_index,
+            my_addr,
+            epoch_state,
+            vtxn_pool,
+            reliable_broadcast,
+            network_sender,
+        )
+    }
+
+    /// The timelock session manager.
+    pub fn new_timelock(
+        chain_id: ChainId,
+        ssk: Arc<DealerPrivateKey>,
+        spk: Arc<DealerPublicKey>,
+        my_index: usize,
+        my_addr: AccountAddress,
+        epoch_state: Arc<EpochState>,
+        vtxn_pool: VTxnPoolState,
+        reliable_broadcast: Arc<ReliableBroadcast<DKGMessage, ExponentialBackoff>>,
+        network_sender: Arc<NetworkSender>,
+    ) -> Self {
+        Self::new_with_kind(
+            ChunkyDKGSessionKind::Timelock,
+            chain_id,
+            ssk,
+            spk,
+            my_index,
+            my_addr,
+            epoch_state,
+            vtxn_pool,
+            reliable_broadcast,
+            network_sender,
+        )
+    }
+
+    pub fn new_with_kind(
+        kind: ChunkyDKGSessionKind,
+        chain_id: ChainId,
         ssk: Arc<DealerPrivateKey>,
         spk: Arc<DealerPublicKey>,
         my_index: usize,
@@ -171,6 +232,8 @@ impl ChunkyDKGManager {
         let (pull_notification_tx, pull_notification_rx) =
             aptos_channel::new(QueueStyle::KLAST, 1, None);
         Self {
+            kind,
+            chain_id,
             ssk,
             spk,
             my_addr,
@@ -401,7 +464,13 @@ impl ChunkyDKGManager {
             "[ChunkyDKG] Deal transcript started.",
         );
 
-        let session = ChunkyDKGSession::new(dkg_session_metadata);
+        let session = match self.kind {
+            ChunkyDKGSessionKind::Mempool => ChunkyDKGSession::new(dkg_session_metadata),
+            ChunkyDKGSessionKind::Timelock => {
+                ChunkyDKGSession::new_timelock(dkg_session_metadata, self.chain_id)
+                    .context("[TimelockDKG] this node cannot take part in the timelock session")?
+            },
+        };
 
         let session_clone = session.clone();
         let ssk_clone = self.ssk.clone();
@@ -415,17 +484,7 @@ impl ChunkyDKGManager {
 
             monitor!(
                 "chunky_dkg_deal_transcript",
-                ChunkyTranscript::deal(
-                    &session_clone.threshold_config,
-                    &session_clone.public_parameters,
-                    &ssk_clone,
-                    &spk_clone,
-                    &session_clone.eks,
-                    &input_secret,
-                    &session_clone.session_metadata,
-                    &dealer,
-                    &mut rng,
-                )
+                session_clone.deal(&ssk_clone, &spk_clone, &input_secret, &dealer, &mut rng)
             )
         })
         .await?;
@@ -523,6 +582,8 @@ impl ChunkyDKGManager {
             aggregated_subtranscript.clone(),
             dealer_transcript_hashes,
             self.certified_subtrx_tx.clone(),
+            self.kind,
+            self.chain_id,
         );
 
         self.state = InnerState::AwaitAggregatedSubtranscriptCertification {
@@ -572,48 +633,77 @@ impl ChunkyDKGManager {
 
         counters::observe_chunky_dkg_stage(start_time, self.my_addr, "agg_subtrx_certified");
 
-        info!("[ChunkyDKG] deriving encryption key");
-        // Derive encryption key from subtranscript + DigestKey.
-        // Heavy pairing-based crypto — run off the main loop.
+        let kind = self.kind;
+        let session_metadata = dkg_config.session_metadata.clone();
         let agg_subtrx_for_blocking = Arc::clone(&aggregated_subtranscript);
-        let (encryption_key_bytes, transcript_bytes) = tokio::task::spawn_blocking(move || {
-            let digest_key = DIGEST_KEY
-                .as_ref()
-                .ok_or_else(|| anyhow!("DigestKey not available; cannot derive encryption key"))?;
-            let key = agg_subtrx_for_blocking.derive_encryption_key_bytes(digest_key.tau_g2)?;
-            let bytes = bcs::to_bytes(agg_subtrx_for_blocking.as_ref())
+        let epoch = self.epoch_state.epoch;
+        let my_addr = self.my_addr;
+        // Heavy pairing-based crypto: run off the main loop.
+        let (txn, topic) = tokio::task::spawn_blocking(move || {
+            let transcript_bytes = bcs::to_bytes(agg_subtrx_for_blocking.as_ref())
                 .map_err(|e| anyhow!("transcript serialization error: {e}"))?;
             counters::CHUNKY_DKG_OBJECT_SIZE_BYTES
                 .with_label_values(&["aggregated_subtranscript"])
-                .observe(bytes.len() as f64);
+                .observe(transcript_bytes.len() as f64);
             counters::CHUNKY_DKG_OBJECT_SIZE_BYTES
-                .with_label_values(&["encryption_key"])
-                .observe(key.len() as f64);
-            Ok::<_, anyhow::Error>((key, bytes))
+                .with_label_values(&["certified_transcript"])
+                .observe(transcript_bytes.len() as f64);
+            let certified_transcript = CertifiedAggregatedChunkySubtranscript {
+                metadata: DKGTranscriptMetadata {
+                    epoch,
+                    author: my_addr,
+                },
+                transcript_bytes,
+                signature: aggregate_signature,
+            };
+            match kind {
+                ChunkyDKGSessionKind::Mempool => {
+                    info!("[ChunkyDKG] deriving encryption key");
+                    // Derive encryption key from subtranscript + DigestKey.
+                    let digest_key = DIGEST_KEY.as_ref().ok_or_else(|| {
+                        anyhow!("DigestKey not available; cannot derive encryption key")
+                    })?;
+                    let key =
+                        agg_subtrx_for_blocking.derive_encryption_key_bytes(digest_key.tau_g2)?;
+                    counters::CHUNKY_DKG_OBJECT_SIZE_BYTES
+                        .with_label_values(&["encryption_key"])
+                        .observe(key.len() as f64);
+                    Ok::<_, anyhow::Error>((
+                        ValidatorTransaction::ChunkyDKGResult(CertifiedChunkyDKGOutput {
+                            certified_transcript,
+                            encryption_key: key,
+                        }),
+                        Topic::ChunkyDKG,
+                    ))
+                },
+                ChunkyDKGSessionKind::Timelock => {
+                    // Check what the VM handler will check, so an invalid result is never proposed:
+                    // shape, validated points, and V0 against the interpolated verification keys.
+                    let threshold_config = chunky_threshold_config(&session_metadata);
+                    let derived = derive_timelock_config(
+                        &agg_subtrx_for_blocking.subtranscript,
+                        &threshold_config,
+                    )
+                    .map_err(|e| anyhow!("[TimelockDKG] aggregate refused: {e}"))?;
+                    let params = TIMELOCK_PUBLIC_PARAMETERS.as_ref().ok_or_else(|| {
+                        anyhow!("[TimelockDKG] timelock PublicParameters not available")
+                    })?;
+                    Ok((
+                        ValidatorTransaction::TimelockDKGResult(CertifiedTimelockDKGOutput {
+                            certified_transcript,
+                            mpk: derived.mpk,
+                            public_parameters_hash: params.blob_hash,
+                        }),
+                        Topic::TimelockDKG,
+                    ))
+                },
+            }
         })
         .await
         .map_err(|e| anyhow!("spawn_blocking join error: {e}"))??;
 
-        info!("[ChunkyDKG] forming certified_transcript struct");
-        counters::CHUNKY_DKG_OBJECT_SIZE_BYTES
-            .with_label_values(&["certified_transcript"])
-            .observe(transcript_bytes.len() as f64);
-        let certified_transcript = CertifiedAggregatedChunkySubtranscript {
-            metadata: DKGTranscriptMetadata {
-                epoch: self.epoch_state.epoch,
-                author: self.my_addr,
-            },
-            transcript_bytes,
-            signature: aggregate_signature,
-        };
-
-        let txn = ValidatorTransaction::ChunkyDKGResult(CertifiedChunkyDKGOutput {
-            certified_transcript,
-            encryption_key: encryption_key_bytes,
-        });
-        // TODO(ibalajiarun): Derive Topic from txn
         let vtxn_guard = self.vtxn_pool.put(
-            Topic::ChunkyDKG,
+            topic,
             Arc::new(txn),
             Some(self.pull_notification_tx.clone()),
         );
@@ -670,6 +760,15 @@ impl ChunkyDKGManager {
         ensure!(
             msg.epoch() == self.epoch_state.epoch,
             "[ChunkyDKG] msg not for current epoch"
+        );
+        // A manager only serves its own session. The epoch manager routes by kind already, this is the
+        // second line of defense.
+        let (msg_kind, msg) = msg.split_session_kind();
+        ensure!(
+            msg_kind == self.kind,
+            "[ChunkyDKG] {:?} request received by the {:?} manager",
+            msg_kind,
+            self.kind
         );
         match &msg {
             DKGMessage::ChunkyTranscriptRequest(_) => {
@@ -983,6 +1082,7 @@ impl ChunkyDKGManager {
         let dealer_bitmask = req.dealer_bitmask.clone();
         let subtranscript_hash = req.subtranscript_hash;
         let threshold_config = dkg_config.threshold_config.clone();
+        let (kind, chain_id) = (dkg_config.kind, dkg_config.chain_id);
         let ssk = Arc::clone(ssk);
         tokio::task::spawn_blocking(move || {
             let recomputed_subtranscript =
@@ -997,9 +1097,9 @@ impl ChunkyDKGManager {
                 recomputed.hash() == subtranscript_hash,
                 "subtranscript hash mismatch in validation request"
             );
-            let sig = ssk
-                .sign(&recomputed)
-                .map_err(|e| anyhow!("failed to sign subtranscript validation: {:?}", e))?;
+            let sig = kind
+                .sign_subtranscript(chain_id, &ssk, &recomputed)
+                .context("failed to sign subtranscript validation")?;
             Ok((recomputed, sig))
         })
         .await
@@ -1021,9 +1121,10 @@ impl ChunkyDKGManager {
     ) -> Result<DKGMessage> {
         // Fast path: local aggregated transcript matches — sign and return immediately.
         if local_aggregated_transcript.hash() == req.subtranscript_hash {
-            let signature = ssk
-                .sign(local_aggregated_transcript.as_ref())
-                .map_err(|e| anyhow!("failed to sign subtranscript validation: {:?}", e))?;
+            let signature = dkg_config
+                .kind
+                .sign_subtranscript(dkg_config.chain_id, &ssk, local_aggregated_transcript.as_ref())
+                .context("failed to sign subtranscript validation")?;
             return Ok(DKGMessage::SubtranscriptSignatureResponse(
                 ChunkyDKGSubtranscriptSignatureResponse::new(
                     req.dealer_epoch,
@@ -1070,6 +1171,8 @@ impl ChunkyDKGManager {
         let (pull_notification_tx, pull_notification_rx) =
             aptos_channel::new(QueueStyle::KLAST, 1, None);
         Self {
+            kind: ChunkyDKGSessionKind::Mempool,
+            chain_id: ChainId::new(0),
             ssk,
             spk,
             my_addr,
