@@ -169,7 +169,10 @@ fn start_session(h: &mut MoveHarness, epoch: u64) {
     );
 }
 
+/// Moves block time forward by a few seconds, so `reconfiguration::reconfigure` sees time pass,
+/// then runs the finish step of the reconfiguration.
 fn end_epoch(h: &mut MoveHarness) {
+    h.executor.new_block();
     h.executor.exec(
         "reconfiguration_with_dkg",
         "finish",
