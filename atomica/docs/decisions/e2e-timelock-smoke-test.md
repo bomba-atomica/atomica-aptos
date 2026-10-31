@@ -36,7 +36,7 @@ How the service decides (spec section 8, rule 7): a timelock is served only if i
 
 Symptom (first live run): three honest shares were accepted, the handler logged `Timelock 0: rebuilt key failed the pairing check, expiring (key-check-failed)`, and the timelock expired. The DKG, the share check and the verification keys were all fine.
 
-Cause: `ibe_config::get_reconstruction_inputs` returned `info.validator_weights` as the third value. That vector lists only the validators that submitted. The Rust reconstruction (`reconstruct_ibe_dk_from_g1_shares`) expects the weight of every validator of the epoch, indexed by validator index: it derives each share's player id from the weights before it and checks that the weights sum to the total. With 3 of 4 validators submitting the sum was 3, not 4, so the reconstruction returned `WeightSumMismatch` and the handler read that as a failed key check. The unit and VM tests all had every validator submit, so none could see it.
+Cause: `ibe_config::get_reconstruction_inputs` returned `info.validator_weights` as the third value. That vector lists only the validators that submitted. The Rust reconstruction (`reconstruct_ibe_dk_from_g1_shares`) expects the weight of every validator of the epoch, indexed by validator index: it derives each share's player id from the weights before it and checks that the weights sum to the total. With 3 of 4 validators submitting the sum was 3, not 4, so the reconstruction returned `WeightSumMismatch` and the handler read that as a failed key check. The unit and VM tests all had every validator submit (the VM test harness has one validator, so it cannot submit from several), so none could see it.
 
 Fix: `get_reconstruction_inputs` returns `TimelockEpochConfig.weights`. Regression test: Move unit test `ibe_config_tests::reconstruction_inputs_carry_the_weights_of_all_validators` (validators 0 and 2 of three submit, weights must be `[2,1,2]`). `head.mrb` regenerated with `cargo run -p aptos-framework -- update-cached-packages`.
 
@@ -44,7 +44,7 @@ Consequence worth stating: a bug in the handler path turned a recoverable situat
 
 ### Finding 2 (not a bug, a test design fact): a validator with a larger weight can block a reveal
 
-In epoch 5 the DKG gave weights `[1, 2, 2, 1]`, total 6, threshold 5. If the corrupted validator holds weight 2 the honest weight is 4, below the threshold, and no reveal is possible while it misbehaves. The 2/3 reconstruction ratio of `OnChainChunkyDKGConfig::default_enabled()` becomes 5 of 6 after rounding. The second reveal in the test runs with the corrupted validator healed for this reason. See section 5.
+In epoch 5 the DKG gave weights `[1, 2, 2, 1]`, total 6, threshold 5 (a later run gave `[1, 2, 2, 2]`, total 7, threshold 5). The weights change from run to run. If the corrupted validator holds weight 2 the honest weight is 4, below the threshold, and no reveal is possible while it misbehaves. The 2/3 reconstruction ratio of `OnChainChunkyDKGConfig::default_enabled()` becomes 5 of 6 after rounding. The second reveal in the test runs with the corrupted validator healed for this reason. See section 5.
 
 ### Finding 3 (design fact, tested): governance `force_end_epoch` runs no DKG
 
@@ -87,6 +87,12 @@ Result: `test result: ok. 1 passed; 0 failed ... finished in 205.61s`. One `E2E-
 | mempool-encrypted-txns-commit-after-second-timelock-dkg | PASS |
 
 The "C-2" case. The packet row C-2 is "a share released for one secret is invalid under another". The task text calls it "two timelock sessions in one epoch". The run covers the reading in the packet in two ways: the epoch 3 key fails under the epoch 5 mpk (two independent timelock sessions in one chain), and the timelock session and the mempool session run in the same reconfiguration with distinct mpk values. The manager level test `two_managers_in_one_epoch_produce_separate_results` already covers two managers in one epoch with a dummy network. A reading of C-2 as "two reveals of the same timelock id" is excluded by the registry (one reveal per timelock, status one way).
+
+Shell driver: `atomica/scripts/timelock-smoke-test.sh` ran against a kept-alive swarm (`timelock_testnet_for_script`, then `FORCE_EPOCH_CHANGE=1`, `aptos` CLI and the `timelock_bid` example). Result: `TIMELOCK SMOKE TEST: PASS` with nine `ASSERT` lines (key ready, epoch bound identity, bids verify, sealed until deadline, reveal, key verifies, bids decrypt, copied bid fails, epoch change expires timelock with status 2 reason 1).
+
+Other swarm tests run on the same binaries, all pass (the timelock DKG was off in them, the second manager idle): `chunky_dkg_correctness`, `chunky_dkg_enable_feature`, `chunky_dkg_with_validator_down`, `validator_restart_after_randomness_dkg_completion`, `randomness_correctness`, `e2e_basic_consumption`, `secret_share_rpc_path`, `test_encryption_key_rotation_and_encrypted_txns`.
+
+Unit level: `aptos-dkg-runtime` with `--features failpoints` 42 passed (six new share service tests, the failpoint tests need the feature), `aptos-types` timelock filter 9 passed, `aptos-dkg` ibe 24 passed and 3 ignored, Move `ibe_config_tests` 44 passed. `clippy` on `aptos-dkg-runtime`, `aptos-types`, `aptos-dkg` and `aptos-node` shows no warning in the touched files (upstream crates have their own warnings, so `-D warnings` fails on them). The `aptos-vm` lib tests could not be built here (`librocksdb-sys` static library missing for that feature set).
 
 ## 4. What did not run
 
