@@ -105,3 +105,16 @@ jobs:
         if: always()
         run: .github/scripts/run-tests-guarded.sh state_sync_epoch_changes 1 -- cargo test -p smoke-test --lib state_sync::test_validator_execution_sync_epoch_changes -- --nocapture --test-threads=1
         timeout-minutes: 60
+
+      # Swarm logs are kept when a test panics. Print the DKG and error lines
+      # so a failure can be diagnosed from the job log.
+      - name: Print swarm node log excerpts
+        if: failure()
+        run: |
+          for d in "${TMPDIR:-/tmp}"/.tmp*; do
+            [ -d "$d" ] || continue
+            for f in $(find "$d" -name log -type f | sort | head -8); do
+              echo "=== $f ($(wc -l < "$f") lines)"
+              grep -iE "dkg|timelock|ibe|chunky|ERROR|panic" "$f" | tail -25 | cut -c1-400
+            done
+          done
