@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     core_mempool::{CoreMempool, TimelineState},
@@ -564,16 +563,13 @@ fn start_node_mempool(
         notification_receiver: reconfig_events,
     };
     reconfig_sender
-        .push(
-            (),
-            ReconfigNotification {
-                version: 1,
-                on_chain_configs: OnChainConfigPayload::new(
-                    1,
-                    InMemoryOnChainConfig::new(HashMap::new()),
-                ),
-            },
-        )
+        .push((), ReconfigNotification {
+            version: 1,
+            on_chain_configs: OnChainConfigPayload::new(
+                1,
+                InMemoryOnChainConfig::new(HashMap::new()),
+            ),
+        })
         .unwrap();
 
     let runtime = aptos_runtimes::spawn_named_runtime("shared-mem".into(), None);

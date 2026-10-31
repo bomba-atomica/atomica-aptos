@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::Result;
 use aptos_logger::error;
@@ -157,10 +156,7 @@ impl TransactionValidation for PooledVMValidator {
             let vm_validator_locked = vm_validator.lock().unwrap();
 
             use aptos_vm::VMValidator;
-            let vm = AptosVM::new(
-                &vm_validator_locked.state.environment,
-                &vm_validator_locked.state.state_view,
-            );
+            let vm = AptosVM::new(&vm_validator_locked.state.environment);
             vm.validate_transaction(
                 txn,
                 &vm_validator_locked.state.state_view,

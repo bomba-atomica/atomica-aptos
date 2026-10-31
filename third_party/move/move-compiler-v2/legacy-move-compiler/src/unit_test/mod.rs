@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     compiled_unit::{AnnotatedCompiledUnit, NamedCompiledModule},
@@ -166,14 +167,17 @@ impl fmt::Display for ExpectedMoveErrorDisplay<'_> {
             };
         }
         if status == &StatusCode::ABORTED {
-            write!(f, " with code {}", sub_status.unwrap())?
+            let code = sub_status.unwrap();
+            write!(f, " with code {}", code)?;
+            let (category, reason) = error_split(code);
+            if let Some(category_str) = category_str(category) {
+                write!(f, " (category: {}, reason: {})", category_str, reason)?;
+            }
         } else if let Some(code) = sub_status {
             write!(f, " with sub-status {code}")?
         };
         if let Some(msg) = msg {
-            if status != &StatusCode::ABORTED {
-                write!(f, " with error message: \"{}\". Error", msg)?;
-            }
+            write!(f, " with error message: \"{}\". Error", msg)?;
         }
         if status != &StatusCode::OUT_OF_GAS {
             write!(f, " originating")?;
@@ -183,5 +187,30 @@ impl fmt::Display for ExpectedMoveErrorDisplay<'_> {
             Location::Script => write!(f, " in the script"),
             Location::Module(id) => write!(f, " in the module {id}"),
         }
+    }
+}
+
+fn error_split(code: u64) -> (u8, u64) {
+    let reason = code & 0xFFFF;
+    let category = ((code >> 16) & 0xFF) as u8;
+    (category, reason)
+}
+
+fn category_str(category: u8) -> Option<&'static str> {
+    match category {
+        0x1 => Some("INVALID_ARGUMENT"),
+        0x2 => Some("OUT_OF_RANGE"),
+        0x3 => Some("INVALID_STATE"),
+        0x4 => Some("UNAUTHENTICATED"),
+        0x5 => Some("PERMISSION_DENIED"),
+        0x6 => Some("NOT_FOUND"),
+        0x7 => Some("ABORTED"),
+        0x8 => Some("ALREADY_EXISTS"),
+        0x9 => Some("RESOURCE_EXHAUSTED"),
+        0xA => Some("CANCELLED"),
+        0xB => Some("INTERNAL"),
+        0xC => Some("NOT_IMPLEMENTED"),
+        0xD => Some("UNAVAILABLE"),
+        _ => None,
     }
 }

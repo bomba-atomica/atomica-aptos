@@ -1,0 +1,7 @@
+BUILDING script_pkg
+{
+  "Result": {
+    "script_location": "<TEMPDIR>/script.mv",
+    "script_hash": "d9129c7f1ab7c1222f0dd5fdeb31ac4d773f9051073a8afad6a5b8fcbc44a2fb"
+  }
+}

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::helpers::new_node;
 use crate::dag::{
@@ -24,7 +24,7 @@ fn test_node_verify() {
 
     let invalid_node = Node::new_for_test(
         NodeMetadata::new_for_test(0, 0, signers[0].author(), 0, HashValue::random()),
-        Payload::empty(false, true),
+        Payload::empty(false),
         vec![],
         Extensions::empty(),
     );
@@ -73,7 +73,7 @@ fn test_certified_node_verify() {
 
     let invalid_node = Node::new_for_test(
         NodeMetadata::new_for_test(0, 0, signers[0].author(), 0, HashValue::random()),
-        Payload::empty(false, true),
+        Payload::empty(false),
         vec![],
         Extensions::empty(),
     );
@@ -152,13 +152,9 @@ fn test_dag_snapshot_bitmask() {
     assert!(!bitmask.has(2, 0));
     assert_eq!(bitmask.first_round(), 1);
 
-    let bitmask = DagSnapshotBitmask::new(
-        1,
-        vec![
-            vec![false, true, true, true],
-            vec![false, true, false, false],
-        ],
-    );
+    let bitmask = DagSnapshotBitmask::new(1, vec![vec![false, true, true, true], vec![
+        false, true, false, false,
+    ]]);
 
     assert!(!bitmask.has(1, 0));
     assert!(bitmask.has(1, 3));

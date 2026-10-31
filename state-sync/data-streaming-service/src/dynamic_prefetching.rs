@@ -1,8 +1,10 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{metrics, stream_engine::StreamEngine};
 use aptos_config::config::{DataStreamingServiceConfig, DynamicPrefetchingConfig};
+#[cfg(test)]
+use aptos_storage_interface::StateKind;
 use aptos_time_service::{TimeService, TimeServiceTrait};
 use std::{
     cmp::{max, min},
@@ -693,6 +695,7 @@ mod test {
         let stream_request = StreamRequest::GetAllStates(GetAllStatesRequest {
             version: 0,
             start_index: 0,
+            state_kind: StateKind::MainState,
         });
 
         // Create and return the stream engine

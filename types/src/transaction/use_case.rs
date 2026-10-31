@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::transaction::{
     signature_verified_transaction::SignatureVerifiedTransaction, SignedTransaction, Transaction,
@@ -36,6 +36,15 @@ fn parse_use_case(payload: &TransactionPayload) -> UseCaseKey {
         EntryFunction(entry_fun) => Some(entry_fun),
         v2 @ Payload(_) => {
             if let Ok(TransactionExecutableRef::EntryFunction(entry_fun)) = v2.executable_ref() {
+                Some(entry_fun)
+            } else {
+                None
+            }
+        },
+        EncryptedPayload(encrypted_payload) => {
+            if let Ok(TransactionExecutableRef::EntryFunction(entry_fun)) =
+                encrypted_payload.executable_ref()
+            {
                 Some(entry_fun)
             } else {
                 None

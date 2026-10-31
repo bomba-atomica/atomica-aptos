@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::{anyhow, Result};
 use aptos_rest_client::{
@@ -227,11 +227,10 @@ impl FetchMetadata {
                 .get_new_block_events_bcs(Some(cursor), Some(MAX_FETCH_BATCH_SIZE))
                 .await;
 
-            if response.is_err() {
+            if let Err(err) = &response {
                 println!(
                     "Failed to read new_block_events beyond {}, stopping. {:?}",
-                    cursor,
-                    response.unwrap_err()
+                    cursor, err
                 );
                 assert!(!validators.is_empty());
                 result.push(EpochInfo {

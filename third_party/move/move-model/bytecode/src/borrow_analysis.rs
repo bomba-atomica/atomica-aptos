@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Data flow analysis computing borrow information for preparation of memory_instrumentation.
 
@@ -19,7 +20,10 @@ use move_binary_format::file_format::CodeOffset;
 use move_model::{
     ast::TempIndex,
     model::{FunctionEnv, GlobalEnv, QualifiedInstId},
-    pragmas::{INTRINSIC_FUN_MAP_BORROW_MUT, INTRINSIC_FUN_MAP_BORROW_MUT_WITH_DEFAULT},
+    pragmas::{
+        INTRINSIC_FUN_MAP_BORROW_MUT, INTRINSIC_FUN_MAP_BORROW_MUT_WITH_DEFAULT,
+        INTRINSIC_FUN_MAP_ITER_BORROW_MUT,
+    },
     ty::Type,
     well_known::VECTOR_BORROW_MUT,
 };
@@ -496,7 +500,7 @@ impl FunctionTargetProcessor for BorrowAnalysisProcessor {
         writeln!(f, "\n\n==== borrow analysis summaries ====\n")?;
         for ref module in env.get_modules() {
             for ref fun in module.get_functions() {
-                if fun.is_inline() {
+                if fun.is_not_prover_target() {
                     continue;
                 }
                 for (_, ref target) in targets.get_targets(fun) {
@@ -564,12 +568,31 @@ fn get_custom_annotation_or_none(
             // check whether this borrow has known special semantics
             if fun_env.is_well_known(VECTOR_BORROW_MUT) {
                 Some(summarize_custom_borrow(IndexEdgeKind::Vector, &[0], &[0]))
-            } else if fun_env.is_intrinsic_of(INTRINSIC_FUN_MAP_BORROW_MUT)
+            } else if let Some(map_param) = if fun_env.is_intrinsic_of(INTRINSIC_FUN_MAP_BORROW_MUT)
                 || fun_env.is_intrinsic_of(INTRINSIC_FUN_MAP_BORROW_MUT_WITH_DEFAULT)
             {
-                Some(summarize_custom_borrow(IndexEdgeKind::Table, &[0], &[0]))
-            } else if fun_env.is_native_or_intrinsic() {
-                // non-borrow related native/intrinsic has no borrow semantics
+                Some(0)
+            } else if fun_env.is_intrinsic_of(INTRINSIC_FUN_MAP_ITER_BORROW_MUT) {
+                // The iterator is the first parameter; the map is the second.
+                Some(1)
+            } else {
+                None
+            } {
+                // Malformed bindings are diagnosed at mono analysis, which
+                // runs later; tolerate them here (default annotation) so that
+                // the summary's parameter indices cannot be applied out of
+                // bounds at call sites before the diagnostic is reachable.
+                if fun_env.get_parameter_count() > map_param && fun_env.get_return_count() >= 1 {
+                    Some(summarize_custom_borrow(
+                        IndexEdgeKind::Table,
+                        &[map_param],
+                        &[0],
+                    ))
+                } else {
+                    Some(BorrowAnnotation::default())
+                }
+            } else if fun_env.no_verified_bytecode() {
+                // functions without verified bytecode have no borrow semantics
                 Some(BorrowAnnotation::default())
             } else {
                 // this is a normal function and we can summarize its borrow semantics

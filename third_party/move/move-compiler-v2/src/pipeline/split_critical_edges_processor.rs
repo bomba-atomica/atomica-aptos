@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This pass splits critical edges with empty blocks.
 //! A critical edge is an edge where the source node has multiple successors,
@@ -211,12 +211,14 @@ impl SplitCriticalEdgesTransformation {
 
     /// Generates a fresh label
     fn gen_fresh_label(&mut self) -> Label {
-        let new_label = Label::new(if self.labels.is_empty() {
-            0
-        } else {
-            let max_label = self.labels.iter().next_back().expect("label");
-            max_label.as_usize() + 1
-        });
+        let new_label = Label::new(
+            if self.labels.is_empty() {
+                0
+            } else {
+                let max_label = self.labels.iter().next_back().expect("label");
+                max_label.as_usize() + 1
+            },
+        );
         self.labels.insert(new_label);
         new_label
     }

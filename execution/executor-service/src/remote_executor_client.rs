@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 use crate::{
     remote_state_view_service::RemoteStateViewService, ExecuteBlockCommand, RemoteExecutionRequest,
     RemoteExecutionResult,
@@ -196,7 +195,7 @@ impl<S: StateView + Sync + Send + 'static> ExecutorClient<S> for RemoteExecutorC
             let execution_request = RemoteExecutionRequest::ExecuteBlock(ExecuteBlockCommand {
                 sub_blocks,
                 concurrency_level: concurrency_level_per_shard,
-                onchain_config: onchain_config.clone(),
+                onchain_config,
             });
 
             senders[shard_id]

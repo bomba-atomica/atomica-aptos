@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // This file was generated. Do not modify!
 //
@@ -174,9 +174,24 @@ pub enum EntryFunctionCall {
     /// authority of the new authentication key.
     AccountSetOriginatingAddress {},
 
-    /// Upserts an ED25519 backup key to an account that has a keyless public key as its original public key by converting the account's authentication key
+    /// Atomically performs an `upsert_ed25519_backup_key_on_keyless_account` and stores `dk_ciphertext` in the
+    /// account's `EncryptedDK` resource. Currently used for backing up confidential-asset decryption keys on-chain
+    /// in Petra for keyless accounts. The ciphertext is opaque to the chain — see `EncryptedDK`.
+    ///
+    /// SECURITY: This function does not verify that `dk_ciphertext` is a well-formed encryption of the DK corresponding
+    /// to the registered EK on-chain. (It could, in theory, but we've judged the implementation complexity too high.)
+    /// Wallets using this function must be careful to only call this using a `dk_ciphertext` produced from its own
+    /// keyless Ed25519 backup key flow under the user-controlled `backup_public_key`.
+    AccountUpsertEd25519BackupKeyAndEncryptDk {
+        keyless_public_key: Vec<u8>,
+        backup_public_key: Vec<u8>,
+        backup_key_proof: Vec<u8>,
+        dk_ciphertext: Vec<u8>,
+    },
+
+    /// Upserts an Ed25519 backup key to an account that has a keyless public key as its original public key by converting the account's authentication key
     /// to a multi-key of the original keyless public key and the new backup key that requires 1 signature from either key to authenticate.
-    /// This function takes a the account's original keyless public key and a ED25519 backup public key and rotates the account's authentication key to a multi-key of
+    /// This function takes the account's original keyless public key and a Ed25519 backup public key and rotates the account's authentication key to a multi-key of
     /// the original keyless public key and the new backup key that requires 1 signature from either key to authenticate.
     ///
     /// Note: This function emits a `KeyRotationToMultiPublicKey` event marking both keys as verified since the keyless public key
@@ -185,7 +200,7 @@ pub enum EntryFunctionCall {
     /// # Arguments
     /// * `account` - The signer representing the keyless account
     /// * `keyless_public_key` - The original keyless public key of the account (wrapped in an AnyPublicKey)
-    /// * `backup_public_key` - The ED25519 public key to add as a backup
+    /// * `backup_public_key` - The Ed25519 public key to add as a backup
     /// * `backup_key_proof` - A signature from the backup key proving ownership
     ///
     /// # Aborts
@@ -321,6 +336,9 @@ pub enum EntryFunctionCall {
         amount: u64,
     },
 
+    /// Used to upgrade supply to use an integer, deprecating Aggregator V1.
+    AptosCoinUpgradeSupply {},
+
     AptosGovernanceAddApprovedScriptHashScript {
         proposal_id: u64,
     },
@@ -431,8 +449,7 @@ pub enum EntryFunctionCall {
         amount: u64,
     },
 
-    /// Upgrade total supply to use a parallelizable implementation if it is
-    /// available.
+    /// Upgrade total supply to use a non-parallelizable implementation.
     CoinUpgradeSupply {
         coin_type: TypeTag,
     },
@@ -557,6 +574,10 @@ pub enum EntryFunctionCall {
         amount: u64,
     },
 
+    /// Registers a timelock for `deadline_us`.
+    ///
+    /// Aborts unless the MPK of the current epoch is ready, the deadline is in the future and the deadline is at
+    /// most `epoch_end - 15 minutes`.
     IbeConfigRegisterTimelock {
         deadline_us: u64,
     },
@@ -780,6 +801,22 @@ pub enum EntryFunctionCall {
         metadata_values: Vec<Vec<u8>>,
     },
 
+    /// Like `create_with_owners`, but also configures a timelock at creation time so the initial
+    /// queue is protected by the timelock from the very first transaction.
+    ///
+    /// `timelock_period` and `override_threshold` are two separate `Option<u64>` because entry
+    /// function arguments cannot carry tuple-typed options. If `timelock_period` is `None` no
+    /// timelock is configured and `override_threshold` must also be `None`. If `timelock_period`
+    /// is `Some`, the bounds and invariants are identical to `upsert_timelock`.
+    MultisigAccountCreateWithOwnersAndTimelock {
+        additional_owners: Vec<AccountAddress>,
+        num_signatures_required: u64,
+        metadata_keys: Vec<Vec<u8>>,
+        metadata_values: Vec<Vec<u8>>,
+        timelock_period: Option<u64>,
+        override_threshold: Option<u64>,
+    },
+
     /// Like `create_with_owners`, but removes the calling account after creation.
     ///
     /// This is for creating a vanity multisig account from a bootstrapping account that should not
@@ -824,6 +861,10 @@ pub enum EntryFunctionCall {
         owners_to_remove: Vec<AccountAddress>,
     },
 
+    /// Remove the timelock configuration for the multisig account.
+    /// Aborts if no timelock is configured.
+    MultisigAccountRemoveTimelock {},
+
     /// Swap an owner in for an old one, without changing required signatures.
     MultisigAccountSwapOwner {
         to_swap_in: AccountAddress,
@@ -863,6 +904,24 @@ pub enum EntryFunctionCall {
     /// maliciously alter the number of signatures required.
     MultisigAccountUpdateSignaturesRequired {
         new_num_signatures_required: u64,
+    },
+
+    /// Upsert the timelock configuration for the multisig account.
+    /// timelock_period must be between MIN_TIMELOCK_PERIOD and MAX_TIMELOCK_PERIOD.
+    /// override_threshold, if provided, must be > num_signatures_required and <= the number of owners.
+    ///
+    /// Note on pending transactions: the timelock check measures elapsed time from a transaction's
+    /// `creation_time_secs`, not from when the timelock was activated. Because multisig transactions
+    /// execute strictly in sequence order, this is only observable for transactions queued *after*
+    /// this `upsert_timelock` call but *before* it executes — those transactions may become
+    /// executable sooner than `timelock_period` seconds after this call takes effect, because part
+    /// of their elapsed time is counted from before the new timelock was live. Transactions queued
+    /// after this call has executed receive the full `timelock_period` protection. This residual
+    /// window is bounded by the previous timelock period (or by approval time, if there was no
+    /// prior timelock) and is considered an acceptable, operator-visible risk.
+    MultisigAccountUpsertTimelock {
+        timelock_period: u64,
+        override_threshold: Option<u64>,
     },
 
     /// Generic function that can be used to either approve or reject a multisig transaction
@@ -910,13 +969,10 @@ pub enum EntryFunctionCall {
         code: Vec<Vec<u8>>,
     },
 
-    /// Revoke all storable permission handle of the signer immediately.
     PermissionedSignerRevokeAllHandles {},
 
-    /// Revoke a specific storable permission handle immediately. This will disallow owner of
-    /// the storable permission handle to derive signer from it anymore.
     PermissionedSignerRevokePermissionStorageAddress {
-        permissions_storage_addr: AccountAddress,
+        _permissions_storage_addr: AccountAddress,
     },
 
     /// Creates a new resource account and rotates the authentication key to either
@@ -1147,6 +1203,11 @@ pub enum EntryFunctionCall {
 
     TransactionFeeConvertToAptosFaBurnRef {},
 
+    /// Migrate an existing chain from the legacy `AptosCoinMintCapability` (coin `MintCapability`)
+    /// to `AptosFAMintCapabilities` (FA `MintRef`), so gas refunds mint APT FA directly without
+    /// touching the legacy coin supply aggregator. Gated by the aptos_framework signer (governance).
+    TransactionFeeConvertToAptosFaMintRef {},
+
     /// Used in on-chain governances to update the major version for the next epoch.
     /// Example usage:
     /// - `aptos_framework::version::set_for_next_epoch(&framework_signer, new_version);`
@@ -1329,6 +1390,17 @@ impl EntryFunctionCall {
                 cap_update_table,
             ),
             AccountSetOriginatingAddress {} => account_set_originating_address(),
+            AccountUpsertEd25519BackupKeyAndEncryptDk {
+                keyless_public_key,
+                backup_public_key,
+                backup_key_proof,
+                dk_ciphertext,
+            } => account_upsert_ed25519_backup_key_and_encrypt_dk(
+                keyless_public_key,
+                backup_public_key,
+                backup_key_proof,
+                dk_ciphertext,
+            ),
             AccountUpsertEd25519BackupKeyOnKeylessAccount {
                 keyless_public_key,
                 backup_public_key,
@@ -1413,6 +1485,7 @@ impl EntryFunctionCall {
             AptosCoinClaimMintCapability {} => aptos_coin_claim_mint_capability(),
             AptosCoinDelegateMintCapability { to } => aptos_coin_delegate_mint_capability(to),
             AptosCoinMint { dst_addr, amount } => aptos_coin_mint(dst_addr, amount),
+            AptosCoinUpgradeSupply {} => aptos_coin_upgrade_supply(),
             AptosGovernanceAddApprovedScriptHashScript { proposal_id } => {
                 aptos_governance_add_approved_script_hash_script(proposal_id)
             },
@@ -1686,6 +1759,21 @@ impl EntryFunctionCall {
                 metadata_keys,
                 metadata_values,
             ),
+            MultisigAccountCreateWithOwnersAndTimelock {
+                additional_owners,
+                num_signatures_required,
+                metadata_keys,
+                metadata_values,
+                timelock_period,
+                override_threshold,
+            } => multisig_account_create_with_owners_and_timelock(
+                additional_owners,
+                num_signatures_required,
+                metadata_keys,
+                metadata_values,
+                timelock_period,
+                override_threshold,
+            ),
             MultisigAccountCreateWithOwnersThenRemoveBootstrapper {
                 owners,
                 num_signatures_required,
@@ -1717,6 +1805,7 @@ impl EntryFunctionCall {
             MultisigAccountRemoveOwners { owners_to_remove } => {
                 multisig_account_remove_owners(owners_to_remove)
             },
+            MultisigAccountRemoveTimelock {} => multisig_account_remove_timelock(),
             MultisigAccountSwapOwner {
                 to_swap_in,
                 to_swap_out,
@@ -1740,6 +1829,10 @@ impl EntryFunctionCall {
             MultisigAccountUpdateSignaturesRequired {
                 new_num_signatures_required,
             } => multisig_account_update_signatures_required(new_num_signatures_required),
+            MultisigAccountUpsertTimelock {
+                timelock_period,
+                override_threshold,
+            } => multisig_account_upsert_timelock(timelock_period, override_threshold),
             MultisigAccountVoteTransaction {
                 multisig_account,
                 sequence_number,
@@ -1770,8 +1863,8 @@ impl EntryFunctionCall {
             } => object_code_deployment_publish(metadata_serialized, code),
             PermissionedSignerRevokeAllHandles {} => permissioned_signer_revoke_all_handles(),
             PermissionedSignerRevokePermissionStorageAddress {
-                permissions_storage_addr,
-            } => permissioned_signer_revoke_permission_storage_address(permissions_storage_addr),
+                _permissions_storage_addr,
+            } => permissioned_signer_revoke_permission_storage_address(_permissions_storage_addr),
             ResourceAccountCreateResourceAccount {
                 seed,
                 optional_auth_key,
@@ -1918,6 +2011,9 @@ impl EntryFunctionCall {
             } => staking_proxy_set_voter(operator, new_voter),
             TransactionFeeConvertToAptosFaBurnRef {} => {
                 transaction_fee_convert_to_aptos_fa_burn_ref()
+            },
+            TransactionFeeConvertToAptosFaMintRef {} => {
+                transaction_fee_convert_to_aptos_fa_mint_ref()
             },
             VersionSetForNextEpoch { major } => version_set_for_next_epoch(major),
             VersionSetVersion { major } => version_set_version(major),
@@ -2297,9 +2393,42 @@ pub fn account_set_originating_address() -> TransactionPayload {
     ))
 }
 
-/// Upserts an ED25519 backup key to an account that has a keyless public key as its original public key by converting the account's authentication key
+/// Atomically performs an `upsert_ed25519_backup_key_on_keyless_account` and stores `dk_ciphertext` in the
+/// account's `EncryptedDK` resource. Currently used for backing up confidential-asset decryption keys on-chain
+/// in Petra for keyless accounts. The ciphertext is opaque to the chain — see `EncryptedDK`.
+///
+/// SECURITY: This function does not verify that `dk_ciphertext` is a well-formed encryption of the DK corresponding
+/// to the registered EK on-chain. (It could, in theory, but we've judged the implementation complexity too high.)
+/// Wallets using this function must be careful to only call this using a `dk_ciphertext` produced from its own
+/// keyless Ed25519 backup key flow under the user-controlled `backup_public_key`.
+pub fn account_upsert_ed25519_backup_key_and_encrypt_dk(
+    keyless_public_key: Vec<u8>,
+    backup_public_key: Vec<u8>,
+    backup_key_proof: Vec<u8>,
+    dk_ciphertext: Vec<u8>,
+) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("account").to_owned(),
+        ),
+        ident_str!("upsert_ed25519_backup_key_and_encrypt_dk").to_owned(),
+        vec![],
+        vec![
+            bcs::to_bytes(&keyless_public_key).unwrap(),
+            bcs::to_bytes(&backup_public_key).unwrap(),
+            bcs::to_bytes(&backup_key_proof).unwrap(),
+            bcs::to_bytes(&dk_ciphertext).unwrap(),
+        ],
+    ))
+}
+
+/// Upserts an Ed25519 backup key to an account that has a keyless public key as its original public key by converting the account's authentication key
 /// to a multi-key of the original keyless public key and the new backup key that requires 1 signature from either key to authenticate.
-/// This function takes a the account's original keyless public key and a ED25519 backup public key and rotates the account's authentication key to a multi-key of
+/// This function takes the account's original keyless public key and a Ed25519 backup public key and rotates the account's authentication key to a multi-key of
 /// the original keyless public key and the new backup key that requires 1 signature from either key to authenticate.
 ///
 /// Note: This function emits a `KeyRotationToMultiPublicKey` event marking both keys as verified since the keyless public key
@@ -2308,7 +2437,7 @@ pub fn account_set_originating_address() -> TransactionPayload {
 /// # Arguments
 /// * `account` - The signer representing the keyless account
 /// * `keyless_public_key` - The original keyless public key of the account (wrapped in an AnyPublicKey)
-/// * `backup_public_key` - The ED25519 public key to add as a backup
+/// * `backup_public_key` - The Ed25519 public key to add as a backup
 /// * `backup_key_proof` - A signature from the backup key proving ownership
 ///
 /// # Aborts
@@ -2709,6 +2838,22 @@ pub fn aptos_coin_mint(dst_addr: AccountAddress, amount: u64) -> TransactionPayl
     ))
 }
 
+/// Used to upgrade supply to use an integer, deprecating Aggregator V1.
+pub fn aptos_coin_upgrade_supply() -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("aptos_coin").to_owned(),
+        ),
+        ident_str!("upgrade_supply").to_owned(),
+        vec![],
+        vec![],
+    ))
+}
+
 pub fn aptos_governance_add_approved_script_hash_script(proposal_id: u64) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
@@ -3049,8 +3194,7 @@ pub fn coin_transfer(coin_type: TypeTag, to: AccountAddress, amount: u64) -> Tra
     ))
 }
 
-/// Upgrade total supply to use a parallelizable implementation if it is
-/// available.
+/// Upgrade total supply to use a non-parallelizable implementation.
 pub fn coin_upgrade_supply(coin_type: TypeTag) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
@@ -3447,6 +3591,10 @@ pub fn delegation_pool_withdraw(pool_address: AccountAddress, amount: u64) -> Tr
     ))
 }
 
+/// Registers a timelock for `deadline_us`.
+///
+/// Aborts unless the MPK of the current epoch is ready, the deadline is in the future and the deadline is at
+/// most `epoch_end - 15 minutes`.
 pub fn ibe_config_register_timelock(deadline_us: u64) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
@@ -3967,6 +4115,42 @@ pub fn multisig_account_create_with_owners(
     ))
 }
 
+/// Like `create_with_owners`, but also configures a timelock at creation time so the initial
+/// queue is protected by the timelock from the very first transaction.
+///
+/// `timelock_period` and `override_threshold` are two separate `Option<u64>` because entry
+/// function arguments cannot carry tuple-typed options. If `timelock_period` is `None` no
+/// timelock is configured and `override_threshold` must also be `None`. If `timelock_period`
+/// is `Some`, the bounds and invariants are identical to `upsert_timelock`.
+pub fn multisig_account_create_with_owners_and_timelock(
+    additional_owners: Vec<AccountAddress>,
+    num_signatures_required: u64,
+    metadata_keys: Vec<Vec<u8>>,
+    metadata_values: Vec<Vec<u8>>,
+    timelock_period: Option<u64>,
+    override_threshold: Option<u64>,
+) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("multisig_account").to_owned(),
+        ),
+        ident_str!("create_with_owners_and_timelock").to_owned(),
+        vec![],
+        vec![
+            bcs::to_bytes(&additional_owners).unwrap(),
+            bcs::to_bytes(&num_signatures_required).unwrap(),
+            bcs::to_bytes(&metadata_keys).unwrap(),
+            bcs::to_bytes(&metadata_values).unwrap(),
+            bcs::to_bytes(&timelock_period).unwrap(),
+            bcs::to_bytes(&override_threshold).unwrap(),
+        ],
+    ))
+}
+
 /// Like `create_with_owners`, but removes the calling account after creation.
 ///
 /// This is for creating a vanity multisig account from a bootstrapping account that should not
@@ -4096,6 +4280,23 @@ pub fn multisig_account_remove_owners(owners_to_remove: Vec<AccountAddress>) -> 
     ))
 }
 
+/// Remove the timelock configuration for the multisig account.
+/// Aborts if no timelock is configured.
+pub fn multisig_account_remove_timelock() -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("multisig_account").to_owned(),
+        ),
+        ident_str!("remove_timelock").to_owned(),
+        vec![],
+        vec![],
+    ))
+}
+
 /// Swap an owner in for an old one, without changing required signatures.
 pub fn multisig_account_swap_owner(
     to_swap_in: AccountAddress,
@@ -4212,6 +4413,40 @@ pub fn multisig_account_update_signatures_required(
         ident_str!("update_signatures_required").to_owned(),
         vec![],
         vec![bcs::to_bytes(&new_num_signatures_required).unwrap()],
+    ))
+}
+
+/// Upsert the timelock configuration for the multisig account.
+/// timelock_period must be between MIN_TIMELOCK_PERIOD and MAX_TIMELOCK_PERIOD.
+/// override_threshold, if provided, must be > num_signatures_required and <= the number of owners.
+///
+/// Note on pending transactions: the timelock check measures elapsed time from a transaction's
+/// `creation_time_secs`, not from when the timelock was activated. Because multisig transactions
+/// execute strictly in sequence order, this is only observable for transactions queued *after*
+/// this `upsert_timelock` call but *before* it executes — those transactions may become
+/// executable sooner than `timelock_period` seconds after this call takes effect, because part
+/// of their elapsed time is counted from before the new timelock was live. Transactions queued
+/// after this call has executed receive the full `timelock_period` protection. This residual
+/// window is bounded by the previous timelock period (or by approval time, if there was no
+/// prior timelock) and is considered an acceptable, operator-visible risk.
+pub fn multisig_account_upsert_timelock(
+    timelock_period: u64,
+    override_threshold: Option<u64>,
+) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("multisig_account").to_owned(),
+        ),
+        ident_str!("upsert_timelock").to_owned(),
+        vec![],
+        vec![
+            bcs::to_bytes(&timelock_period).unwrap(),
+            bcs::to_bytes(&override_threshold).unwrap(),
+        ],
     ))
 }
 
@@ -4362,7 +4597,6 @@ pub fn object_code_deployment_publish(
     ))
 }
 
-/// Revoke all storable permission handle of the signer immediately.
 pub fn permissioned_signer_revoke_all_handles() -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
@@ -4378,10 +4612,8 @@ pub fn permissioned_signer_revoke_all_handles() -> TransactionPayload {
     ))
 }
 
-/// Revoke a specific storable permission handle immediately. This will disallow owner of
-/// the storable permission handle to derive signer from it anymore.
 pub fn permissioned_signer_revoke_permission_storage_address(
-    permissions_storage_addr: AccountAddress,
+    _permissions_storage_addr: AccountAddress,
 ) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
         ModuleId::new(
@@ -4393,7 +4625,7 @@ pub fn permissioned_signer_revoke_permission_storage_address(
         ),
         ident_str!("revoke_permission_storage_address").to_owned(),
         vec![],
-        vec![bcs::to_bytes(&permissions_storage_addr).unwrap()],
+        vec![bcs::to_bytes(&_permissions_storage_addr).unwrap()],
     ))
 }
 
@@ -5153,6 +5385,24 @@ pub fn transaction_fee_convert_to_aptos_fa_burn_ref() -> TransactionPayload {
     ))
 }
 
+/// Migrate an existing chain from the legacy `AptosCoinMintCapability` (coin `MintCapability`)
+/// to `AptosFAMintCapabilities` (FA `MintRef`), so gas refunds mint APT FA directly without
+/// touching the legacy coin supply aggregator. Gated by the aptos_framework signer (governance).
+pub fn transaction_fee_convert_to_aptos_fa_mint_ref() -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("transaction_fee").to_owned(),
+        ),
+        ident_str!("convert_to_aptos_fa_mint_ref").to_owned(),
+        vec![],
+        vec![],
+    ))
+}
+
 /// Used in on-chain governances to update the major version for the next epoch.
 /// Example usage:
 /// - `aptos_framework::version::set_for_next_epoch(&framework_signer, new_version);`
@@ -5674,6 +5924,23 @@ mod decoder {
         }
     }
 
+    pub fn account_upsert_ed25519_backup_key_and_encrypt_dk(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(
+                EntryFunctionCall::AccountUpsertEd25519BackupKeyAndEncryptDk {
+                    keyless_public_key: bcs::from_bytes(script.args().get(0)?).ok()?,
+                    backup_public_key: bcs::from_bytes(script.args().get(1)?).ok()?,
+                    backup_key_proof: bcs::from_bytes(script.args().get(2)?).ok()?,
+                    dk_ciphertext: bcs::from_bytes(script.args().get(3)?).ok()?,
+                },
+            )
+        } else {
+            None
+        }
+    }
+
     pub fn account_upsert_ed25519_backup_key_on_keyless_account(
         payload: &TransactionPayload,
     ) -> Option<EntryFunctionCall> {
@@ -5911,6 +6178,14 @@ mod decoder {
                 dst_addr: bcs::from_bytes(script.args().get(0)?).ok()?,
                 amount: bcs::from_bytes(script.args().get(1)?).ok()?,
             })
+        } else {
+            None
+        }
+    }
+
+    pub fn aptos_coin_upgrade_supply(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(_script) = payload {
+            Some(EntryFunctionCall::AptosCoinUpgradeSupply {})
         } else {
             None
         }
@@ -6618,6 +6893,25 @@ mod decoder {
         }
     }
 
+    pub fn multisig_account_create_with_owners_and_timelock(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(
+                EntryFunctionCall::MultisigAccountCreateWithOwnersAndTimelock {
+                    additional_owners: bcs::from_bytes(script.args().get(0)?).ok()?,
+                    num_signatures_required: bcs::from_bytes(script.args().get(1)?).ok()?,
+                    metadata_keys: bcs::from_bytes(script.args().get(2)?).ok()?,
+                    metadata_values: bcs::from_bytes(script.args().get(3)?).ok()?,
+                    timelock_period: bcs::from_bytes(script.args().get(4)?).ok()?,
+                    override_threshold: bcs::from_bytes(script.args().get(5)?).ok()?,
+                },
+            )
+        } else {
+            None
+        }
+    }
+
     pub fn multisig_account_create_with_owners_then_remove_bootstrapper(
         payload: &TransactionPayload,
     ) -> Option<EntryFunctionCall> {
@@ -6701,6 +6995,16 @@ mod decoder {
         }
     }
 
+    pub fn multisig_account_remove_timelock(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(_script) = payload {
+            Some(EntryFunctionCall::MultisigAccountRemoveTimelock {})
+        } else {
+            None
+        }
+    }
+
     pub fn multisig_account_swap_owner(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(EntryFunctionCall::MultisigAccountSwapOwner {
@@ -6758,6 +7062,19 @@ mod decoder {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(EntryFunctionCall::MultisigAccountUpdateSignaturesRequired {
                 new_num_signatures_required: bcs::from_bytes(script.args().get(0)?).ok()?,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn multisig_account_upsert_timelock(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(EntryFunctionCall::MultisigAccountUpsertTimelock {
+                timelock_period: bcs::from_bytes(script.args().get(0)?).ok()?,
+                override_threshold: bcs::from_bytes(script.args().get(1)?).ok()?,
             })
         } else {
             None
@@ -6869,7 +7186,7 @@ mod decoder {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(
                 EntryFunctionCall::PermissionedSignerRevokePermissionStorageAddress {
-                    permissions_storage_addr: bcs::from_bytes(script.args().get(0)?).ok()?,
+                    _permissions_storage_addr: bcs::from_bytes(script.args().get(0)?).ok()?,
                 },
             )
         } else {
@@ -7326,6 +7643,16 @@ mod decoder {
         }
     }
 
+    pub fn transaction_fee_convert_to_aptos_fa_mint_ref(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(_script) = payload {
+            Some(EntryFunctionCall::TransactionFeeConvertToAptosFaMintRef {})
+        } else {
+            None
+        }
+    }
+
     pub fn version_set_for_next_epoch(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(EntryFunctionCall::VersionSetForNextEpoch {
@@ -7605,6 +7932,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
             Box::new(decoder::account_set_originating_address),
         );
         map.insert(
+            "account_upsert_ed25519_backup_key_and_encrypt_dk".to_string(),
+            Box::new(decoder::account_upsert_ed25519_backup_key_and_encrypt_dk),
+        );
+        map.insert(
             "account_upsert_ed25519_backup_key_on_keyless_account".to_string(),
             Box::new(decoder::account_upsert_ed25519_backup_key_on_keyless_account),
         );
@@ -7679,6 +8010,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
         map.insert(
             "aptos_coin_mint".to_string(),
             Box::new(decoder::aptos_coin_mint),
+        );
+        map.insert(
+            "aptos_coin_upgrade_supply".to_string(),
+            Box::new(decoder::aptos_coin_upgrade_supply),
         );
         map.insert(
             "aptos_governance_add_approved_script_hash_script".to_string(),
@@ -7903,6 +8238,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
             Box::new(decoder::multisig_account_create_with_owners),
         );
         map.insert(
+            "multisig_account_create_with_owners_and_timelock".to_string(),
+            Box::new(decoder::multisig_account_create_with_owners_and_timelock),
+        );
+        map.insert(
             "multisig_account_create_with_owners_then_remove_bootstrapper".to_string(),
             Box::new(decoder::multisig_account_create_with_owners_then_remove_bootstrapper),
         );
@@ -7927,6 +8266,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
             Box::new(decoder::multisig_account_remove_owners),
         );
         map.insert(
+            "multisig_account_remove_timelock".to_string(),
+            Box::new(decoder::multisig_account_remove_timelock),
+        );
+        map.insert(
             "multisig_account_swap_owner".to_string(),
             Box::new(decoder::multisig_account_swap_owner),
         );
@@ -7945,6 +8288,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
         map.insert(
             "multisig_account_update_signatures_required".to_string(),
             Box::new(decoder::multisig_account_update_signatures_required),
+        );
+        map.insert(
+            "multisig_account_upsert_timelock".to_string(),
+            Box::new(decoder::multisig_account_upsert_timelock),
         );
         map.insert(
             "multisig_account_vote_transaction".to_string(),
@@ -8126,6 +8473,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
         map.insert(
             "transaction_fee_convert_to_aptos_fa_burn_ref".to_string(),
             Box::new(decoder::transaction_fee_convert_to_aptos_fa_burn_ref),
+        );
+        map.insert(
+            "transaction_fee_convert_to_aptos_fa_mint_ref".to_string(),
+            Box::new(decoder::transaction_fee_convert_to_aptos_fa_mint_ref),
         );
         map.insert(
             "version_set_for_next_epoch".to_string(),

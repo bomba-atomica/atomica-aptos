@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block_storage::{
@@ -30,10 +29,9 @@ use crate::{
     pending_votes::{VoteReceptionResult, VoteStatus},
     persistent_liveness_storage::PersistentLivenessStorage,
     quorum_store::types::BatchMsg,
-    rand::rand_gen::types::{FastShare, RandConfig, Share, TShare},
     util::is_vtxn_expected,
 };
-use anyhow::{bail, ensure, Context};
+use anyhow::{anyhow, bail, ensure, Context};
 use aptos_channels::aptos_channel;
 use aptos_config::config::{BlockTransactionFilterConfig, ConsensusConfig};
 use aptos_consensus_types::{
@@ -45,7 +43,7 @@ use aptos_consensus_types::{
     order_vote::OrderVote,
     order_vote_msg::OrderVoteMsg,
     pipelined_block::PipelinedBlock,
-    proof_of_store::{ProofCache, ProofOfStoreMsg, SignedBatchInfoMsg},
+    proof_of_store::{BatchInfo, BatchInfoExt, ProofCache, ProofOfStoreMsg, SignedBatchInfoMsg},
     proposal_msg::ProposalMsg,
     quorum_cert::QuorumCert,
     round_timeout::{RoundTimeout, RoundTimeoutMsg, RoundTimeoutReason},
@@ -56,7 +54,7 @@ use aptos_consensus_types::{
     vote_msg::VoteMsg,
     wrapped_ledger_info::WrappedLedgerInfo,
 };
-use aptos_crypto::{hash::CryptoHash, HashValue};
+use aptos_crypto::hash::CryptoHash;
 use aptos_infallible::{checked, Mutex};
 use aptos_logger::prelude::*;
 #[cfg(test)]
@@ -67,20 +65,17 @@ use aptos_types::{
     block_info::BlockInfo,
     epoch_state::EpochState,
     on_chain_config::{
-        OnChainConsensusConfig, OnChainJWKConsensusConfig, OnChainRandomnessConfig,
-        ValidatorTxnConfig,
+        OnChainChunkyDKGConfig, OnChainConsensusConfig, OnChainJWKConsensusConfig,
+        OnChainRandomnessConfig, ValidatorTxnConfig,
     },
-    randomness::RandMetadata,
     validator_verifier::ValidatorVerifier,
     PeerId,
 };
 use fail::fail_point;
 use futures::{channel::oneshot, stream::FuturesUnordered, Future, FutureExt, SinkExt, StreamExt};
-use lru::LruCache;
 use serde::Serialize;
 use std::{
-    collections::BTreeMap, mem::Discriminant, num::NonZeroUsize, ops::Add, pin::Pin, sync::Arc,
-    time::Duration,
+    collections::BTreeMap, fmt, mem::Discriminant, ops::Add, pin::Pin, sync::Arc, time::Duration,
 };
 use tokio::{
     sync::oneshot as TokioOneshot,
@@ -94,9 +89,12 @@ pub enum UnverifiedEvent {
     RoundTimeoutMsg(Box<RoundTimeoutMsg>),
     OrderVoteMsg(Box<OrderVoteMsg>),
     SyncInfo(Box<SyncInfo>),
-    BatchMsg(Box<BatchMsg>),
-    SignedBatchInfo(Box<SignedBatchInfoMsg>),
-    ProofOfStoreMsg(Box<ProofOfStoreMsg>),
+    BatchMsg(Box<BatchMsg<BatchInfo>>),
+    BatchMsgV2(Box<BatchMsg<BatchInfoExt>>),
+    SignedBatchInfo(Box<SignedBatchInfoMsg<BatchInfo>>),
+    SignedBatchInfoMsgV2(Box<SignedBatchInfoMsg<BatchInfoExt>>),
+    ProofOfStoreMsg(Box<ProofOfStoreMsg<BatchInfo>>),
+    ProofOfStoreMsgV2(Box<ProofOfStoreMsg<BatchInfoExt>>),
     OptProposalMsg(Box<OptProposalMsg>),
 }
 
@@ -109,16 +107,33 @@ impl UnverifiedEvent {
         validator: &ValidatorVerifier,
         proof_cache: &ProofCache,
         quorum_store_enabled: bool,
+        opt_qs_v2_rx_enabled: bool,
         self_message: bool,
         max_num_batches: usize,
         max_batch_expiry_gap_usecs: u64,
+        max_batch_txns: u64,
+        max_batch_bytes: u64,
+        encrypted_enabled: bool,
     ) -> Result<VerifiedEvent, VerifyError> {
+        // Temporary: reject encrypted batches/PoS at the entry point until the
+        // feature is fully rolled out, after which these checks can be removed.
+        if !encrypted_enabled {
+            self.reject_encrypted()?;
+        }
+
         let start_time = Instant::now();
         Ok(match self {
-            //TODO: no need to sign and verify the proposal
             UnverifiedEvent::ProposalMsg(p) => {
                 if !self_message {
-                    p.verify(peer_id, validator, proof_cache, quorum_store_enabled)?;
+                    p.verify(
+                        peer_id,
+                        validator,
+                        proof_cache,
+                        quorum_store_enabled,
+                        opt_qs_v2_rx_enabled,
+                        max_batch_txns,
+                        max_batch_bytes,
+                    )?;
                     counters::VERIFY_MSG
                         .with_label_values(&["proposal"])
                         .observe(start_time.elapsed().as_secs_f64());
@@ -127,7 +142,15 @@ impl UnverifiedEvent {
             },
             UnverifiedEvent::OptProposalMsg(p) => {
                 if !self_message {
-                    p.verify(peer_id, validator, proof_cache, quorum_store_enabled)?;
+                    p.verify(
+                        peer_id,
+                        validator,
+                        proof_cache,
+                        quorum_store_enabled,
+                        opt_qs_v2_rx_enabled,
+                        max_batch_txns,
+                        max_batch_bytes,
+                    )?;
                     counters::VERIFY_MSG
                         .with_label_values(&["opt_proposal"])
                         .observe(start_time.elapsed().as_secs_f64());
@@ -161,13 +184,21 @@ impl UnverifiedEvent {
                 }
                 VerifiedEvent::OrderVoteMsg(v)
             },
-            // sync info verification is on-demand (verified when it's used)
             UnverifiedEvent::SyncInfo(s) => VerifiedEvent::UnverifiedSyncInfo(s),
             UnverifiedEvent::BatchMsg(b) => {
                 if !self_message {
                     b.verify(peer_id, max_num_batches, validator)?;
                     counters::VERIFY_MSG
                         .with_label_values(&["batch"])
+                        .observe(start_time.elapsed().as_secs_f64());
+                }
+                VerifiedEvent::BatchMsg(Box::new((*b).into()))
+            },
+            UnverifiedEvent::BatchMsgV2(b) => {
+                if !self_message {
+                    b.verify_v2(peer_id, max_num_batches, validator)?;
+                    counters::VERIFY_MSG
+                        .with_label_values(&["batch_v2"])
                         .observe(start_time.elapsed().as_secs_f64());
                 }
                 VerifiedEvent::BatchMsg(b)
@@ -184,6 +215,20 @@ impl UnverifiedEvent {
                         .with_label_values(&["signed_batch"])
                         .observe(start_time.elapsed().as_secs_f64());
                 }
+                VerifiedEvent::SignedBatchInfo(Box::new((*sd).into()))
+            },
+            UnverifiedEvent::SignedBatchInfoMsgV2(sd) => {
+                if !self_message {
+                    sd.verify_v2(
+                        peer_id,
+                        max_num_batches,
+                        max_batch_expiry_gap_usecs,
+                        validator,
+                    )?;
+                    counters::VERIFY_MSG
+                        .with_label_values(&["signed_batch_v2"])
+                        .observe(start_time.elapsed().as_secs_f64());
+                }
                 VerifiedEvent::SignedBatchInfo(sd)
             },
             UnverifiedEvent::ProofOfStoreMsg(p) => {
@@ -193,9 +238,41 @@ impl UnverifiedEvent {
                         .with_label_values(&["proof_of_store"])
                         .observe(start_time.elapsed().as_secs_f64());
                 }
+                VerifiedEvent::ProofOfStoreMsg(Box::new((*p).into()))
+            },
+            UnverifiedEvent::ProofOfStoreMsgV2(p) => {
+                if !self_message {
+                    p.verify_v2(max_num_batches, validator, proof_cache)?;
+                    counters::VERIFY_MSG
+                        .with_label_values(&["proof_of_store_v2"])
+                        .observe(start_time.elapsed().as_secs_f64());
+                }
                 VerifiedEvent::ProofOfStoreMsg(p)
             },
         })
+    }
+
+    fn reject_encrypted(&self) -> Result<(), VerifyError> {
+        let has_encrypted = match self {
+            UnverifiedEvent::ProposalMsg(p) => p
+                .proposal()
+                .payload()
+                .is_some_and(|payload| payload.has_encrypted_batches()),
+            UnverifiedEvent::OptProposalMsg(p) => p.block_data().payload().has_encrypted_batches(),
+            UnverifiedEvent::BatchMsg(b) => b.has_encrypted_batches(),
+            UnverifiedEvent::BatchMsgV2(b) => b.has_encrypted_batches(),
+            UnverifiedEvent::SignedBatchInfo(sd) => sd.has_encrypted_batches(),
+            UnverifiedEvent::SignedBatchInfoMsgV2(sd) => sd.has_encrypted_batches(),
+            UnverifiedEvent::ProofOfStoreMsg(p) => p.has_encrypted_batches(),
+            UnverifiedEvent::ProofOfStoreMsgV2(p) => p.has_encrypted_batches(),
+            _ => false,
+        };
+        if has_encrypted {
+            return Err(VerifyError::from(anyhow!(
+                "Encrypted batches not allowed: feature disabled in this epoch"
+            )));
+        }
+        Ok(())
     }
 
     pub fn epoch(&self) -> anyhow::Result<u64> {
@@ -209,6 +286,88 @@ impl UnverifiedEvent {
             UnverifiedEvent::SignedBatchInfo(sd) => sd.epoch(),
             UnverifiedEvent::ProofOfStoreMsg(p) => p.epoch(),
             UnverifiedEvent::RoundTimeoutMsg(t) => Ok(t.epoch()),
+            UnverifiedEvent::BatchMsgV2(b) => b.epoch(),
+            UnverifiedEvent::SignedBatchInfoMsgV2(sd) => sd.epoch(),
+            UnverifiedEvent::ProofOfStoreMsgV2(p) => p.epoch(),
+        }
+    }
+}
+
+impl fmt::Display for UnverifiedEvent {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            UnverifiedEvent::ProposalMsg(m) => write!(
+                f,
+                "ProposalMsg(epoch={}, round={}, id={}, author={})",
+                m.proposal().epoch(),
+                m.proposal().round(),
+                m.proposal().id(),
+                m.proposal()
+                    .author()
+                    .map_or_else(|| "NIL".to_string(), |a| a.short_str().to_string()),
+            ),
+            UnverifiedEvent::OptProposalMsg(m) => write!(
+                f,
+                "OptProposalMsg(epoch={}, round={}, author={})",
+                m.epoch(),
+                m.round(),
+                m.proposer().short_str(),
+            ),
+            UnverifiedEvent::VoteMsg(m) => write!(
+                f,
+                "VoteMsg(epoch={}, round={}, block_id={}, author={})",
+                m.epoch(),
+                m.vote().vote_data().proposed().round(),
+                m.proposed_block_id(),
+                m.vote().author().short_str(),
+            ),
+            UnverifiedEvent::OrderVoteMsg(m) => write!(
+                f,
+                "OrderVoteMsg(epoch={}, round={}, author={})",
+                m.epoch(),
+                m.order_vote().ledger_info().commit_info().round(),
+                m.order_vote().author().short_str(),
+            ),
+            UnverifiedEvent::SyncInfo(m) => write!(
+                f,
+                "SyncInfo(epoch={}, certified_round={}, ordered_round={}, commit_round={}, timeout_round={})",
+                m.epoch(),
+                m.highest_certified_round(),
+                m.highest_ordered_round(),
+                m.highest_commit_round(),
+                m.highest_timeout_round(),
+            ),
+            UnverifiedEvent::RoundTimeoutMsg(m) => write!(
+                f,
+                "RoundTimeoutMsg(epoch={}, round={}, author={})",
+                m.epoch(),
+                m.round(),
+                m.author().short_str(),
+            ),
+            UnverifiedEvent::BatchMsg(m) => match m.epoch() {
+                Ok(epoch) => write!(f, "BatchMsg(epoch={}, author={:?})", epoch, m.author()),
+                Err(e) => write!(f, "BatchMsg(epoch_error={})", e),
+            },
+            UnverifiedEvent::BatchMsgV2(m) => match m.epoch() {
+                Ok(epoch) => write!(f, "BatchMsgV2(epoch={}, author={:?})", epoch, m.author()),
+                Err(e) => write!(f, "BatchMsgV2(epoch_error={})", e),
+            },
+            UnverifiedEvent::SignedBatchInfo(m) => match m.epoch() {
+                Ok(epoch) => write!(f, "SignedBatchInfo(epoch={})", epoch),
+                Err(e) => write!(f, "SignedBatchInfo(epoch_error={})", e),
+            },
+            UnverifiedEvent::SignedBatchInfoMsgV2(m) => match m.epoch() {
+                Ok(epoch) => write!(f, "SignedBatchInfoMsgV2(epoch={})", epoch),
+                Err(e) => write!(f, "SignedBatchInfoMsgV2(epoch_error={})", e),
+            },
+            UnverifiedEvent::ProofOfStoreMsg(m) => match m.epoch() {
+                Ok(epoch) => write!(f, "ProofOfStoreMsg(epoch={})", epoch),
+                Err(e) => write!(f, "ProofOfStoreMsg(epoch_error={})", e),
+            },
+            UnverifiedEvent::ProofOfStoreMsgV2(m) => match m.epoch() {
+                Ok(epoch) => write!(f, "ProofOfStoreMsgV2(epoch={})", epoch),
+                Err(e) => write!(f, "ProofOfStoreMsgV2(epoch_error={})", e),
+            },
         }
     }
 }
@@ -225,6 +384,9 @@ impl From<ConsensusMsg> for UnverifiedEvent {
             ConsensusMsg::SignedBatchInfo(m) => UnverifiedEvent::SignedBatchInfo(m),
             ConsensusMsg::ProofOfStoreMsg(m) => UnverifiedEvent::ProofOfStoreMsg(m),
             ConsensusMsg::RoundTimeoutMsg(m) => UnverifiedEvent::RoundTimeoutMsg(m),
+            ConsensusMsg::BatchMsgV2(m) => UnverifiedEvent::BatchMsgV2(m),
+            ConsensusMsg::SignedBatchInfoMsgV2(m) => UnverifiedEvent::SignedBatchInfoMsgV2(m),
+            ConsensusMsg::ProofOfStoreMsgV2(m) => UnverifiedEvent::ProofOfStoreMsgV2(m),
             _ => unreachable!("Unexpected conversion"),
         }
     }
@@ -239,9 +401,9 @@ pub enum VerifiedEvent {
     RoundTimeoutMsg(Box<RoundTimeoutMsg>),
     OrderVoteMsg(Box<OrderVoteMsg>),
     UnverifiedSyncInfo(Box<SyncInfo>),
-    BatchMsg(Box<BatchMsg>),
-    SignedBatchInfo(Box<SignedBatchInfoMsg>),
-    ProofOfStoreMsg(Box<ProofOfStoreMsg>),
+    BatchMsg(Box<BatchMsg<BatchInfoExt>>),
+    SignedBatchInfo(Box<SignedBatchInfoMsg<BatchInfoExt>>),
+    ProofOfStoreMsg(Box<ProofOfStoreMsg<BatchInfoExt>>),
     // local messages
     LocalTimeout(Round),
     // Shutdown the NetworkListener
@@ -278,13 +440,9 @@ pub struct RoundManager {
     local_config: ConsensusConfig,
     randomness_config: OnChainRandomnessConfig,
     jwk_consensus_config: OnChainJWKConsensusConfig,
-    fast_rand_config: Option<RandConfig>,
+    chunky_dkg_config: OnChainChunkyDKGConfig,
     // Stores the order votes from all the rounds above highest_ordered_round
     pending_order_votes: PendingOrderVotes,
-    // Round manager broadcasts fast shares when forming a QC or when receiving a proposal.
-    // To avoid duplicate broadcasts for the same block, we keep track of blocks for
-    // which we recently broadcasted fast shares.
-    blocks_with_broadcasted_fast_shares: LruCache<HashValue, ()>,
     futures: FuturesUnordered<
         Pin<Box<dyn Future<Output = (anyhow::Result<()>, Block, Instant)> + Send>>,
     >,
@@ -310,7 +468,7 @@ impl RoundManager {
         local_config: ConsensusConfig,
         randomness_config: OnChainRandomnessConfig,
         jwk_consensus_config: OnChainJWKConsensusConfig,
-        fast_rand_config: Option<RandConfig>,
+        chunky_dkg_config: OnChainChunkyDKGConfig,
         proposal_status_tracker: Arc<dyn TPastProposalStatusTracker>,
         opt_proposal_loopback_tx: aptos_channels::UnboundedSender<OptBlockData>,
     ) -> Self {
@@ -340,11 +498,8 @@ impl RoundManager {
             local_config,
             randomness_config,
             jwk_consensus_config,
-            fast_rand_config,
+            chunky_dkg_config,
             pending_order_votes: PendingOrderVotes::new(),
-            blocks_with_broadcasted_fast_shares: LruCache::new(
-                NonZeroUsize::new(5).expect("LRU capacity should be non-zero."),
-            ),
             futures: FuturesUnordered::new(),
             proposal_status_tracker,
             pending_opt_proposals: BTreeMap::new(),
@@ -700,6 +855,11 @@ impl RoundManager {
             block_round = proposal_msg.proposal().round(),
             block_hash = proposal_msg.proposal().id(),
             block_parent_hash = proposal_msg.proposal().quorum_cert().certified_block().id(),
+            block_num_txns = proposal_msg
+                .proposal()
+                .payload()
+                .map(|p| p.len())
+                .unwrap_or(0),
         );
 
         let in_correct_round = self
@@ -764,7 +924,7 @@ impl RoundManager {
             proposal_msg.block_data().timestamp_usecs(),
             BlockStage::ROUND_MANAGER_RECEIVED_OPT_PROPOSAL,
         );
-        info!(
+        debug!(
             self.new_log(LogEvent::ReceiveOptProposal),
             block_author = proposal_msg.proposer(),
             block_epoch = proposal_msg.block_data().epoch(),
@@ -832,6 +992,7 @@ impl RoundManager {
             block_round = proposal.round(),
             block_hash = proposal.id(),
             block_parent_hash = proposal.quorum_cert().certified_block().id(),
+            block_num_txns = proposal.payload().map(|p| p.len()).unwrap_or(0),
         );
         self.process_proposal(proposal).await
     }
@@ -840,7 +1001,7 @@ impl RoundManager {
     async fn sync_up(&mut self, sync_info: &SyncInfo, author: Author) -> anyhow::Result<()> {
         let local_sync_info = self.block_store.sync_info();
         if sync_info.has_newer_certificates(&local_sync_info) {
-            info!(
+            debug!(
                 self.new_log(LogEvent::ReceiveNewCertificate)
                     .remote_peer(author),
                 "Local state {},\n remote state {}", local_sync_info, sync_info
@@ -850,7 +1011,7 @@ impl RoundManager {
             sync_info.verify(&self.epoch_state.verifier).map_err(|e| {
                 error!(
                     SecurityEvent::InvalidSyncInfoMsg,
-                    sync_info = sync_info,
+                    sync_info = %sync_info,
                     remote_peer = author,
                     error = ?e,
                 );
@@ -1089,7 +1250,12 @@ impl RoundManager {
             for vtxn in vtxns {
                 let vtxn_type_name = vtxn.type_name();
                 ensure!(
-                    is_vtxn_expected(&self.randomness_config, &self.jwk_consensus_config, vtxn),
+                    is_vtxn_expected(
+                        &self.randomness_config,
+                        &self.jwk_consensus_config,
+                        &self.chunky_dkg_config,
+                        vtxn
+                    ),
                     "unexpected validator txn: {:?}",
                     vtxn_type_name
                 );
@@ -1116,7 +1282,7 @@ impl RoundManager {
         PROPOSED_VTXN_BYTES
             .with_label_values(&[&author_hex])
             .inc_by(validator_txns_total_bytes);
-        info!(
+        debug!(
             vtxn_count_limit = vtxn_count_limit,
             vtxn_count_proposed = num_validator_txns,
             vtxn_bytes_limit = vtxn_bytes_limit,
@@ -1160,6 +1326,31 @@ impl RoundManager {
             author,
             proposal,
         );
+
+        // A round-0 parent QC is the epoch's genesis certificate. `QuorumCert::verify`
+        // accepts it without signatures (it is implicitly agreed upon), so it only checks
+        // self-consistency and does not bind the certified BlockInfo to any real state.
+        // Bind it here to the genesis QC we derived locally from the previous epoch's final
+        // LedgerInfo (identical on every honest node), so a malicious proposer cannot smuggle
+        // an attacker-chosen genesis BlockInfo (fake executed_state_id / version) into the
+        // SafetyRules voting path.
+        let parent_qc = proposal.quorum_cert();
+        if parent_qc.certified_block().round() == 0 {
+            let local_genesis = self
+                .block_store
+                .get_quorum_cert_for_block(parent_qc.certified_block().id());
+            // Comparing the certified BlockInfo is sufficient: it carries executed_state_id and
+            // version (the fields the attacker forges, and the only part of the round-0 QC that
+            // flows into the signed vote LedgerInfo). The QC itself is signatureless by
+            // construction (QuorumCert::verify requires zero voters for round 0), so nothing else
+            // in the QC is security-relevant here.
+            ensure!(
+                local_genesis.map(|qc| qc.certified_block().clone())
+                    == Some(parent_qc.certified_block().clone()),
+                "[RoundManager] Proposal {} carries a round-0 QC whose certified block does not match the local genesis",
+                proposal.id(),
+            );
+        }
 
         // If the proposal contains any inline transactions that need to be denied
         // (e.g., due to filtering) drop the message and do not vote for the block.
@@ -1219,6 +1410,29 @@ impl RoundManager {
             .insert_block(proposal.clone())
             .await
             .context("[RoundManager] Failed to insert the block into BlockStore")?;
+
+        // Register block → traced txn hashes at proposal time (before execution).
+        if aptos_transaction_tracing::store::TransactionTraceStore::global().is_enabled() {
+            if let Some(payload) = proposal.payload() {
+                let batch_digests = extract_batch_digests(payload);
+                let proposal_info = proposal.author().map(|author| {
+                    aptos_transaction_tracing::types::BlockProposalInfo {
+                        proposer: author.short_str().to_string(),
+                        round: proposal.round(),
+                    }
+                });
+                let parent_block_timestamp_usecs =
+                    proposal.quorum_cert().certified_block().timestamp_usecs();
+                aptos_transaction_tracing::store::TransactionTraceStore::global()
+                    .process_proposed_block(
+                        proposal.id(),
+                        proposal.timestamp_usecs(),
+                        parent_block_timestamp_usecs,
+                        &batch_digests,
+                        proposal_info,
+                    );
+            }
+        }
 
         let block_store = self.block_store.clone();
         if block_store.check_payload(&proposal).is_err() {
@@ -1298,30 +1512,6 @@ impl RoundManager {
         });
     }
 
-    async fn broadcast_fast_shares(&mut self, block_info: &BlockInfo) {
-        // generate and multicast randomness share for the fast path
-        if let Some(fast_config) = &self.fast_rand_config {
-            if !block_info.is_empty()
-                && !self
-                    .blocks_with_broadcasted_fast_shares
-                    .contains(&block_info.id())
-            {
-                let metadata = RandMetadata {
-                    epoch: block_info.epoch(),
-                    round: block_info.round(),
-                };
-                let self_share = Share::generate(fast_config, metadata);
-                let fast_share = FastShare::new(self_share);
-                info!(LogSchema::new(LogEvent::BroadcastRandShareFastPath)
-                    .epoch(fast_share.epoch())
-                    .round(fast_share.round()));
-                self.network.broadcast_fast_share(fast_share).await;
-                self.blocks_with_broadcasted_fast_shares
-                    .put(block_info.id(), ());
-            }
-        }
-    }
-
     async fn create_vote(&mut self, proposal: Block) -> anyhow::Result<Vote> {
         let vote = self
             .vote_block(proposal)
@@ -1361,9 +1551,6 @@ impl RoundManager {
         let vote = self.create_vote(proposal).await?;
         self.round_state.record_vote(vote.clone());
         let vote_msg = VoteMsg::new(vote.clone(), self.block_store.sync_info());
-
-        self.broadcast_fast_shares(vote.ledger_info().commit_info())
-            .await;
 
         if self.local_config.broadcast_vote {
             info!(self.new_log(LogEvent::Vote), "{}", vote);
@@ -1444,7 +1631,7 @@ impl RoundManager {
                     )
                     .await
                 ) {
-                    warn!(
+                    debug!(
                         "[OptProposal] Error generating and sending opt proposal: {}",
                         e
                     );
@@ -1771,8 +1958,6 @@ impl RoundManager {
                             "Failed to broadcast order vote for QC {:?}. Error: {:?}",
                             qc, e
                         );
-                    } else {
-                        self.broadcast_fast_shares(qc.certified_block()).await;
                     }
                 }
                 Ok(())
@@ -2198,5 +2383,165 @@ impl RoundManager {
         } else {
             Ok(())
         }
+    }
+}
+
+/// Extract (batch_digest, inclusion_type) pairs from a block payload for tracing.
+fn extract_batch_digests(
+    payload: &aptos_consensus_types::common::Payload,
+) -> Vec<(
+    aptos_crypto::HashValue,
+    aptos_transaction_tracing::types::BatchInclusionType,
+)> {
+    use aptos_consensus_types::{payload::OptQuorumStorePayload, proof_of_store::TBatchInfo};
+    use aptos_transaction_tracing::types::BatchInclusionType;
+
+    let mut out = Vec::new();
+    macro_rules! collect {
+        ($p:expr) => {{
+            for b in $p.inline_batches().iter() {
+                out.push((*b.info().digest(), BatchInclusionType::Inline));
+            }
+            for b in $p.opt_batches().iter() {
+                out.push((*b.digest(), BatchInclusionType::Opt));
+            }
+            for b in $p.proof_with_data().iter() {
+                out.push((*b.info().digest(), BatchInclusionType::Proof));
+            }
+        }};
+    }
+    match payload {
+        aptos_consensus_types::common::Payload::OptQuorumStore(OptQuorumStorePayload::V1(p)) => {
+            collect!(p);
+        },
+        aptos_consensus_types::common::Payload::OptQuorumStore(OptQuorumStorePayload::V2(p)) => {
+            collect!(p);
+        },
+        _ => {},
+    }
+    out
+}
+
+#[cfg(test)]
+mod reject_encrypted_tests {
+    use super::*;
+    use crate::quorum_store::types::BatchMsg;
+    use aptos_consensus_types::proof_of_store::{
+        BatchInfoExt, BatchKind, SignedBatchInfo, SignedBatchInfoMsg,
+    };
+    use aptos_types::quorum_store::BatchId;
+    use move_core_types::account_address::AccountAddress;
+
+    fn make_encrypted_batch_msg_v2() -> BatchMsg<BatchInfoExt> {
+        let author = AccountAddress::random();
+        let batch = crate::quorum_store::types::Batch::new_v2(
+            BatchId::new_for_test(1),
+            vec![],
+            1,
+            1,
+            author,
+            0,
+            BatchKind::Encrypted,
+        );
+        BatchMsg::new(vec![batch])
+    }
+
+    fn make_normal_batch_msg_v2() -> BatchMsg<BatchInfoExt> {
+        let author = AccountAddress::random();
+        let batch = crate::quorum_store::types::Batch::new_v2(
+            BatchId::new_for_test(1),
+            vec![],
+            1,
+            1,
+            author,
+            0,
+            BatchKind::Normal,
+        );
+        BatchMsg::new(vec![batch])
+    }
+
+    fn make_encrypted_signed_batch_info_v2() -> SignedBatchInfoMsg<BatchInfoExt> {
+        let author = AccountAddress::random();
+        let info = BatchInfoExt::new_v2(
+            author,
+            BatchId::new_for_test(1),
+            1,
+            1,
+            aptos_crypto::HashValue::random(),
+            0,
+            0,
+            0,
+            BatchKind::Encrypted,
+        );
+        SignedBatchInfoMsg::new(vec![SignedBatchInfo::dummy(info, author)])
+    }
+
+    #[test]
+    fn test_reject_encrypted_batch_msg_v2() {
+        let event = UnverifiedEvent::BatchMsgV2(Box::new(make_encrypted_batch_msg_v2()));
+        assert!(event.reject_encrypted().is_err());
+    }
+
+    #[test]
+    fn test_allow_normal_batch_msg_v2() {
+        let event = UnverifiedEvent::BatchMsgV2(Box::new(make_normal_batch_msg_v2()));
+        assert!(event.reject_encrypted().is_ok());
+    }
+
+    #[test]
+    fn test_reject_encrypted_signed_batch_info_v2() {
+        let event =
+            UnverifiedEvent::SignedBatchInfoMsgV2(Box::new(make_encrypted_signed_batch_info_v2()));
+        assert!(event.reject_encrypted().is_err());
+    }
+
+    /// Exercises the disclosed crafted `BatchMsgV2` (V1 entry with expiration=1
+    /// followed by V2 entry with expiration=u64::MAX) through
+    /// `UnverifiedEvent::verify`, ensuring `round_manager` routes V2 wire
+    /// messages through `verify_v2` and that the variant check rejects the
+    /// message before any panic-prone downstream consumer runs.
+    #[test]
+    fn test_unverified_event_rejects_v1_in_batch_msg_v2() {
+        use aptos_consensus_types::proof_of_store::ProofCache;
+        use aptos_types::validator_verifier::ValidatorVerifier;
+
+        let author = AccountAddress::random();
+        let v1 = crate::quorum_store::types::Batch::<BatchInfoExt>::new_v1(
+            BatchId::new_for_test(1),
+            vec![],
+            1,
+            1,
+            author,
+            0,
+        );
+        let v2 = crate::quorum_store::types::Batch::<BatchInfoExt>::new_v2(
+            BatchId::new_for_test(2),
+            vec![],
+            1,
+            u64::MAX,
+            author,
+            0,
+            BatchKind::Normal,
+        );
+        let event = UnverifiedEvent::BatchMsgV2(Box::new(BatchMsg::new(vec![v1, v2])));
+        let err = event
+            .verify(
+                author,
+                &ValidatorVerifier::new(vec![]),
+                &ProofCache::new(1),
+                true,     // quorum_store_enabled
+                true,     // opt_qs_v2_rx_enabled
+                false,    // self_message
+                100,      // max_num_batches
+                u64::MAX, // max_batch_expiry_gap_usecs
+                1_000_000,
+                1_000_000,
+                true, // encrypted_enabled
+            )
+            .expect_err("must reject mixed-variant BatchMsgV2");
+        assert!(
+            err.to_string().contains("Non-V2 batch in BatchMsgV2"),
+            "unexpected error: {err}"
+        );
     }
 }

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{metrics::increment_log_ingest_too_large_by, sender::TelemetrySender};
 use aptos_logger::{prelude::*, telemetry_log_writer::TelemetryLog};
@@ -125,7 +125,7 @@ mod tests {
             // Create batch that reaches max bytes
             let bytes_per_string = 11;
             let mut num_strings = (MAX_BYTES + 1) / bytes_per_string;
-            if (MAX_BYTES + 1) % bytes_per_string != 0 {
+            if !(MAX_BYTES + 1).is_multiple_of(bytes_per_string) {
                 num_strings += 1;
             }
             let to_send: Vec<_> = (0..num_strings).map(|i| format!("{:11}", i)).collect();

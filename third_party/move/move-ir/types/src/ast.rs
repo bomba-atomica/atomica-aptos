@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     location::*,
@@ -1140,16 +1141,12 @@ impl fmt::Display for TypeVar_ {
 
 impl fmt::Display for Ability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Ability::Copy => Ability::COPY,
-                Ability::Drop => Ability::DROP,
-                Ability::Store => Ability::STORE,
-                Ability::Key => Ability::KEY,
-            }
-        )
+        write!(f, "{}", match self {
+            Ability::Copy => Ability::COPY,
+            Ability::Drop => Ability::DROP,
+            Ability::Store => Ability::STORE,
+            Ability::Key => Ability::KEY,
+        })
     }
 }
 
@@ -1618,47 +1615,39 @@ impl fmt::Display for CopyableVal_ {
 
 impl fmt::Display for UnaryOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                UnaryOp::Not => "!",
-            }
-        )
+        write!(f, "{}", match self {
+            UnaryOp::Not => "!",
+        })
     }
 }
 
 impl fmt::Display for BinOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                BinOp::Add => "+",
-                BinOp::Sub => "-",
-                BinOp::Mul => "*",
-                BinOp::Mod => "%",
-                BinOp::Div => "/",
-                BinOp::BitOr => "|",
-                BinOp::BitAnd => "&",
-                BinOp::Xor => "^",
-                BinOp::Shl => "<<",
-                BinOp::Shr => ">>",
+        write!(f, "{}", match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Mod => "%",
+            BinOp::Div => "/",
+            BinOp::BitOr => "|",
+            BinOp::BitAnd => "&",
+            BinOp::Xor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
 
-                // Bool ops
-                BinOp::Or => "||",
-                BinOp::And => "&&",
+            // Bool ops
+            BinOp::Or => "||",
+            BinOp::And => "&&",
 
-                // Compare Ops
-                BinOp::Eq => "==",
-                BinOp::Neq => "!=",
-                BinOp::Lt => "<",
-                BinOp::Gt => ">",
-                BinOp::Le => "<=",
-                BinOp::Ge => ">=",
-                BinOp::Subrange => "..",
-            }
-        )
+            // Compare Ops
+            BinOp::Eq => "==",
+            BinOp::Neq => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Le => "<=",
+            BinOp::Ge => ">=",
+            BinOp::Subrange => "..",
+        })
     }
 }
 

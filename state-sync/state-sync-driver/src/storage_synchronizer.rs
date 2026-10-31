@@ -1,12 +1,11 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     error::Error,
     logging::{LogEntry, LogSchema},
     metadata_storage::MetadataStorageInterface,
-    metrics,
+    metrics::{self, StorageSynchronizerOperations},
     notification_handlers::{
         CommitNotification, CommittedTransactions, ErrorNotification, MempoolNotificationHandler,
         StorageServiceNotificationHandler,
@@ -14,6 +13,7 @@ use crate::{
     utils,
 };
 use aptos_config::config::StateSyncDriverConfig;
+use aptos_crypto::HashValue;
 use aptos_data_streaming_service::data_notification::NotificationId;
 use aptos_event_notifications::EventSubscriptionService;
 use aptos_executor_types::{ChunkCommitNotification, ChunkExecutorTrait};
@@ -21,7 +21,7 @@ use aptos_infallible::Mutex;
 use aptos_logger::prelude::*;
 use aptos_mempool_notifications::MempoolNotificationSender;
 use aptos_metrics_core::HistogramTimer;
-use aptos_storage_interface::{DbReader, DbReaderWriter, StateSnapshotReceiver};
+use aptos_storage_interface::{DbReader, DbReaderWriter, StateKind, StateSnapshotReceiver};
 use aptos_storage_service_notifications::StorageServiceNotificationSender;
 use aptos_types::{
     ledger_info::LedgerInfoWithSignatures,
@@ -44,10 +44,7 @@ use std::{
     },
     time::Instant,
 };
-use tokio::{
-    runtime::{Handle, Runtime},
-    task::JoinHandle,
-};
+use tokio::{runtime::Handle, task::JoinHandle};
 
 /// Synchronizes the storage of the node by verifying and storing new data
 /// (e.g., transactions and outputs).
@@ -75,31 +72,47 @@ pub trait StorageSynchronizerInterface {
         end_of_epoch_ledger_info: Option<LedgerInfoWithSignatures>,
     ) -> Result<(), Error>;
 
-    /// Initializes a state synchronizer with the specified
-    /// `target_ledger_info` and `target_output_with_proof` at the target
-    /// syncing version. Returns a join handle to the state synchronizer.
-    ///
-    /// Note: this assumes that `epoch_change_proofs`, `target_ledger_info`,
-    /// and `target_output_with_proof` have already been verified.
-    fn initialize_state_synchronizer(
+    /// Initializes a snapshot synchronizer for the given `kind` at
+    /// `target_ledger_info`'s version, verifying chunks against `expected_root`.
+    /// Returns a join handle to the spawned receiver. The receiver only writes
+    /// the snapshot + records progress; the whole-fast-sync finalize is performed
+    /// separately via `finalize_fast_sync`.
+    fn initialize_snapshot_synchronizer(
         &mut self,
-        epoch_change_proofs: Vec<LedgerInfoWithSignatures>,
         target_ledger_info: LedgerInfoWithSignatures,
-        target_output_with_proof: TransactionOutputListWithProofV2,
+        expected_root: HashValue,
+        kind: StateKind,
     ) -> Result<JoinHandle<()>, Error>;
 
     /// Returns true iff there is storage data that is still waiting
     /// to be executed/applied or committed.
     fn pending_storage_data(&self) -> bool;
 
-    /// Saves the given state values to storage.
-    ///
-    /// Note: this requires that `initialize_state_synchronizer` has been
-    /// called.
+    /// Returns true iff a storage data error is waiting to be handled by the driver.
+    fn pending_storage_data_error(&self) -> bool;
+
+    /// Marks one storage data error as handled by the driver.
+    fn acknowledge_storage_data_error(&self);
+
+    /// Saves the given state values to storage, for whichever snapshot
+    /// synchronizer was last initialized.
     async fn save_state_values(
         &mut self,
         notification_id: NotificationId,
         state_value_chunk_with_proof: StateValueChunkWithProof,
+    ) -> Result<(), Error>;
+
+    /// Finalizes the whole fast-sync process once all snapshots have been
+    /// written: bootstraps the transaction accumulator, resets the chunk
+    /// executor, sends the commit notification, and initializes the sync gauges.
+    ///
+    /// Note: assumes `epoch_change_proofs`, `target_ledger_info`, and
+    /// `target_output_with_proof` have already been verified.
+    async fn finalize_fast_sync(
+        &mut self,
+        epoch_change_proofs: Vec<LedgerInfoWithSignatures>,
+        target_ledger_info: LedgerInfoWithSignatures,
+        target_output_with_proof: TransactionOutputListWithProofV2,
     ) -> Result<(), Error>;
 
     /// Resets the chunk executor. This is required to support continuous
@@ -156,10 +169,15 @@ pub struct StorageSynchronizer<ChunkExecutor, MetadataStorage> {
     // The number of storage data chunks pending execute/apply, or commit
     pending_data_chunks: Arc<AtomicU64>,
 
+    // The number of storage data errors waiting to be handled by the driver
+    pending_data_errors: Arc<AtomicU64>,
+
     // An optional runtime on which to spawn the storage synchronizer threads
     runtime: Option<Handle>,
 
-    // The channel through which to notify the state snapshot receiver of new data chunks
+    // The channel through which to notify the currently-active snapshot receiver
+    // of new data chunks. Snapshots are driven one at a time, so a single channel
+    // serves them.
     state_snapshot_notifier: Option<mpsc::Sender<StorageDataChunk>>,
 
     // The reader and writer for storage (required for state syncing)
@@ -181,6 +199,7 @@ impl<
             error_notification_sender: self.error_notification_sender.clone(),
             executor_notifier: self.executor_notifier.clone(),
             pending_data_chunks: self.pending_data_chunks.clone(),
+            pending_data_errors: Arc::clone(&self.pending_data_errors),
             metadata_storage: self.metadata_storage.clone(),
             runtime: self.runtime.clone(),
             state_snapshot_notifier: self.state_snapshot_notifier.clone(),
@@ -210,7 +229,7 @@ impl<
         >,
         metadata_storage: MetadataStorage,
         storage: DbReaderWriter,
-        runtime: Option<&Runtime>,
+        runtime: Option<Handle>,
     ) -> (Self, StorageSynchronizerHandles) {
         // Create a channel to notify the executor when data chunks are ready
         let max_pending_data_chunks = driver_config.max_pending_data_chunks as usize;
@@ -229,15 +248,14 @@ impl<
 
         // Create a shared pending data chunk counter
         let pending_data_chunks = Arc::new(AtomicU64::new(0));
-
-        // Spawn the executor that executes/applies storage data chunks
-        let runtime = runtime.map(|runtime| runtime.handle().clone());
+        let pending_data_errors = Arc::new(AtomicU64::new(0));
         let executor_handle = spawn_executor(
             chunk_executor.clone(),
             error_notification_sender.clone(),
             executor_listener,
             ledger_updater_notifier,
             pending_data_chunks.clone(),
+            Arc::clone(&pending_data_errors),
             runtime.clone(),
         );
 
@@ -248,6 +266,7 @@ impl<
             ledger_updater_listener,
             committer_notifier,
             pending_data_chunks.clone(),
+            Arc::clone(&pending_data_errors),
             runtime.clone(),
         );
 
@@ -258,6 +277,7 @@ impl<
             committer_listener,
             commit_post_processor_notifier,
             pending_data_chunks.clone(),
+            Arc::clone(&pending_data_errors),
             runtime.clone(),
             storage.reader.clone(),
         );
@@ -285,6 +305,7 @@ impl<
             error_notification_sender,
             executor_notifier,
             pending_data_chunks,
+            pending_data_errors,
             metadata_storage,
             runtime,
             state_snapshot_notifier: None,
@@ -376,38 +397,52 @@ impl<
         self.notify_executor(storage_data_chunk).await
     }
 
-    fn initialize_state_synchronizer(
+    fn initialize_snapshot_synchronizer(
         &mut self,
-        epoch_change_proofs: Vec<LedgerInfoWithSignatures>,
         target_ledger_info: LedgerInfoWithSignatures,
-        target_output_with_proof: TransactionOutputListWithProofV2,
+        expected_root: HashValue,
+        kind: StateKind,
     ) -> Result<JoinHandle<()>, Error> {
-        // Create a channel to notify the state snapshot receiver when data chunks are ready
+        // Create a channel to notify the snapshot receiver when data chunks are ready
         let max_pending_data_chunks = self.driver_config.max_pending_data_chunks as usize;
-        let (state_snapshot_notifier, state_snapshot_listener) =
-            mpsc::channel(max_pending_data_chunks);
+        let (snapshot_notifier, snapshot_listener) = mpsc::channel(max_pending_data_chunks);
 
-        // Spawn the state snapshot receiver that commits state values
-        let receiver_handle = spawn_state_snapshot_receiver(
-            self.chunk_executor.clone(),
-            state_snapshot_listener,
-            self.commit_notification_sender.clone(),
+        // Spawn the snapshot receiver that writes the snapshot values
+        let receiver_handle = spawn_snapshot_receiver(
+            kind,
+            snapshot_listener,
             self.error_notification_sender.clone(),
             self.pending_data_chunks.clone(),
+            Arc::clone(&self.pending_data_errors),
             self.metadata_storage.clone(),
             self.storage.clone(),
-            epoch_change_proofs,
             target_ledger_info,
-            target_output_with_proof,
+            expected_root,
             self.runtime.clone(),
         );
-        self.state_snapshot_notifier = Some(state_snapshot_notifier);
+        self.state_snapshot_notifier = Some(snapshot_notifier);
 
         Ok(receiver_handle)
     }
 
     fn pending_storage_data(&self) -> bool {
         load_pending_data_chunks(self.pending_data_chunks.clone()) > 0
+    }
+
+    fn pending_storage_data_error(&self) -> bool {
+        self.pending_data_errors.load(Ordering::Acquire) > 0
+    }
+
+    fn acknowledge_storage_data_error(&self) {
+        if self
+            .pending_data_errors
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_sub(1)
+            })
+            .is_err()
+        {
+            error!("Received a storage data error acknowledgement with no pending error!");
+        }
     }
 
     async fn save_state_values(
@@ -438,6 +473,62 @@ impl<
             increment_pending_data_chunks(self.pending_data_chunks.clone());
             Ok(())
         }
+    }
+
+    async fn finalize_fast_sync(
+        &mut self,
+        epoch_change_proofs: Vec<LedgerInfoWithSignatures>,
+        target_ledger_info: LedgerInfoWithSignatures,
+        target_output_with_proof: TransactionOutputListWithProofV2,
+    ) -> Result<(), Error> {
+        let version = target_ledger_info.ledger_info().version();
+        let last_committed_state_index = self
+            .metadata_storage
+            .get_last_persisted_index(&target_ledger_info, StateKind::MainState)?;
+
+        // Bootstrap the transaction accumulator / ledger from the target output
+        self.storage
+            .writer
+            .finalize_state_snapshot(
+                version,
+                target_output_with_proof.clone(),
+                &epoch_change_proofs,
+            )
+            .map_err(|error| {
+                Error::UnexpectedError(format!(
+                    "Failed to finalize the state snapshot! Error: {:?}",
+                    error
+                ))
+            })?;
+
+        info!("Fast sync to version {} is complete!", version);
+
+        // Reset the chunk executor
+        self.reset_chunk_executor()?;
+
+        // Create and send the commit notification (the whole fast-sync is done)
+        let commit_notification = create_commit_notification(
+            target_output_with_proof,
+            last_committed_state_index,
+            version,
+        );
+        self.commit_notification_sender
+            .send(commit_notification)
+            .await
+            .map_err(|error| {
+                Error::UnexpectedError(format!(
+                    "Failed to send the final fast-sync commit notification! Error: {:?}",
+                    error
+                ))
+            })?;
+
+        // Update the counters
+        utils::initialize_sync_gauges(self.storage.reader.clone()).map_err(|error| {
+            Error::UnexpectedError(format!(
+                "Failed to initialize the state sync version gauges! Error: {:?}",
+                error
+            ))
+        })
     }
 
     fn reset_chunk_executor(&self) -> Result<(), Error> {
@@ -490,6 +581,7 @@ fn spawn_executor<ChunkExecutor: ChunkExecutorTrait + 'static>(
     mut executor_listener: mpsc::Receiver<StorageDataChunk>,
     mut ledger_updater_notifier: mpsc::Sender<NotificationMetadata>,
     pending_data_chunks: Arc<AtomicU64>,
+    pending_data_errors: Arc<AtomicU64>,
     runtime: Option<Handle>,
 ) -> JoinHandle<()> {
     // Create an executor
@@ -566,6 +658,7 @@ fn spawn_executor<ChunkExecutor: ChunkExecutorTrait + 'static>(
                             error,
                             &error_notification_sender,
                             &pending_data_chunks,
+                            &pending_data_errors,
                         )
                         .await;
                     }
@@ -582,6 +675,7 @@ fn spawn_executor<ChunkExecutor: ChunkExecutorTrait + 'static>(
                         error,
                         &error_notification_sender,
                         &pending_data_chunks,
+                        &pending_data_errors,
                     )
                     .await;
                 },
@@ -618,6 +712,7 @@ fn spawn_ledger_updater<ChunkExecutor: ChunkExecutorTrait + 'static>(
     mut ledger_updater_listener: mpsc::Receiver<NotificationMetadata>,
     mut committer_notifier: mpsc::Sender<NotificationMetadata>,
     pending_data_chunks: Arc<AtomicU64>,
+    pending_data_errors: Arc<AtomicU64>,
     runtime: Option<Handle>,
 ) -> JoinHandle<()> {
     // Create a ledger updater
@@ -665,6 +760,7 @@ fn spawn_ledger_updater<ChunkExecutor: ChunkExecutorTrait + 'static>(
                             error,
                             &error_notification_sender,
                             &pending_data_chunks,
+                            &pending_data_errors,
                         )
                         .await;
                     }
@@ -677,6 +773,7 @@ fn spawn_ledger_updater<ChunkExecutor: ChunkExecutorTrait + 'static>(
                         error,
                         &error_notification_sender,
                         &pending_data_chunks,
+                        &pending_data_errors,
                     )
                     .await;
                 },
@@ -695,6 +792,7 @@ fn spawn_committer<ChunkExecutor: ChunkExecutorTrait + 'static>(
     mut committer_listener: mpsc::Receiver<NotificationMetadata>,
     mut commit_post_processor_notifier: mpsc::Sender<ChunkCommitNotification>,
     pending_data_chunks: Arc<AtomicU64>,
+    pending_data_errors: Arc<AtomicU64>,
     runtime: Option<Handle>,
     storage: Arc<dyn DbReader>,
 ) -> JoinHandle<()> {
@@ -758,6 +856,7 @@ fn spawn_committer<ChunkExecutor: ChunkExecutorTrait + 'static>(
                             error,
                             &error_notification_sender,
                             &pending_data_chunks,
+                            &pending_data_errors,
                         )
                         .await;
                     }
@@ -770,6 +869,7 @@ fn spawn_committer<ChunkExecutor: ChunkExecutorTrait + 'static>(
                         error,
                         &error_notification_sender,
                         &pending_data_chunks,
+                        &pending_data_errors,
                     )
                     .await;
                 },
@@ -824,166 +924,412 @@ fn spawn_commit_post_processor<
     spawn(runtime, commit_post_processor)
 }
 
-/// Spawns a dedicated receiver that commits state values from a state snapshot
-fn spawn_state_snapshot_receiver<
-    ChunkExecutor: ChunkExecutorTrait + 'static,
-    MetadataStorage: MetadataStorageInterface + Clone + Send + Sync + 'static,
->(
-    chunk_executor: Arc<ChunkExecutor>,
-    mut state_snapshot_listener: mpsc::Receiver<StorageDataChunk>,
-    mut commit_notification_sender: mpsc::UnboundedSender<CommitNotification>,
-    error_notification_sender: mpsc::UnboundedSender<ErrorNotification>,
-    pending_data_chunks: Arc<AtomicU64>,
-    metadata_storage: MetadataStorage,
-    storage: DbReaderWriter,
-    epoch_change_proofs: Vec<LedgerInfoWithSignatures>,
-    target_ledger_info: LedgerInfoWithSignatures,
-    target_output_with_proof: TransactionOutputListWithProofV2,
-    runtime: Option<Handle>,
-) -> JoinHandle<()> {
-    // Create a state snapshot receiver
-    let receiver = async move {
-        // Get the target version and expected root hash
-        let version = target_ledger_info.ledger_info().version();
-        let expected_root_hash = target_output_with_proof
-            .get_output_list_with_proof()
-            .proof
-            .transaction_infos
-            .first()
-            .expect("Target transaction info should exist!")
-            .ensure_state_checkpoint_hash()
-            .expect("Must be at state checkpoint.");
+/// The outcome of applying a single snapshot chunk via [`apply_snapshot_chunk`].
+enum ChunkApplyOutcome {
+    /// The chunk was applied (or it failed and an error was sent); keep listening.
+    Continue,
+    /// The final chunk was applied; the caller should finalize the snapshot.
+    Finalize {
+        notification_id: NotificationId,
+        last_index: u64,
+    },
+}
 
-        // Create the snapshot receiver
-        let mut state_snapshot_receiver = storage
-            .writer
-            .get_state_snapshot_receiver(version, expected_root_hash)
-            .expect("Failed to initialize the state snapshot receiver!");
+/// Applies a single snapshot chunk to `receiver`,
+/// updating the per-chunk metrics and (for non-final chunks) the persisted
+/// progress. The divergent finalize step is left to the caller, which is
+/// signalled via [`ChunkApplyOutcome::Finalize`]. Decrements the pending-chunk
+/// counter except on the finalize path (the caller does so after finalizing).
+async fn apply_snapshot_chunk<MetadataStorage: MetadataStorageInterface + Clone>(
+    receiver: &mut Box<dyn StateSnapshotReceiver<StateKey, StateValue>>,
+    storage_data_chunk: StorageDataChunk,
+    kind: StateKind,
+    metadata_storage: &MetadataStorage,
+    target_ledger_info: &LedgerInfoWithSignatures,
+    error_notification_sender: &mpsc::UnboundedSender<ErrorNotification>,
+    pending_data_chunks: &Arc<AtomicU64>,
+    pending_data_errors: &Arc<AtomicU64>,
+    version: Version,
+) -> ChunkApplyOutcome {
+    let (operation, noun) = match kind {
+        StateKind::MainState => (StorageSynchronizerOperations::SyncedStates, "state"),
+        StateKind::Position => (
+            StorageSynchronizerOperations::SyncedPositionStates,
+            "position state",
+        ),
+    };
+    match storage_data_chunk {
+        StorageDataChunk::States(notification_id, states_with_proof) => {
+            let all_states_synced = states_with_proof.is_last_chunk();
+            let last_committed_state_index = states_with_proof.last_index;
+            let num_state_values = states_with_proof.raw_values.len();
 
-        // Handle state value chunks
-        while let Some(storage_data_chunk) = state_snapshot_listener.next().await {
-            // Start the snapshot timer for the state value chunk
-            let _timer = metrics::start_timer(
-                &metrics::STORAGE_SYNCHRONIZER_LATENCIES,
-                metrics::STORAGE_SYNCHRONIZER_STATE_VALUE_CHUNK,
-            );
+            match receiver.add_chunk(
+                states_with_proof.raw_values,
+                states_with_proof.proof.clone(),
+            ) {
+                Ok(()) => {
+                    info!(LogSchema::new(LogEntry::StorageSynchronizer).message(&format!(
+                        "Committed a new {} value chunk! Chunk size: {:?}, last persisted index: {:?}",
+                        noun, num_state_values, last_committed_state_index
+                    )));
 
-            // Commit the state value chunk
-            match storage_data_chunk {
-                StorageDataChunk::States(notification_id, states_with_proof) => {
-                    // Commit the state value chunk
-                    let all_states_synced = states_with_proof.is_last_chunk();
-                    let last_committed_state_index = states_with_proof.last_index;
-                    let num_state_values = states_with_proof.raw_values.len();
-
-                    let result = state_snapshot_receiver.add_chunk(
-                        states_with_proof.raw_values,
-                        states_with_proof.proof.clone(),
+                    // Update the chunk metrics
+                    let operation_label = operation.get_label();
+                    metrics::set_gauge(
+                        &metrics::STORAGE_SYNCHRONIZER_OPERATIONS,
+                        operation_label,
+                        last_committed_state_index,
+                    );
+                    metrics::observe_value(
+                        &metrics::STORAGE_SYNCHRONIZER_CHUNK_SIZES,
+                        operation_label,
+                        num_state_values as u64,
                     );
 
-                    // Handle the commit result
-                    match result {
-                        Ok(()) => {
-                            // Update the logs and metrics
-                            info!(
-                                LogSchema::new(LogEntry::StorageSynchronizer).message(&format!(
-                                    "Committed a new state value chunk! Chunk size: {:?}, last persisted index: {:?}",
-                                    num_state_values,
-                                    last_committed_state_index
-                                ))
-                            );
+                    if all_states_synced {
+                        // The caller performs the (kind-specific) finalize.
+                        return ChunkApplyOutcome::Finalize {
+                            notification_id,
+                            last_index: last_committed_state_index,
+                        };
+                    }
 
-                            // Update the chunk metrics
-                            let operation_label =
-                                metrics::StorageSynchronizerOperations::SyncedStates.get_label();
-                            metrics::set_gauge(
-                                &metrics::STORAGE_SYNCHRONIZER_OPERATIONS,
-                                operation_label,
-                                last_committed_state_index,
-                            );
-                            metrics::observe_value(
-                                &metrics::STORAGE_SYNCHRONIZER_CHUNK_SIZES,
-                                operation_label,
-                                num_state_values as u64,
-                            );
-
-                            if !all_states_synced {
-                                // Update the metadata storage with the last committed state index
-                                if let Err(error) = metadata_storage
-                                    .clone()
-                                    .update_last_persisted_state_value_index(
-                                        &target_ledger_info,
-                                        last_committed_state_index,
-                                        all_states_synced,
-                                    )
-                                {
-                                    let error = format!("Failed to update the last persisted state index at version: {:?}! Error: {:?}", version, error);
-                                    send_storage_synchronizer_error(
-                                        error_notification_sender.clone(),
-                                        notification_id,
-                                        error,
-                                    )
-                                    .await;
-                                }
-                                decrement_pending_data_chunks(pending_data_chunks.clone());
-                                continue; // Wait for the next chunk
-                            }
-
-                            // Finalize storage and send a commit notification
-                            if let Err(error) = finalize_storage_and_send_commit(
-                                chunk_executor,
-                                &mut commit_notification_sender,
-                                metadata_storage,
-                                state_snapshot_receiver,
-                                storage,
-                                &epoch_change_proofs,
-                                target_output_with_proof,
-                                version,
-                                &target_ledger_info,
-                                last_committed_state_index,
-                            )
-                            .await
-                            {
-                                send_storage_synchronizer_error(
-                                    error_notification_sender.clone(),
-                                    notification_id,
-                                    error,
-                                )
-                                .await;
-                            }
-                            decrement_pending_data_chunks(pending_data_chunks.clone());
-                            return; // There's nothing left to do!
-                        },
-                        Err(error) => {
-                            let error =
-                                format!("Failed to commit state value chunk! Error: {:?}", error);
-                            send_storage_synchronizer_error(
-                                error_notification_sender.clone(),
-                                notification_id,
-                                error,
-                            )
-                            .await;
-                        },
+                    // Persist the last committed index for crash resumption
+                    let update_result = metadata_storage.clone().update_last_persisted_index(
+                        target_ledger_info,
+                        last_committed_state_index,
+                        false,
+                        kind,
+                    );
+                    if let Err(error) = update_result {
+                        let error = format!("Failed to update the last persisted {} index at version: {:?}! Error: {:?}", noun, version, error);
+                        send_storage_synchronizer_error(
+                            error_notification_sender.clone(),
+                            notification_id,
+                            error,
+                            pending_data_errors,
+                        )
+                        .await;
                     }
                 },
-                storage_data_chunk => {
-                    unimplemented!(
-                        "Invalid storage data chunk sent to state snapshot receiver! This shouldn't happen: {:?}",
-                        storage_data_chunk
-                    );
+                Err(error) => {
+                    let error =
+                        format!("Failed to commit {} value chunk! Error: {:?}", noun, error);
+                    send_storage_synchronizer_error(
+                        error_notification_sender.clone(),
+                        notification_id,
+                        error,
+                        pending_data_errors,
+                    )
+                    .await;
                 },
             }
-            decrement_pending_data_chunks(pending_data_chunks.clone());
+        },
+        storage_data_chunk => {
+            unimplemented!(
+                "Invalid storage data chunk sent to snapshot receiver! This shouldn't happen: {:?}",
+                storage_data_chunk
+            );
+        },
+    }
+    decrement_pending_data_chunks(pending_data_chunks.clone());
+    ChunkApplyOutcome::Continue
+}
+
+/// Spawns a dedicated receiver that writes a snapshot of the given `kind` and
+/// records its progress. The whole-fast-sync finalize (accumulator bootstrap +
+/// commit notification) is performed separately via
+/// `StorageSynchronizerInterface::finalize_fast_sync`.
+fn spawn_snapshot_receiver<
+    MetadataStorage: MetadataStorageInterface + Clone + Send + Sync + 'static,
+>(
+    kind: StateKind,
+    mut snapshot_listener: mpsc::Receiver<StorageDataChunk>,
+    error_notification_sender: mpsc::UnboundedSender<ErrorNotification>,
+    pending_data_chunks: Arc<AtomicU64>,
+    pending_data_errors: Arc<AtomicU64>,
+    metadata_storage: MetadataStorage,
+    storage: DbReaderWriter,
+    target_ledger_info: LedgerInfoWithSignatures,
+    expected_root: HashValue,
+    runtime: Option<Handle>,
+) -> JoinHandle<()> {
+    let timer_label = match kind {
+        StateKind::MainState => metrics::STORAGE_SYNCHRONIZER_STATE_VALUE_CHUNK,
+        StateKind::Position => metrics::STORAGE_SYNCHRONIZER_POSITION_STATE_VALUE_CHUNK,
+    };
+    let receiver = async move {
+        let version = target_ledger_info.ledger_info().version();
+        let mut snapshot_receiver: Option<Box<dyn StateSnapshotReceiver<StateKey, StateValue>>> =
+            None;
+
+        while let Some(storage_data_chunk) = snapshot_listener.next().await {
+            let _timer =
+                metrics::start_timer(&metrics::STORAGE_SYNCHRONIZER_LATENCIES, timer_label);
+
+            // Create the receiver lazily on the first chunk, so a failure (e.g.
+            // the native-position backend not being attached locally) surfaces as
+            // a recoverable error notification tied to the chunk, rather than
+            // panicking the receiver task.
+            if snapshot_receiver.is_none() {
+                match storage
+                    .writer
+                    .get_state_snapshot_receiver(version, expected_root, kind)
+                {
+                    Ok(new_receiver) => snapshot_receiver = Some(new_receiver),
+                    Err(error) => {
+                        if let StorageDataChunk::States(notification_id, _) = &storage_data_chunk {
+                            send_storage_synchronizer_error(
+                                error_notification_sender.clone(),
+                                *notification_id,
+                                format!(
+                                    "Failed to initialize the {:?} snapshot receiver! Error: {:?}",
+                                    kind, error
+                                ),
+                                &pending_data_errors,
+                            )
+                            .await;
+                        }
+                        decrement_pending_data_chunks(pending_data_chunks.clone());
+                        return;
+                    },
+                }
+            }
+
+            match apply_snapshot_chunk(
+                snapshot_receiver
+                    .as_mut()
+                    .expect("The snapshot receiver was initialized above!"),
+                storage_data_chunk,
+                kind,
+                &metadata_storage,
+                &target_ledger_info,
+                &error_notification_sender,
+                &pending_data_chunks,
+                &pending_data_errors,
+                version,
+            )
+            .await
+            {
+                ChunkApplyOutcome::Continue => {},
+                ChunkApplyOutcome::Finalize {
+                    notification_id,
+                    last_index,
+                } => {
+                    // Write the snapshot and record completion. The whole
+                    // fast-sync (accumulator + commit) is finalized separately.
+                    let finalize_result = snapshot_receiver
+                        .take()
+                        .expect("The snapshot receiver was initialized above!")
+                        .finish_box()
+                        .map_err(|error| {
+                            format!("Failed to finish the snapshot! Error: {:?}", error)
+                        })
+                        .and_then(|()| {
+                            metadata_storage
+                                .update_last_persisted_index(
+                                    &target_ledger_info,
+                                    last_index,
+                                    true,
+                                    kind,
+                                )
+                                .map_err(|error| {
+                                    format!("Snapshot synced, but failed to update the metadata storage at version {:?}! Error: {:?}", version, error)
+                                })
+                        });
+                    if let Err(error) = finalize_result {
+                        send_storage_synchronizer_error(
+                            error_notification_sender.clone(),
+                            notification_id,
+                            error,
+                            &pending_data_errors,
+                        )
+                        .await;
+                    } else {
+                        info!("All snapshot values have synced, version: {}", version);
+                    }
+                    decrement_pending_data_chunks(pending_data_chunks.clone());
+                    return;
+                },
+            }
         }
     };
 
-    // Spawn the receiver
     spawn(runtime, receiver)
 }
 
-/// Spawns a dedicated task that applies the given output chunk. We use
-/// `spawn_blocking` so that the heavy synchronous function doesn't
-/// block the async thread.
+/// Creates a commit notification for the new committed state snapshot
+fn create_commit_notification(
+    target_output_with_proof: TransactionOutputListWithProofV2,
+    last_committed_state_index: u64,
+    version: u64,
+) -> CommitNotification {
+    let (transactions, outputs): (Vec<Transaction>, Vec<TransactionOutput>) =
+        target_output_with_proof
+            .consume_output_list_with_proof()
+            .transactions_and_outputs
+            .into_iter()
+            .unzip();
+    let events = outputs
+        .into_iter()
+        .flat_map(|output| output.events().to_vec())
+        .collect::<Vec<_>>();
+    CommitNotification::new_committed_state_snapshot(
+        events,
+        transactions,
+        last_committed_state_index,
+        version,
+    )
+}
+
+/// Spawns a future on a specified runtime. If no runtime is specified, uses
+/// the current runtime.
+fn spawn(
+    runtime: Option<Handle>,
+    future: impl Future<Output = ()> + Send + 'static,
+) -> JoinHandle<()> {
+    if let Some(runtime) = runtime {
+        runtime.spawn(future)
+    } else {
+        tokio::spawn(future)
+    }
+}
+
+/// Returns the value currently held by the pending chunk counter
+fn load_pending_data_chunks(pending_data_chunks: Arc<AtomicU64>) -> u64 {
+    pending_data_chunks.load(Ordering::Acquire)
+}
+
+/// Increments the pending data chunks
+fn increment_pending_data_chunks(pending_data_chunks: Arc<AtomicU64>) {
+    let delta = 1;
+    pending_data_chunks.fetch_add(delta, Ordering::Relaxed);
+    metrics::increment_gauge(
+        &metrics::STORAGE_SYNCHRONIZER_GAUGES,
+        metrics::STORAGE_SYNCHRONIZER_PENDING_DATA,
+        delta,
+    );
+}
+
+/// Decrements the pending data chunks
+fn decrement_pending_data_chunks(atomic_u64: Arc<AtomicU64>) {
+    let delta = 1;
+    // Publish stage completion after any pending error.
+    atomic_u64.fetch_sub(delta, Ordering::AcqRel);
+    metrics::decrement_gauge(
+        &metrics::STORAGE_SYNCHRONIZER_GAUGES,
+        metrics::STORAGE_SYNCHRONIZER_PENDING_DATA,
+        delta,
+    );
+}
+
+/// Handles a storage synchronizer error by sending a notification to the driver
+/// and decrementing the number of pending data chunks in the pipeline.
+async fn handle_storage_synchronizer_error(
+    notification_metadata: NotificationMetadata,
+    error: String,
+    error_notification_sender: &mpsc::UnboundedSender<ErrorNotification>,
+    pending_data_chunks: &Arc<AtomicU64>,
+    pending_data_errors: &Arc<AtomicU64>,
+) {
+    // Send an error notification to the driver
+    send_storage_synchronizer_error(
+        error_notification_sender.clone(),
+        notification_metadata.notification_id,
+        error,
+        pending_data_errors,
+    )
+    .await;
+
+    // Decrement the number of pending data chunks
+    decrement_pending_data_chunks(pending_data_chunks.clone());
+}
+
+/// Sends the given message along the specified channel, and monitors
+/// if the channel hits backpressure (i.e., the channel is full).
+async fn send_and_monitor_backpressure<T: Clone>(
+    channel: &mut mpsc::Sender<T>,
+    channel_label: &str,
+    message: T,
+) -> Result<(), Error> {
+    match channel.try_send(message.clone()) {
+        Ok(_) => Ok(()), // The message was sent successfully
+        Err(error) => {
+            // Otherwise, try_send failed. Handle the error.
+            if error.is_full() {
+                // The channel is full, log the backpressure and update the metrics.
+                info!(
+                    LogSchema::new(LogEntry::StorageSynchronizer).message(&format!(
+                        "The {:?} channel is full! Backpressure will kick in!",
+                        channel_label
+                    ))
+                );
+                metrics::set_gauge(
+                    &metrics::STORAGE_SYNCHRONIZER_PIPELINE_CHANNEL_BACKPRESSURE,
+                    channel_label,
+                    1, // We hit backpressure
+                );
+
+                // Call the blocking send (we still need to send the data chunk with backpressure)
+                let result = channel.send(message).await.map_err(|error| {
+                    Error::UnexpectedError(format!(
+                        "Failed to send storage data chunk to: {:?}. Error: {:?}",
+                        channel_label, error
+                    ))
+                });
+
+                // Reset the gauge for the pipeline channel to inactive (we're done sending the message)
+                metrics::set_gauge(
+                    &metrics::STORAGE_SYNCHRONIZER_PIPELINE_CHANNEL_BACKPRESSURE,
+                    channel_label,
+                    0, // Backpressure is no longer active
+                );
+
+                result
+            } else {
+                // Otherwise, return the error (there's nothing else we can do)
+                Err(Error::UnexpectedError(format!(
+                    "Failed to try_send storage data chunk to {:?}. Error: {:?}",
+                    channel_label, error
+                )))
+            }
+        },
+    }
+}
+
+/// Sends an error notification to the driver
+async fn send_storage_synchronizer_error(
+    mut error_notification_sender: mpsc::UnboundedSender<ErrorNotification>,
+    notification_id: NotificationId,
+    error_message: String,
+    pending_data_errors: &Arc<AtomicU64>,
+) {
+    // Log the storage synchronizer error
+    let error_message = format!("Storage synchronizer error: {:?}", error_message);
+    error!(LogSchema::new(LogEntry::StorageSynchronizer).message(&error_message));
+
+    // Update the storage synchronizer error metrics
+    let error = Error::UnexpectedError(error_message);
+    metrics::increment_counter(&metrics::STORAGE_SYNCHRONIZER_ERRORS, error.get_label());
+    // Keep drain barriers closed until the driver handles this notification.
+    pending_data_errors.fetch_add(1, Ordering::Release);
+
+    // Send an error notification to the driver
+    let error_notification = ErrorNotification {
+        error: error.clone(),
+        notification_id,
+    };
+    if let Err(error) = error_notification_sender.send(error_notification).await {
+        error!(
+            LogSchema::new(LogEntry::StorageSynchronizer).message(&format!(
+                "Failed to send error notification! Error: {:?}",
+                error
+            ))
+        );
+    }
+}
+
 async fn apply_output_chunk<ChunkExecutor: ChunkExecutorTrait + 'static>(
     chunk_executor: Arc<ChunkExecutor>,
     outputs_with_proof: TransactionOutputListWithProofV2,
@@ -1098,251 +1444,4 @@ async fn commit_chunk<ChunkExecutor: ChunkExecutorTrait + 'static>(
     tokio::task::spawn_blocking(move || chunk_executor.commit_chunk())
         .await
         .expect("Spawn_blocking(commit_chunk) failed!")
-}
-
-/// Finalizes storage once all state values have been committed
-/// and sends a commit notification to the driver.
-async fn finalize_storage_and_send_commit<
-    'receiver_lifetime, // Required because of https://github.com/rust-lang/rust/issues/63033
-    ChunkExecutor: ChunkExecutorTrait + 'static,
-    MetadataStorage: MetadataStorageInterface + Clone + Send + Sync + 'static,
->(
-    chunk_executor: Arc<ChunkExecutor>,
-    commit_notification_sender: &mut mpsc::UnboundedSender<CommitNotification>,
-    metadata_storage: MetadataStorage,
-    state_snapshot_receiver: Box<
-        dyn StateSnapshotReceiver<StateKey, StateValue> + 'receiver_lifetime,
-    >,
-    storage: DbReaderWriter,
-    epoch_change_proofs: &[LedgerInfoWithSignatures],
-    target_output_with_proof: TransactionOutputListWithProofV2,
-    version: Version,
-    target_ledger_info: &LedgerInfoWithSignatures,
-    last_committed_state_index: u64,
-) -> Result<(), String> {
-    // Finalize the state snapshot
-    state_snapshot_receiver.finish_box().map_err(|error| {
-        format!(
-            "Failed to finish the state value synchronization! Error: {:?}",
-            error
-        )
-    })?;
-    storage
-        .writer
-        .finalize_state_snapshot(
-            version,
-            target_output_with_proof.clone(),
-            epoch_change_proofs,
-        )
-        .map_err(|error| format!("Failed to finalize the state snapshot! Error: {:?}", error))?;
-
-    info!("All states have synced, version: {}", version);
-
-    // Update the metadata storage
-    metadata_storage.update_last_persisted_state_value_index(
-            target_ledger_info,
-            last_committed_state_index,
-            true,
-        ).map_err(|error| {
-        format!("All states have synced, but failed to update the metadata storage at version {:?}! Error: {:?}", version, error)
-    })?;
-
-    // Reset the chunk executor
-    chunk_executor.reset().map_err(|error| {
-        format!(
-            "Failed to reset the chunk executor after state snapshot synchronization! Error: {:?}",
-            error
-        )
-    })?;
-
-    // Create and send the commit notification
-    let commit_notification = create_commit_notification(
-        target_output_with_proof,
-        last_committed_state_index,
-        version,
-    );
-    commit_notification_sender
-        .send(commit_notification)
-        .await
-        .map_err(|error| {
-            format!(
-                "Failed to send the final state commit notification! Error: {:?}",
-                error
-            )
-        })?;
-
-    // Update the counters
-    utils::initialize_sync_gauges(storage.reader).map_err(|error| {
-        format!(
-            "Failed to initialize the state sync version gauges! Error: {:?}",
-            error
-        )
-    })?;
-
-    Ok(())
-}
-
-/// Creates a commit notification for the new committed state snapshot
-fn create_commit_notification(
-    target_output_with_proof: TransactionOutputListWithProofV2,
-    last_committed_state_index: u64,
-    version: u64,
-) -> CommitNotification {
-    let (transactions, outputs): (Vec<Transaction>, Vec<TransactionOutput>) =
-        target_output_with_proof
-            .consume_output_list_with_proof()
-            .transactions_and_outputs
-            .into_iter()
-            .unzip();
-    let events = outputs
-        .into_iter()
-        .flat_map(|output| output.events().to_vec())
-        .collect::<Vec<_>>();
-    CommitNotification::new_committed_state_snapshot(
-        events,
-        transactions,
-        last_committed_state_index,
-        version,
-    )
-}
-
-/// Spawns a future on a specified runtime. If no runtime is specified, uses
-/// the current runtime.
-fn spawn(
-    runtime: Option<Handle>,
-    future: impl Future<Output = ()> + Send + 'static,
-) -> JoinHandle<()> {
-    if let Some(runtime) = runtime {
-        runtime.spawn(future)
-    } else {
-        tokio::spawn(future)
-    }
-}
-
-/// Returns the value currently held by the pending chunk counter
-fn load_pending_data_chunks(pending_data_chunks: Arc<AtomicU64>) -> u64 {
-    pending_data_chunks.load(Ordering::Relaxed)
-}
-
-/// Increments the pending data chunks
-fn increment_pending_data_chunks(pending_data_chunks: Arc<AtomicU64>) {
-    let delta = 1;
-    pending_data_chunks.fetch_add(delta, Ordering::Relaxed);
-    metrics::increment_gauge(
-        &metrics::STORAGE_SYNCHRONIZER_GAUGES,
-        metrics::STORAGE_SYNCHRONIZER_PENDING_DATA,
-        delta,
-    );
-}
-
-/// Decrements the pending data chunks
-fn decrement_pending_data_chunks(atomic_u64: Arc<AtomicU64>) {
-    let delta = 1;
-    atomic_u64.fetch_sub(delta, Ordering::Relaxed);
-    metrics::decrement_gauge(
-        &metrics::STORAGE_SYNCHRONIZER_GAUGES,
-        metrics::STORAGE_SYNCHRONIZER_PENDING_DATA,
-        delta,
-    );
-}
-
-/// Handles a storage synchronizer error by sending a notification to the driver
-/// and decrementing the number of pending data chunks in the pipeline.
-async fn handle_storage_synchronizer_error(
-    notification_metadata: NotificationMetadata,
-    error: String,
-    error_notification_sender: &mpsc::UnboundedSender<ErrorNotification>,
-    pending_data_chunks: &Arc<AtomicU64>,
-) {
-    // Send an error notification to the driver
-    send_storage_synchronizer_error(
-        error_notification_sender.clone(),
-        notification_metadata.notification_id,
-        error,
-    )
-    .await;
-
-    // Decrement the number of pending data chunks
-    decrement_pending_data_chunks(pending_data_chunks.clone());
-}
-
-/// Sends the given message along the specified channel, and monitors
-/// if the channel hits backpressure (i.e., the channel is full).
-async fn send_and_monitor_backpressure<T: Clone>(
-    channel: &mut mpsc::Sender<T>,
-    channel_label: &str,
-    message: T,
-) -> Result<(), Error> {
-    match channel.try_send(message.clone()) {
-        Ok(_) => Ok(()), // The message was sent successfully
-        Err(error) => {
-            // Otherwise, try_send failed. Handle the error.
-            if error.is_full() {
-                // The channel is full, log the backpressure and update the metrics.
-                info!(
-                    LogSchema::new(LogEntry::StorageSynchronizer).message(&format!(
-                        "The {:?} channel is full! Backpressure will kick in!",
-                        channel_label
-                    ))
-                );
-                metrics::set_gauge(
-                    &metrics::STORAGE_SYNCHRONIZER_PIPELINE_CHANNEL_BACKPRESSURE,
-                    channel_label,
-                    1, // We hit backpressure
-                );
-
-                // Call the blocking send (we still need to send the data chunk with backpressure)
-                let result = channel.send(message).await.map_err(|error| {
-                    Error::UnexpectedError(format!(
-                        "Failed to send storage data chunk to: {:?}. Error: {:?}",
-                        channel_label, error
-                    ))
-                });
-
-                // Reset the gauge for the pipeline channel to inactive (we're done sending the message)
-                metrics::set_gauge(
-                    &metrics::STORAGE_SYNCHRONIZER_PIPELINE_CHANNEL_BACKPRESSURE,
-                    channel_label,
-                    0, // Backpressure is no longer active
-                );
-
-                result
-            } else {
-                // Otherwise, return the error (there's nothing else we can do)
-                Err(Error::UnexpectedError(format!(
-                    "Failed to try_send storage data chunk to {:?}. Error: {:?}",
-                    channel_label, error
-                )))
-            }
-        },
-    }
-}
-
-/// Sends an error notification to the driver
-async fn send_storage_synchronizer_error(
-    mut error_notification_sender: mpsc::UnboundedSender<ErrorNotification>,
-    notification_id: NotificationId,
-    error_message: String,
-) {
-    // Log the storage synchronizer error
-    let error_message = format!("Storage synchronizer error: {:?}", error_message);
-    error!(LogSchema::new(LogEntry::StorageSynchronizer).message(&error_message));
-
-    // Update the storage synchronizer error metrics
-    let error = Error::UnexpectedError(error_message);
-    metrics::increment_counter(&metrics::STORAGE_SYNCHRONIZER_ERRORS, error.get_label());
-
-    // Send an error notification to the driver
-    let error_notification = ErrorNotification {
-        error: error.clone(),
-        notification_id,
-    };
-    if let Err(error) = error_notification_sender.send(error_notification).await {
-        error!(
-            LogSchema::new(LogEntry::StorageSynchronizer).message(&format!(
-                "Failed to send error notification! Error: {:?}",
-                error
-            ))
-        );
-    }
 }

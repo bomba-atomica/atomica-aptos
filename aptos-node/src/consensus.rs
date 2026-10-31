@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{network::ApplicationNetworkInterfaces, services};
 use aptos_admin_service::AdminService;
@@ -94,6 +94,7 @@ pub fn create_dkg_runtime(
                 vtxn_pool.clone(),
                 rb_config,
                 node_config.randomness_override_seq_num,
+                node_config.chunky_dkg_override_seq_num,
             );
             Some(dkg_runtime)
         },

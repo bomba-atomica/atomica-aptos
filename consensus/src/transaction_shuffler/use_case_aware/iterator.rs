@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::transaction_shuffler::use_case_aware::{
     delayed_queue::DelayedQueue,
@@ -33,6 +33,10 @@ where
     pub(super) fn extended_with(mut self, txns: impl IntoIterator<Item = Txn>) -> Self {
         self.input_queue.extend(txns);
         self
+    }
+
+    pub(super) fn extend_with(&mut self, txns: impl IntoIterator<Item = Txn>) {
+        self.input_queue.extend(txns);
     }
 
     pub(super) fn select_next_txn(&mut self) -> Option<Txn> {

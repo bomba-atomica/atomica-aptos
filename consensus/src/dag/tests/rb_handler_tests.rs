@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::dag::{
     dag_fetcher::TFetchRequester,
@@ -232,10 +232,10 @@ async fn test_node_broadcast_receiver_storage() {
     );
     let sig = rb_receiver.process(node).await.expect("must succeed");
 
-    assert_ok_eq!(
-        storage.get_votes(),
-        vec![(NodeId::new(1, 1, signers[0].author()), sig)],
-    );
+    assert_ok_eq!(storage.get_votes(), vec![(
+        NodeId::new(1, 1, signers[0].author()),
+        sig
+    )],);
 
     let rb_receiver = NodeBroadcastHandler::new(
         dag,

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::move_utils::move_event_v2::MoveEventV2Type;
 use move_core_types::{ident_str, identifier::IdentStr, move_resource::MoveStructType};
@@ -40,6 +40,7 @@ pub struct FeeStatement {
     storage_fee_refund_octas: u64,
 }
 
+#[bon::bon]
 impl FeeStatement {
     pub fn zero() -> Self {
         Self {
@@ -51,6 +52,7 @@ impl FeeStatement {
         }
     }
 
+    #[builder(finish_fn = build)]
     pub fn new(
         total_charge_gas_units: u64,
         execution_gas_units: u64,

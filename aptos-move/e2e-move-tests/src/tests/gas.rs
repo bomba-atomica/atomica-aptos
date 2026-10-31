@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::MoveHarness;
 use aptos_types::account_config::CORE_CODE_ADDRESS;
@@ -51,14 +51,13 @@ fn test_modify_gas_schedule_check_hash() {
         ],
     );
 
-    harness.executor.exec(
-        "reconfiguration_with_dkg",
-        "finish",
-        vec![],
-        vec![MoveValue::Signer(CORE_CODE_ADDRESS)
-            .simple_serialize()
-            .unwrap()],
-    );
+    harness
+        .executor
+        .exec("reconfiguration_with_dkg", "finish", vec![], vec![
+            MoveValue::Signer(CORE_CODE_ADDRESS)
+                .simple_serialize()
+                .unwrap(),
+        ]);
 
     let (_, gas_params) = harness.get_gas_params();
     assert_eq!(gas_params.vm.instr.nop, MAGIC.into());

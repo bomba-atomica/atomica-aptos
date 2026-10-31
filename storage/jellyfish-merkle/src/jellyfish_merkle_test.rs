@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::*;
 use crate::{
@@ -20,7 +19,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 fn update_nibble(original_key: &HashValue, n: usize, nibble: u8) -> HashValue {
     assert!(nibble < 16);
     let mut key = original_key.to_vec();
-    key[n / 2] = if n % 2 == 0 {
+    key[n / 2] = if n.is_multiple_of(2) {
         key[n / 2] & 0x0F | (nibble << 4)
     } else {
         key[n / 2] & 0xF0 | nibble

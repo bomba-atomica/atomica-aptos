@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_types::{
     account_config::{
@@ -27,7 +27,7 @@ use std::{collections::BTreeMap, str::FromStr};
 /// implies that the fee statement event, the account balance of the fee payer, and the total token
 /// supply are different.
 #[derive(Clone, Eq, PartialEq)]
-enum Diff {
+pub enum Diff {
     GasUsed {
         left: u64,
         right: u64,
@@ -48,8 +48,8 @@ enum Diff {
 }
 
 /// Holds all differences for a pair of transaction outputs.
-pub(crate) struct TransactionDiff {
-    diffs: Vec<Diff>,
+pub struct TransactionDiff {
+    pub diffs: Vec<Diff>,
 }
 
 impl TransactionDiff {
@@ -117,22 +117,20 @@ impl TransactionDiff {
                     let left = left.as_ref();
                     let right = right.as_ref();
 
-                    if left.is_none() {
-                        println!("{}", "========".yellow());
-                        println!("{}", format!("write {:?}", state_key).red());
-                    } else if right.is_none() {
-                        println!("{}", format!("write {:?}", state_key).green());
-                        println!("{}", "========".yellow());
-                    } else {
-                        println!(
-                            "{}",
-                            format!("write {:?} op {:?}", state_key, left.unwrap()).green()
-                        );
-                        println!("{}", "========".yellow());
-                        println!(
-                            "{}",
-                            format!("write {:?} op {:?}", state_key, right.unwrap()).red()
-                        );
+                    match (left, right) {
+                        (None, _) => {
+                            println!("{}", "========".yellow());
+                            println!("{}", format!("write {:?}", state_key).red());
+                        },
+                        (_, None) => {
+                            println!("{}", format!("write {:?}", state_key).green());
+                            println!("{}", "========".yellow());
+                        },
+                        (Some(l), Some(r)) => {
+                            println!("{}", format!("write {:?} op {:?}", state_key, l).green());
+                            println!("{}", "========".yellow());
+                            println!("{}", format!("write {:?} op {:?}", state_key, r).red());
+                        },
                     }
                 },
             }
@@ -143,25 +141,28 @@ impl TransactionDiff {
 
 /// Builds [TransactionDiff]s for transaction outputs. The builder can be configured to ignore the
 /// differences in outputs sometimes.
-pub(crate) struct TransactionDiffBuilder {
+pub struct TransactionDiffBuilder {
     /// If true, differences related to the gas usage are ignored. These include:
     ///   - total gas used is not compared,
     ///   - `EmitFeeStatement` event is not compared,
     ///   - total APT supply is not compared,
     ///   - account balances are no compared.
     allow_different_gas_usage: bool,
+    /// If true, the gas used is still compared even if the `allow_different_gas_usage` is true.
+    still_compare_gas_used: bool,
 }
 
 impl TransactionDiffBuilder {
-    pub(crate) fn new(allow_different_gas_usage: bool) -> Self {
+    pub fn new(allow_different_gas_usage: bool, still_compare_gas_used: bool) -> Self {
         Self {
             allow_different_gas_usage,
+            still_compare_gas_used,
         }
     }
 
     /// Given a pair of transaction outputs, computes its [TransactionDiff] that includes the gas
     /// used, execution status, events and write sets.
-    pub(crate) fn build_from_outputs(
+    pub fn build_from_outputs(
         &self,
         left: TransactionOutput,
         right: TransactionOutput,
@@ -184,7 +185,9 @@ impl TransactionDiffBuilder {
             });
         }
 
-        if left_gas_used != right_gas_used && !self.allow_different_gas_usage {
+        if left_gas_used != right_gas_used
+            && (!self.allow_different_gas_usage || self.still_compare_gas_used)
+        {
             diffs.push(Diff::GasUsed {
                 left: left_gas_used,
                 right: right_gas_used,
@@ -250,8 +253,8 @@ impl TransactionDiffBuilder {
         right: WriteSet,
         fee_payer: Option<AccountAddress>,
     ) -> Vec<Diff> {
-        let mut left = left.into_mut().into_inner();
-        let mut right = right.into_mut().into_inner();
+        let mut left = left.into_value_writes().into_inner();
+        let mut right = right.into_value_writes().into_inner();
 
         let filter_gas_related_ops = |ops: &mut BTreeMap<StateKey, WriteOp>| {
             // Skip total coin APT supply comparisons.
@@ -358,7 +361,7 @@ mod tests {
             TransactionAuxiliaryData::None,
         );
 
-        let diff = TransactionDiffBuilder::new(false).build_from_outputs(
+        let diff = TransactionDiffBuilder::new(false, true).build_from_outputs(
             output_1.clone(),
             output_2.clone(),
             None,
@@ -366,7 +369,8 @@ mod tests {
         assert_eq!(diff.diffs.len(), 1);
         assert!(diff.diffs[0].clone() == Diff::GasUsed { left: 1, right: 2 });
 
-        let diff = TransactionDiffBuilder::new(true).build_from_outputs(output_1, output_2, None);
+        let diff =
+            TransactionDiffBuilder::new(true, false).build_from_outputs(output_1, output_2, None);
         assert!(diff.diffs.is_empty());
     }
 
@@ -387,7 +391,7 @@ mod tests {
             TransactionAuxiliaryData::None,
         );
 
-        let diff = TransactionDiffBuilder::new(false).build_from_outputs(
+        let diff = TransactionDiffBuilder::new(false, false).build_from_outputs(
             output_1.clone(),
             output_2.clone(),
             None,
@@ -416,7 +420,7 @@ mod tests {
             ContractEvent::new_v2_with_type_tag_str("0x1::event::EventD", vec![0, 1, 3]),
         ];
 
-        let expected_diffs = vec![
+        let expected_diffs = [
             Diff::Event {
                 left: Some(ContractEvent::new_v2_with_type_tag_str(
                     "0x1::event::EventB",
@@ -443,7 +447,7 @@ mod tests {
             },
         ];
 
-        let diffs = TransactionDiffBuilder::new(false).diff_events(events_1, events_2);
+        let diffs = TransactionDiffBuilder::new(false, true).diff_events(events_1, events_2);
         assert_eq!(diffs.len(), 3);
         assert!(diffs.iter().all(|diff| expected_diffs.contains(diff)));
     }
@@ -456,10 +460,11 @@ mod tests {
             vec![ContractEvent::new_v2(fee_statement_tag.clone(), vec![0, 1, 2]).unwrap()];
         let events_2 = vec![ContractEvent::new_v2(fee_statement_tag, vec![0, 1, 3]).unwrap()];
 
-        let diffs = TransactionDiffBuilder::new(true).diff_events(events_1.clone(), events_2);
+        let diffs =
+            TransactionDiffBuilder::new(true, false).diff_events(events_1.clone(), events_2);
         assert!(diffs.is_empty());
 
-        let diffs = TransactionDiffBuilder::new(true).diff_events(events_1, vec![]);
+        let diffs = TransactionDiffBuilder::new(true, false).diff_events(events_1, vec![]);
         assert_eq!(diffs.len(), 1);
     }
 
@@ -527,7 +532,7 @@ mod tests {
         .freeze()
         .unwrap();
 
-        let expected_diffs = vec![
+        let expected_diffs = [
             Diff::WriteSet {
                 state_key: StateKey::raw(b"key-2"),
                 left: Some(WriteOp::legacy_creation(vec![0, 1, 2].into())),
@@ -561,8 +566,11 @@ mod tests {
             },
         ];
 
-        let diffs =
-            TransactionDiffBuilder::new(false).diff_write_sets(write_set_1, write_set_2, None);
+        let diffs = TransactionDiffBuilder::new(false, true).diff_write_sets(
+            write_set_1,
+            write_set_2,
+            None,
+        );
         assert_eq!(diffs.len(), 5);
         assert!(diffs.iter().all(|diff| expected_diffs.contains(diff)));
     }

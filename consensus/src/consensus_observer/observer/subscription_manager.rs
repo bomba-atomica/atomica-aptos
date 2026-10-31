@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::consensus_observer::{
     common::{
@@ -514,10 +514,10 @@ mod test {
             .unwrap();
 
         // Verify that the subscriptions are still active
-        verify_active_subscription_peers(
-            &subscription_manager,
-            vec![connected_peer_1, connected_peer_2],
-        );
+        verify_active_subscription_peers(&subscription_manager, vec![
+            connected_peer_1,
+            connected_peer_2,
+        ]);
 
         // Elapse time to simulate a timeout for peer 1
         let mock_time_service = time_service.into_mock();
@@ -898,10 +898,10 @@ mod test {
         }
 
         // Verify the subscriptions are active
-        verify_active_subscription_peers(
-            &subscription_manager,
-            vec![subscription_peer_1, subscription_peer_2],
-        );
+        verify_active_subscription_peers(&subscription_manager, vec![
+            subscription_peer_1,
+            subscription_peer_2,
+        ]);
 
         // Terminate all subscriptions
         subscription_manager.terminate_all_subscriptions();
@@ -966,10 +966,10 @@ mod test {
         ));
 
         // Terminate unhealthy subscriptions and verify the first two subscriptions were terminated
-        verify_terminated_unhealthy_subscriptions(
-            &mut subscription_manager,
-            vec![subscription_peer_1, subscription_peer_2],
-        );
+        verify_terminated_unhealthy_subscriptions(&mut subscription_manager, vec![
+            subscription_peer_1,
+            subscription_peer_2,
+        ]);
 
         // Verify the third subscription is still active
         verify_active_subscription_peers(&subscription_manager, vec![subscription_peer_3]);
@@ -1019,10 +1019,10 @@ mod test {
         );
 
         // Verify the second subscription is active
-        verify_active_subscription_peers(
-            &subscription_manager,
-            vec![subscription_peer_1, subscription_peer_2],
-        );
+        verify_active_subscription_peers(&subscription_manager, vec![
+            subscription_peer_1,
+            subscription_peer_2,
+        ]);
 
         // Unsubscribe from the first peer
         subscription_manager.unsubscribe_from_peer(subscription_peer_1);

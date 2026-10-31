@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Transformation which injects well-formed assumptions at top-level entry points of verified
 //! functions. These assumptions are both about parameters and any memory referred to by
@@ -57,11 +58,9 @@ impl FunctionTargetProcessor for WellFormedInstrumentationProcessor {
 
         // Inject well-formedness assumptions for parameters.
         for param in 0..builder.fun_env.get_parameter_count() {
-            let exp = builder.mk_call(
-                &BOOL_TYPE,
-                Operation::WellFormed,
-                vec![builder.mk_temporary(param)],
-            );
+            let exp = builder.mk_call(&BOOL_TYPE, Operation::WellFormed, vec![
+                builder.mk_temporary(param)
+            ]);
             builder.emit_prop(PropKind::Assume, exp);
         }
 

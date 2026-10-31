@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     account_address::AccountAddress,
@@ -115,14 +116,15 @@ fn nested_typed_struct_deserialization() {
         json!({ "inner": { "f": 7 } })
     );
 
-    let nested_typed_struct = MoveValue::Struct(MoveStruct::with_types(
-        nested_struct_type,
-        vec![(ident_str!("f").to_owned(), MoveValue::U64(7))],
-    ));
-    let typed_value = MoveStruct::with_types(
-        struct_type,
-        vec![(ident_str!("inner").to_owned(), nested_typed_struct)],
-    );
+    let nested_typed_struct =
+        MoveValue::Struct(MoveStruct::with_types(nested_struct_type, vec![(
+            ident_str!("f").to_owned(),
+            MoveValue::U64(7),
+        )]));
+    let typed_value = MoveStruct::with_types(struct_type, vec![(
+        ident_str!("inner").to_owned(),
+        nested_typed_struct,
+    )]);
     assert_eq!(
         serde_json::to_value(&typed_value).unwrap(),
         json!({

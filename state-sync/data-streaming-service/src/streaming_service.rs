@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     data_stream::{DataStream, DataStreamId, DataStreamListener},
@@ -514,6 +513,7 @@ mod streaming_service_tests {
     };
     use aptos_channels::{aptos_channel, message_queues::QueueStyle};
     use aptos_config::config::DataStreamingServiceConfig;
+    use aptos_storage_interface::StateKind;
     use futures::{
         channel::{oneshot, oneshot::Receiver},
         FutureExt, StreamExt,
@@ -809,6 +809,7 @@ mod streaming_service_tests {
         let stream_request = StreamRequest::GetAllStates(GetAllStatesRequest {
             version: MIN_ADVERTISED_STATES,
             start_index: 0,
+            state_kind: StateKind::MainState,
         });
         create_request_message_and_receiver(stream_request)
     }

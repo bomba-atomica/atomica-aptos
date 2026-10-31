@@ -1,35 +1,52 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::state_store::{
-    state::{LedgerState, State},
+    state::{HotStateMetadata, LedgerState, State},
     state_summary::{LedgerStateSummary, StateSummary},
 };
+use aptos_config::config::HotStateConfig;
 use aptos_crypto::HashValue;
 use aptos_scratchpad::SparseMerkleTree;
 use aptos_types::{
-    state_store::{hot_state::HotStateConfig, state_storage_usage::StateStorageUsage},
+    state_store::{state_storage_usage::StateStorageUsage, NUM_STATE_SHARDS},
     transaction::Version,
 };
 use derive_more::{Deref, DerefMut};
 
 #[derive(Clone, Debug, Deref)]
-pub struct StateWithSummary {
+pub struct StateAndSummary<S> {
     #[deref]
-    state: State,
+    state: S,
     summary: StateSummary,
 }
 
-impl StateWithSummary {
-    pub fn new(state: State, summary: StateSummary) -> Self {
-        assert_eq!(state.next_version(), summary.next_version());
+impl<S> StateAndSummary<S> {
+    pub fn new(state: S, summary: StateSummary) -> Self {
         Self { state, summary }
     }
 
+    pub fn state(&self) -> &S {
+        &self.state
+    }
+
+    pub fn summary(&self) -> &StateSummary {
+        &self.summary
+    }
+
+    pub fn into_inner(self) -> (S, StateSummary) {
+        let Self { state, summary } = self;
+        (state, summary)
+    }
+}
+
+pub type StateWithSummary = StateAndSummary<State>;
+
+impl StateWithSummary {
     pub fn new_empty(hot_state_config: HotStateConfig) -> Self {
         Self::new(
             State::new_empty(hot_state_config),
-            StateSummary::new_empty(),
+            StateSummary::new_empty(hot_state_config),
         )
     }
 
@@ -40,59 +57,78 @@ impl StateWithSummary {
         usage: StateStorageUsage,
         hot_state_config: HotStateConfig,
     ) -> Self {
+        Self::new_at_version_with_hot_state_metadata(
+            version,
+            hot_state_root_hash,
+            global_state_root_hash,
+            usage,
+            hot_state_config,
+            Default::default(),
+        )
+    }
+
+    pub fn new_at_version_with_hot_state_metadata(
+        version: Option<Version>,
+        hot_state_root_hash: HashValue,
+        global_state_root_hash: HashValue,
+        usage: StateStorageUsage,
+        hot_state_config: HotStateConfig,
+        hot_state_metadata: [HotStateMetadata; NUM_STATE_SHARDS],
+    ) -> Self {
         Self::new(
-            State::new_at_version(version, usage, hot_state_config),
+            State::new_at_version_with_hot_state_metadata(
+                version,
+                usage,
+                hot_state_config,
+                hot_state_metadata,
+            ),
             StateSummary::new_at_version(
                 version,
                 SparseMerkleTree::new(hot_state_root_hash),
                 SparseMerkleTree::new(global_state_root_hash),
+                hot_state_config,
             ),
         )
     }
 
-    pub fn state(&self) -> &State {
-        &self.state
-    }
-
-    pub fn summary(&self) -> &StateSummary {
-        &self.summary
-    }
-
     pub fn is_descendant_of(&self, other: &Self) -> bool {
-        self.state.is_descendant_of(&other.state) && self.summary.is_descendant_of(&other.summary)
-    }
-
-    pub fn into_inner(self) -> (State, StateSummary) {
-        let Self { state, summary } = self;
-
-        (state, summary)
+        self.state().is_descendant_of(other.state())
+            && self.summary().is_descendant_of(other.summary())
     }
 }
 
 #[derive(Clone, Debug, Deref, DerefMut)]
-pub struct LedgerStateWithSummary {
+pub struct LedgerWithSummary<W: Clone> {
     #[deref]
     #[deref_mut]
-    latest: StateWithSummary,
-    last_checkpoint: StateWithSummary,
+    latest: W,
+    last_checkpoint: W,
 }
 
-impl LedgerStateWithSummary {
-    pub fn from_latest_and_last_checkpoint(
-        latest: StateWithSummary,
-        last_checkpoint: StateWithSummary,
-    ) -> Self {
-        assert!(latest.is_descendant_of(&last_checkpoint));
+impl<W: Clone> LedgerWithSummary<W> {
+    pub fn from_latest_and_last_checkpoint(latest: W, last_checkpoint: W) -> Self {
         Self {
             latest,
             last_checkpoint,
         }
     }
 
-    pub fn new_at_checkpoint(checkpoint: StateWithSummary) -> Self {
+    pub fn new_at_checkpoint(checkpoint: W) -> Self {
         Self::from_latest_and_last_checkpoint(checkpoint.clone(), checkpoint)
     }
 
+    pub fn latest(&self) -> &W {
+        &self.latest
+    }
+
+    pub fn last_checkpoint(&self) -> &W {
+        &self.last_checkpoint
+    }
+}
+
+pub type LedgerStateWithSummary = LedgerWithSummary<StateWithSummary>;
+
+impl LedgerStateWithSummary {
     pub fn new_empty(hot_state_config: HotStateConfig) -> Self {
         let empty = StateWithSummary::new_empty(hot_state_config);
         Self::from_latest_and_last_checkpoint(empty.clone(), empty)
@@ -109,24 +145,20 @@ impl LedgerStateWithSummary {
     }
 
     pub fn is_at_checkpoint(&self) -> bool {
-        self.latest.next_version() == self.last_checkpoint.next_version()
-    }
-
-    pub fn last_checkpoint(&self) -> &StateWithSummary {
-        &self.last_checkpoint
+        self.latest().next_version() == self.last_checkpoint().next_version()
     }
 
     pub fn ledger_state(&self) -> LedgerState {
         LedgerState::new(
-            self.latest.state().clone(),
-            self.last_checkpoint.state().clone(),
+            self.latest().state().clone(),
+            self.last_checkpoint().state().clone(),
         )
     }
 
     pub fn ledger_state_summary(&self) -> LedgerStateSummary {
         LedgerStateSummary::new(
-            self.last_checkpoint.summary().clone(),
-            self.latest.summary().clone(),
+            self.last_checkpoint().summary().clone(),
+            self.latest().summary().clone(),
         )
     }
 
@@ -134,8 +166,10 @@ impl LedgerStateWithSummary {
         (self.ledger_state(), self.ledger_state_summary())
     }
 
-    pub fn is_descendant_of(&self, rhs: &Self) -> bool {
-        self.latest.is_descendant_of(&rhs.latest)
-            && self.last_checkpoint.is_descendant_of(&rhs.last_checkpoint)
+    pub fn is_descendant_of(&self, other: &Self) -> bool {
+        self.latest().is_descendant_of(other.latest())
+            && self
+                .last_checkpoint()
+                .is_descendant_of(other.last_checkpoint())
     }
 }

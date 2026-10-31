@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::U64;
 use aptos_types::{chain_id::ChainId, ledger_info::LedgerInfoWithSignatures};
@@ -18,6 +17,8 @@ pub struct LedgerInfo {
     pub block_height: U64,
     pub oldest_block_height: U64,
     pub ledger_timestamp: U64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub txn_encryption_key: Option<String>,
 }
 
 impl LedgerInfo {
@@ -27,6 +28,7 @@ impl LedgerInfo {
         oldest_ledger_version: u64,
         oldest_block_height: u64,
         block_height: u64,
+        txn_encryption_key: Option<String>,
     ) -> Self {
         let ledger_info = info.ledger_info();
         Self {
@@ -37,6 +39,7 @@ impl LedgerInfo {
             block_height: block_height.into(),
             oldest_block_height: oldest_block_height.into(),
             ledger_timestamp: ledger_info.timestamp_usecs().into(),
+            txn_encryption_key,
         }
     }
 
@@ -48,6 +51,7 @@ impl LedgerInfo {
         oldest_block_height: u64,
         block_height: u64,
         ledger_timestamp: u64,
+        txn_encryption_key: Option<String>,
     ) -> Self {
         Self {
             chain_id: chain_id.id(),
@@ -57,6 +61,7 @@ impl LedgerInfo {
             block_height: block_height.into(),
             oldest_block_height: oldest_block_height.into(),
             ledger_timestamp: ledger_timestamp.into(),
+            txn_encryption_key,
         }
     }
 

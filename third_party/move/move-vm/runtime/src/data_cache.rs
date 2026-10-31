@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     module_traversal::TraversalContext,
@@ -29,21 +30,31 @@ use move_vm_types::{
     value_serde::{FunctionValueExtension, ValueSerDeContext},
     values::{GlobalValue, Value},
 };
-use std::collections::btree_map::{BTreeMap, Entry};
+use std::collections::{hash_map::Entry, BTreeMap, HashMap};
 use triomphe::Arc as TriompheArc;
 
 /// A hack to be able to use [MoveVmDataCache] in native context where there is no access to
 /// static gas meter.
 pub trait NativeContextMoveVmDataCache {
-    /// Used by native context only! Returns true if resource exists in global storage, and false
-    /// otherwise. Also, returns the number of bytes loaded (if any, otherwise [None]).
-    fn native_check_resource_exists(
+    /// Loads resource from global storage for immutable borrow.
+    /// Returns the global value and the number of bytes loaded (if any).
+    fn native_load_resource(
         &mut self,
         gas_meter: &mut dyn DependencyGasMeter,
         traversal_context: &mut TraversalContext,
         addr: &AccountAddress,
         ty: &Type,
-    ) -> PartialVMResult<(bool, Option<NumBytes>)>;
+    ) -> PartialVMResult<(&GlobalValue, Option<NumBytes>)>;
+
+    /// Loads resource from global storage for mutable borrow.
+    /// Returns the global value and the number of bytes loaded (if any).
+    fn native_load_resource_mut(
+        &mut self,
+        gas_meter: &mut dyn DependencyGasMeter,
+        traversal_context: &mut TraversalContext,
+        addr: &AccountAddress,
+        ty: &Type,
+    ) -> PartialVMResult<(&mut GlobalValue, Option<NumBytes>)>;
 }
 
 /// Provides access to global storage for Move VM.
@@ -87,17 +98,26 @@ impl<'a, LoaderImpl> NativeContextMoveVmDataCache for MoveVmDataCacheAdapter<'a,
 where
     LoaderImpl: Loader,
 {
-    fn native_check_resource_exists(
+    fn native_load_resource(
         &mut self,
         gas_meter: &mut dyn DependencyGasMeter,
         traversal_context: &mut TraversalContext,
         addr: &AccountAddress,
         ty: &Type,
-    ) -> PartialVMResult<(bool, Option<NumBytes>)> {
+    ) -> PartialVMResult<(&GlobalValue, Option<NumBytes>)> {
         let mut gas_meter = DependencyGasMeterWrapper::new(gas_meter);
-        let (gv, bytes_loaded) = self.load_resource(&mut gas_meter, traversal_context, addr, ty)?;
-        let exists = gv.exists();
-        Ok((exists, bytes_loaded))
+        self.load_resource(&mut gas_meter, traversal_context, addr, ty)
+    }
+
+    fn native_load_resource_mut(
+        &mut self,
+        gas_meter: &mut dyn DependencyGasMeter,
+        traversal_context: &mut TraversalContext,
+        addr: &AccountAddress,
+        ty: &Type,
+    ) -> PartialVMResult<(&mut GlobalValue, Option<NumBytes>)> {
+        let mut gas_meter = DependencyGasMeterWrapper::new(gas_meter);
+        self.load_resource_mut(&mut gas_meter, traversal_context, addr, ty)
     }
 }
 
@@ -175,7 +195,9 @@ struct DataCacheEntry {
 /// for a data store related to a transaction. Clients should create an instance of this type
 /// and pass it to the Move VM.
 pub struct TransactionDataCache {
-    account_map: BTreeMap<AccountAddress, BTreeMap<Type, DataCacheEntry>>,
+    // CAUTION: Iterating the inner map is not deterministic, one should
+    // enforce the ordering deterministically.
+    account_map: BTreeMap<AccountAddress, HashMap<Type, DataCacheEntry>>,
 }
 
 impl TransactionDataCache {
@@ -204,7 +226,7 @@ impl TransactionDataCache {
                 .map(Into::into)
                 .ok_or_else(|| {
                     PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
-                        .with_message(format!("Error when serializing resource {}.", value))
+                        .with_message("Error when serializing resource.")
                 })
         };
         self.into_custom_effects(&resource_converter)
@@ -223,7 +245,18 @@ impl TransactionDataCache {
         let mut change_set = Changes::<Resource>::new();
         for (addr, account_data_cache) in self.account_map.into_iter() {
             let mut resources = BTreeMap::new();
-            for entry in account_data_cache.into_values() {
+
+            // Serialize resources in struct tag order so that the ordering is
+            // deterministic. This protects against
+            //   1) Non-deterministic hashmap iteration,
+            //   2) Non-deterministic type ordering (struct names are interned
+            //      in non-deterministic way and cannot be compared).
+            // This matters for cases when serialization of a resource fails,
+            // and the reported error may depend on the iteration order.
+            let mut account_data_cache = account_data_cache.into_values().collect::<Vec<_>>();
+            account_data_cache.sort_by(|a, b| a.struct_tag.cmp(&b.struct_tag));
+
+            for entry in account_data_cache {
                 let DataCacheEntry {
                     struct_tag,
                     layout,
@@ -274,7 +307,6 @@ impl TransactionDataCache {
             gas_meter,
             traversal_context,
             ty,
-            false,
         )?;
 
         let (data, bytes_loaded) = {

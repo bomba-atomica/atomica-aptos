@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     file_format::{CodeOffset, FunctionDefinitionIndex, TableIndex},
@@ -104,11 +105,15 @@ impl VMError {
                 debug_assert!(sub_status.is_none());
                 VMStatus::Executed
             },
-            (StatusCode::ABORTED, Some(code), Location::Script) => {
-                VMStatus::MoveAbort(vm_status::AbortLocation::Script, code)
+            (StatusCode::ABORTED, Some(code), Location::Script) => VMStatus::MoveAbort {
+                location: vm_status::AbortLocation::Script,
+                code,
+                message,
             },
-            (StatusCode::ABORTED, Some(code), Location::Module(id)) => {
-                VMStatus::MoveAbort(vm_status::AbortLocation::Module(id), code)
+            (StatusCode::ABORTED, Some(code), Location::Module(id)) => VMStatus::MoveAbort {
+                location: vm_status::AbortLocation::Module(id),
+                code,
+                message,
             },
 
             (StatusCode::ABORTED, sub_status, location) => {

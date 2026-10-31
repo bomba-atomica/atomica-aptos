@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{db::test_helper::put_persisted_auxiliary_info, AptosDB};
 use aptos_temppath::TempPath;
@@ -54,15 +53,15 @@ pub fn test_iterator() {
         vec![PersistedAuxiliaryInfo::None; 20]
     );
 
-    assert_eq!(
-        get_persisted_auxiliary_info(&db, 100, 20),
-        vec![v1_info; 20]
-    );
+    assert_eq!(get_persisted_auxiliary_info(&db, 100, 20), vec![
+        v1_info;
+        20
+    ]);
 
-    assert_eq!(
-        get_persisted_auxiliary_info(&db, 190, 20),
-        vec![v1_info; 10]
-    );
+    assert_eq!(get_persisted_auxiliary_info(&db, 190, 20), vec![
+        v1_info;
+        10
+    ]);
 
     assert_eq!(get_persisted_auxiliary_info(&db, 200, 20), vec![]);
 }

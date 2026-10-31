@@ -19,7 +19,11 @@ module aptos_framework::config_buffer {
     use aptos_std::type_info;
     use aptos_framework::system_addresses;
 
+    friend aptos_framework::chunky_dkg_config;
+    friend aptos_framework::chunky_dkg_config_seqnum;
     friend aptos_framework::consensus_config;
+    friend aptos_framework::decryption;
+    friend aptos_framework::epoch_timeout_config;
     friend aptos_framework::execution_config;
     friend aptos_framework::gas_schedule;
     friend aptos_framework::jwks;
@@ -53,7 +57,7 @@ module aptos_framework::config_buffer {
     public fun does_exist<T: store>(): bool acquires PendingConfigs {
         if (exists<PendingConfigs>(@aptos_framework)) {
             let config = borrow_global<PendingConfigs>(@aptos_framework);
-            simple_map::contains_key(&config.configs, &type_info::type_name<T>())
+            config.configs.contains_key(&type_info::type_name<T>())
         } else {
             false
         }
@@ -66,7 +70,7 @@ module aptos_framework::config_buffer {
         let configs = borrow_global_mut<PendingConfigs>(@aptos_framework);
         let key = type_info::type_name<T>();
         let value = any::pack(config);
-        simple_map::upsert(&mut configs.configs, key, value);
+        configs.configs.upsert(key, value);
     }
 
     #[deprecated]
@@ -82,8 +86,8 @@ module aptos_framework::config_buffer {
     public(friend) fun extract_v2<T: store>(): T acquires PendingConfigs {
         let configs = borrow_global_mut<PendingConfigs>(@aptos_framework);
         let key = type_info::type_name<T>();
-        let (_, value_packed) = simple_map::remove(&mut configs.configs, &key);
-        any::unpack(value_packed)
+        let (_, value_packed) = configs.configs.remove(&key);
+        value_packed.unpack()
     }
 
     #[test_only]

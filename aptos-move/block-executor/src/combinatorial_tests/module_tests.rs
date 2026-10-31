@@ -1,14 +1,11 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     combinatorial_tests::{
         baseline::BaselineOutput,
         mock_executor::{MockEvent, MockTask},
-        resource_tests::{
-            create_executor_thread_pool, execute_block_parallel, get_gas_limit_variants,
-        },
+        resource_tests::{execute_block_parallel, get_gas_limit_variants},
         types::{
             key_to_mock_module_id, KeyType, MockTransaction, TransactionGen, TransactionGenParams,
         },
@@ -49,7 +46,6 @@ fn execute_module_tests(
     assert!(fail::has_failpoints());
     fail::cfg("module_test", "return").unwrap();
 
-    let executor_thread_pool = create_executor_thread_pool();
     let mut runner = TestRunner::default();
 
     let module_id_pool = InternedModuleIdPool::new();
@@ -125,7 +121,6 @@ fn execute_module_tests(
                         AuxiliaryInfo,
                     >,
                 >(
-                    executor_thread_pool.clone(),
                     *maybe_block_gas_limit,
                     &txn_provider,
                     &state_view,

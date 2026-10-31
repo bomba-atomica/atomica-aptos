@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{error::Error, safety_rules::next_round, SafetyRules};
 use aptos_consensus_types::{
@@ -202,7 +201,7 @@ impl SafetyRules {
         let block0 = proposed_block.quorum_cert().certified_block().round();
 
         // verify 2-chain rule
-        let commit = next_round(block0)? == block1;
+        let commit = next_round(block0)? == block1 && block0 > 0;
 
         // create a ledger info
         let commit_info = if commit {

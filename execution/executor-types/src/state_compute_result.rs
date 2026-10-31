@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     execution_output::ExecutionOutput, state_checkpoint_output::StateCheckpointOutput,
@@ -166,6 +166,8 @@ impl StateComputeResult {
             state_summary: &self.state_checkpoint_output.state_summary,
             state_update_refs: self.execution_output.to_commit.state_update_refs(),
             state_reads: &self.execution_output.state_reads,
+            hot_state_updates: &self.execution_output.hot_state_updates,
+            position_state_summary: self.state_checkpoint_output.position_state_summary.as_ref(),
             is_reconfig: self.execution_output.next_epoch_state.is_some(),
         }
     }

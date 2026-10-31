@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 use crate::{ObjectPool, TransactionGenerator, TransactionGeneratorCreator};
 use aptos_sdk::{
     move_types::account_address::AccountAddress,
@@ -189,25 +189,27 @@ impl P2PTransactionGenerator {
         use_txn_payload_v2_format: bool,
         use_orderless_transactions: bool,
     ) -> SignedTransaction {
-        from.sign_with_transaction_builder(if self.use_fa_transfer {
-            txn_factory
-                .payload(aptos_stdlib::aptos_account_fungible_transfer_only(
-                    *to, num_coins,
-                ))
-                .upgrade_payload_with_rng(
-                    rng,
-                    use_txn_payload_v2_format,
-                    use_orderless_transactions,
-                )
-        } else {
-            txn_factory
-                .payload(aptos_stdlib::aptos_coin_transfer(*to, num_coins))
-                .upgrade_payload_with_rng(
-                    rng,
-                    use_txn_payload_v2_format,
-                    use_orderless_transactions,
-                )
-        })
+        from.sign_with_transaction_builder(
+            if self.use_fa_transfer {
+                txn_factory
+                    .payload(aptos_stdlib::aptos_account_fungible_transfer_only(
+                        *to, num_coins,
+                    ))
+                    .upgrade_payload_with_rng(
+                        rng,
+                        use_txn_payload_v2_format,
+                        use_orderless_transactions,
+                    )
+            } else {
+                txn_factory
+                    .payload(aptos_stdlib::aptos_coin_transfer(*to, num_coins))
+                    .upgrade_payload_with_rng(
+                        rng,
+                        use_txn_payload_v2_format,
+                        use_orderless_transactions,
+                    )
+            },
+        )
     }
 
     fn generate_invalid_transaction(

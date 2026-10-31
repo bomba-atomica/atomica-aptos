@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     prometheus_metrics::{
@@ -491,6 +491,14 @@ impl SuccessCriteriaChecker {
                     .ensure_no_fullnode_restart()
                     .await
                     .context("Failed ensuring no fullnode restarted")
+            });
+
+            results.add_result("Check no PFN restart", CheckType::Hard, {
+                let swarm_read = swarm.read().await;
+                swarm_read
+                    .ensure_no_pfn_restart()
+                    .await
+                    .context("Failed ensuring no PFN restarted")
             });
         }
 

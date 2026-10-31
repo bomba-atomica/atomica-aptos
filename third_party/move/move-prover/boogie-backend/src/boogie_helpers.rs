@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Helpers for emitting Boogie code.
 
@@ -13,7 +14,7 @@ use move_core_types::{
     ability::AbilitySet, account_address::AccountAddress, function::ClosureMask,
 };
 use move_model::{
-    ast::{Address, MemoryLabel, TempIndex, Value},
+    ast::{Address, BehaviorKind, MemoryLabel, TempIndex, Value},
     model::{
         FieldEnv, FieldId, FunId, FunctionEnv, GlobalEnv, Loc, ModuleEnv, QualifiedInstId,
         SpecFunId, StructEnv, StructId, SCRIPT_MODULE_NAME,
@@ -23,14 +24,16 @@ use move_model::{
     ty::{PrimitiveType, ReferenceKind, Type},
 };
 use move_prover_bytecode_pipeline::number_operation::{
-    GlobalNumberOperationState, NumOperation::Bitwise,
+    GlobalNumberOperationState, NumOperation, NumOperation::Bitwise,
 };
 use move_stackless_bytecode::{function_target::FunctionTarget, stackless_bytecode::Constant};
 use num::BigUint;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::collections::BTreeSet;
 
 pub const MAX_MAKE_VEC_ARGS: usize = 4;
+pub const MAX_TUPLE_SIZE: usize = 8;
 pub const TABLE_NATIVE_SPEC_ERROR: &str =
     "Native functions defined in Table cannot be used as specification functions";
 const NUM_TYPE_BASE_ERROR: &str = "cannot infer concrete integer type from `num`, consider using a concrete integer type or explicit type cast";
@@ -54,8 +57,36 @@ pub fn boogie_module_name(env: &ModuleEnv<'_>) -> String {
 }
 
 /// Return boogie name of given structure.
-pub fn boogie_struct_name(struct_env: &StructEnv<'_>, inst: &[Type]) -> String {
-    boogie_struct_name_bv(struct_env, inst, false)
+pub fn boogie_struct_name(struct_env: &StructEnv<'_>, inst: &[Type], bv_flag: bool) -> String {
+    if struct_env.is_intrinsic_of(INTRINSIC_TYPE_MAP) {
+        if struct_env.get_ghost_fields().next().is_some() {
+            // Ghost-declaring intrinsic maps use a per-instance carrier
+            // datatype wrapping the table. The name must follow the suffix
+            // convention including the value's bv twin, so twin instances
+            // reference their own carrier.
+            return format!(
+                "${}_{}{}",
+                boogie_module_name(&struct_env.module_env),
+                struct_env.get_name().display(struct_env.symbol_pool()),
+                boogie_inst_suffix(struct_env.module_env.env, inst, &[false, bv_flag])
+            );
+        }
+        // Map to the theory type representation, which is `Table int V`. The key
+        // is encoded as an integer to avoid extensionality problems, and to support
+        // $Mutation paths, which are sequences of ints.
+        let env = struct_env.module_env.env;
+        format!("Table int ({})", boogie_type(env, &inst[1], bv_flag))
+    } else {
+        format!(
+            "${}_{}{}",
+            boogie_module_name(&struct_env.module_env),
+            struct_env.get_name().display(struct_env.symbol_pool()),
+            // Non-Table structs use bv_flag=false for all type parameters: bv classification
+            // is tracked per-field, not at the struct name level, so the `bv_flag` argument
+            // is irrelevant here and only affects the intrinsic-map (Table) branch above.
+            boogie_inst_suffix(struct_env.module_env.env, inst, &[])
+        )
+    }
 }
 
 pub fn boogie_struct_variant_name(
@@ -63,27 +94,9 @@ pub fn boogie_struct_variant_name(
     inst: &[Type],
     variant: Symbol,
 ) -> String {
-    let struct_name = boogie_struct_name(struct_env, inst);
+    let struct_name = boogie_struct_name(struct_env, inst, false);
     let variant_name = variant.display(struct_env.symbol_pool());
     format!("{}_{}", struct_name, variant_name)
-}
-
-pub fn boogie_struct_name_bv(struct_env: &StructEnv<'_>, inst: &[Type], bv_flag: bool) -> String {
-    if struct_env.is_intrinsic_of(INTRINSIC_TYPE_MAP) {
-        // Map to the theory type representation, which is `Table int V`. The key
-        // is encoded as an integer to avoid extensionality problems, and to support
-        // $Mutation paths, which are sequences of ints.
-        let env = struct_env.module_env.env;
-        let type_fun = if bv_flag { boogie_bv_type } else { boogie_type };
-        format!("Table int ({})", type_fun(env, &inst[1]))
-    } else {
-        format!(
-            "${}_{}{}",
-            boogie_module_name(&struct_env.module_env),
-            struct_env.get_name().display(struct_env.symbol_pool()),
-            boogie_inst_suffix(struct_env.module_env.env, inst)
-        )
-    }
 }
 
 /// Return field selector for given field.
@@ -137,11 +150,19 @@ pub fn boogie_variant_field_update(
     )
 }
 
-/// Return true if the field is a bitwise field
+/// Return whether the field renders as a bitvector. `ty` is the field's
+/// (instantiated) type; signed-containing types never render as bitvectors.
 pub fn field_bv_flag_global_state(
     global_state: &GlobalNumberOperationState,
     field_env: &FieldEnv,
+    env: &GlobalEnv,
+    ty: &Type,
 ) -> bool {
+    // Ghost fields are model-only and never participate in number-operation
+    // (bitvector) analysis; on enums they also carry no variant.
+    if field_env.is_ghost() {
+        return false;
+    }
     let operation_map = &global_state.struct_operation_map;
     let mid = field_env.struct_env.module_env.get_id();
     let sid = field_env.struct_env.get_id();
@@ -157,36 +178,77 @@ pub fn field_bv_flag_global_state(
     } else {
         field_env.get_id()
     };
-    if let Some(struct_info) = operation_map.get(&(mid, sid)) {
-        matches!(struct_info.get(&field_id), Some(&Bitwise))
-    } else {
-        false
-    }
+    operation_map
+        .get(&(mid, sid))
+        .and_then(|struct_info| struct_info.get(&field_id))
+        .is_some_and(|oper| bv_flag_for_type(env, oper, ty))
 }
 
-/// Return boogie type for given field
+/// Return boogie type for given field. `ty` is the field's (instantiated)
+/// type.
 pub fn boogie_type_for_struct_field(
     global_state: &GlobalNumberOperationState,
     field: &FieldEnv,
     env: &GlobalEnv,
     ty: &Type,
 ) -> String {
-    let bv_flag = field_bv_flag_global_state(global_state, field);
-    if bv_flag {
-        boogie_bv_type(env, ty)
-    } else {
-        boogie_type(env, ty)
-    }
+    let bv_flag = field_bv_flag_global_state(global_state, field, env, ty);
+    boogie_type(env, ty, bv_flag)
 }
 
 /// Return boogie name of given function.
-pub fn boogie_function_name(fun_env: &FunctionEnv<'_>, inst: &[Type]) -> String {
+/// If `bv_flag` is provided and non-empty, uses bitvector type suffixes.
+/// Otherwise uses standard type suffixes.
+pub fn boogie_function_name(fun_env: &FunctionEnv<'_>, inst: &[Type], bv_flag: &[bool]) -> String {
     format!(
         "${}_{}{}",
         boogie_module_name(&fun_env.module_env),
         fun_env.get_name().display(fun_env.symbol_pool()),
-        boogie_inst_suffix(fun_env.module_env.env, inst)
+        boogie_inst_suffix(fun_env.module_env.env, inst, bv_flag)
     )
+}
+
+/// Return the boogie "$-spec" function name for a native function.
+/// Native function prelude templates follow the naming convention
+/// `$module_$fname'inst'` for their pure, side-effect-free spec versions
+/// (e.g. `$1_vector_$empty'address'`).  When a native function has no
+/// Move-level spec, the Boogie backend can use this name to produce a
+/// concrete, deterministic body for the behavioral result function instead
+/// of leaving it as an unconstrained uninterpreted function.
+pub fn boogie_native_spec_fun_name(fun_env: &FunctionEnv<'_>, inst: &[Type]) -> String {
+    format!(
+        "${}_${}{}",
+        boogie_module_name(&fun_env.module_env),
+        fun_env.get_name().display(fun_env.symbol_pool()),
+        boogie_inst_suffix(fun_env.module_env.env, inst, &[])
+    )
+}
+
+/// Whether the prelude templates define a Boogie "$-spec" function
+/// (see [`boogie_native_spec_fun_name`]) for this native function. Only
+/// these natives can delegate their behavioral result function to the
+/// "$-spec" form; any other native has no Boogie-level function form and
+/// its result function must stay uninterpreted. The list mirrors the
+/// `$<module>_$<name>` function definitions in `src/prelude/*.bpl`.
+pub fn boogie_native_fun_has_spec_fun(fun_env: &FunctionEnv<'_>) -> bool {
+    let funs: &[(&str, &[&str])] = &[
+        ("0x1::vector", &[
+            "empty",
+            "push_back",
+            "length",
+            "borrow",
+            "borrow_mut",
+            "swap",
+        ]),
+        ("0x1::bcs", &["to_bytes"]),
+        ("0x1::from_bcs", &["from_bytes"]),
+        ("0x1::hash", &["sha2_256", "sha3_256"]),
+        ("0x1::signer", &["borrow_address"]),
+    ];
+    let module_name = fun_env.module_env.get_full_name_str();
+    let fun_name = fun_env.get_name_str();
+    funs.iter()
+        .any(|(m, fs)| *m == module_name && fs.contains(&fun_name.as_str()))
 }
 
 /// Reverse map mangled function name to source level function name.
@@ -207,21 +269,6 @@ pub fn boogie_reverse_function_name(_env: &GlobalEnv, s: &str) -> Option<String>
     ))
 }
 
-/// Return boogie name of given function
-/// Currently bv_flag is used when generating vector functions
-pub fn boogie_function_bv_name(
-    fun_env: &FunctionEnv<'_>,
-    inst: &[Type],
-    bv_flag: &[bool],
-) -> String {
-    format!(
-        "${}_{}{}",
-        boogie_module_name(&fun_env.module_env),
-        fun_env.get_name().display(fun_env.symbol_pool()),
-        boogie_inst_suffix_bv(fun_env.module_env.env, inst, bv_flag)
-    )
-}
-
 /// Return boogie name of given spec var.
 pub fn boogie_spec_var_name(
     module_env: &ModuleEnv<'_>,
@@ -233,7 +280,7 @@ pub fn boogie_spec_var_name(
         "${}_{}{}{}",
         boogie_module_name(module_env),
         name.display(module_env.symbol_pool()),
-        boogie_inst_suffix(module_env.env, inst),
+        boogie_inst_suffix(module_env.env, inst, &[]),
         boogie_memory_label(memory_label)
     )
 }
@@ -255,7 +302,7 @@ pub fn boogie_spec_fun_name(
     } else {
         "".to_string()
     };
-    let mut suffix = boogie_inst_suffix_bv(env.env, inst, &[bv_flag]);
+    let mut suffix = boogie_inst_suffix(env.env, inst, &[bv_flag]);
     if env.is_table() {
         if inst.len() != 2 {
             env.env.error(&decl.loc, TABLE_NATIVE_SPEC_ERROR);
@@ -263,7 +310,7 @@ pub fn boogie_spec_fun_name(
         }
         let mut v = vec![false; inst.len()];
         v[inst.len() - 1] = bv_flag;
-        suffix = boogie_inst_suffix_bv_pair(env.env, inst, &v);
+        suffix = boogie_inst_suffix(env.env, inst, &v);
     };
     format!(
         "${}_{}{}{}",
@@ -283,7 +330,10 @@ pub fn boogie_choice_fun_name(id: usize) -> String {
 /// This variable represents a local variable of the Boogie translation of this function.
 pub fn boogie_modifies_memory_name(env: &GlobalEnv, memory: &QualifiedInstId<StructId>) -> String {
     let struct_env = &env.get_struct_qid(memory.to_qualified_id());
-    format!("{}_$modifies", boogie_struct_name(struct_env, &memory.inst))
+    format!(
+        "{}_$modifies",
+        boogie_struct_name(struct_env, &memory.inst, false)
+    )
 }
 
 /// Creates the name of the resource memory for the given struct.
@@ -295,7 +345,7 @@ pub fn boogie_resource_memory_name(
     let struct_env = env.get_struct_qid(memory.to_qualified_id());
     format!(
         "{}_$memory{}",
-        boogie_struct_name(&struct_env, &memory.inst),
+        boogie_struct_name(&struct_env, &memory.inst, false),
         boogie_memory_label(memory_label)
     )
 }
@@ -333,26 +383,160 @@ pub fn boogie_make_vec_from_strings(args: &[String]) -> String {
     }
 }
 
+/// Return whether `ty`'s containment closure (vector elements, type arguments,
+/// struct fields) includes a signed integer. Signed integers are always Boogie
+/// `int` — they have no bitvector rendering — so such types must not select bv
+/// encodings; the prelude generates no bv twins for them. This mirrors the
+/// traversal of `Type::get_all_contained_types_with_skip_reference`, but
+/// short-circuits on the first signed integer instead of materializing the
+/// closure, and additionally checks the intrinsic-map value type argument: it
+/// is declared phantom, yet the Boogie representation (`Table int (V)`)
+/// embeds it. Keys are not checked — they encode to int regardless of the
+/// map's bv rendering.
+pub fn type_contains_signed_int(env: &GlobalEnv, ty: &Type) -> bool {
+    type_contains_prim(env, ty, &|p| p.is_signed())
+}
+
+/// Like `type_contains_signed_int`, for widthless `num`: it has no
+/// bitvector rendering either, and can appear nested (e.g. `vector<num>`
+/// in a spec-function instantiation whose slot acquired `Bitwise` from an
+/// unrelated caller).
+pub fn type_contains_widthless_num(env: &GlobalEnv, ty: &Type) -> bool {
+    type_contains_prim(env, ty, &|p| matches!(p, PrimitiveType::Num))
+}
+
+fn type_contains_prim(env: &GlobalEnv, ty: &Type, pred: &impl Fn(&PrimitiveType) -> bool) -> bool {
+    use Type::*;
+    match ty {
+        Primitive(p) => pred(p),
+        Tuple(ts) => ts.iter().any(|t| type_contains_prim(env, t, pred)),
+        Vector(et) => type_contains_prim(env, et, pred),
+        Struct(mid, sid, ts) => {
+            let struct_env = env.get_module(*mid).into_struct(*sid);
+            let args_contain = if struct_env.is_intrinsic_of(INTRINSIC_TYPE_MAP) {
+                // Only the value type is rendered: the representation is
+                // `Table int (V)` with keys encoded to int by `$EncodeKey`,
+                // and bv twin supply likewise keys on the value type alone.
+                // A signed key must not clamp an unsigned bitwise value to
+                // the int twin while value operands render bv.
+                ts.get(1).is_some_and(|t| type_contains_prim(env, t, pred))
+            } else {
+                // Phantom arguments cannot reach a field type of an ordinary
+                // struct, matching the containment closure.
+                ts.iter().enumerate().any(|(i, t)| {
+                    !struct_env.is_phantom_parameter(i) && type_contains_prim(env, t, pred)
+                })
+            };
+            if args_contain {
+                return true;
+            }
+            if struct_env.has_variants() {
+                struct_env.get_variants().any(|variant| {
+                    struct_env
+                        .get_fields_of_variant(variant)
+                        .any(|f| type_contains_prim(env, &f.get_type().instantiate(ts), pred))
+                })
+            } else {
+                struct_env
+                    .get_fields()
+                    .any(|f| type_contains_prim(env, &f.get_type().instantiate(ts), pred))
+            }
+        },
+        Fun(arg, result, _) => {
+            type_contains_prim(env, arg, pred) || type_contains_prim(env, result, pred)
+        },
+        Reference(_, bt) | TypeDomain(bt) => type_contains_prim(env, bt, pred),
+        ResourceDomain(_, _, Some(ts)) => ts.iter().any(|t| type_contains_prim(env, t, pred)),
+        ResourceDomain(_, _, None) | TypeParameter(_) | StateDomain | Error | Var(_) => false,
+    }
+}
+
+/// Effective bitvector flag for a value of type `ty`: a `Bitwise`
+/// classification selects bv rendering only for types that have one.
+/// Number-operation slots shared across generic instantiations (parameters,
+/// fields) can carry `Bitwise` acquired from an unsigned instantiation; values
+/// of signed instantiations must still render as `int`. Widthless `num`
+/// values (spec lets, spec fun results) have no bitvector rendering either:
+/// a caller's bitwise argument can mark a callee's parameter slot `Bitwise`
+/// and reach `num`-typed expressions in the callee's spec through it.
+pub fn bv_flag_for_type(env: &GlobalEnv, num_oper: &NumOperation, ty: &Type) -> bool {
+    *num_oper == Bitwise
+        && !type_contains_widthless_num(env, ty)
+        && !type_contains_signed_int(env, ty)
+}
+
+/// Returns `"bvN"` when `bv_flag` is true, `"int"` otherwise.
+fn uint_bv_type(bits: usize, bv_flag: bool) -> String {
+    if bv_flag {
+        format!("bv{}", bits)
+    } else {
+        "int".to_string()
+    }
+}
+
 /// Return boogie type for a local with given signature token.
-pub fn boogie_type(env: &GlobalEnv, ty: &Type) -> String {
+/// If `bv_flag` is true, returns bitvector types (bv8, bv16, etc.) for unsigned integer primitives.
+pub fn boogie_type(env: &GlobalEnv, ty: &Type, bv_flag: bool) -> String {
     use PrimitiveType::*;
     use Type::*;
     match ty {
         Primitive(p) => match p {
-            U8 | U16 | U32 | U64 | U128 | U256 | I8 | I16 | I32 | I64 | I128 | I256 | Num
-            | Address => "int".to_string(),
+            U8 => uint_bv_type(8, bv_flag),
+            U16 => uint_bv_type(16, bv_flag),
+            U32 => uint_bv_type(32, bv_flag),
+            U64 => uint_bv_type(64, bv_flag),
+            U128 => uint_bv_type(128, bv_flag),
+            U256 => uint_bv_type(256, bv_flag),
+            I8 | I16 | I32 | I64 | I128 | I256 => {
+                if bv_flag {
+                    // Signed integers have no bv rendering.
+                    env.error(&env.unknown_loc(), BV_TYPE_NOT_ENABLED_ERROR);
+                }
+                "int".to_string()
+            },
+            Num => {
+                if bv_flag {
+                    //TODO(#19036): add error message with accurate location info
+                    "<<num is not supported here>>".to_string()
+                } else {
+                    "int".to_string()
+                }
+            },
+            Address => "int".to_string(),
             Signer => "$signer".to_string(),
             Bool => "bool".to_string(),
             Range | EventStore => panic!("unexpected type"),
         },
-        Vector(et) => format!("Vec ({})", boogie_type(env, et)),
-        Struct(mid, sid, inst) => boogie_struct_name(&env.get_module(*mid).into_struct(*sid), inst),
-        Reference(_, bt) => format!("$Mutation ({})", boogie_type(env, bt)),
+        Vector(et) => format!("Vec ({})", boogie_type(env, et, bv_flag)),
+        Struct(mid, sid, inst) => {
+            boogie_struct_name(&env.get_module(*mid).into_struct(*sid), inst, bv_flag)
+        },
+        Reference(_, bt) => format!("$Mutation ({})", boogie_type(env, bt, bv_flag)),
         TypeParameter(idx) => boogie_type_param(env, *idx),
         Fun(param, result, abilities) => fun_type(env, param, result, *abilities),
-        Tuple(..) | TypeDomain(..) | ResourceDomain(..) | Error | Var(..) => {
+        Tuple(elems) => boogie_tuple_type(ty, elems, |t| boogie_type(env, t, bv_flag)),
+        TypeDomain(..) | ResourceDomain(..) | StateDomain | Error | Var(..) => {
             format!("<<unsupported: {:?}>>", ty)
         },
+    }
+}
+
+/// Helper to generate a Boogie tuple type from element types. The `type_fn` closure
+/// maps each element type to its Boogie representation.
+fn boogie_tuple_type(ty: &Type, elems: &[Type], type_fn: impl Fn(&Type) -> String) -> String {
+    let n = elems.len();
+    if n == 0 || n == 1 {
+        format!("<<unsupported: {:?}>>", ty)
+    } else if n > MAX_TUPLE_SIZE {
+        format!(
+            "<<tuple too large: {} elements, max is {}>>",
+            n, MAX_TUPLE_SIZE
+        )
+    } else {
+        // Use space-separated syntax with each argument in parentheses
+        // to handle complex types like $Mutation (int)
+        let args = elems.iter().map(|t| format!("({})", type_fn(t))).join(" ");
+        format!("$Tuple{} {}", n, args)
     }
 }
 
@@ -363,88 +547,24 @@ fn fun_type(env: &GlobalEnv, params: &Type, results: &Type, _abilities: AbilityS
         .clone()
         .flatten()
         .iter()
-        .map(|t| boogie_type_suffix(env, t))
+        .map(|t| boogie_type_suffix(env, t, false))
         .join("_");
     let results = results
         .clone()
         .flatten()
         .iter()
-        .map(|t| boogie_type_suffix(env, t))
+        .map(|t| boogie_type_suffix(env, t, false))
         .join("_");
     format!("$fun_{}_{}", params, results)
 }
 
-/// Return boogie type for a local with given signature token.
-/// TODO(tengzhang): combine with boogie_type later
-pub fn boogie_bv_type(env: &GlobalEnv, ty: &Type) -> String {
-    use PrimitiveType::*;
-    use Type::*;
-    match ty {
-        Primitive(p) => match p {
-            U8 => "bv8".to_string(),
-            U16 => "bv16".to_string(),
-            U32 => "bv32".to_string(),
-            U64 => "bv64".to_string(),
-            U128 => "bv128".to_string(),
-            U256 => "bv256".to_string(),
-            I8 | I16 | I32 | I64 | I128 | I256 => {
-                unimplemented!("{}", BV_TYPE_NOT_ENABLED_ERROR)
-            },
-            Address => "int".to_string(),
-            Signer => "$signer".to_string(),
-            Bool => "bool".to_string(),
-            Range | EventStore => panic!("unexpected type"),
-            Num => {
-                //TODO(tengzhang): add error message with accurate location info
-                "<<num is not supported here>>".to_string()
-            },
-        },
-        Vector(et) => format!("Vec ({})", boogie_bv_type(env, et)),
-        Struct(mid, sid, inst) => {
-            boogie_struct_name_bv(&env.get_module(*mid).into_struct(*sid), inst, true)
-        },
-        Reference(_, bt) => format!("$Mutation ({})", boogie_bv_type(env, bt)),
-        TypeParameter(idx) => boogie_type_param(env, *idx),
-        Fun(param, result, abilities) => fun_type(env, param, result, *abilities),
-        Tuple(..) | TypeDomain(..) | ResourceDomain(..) | Error | Var(..) => {
-            format!("<<unsupported: {:?}>>", ty)
-        },
-    }
-}
-
 /// Return boogie BV type for a number type.
-pub fn boogie_num_type_base_bv(env: &GlobalEnv, loc: Option<Loc>, ty: &Type) -> String {
-    let base = match ty.skip_reference() {
-        Type::Primitive(PrimitiveType::U8) => "Bv8",
-        Type::Primitive(PrimitiveType::U16) => "Bv16",
-        Type::Primitive(PrimitiveType::U32) => "Bv32",
-        Type::Primitive(PrimitiveType::U64) => "Bv64",
-        Type::Primitive(PrimitiveType::U128) => "Bv128",
-        Type::Primitive(PrimitiveType::U256) => "Bv256",
-        Type::Primitive(PrimitiveType::I8)
-        | Type::Primitive(PrimitiveType::I16)
-        | Type::Primitive(PrimitiveType::I32)
-        | Type::Primitive(PrimitiveType::I64)
-        | Type::Primitive(PrimitiveType::I128)
-        | Type::Primitive(PrimitiveType::I256) => {
-            env.error(&loc.unwrap_or_default(), BV_TYPE_NOT_ENABLED_ERROR);
-            "<<signed integer is not supported here>>"
-        },
-        Type::Primitive(PrimitiveType::Num) => {
-            env.error(&loc.unwrap_or_default(), NUM_TYPE_BASE_ERROR);
-            "<<num is not supported here>>"
-        },
-        _ => unreachable!(),
-    };
-    base.to_string()
-}
-
 pub fn boogie_type_param(_env: &GlobalEnv, idx: u16) -> String {
     format!("#{}", idx)
 }
 
 pub fn boogie_temp(env: &GlobalEnv, ty: &Type, instance: usize, bv_flag: bool) -> String {
-    boogie_temp_from_suffix(env, &boogie_type_suffix_bv(env, ty, bv_flag), instance)
+    boogie_temp_from_suffix(env, &boogie_type_suffix(env, ty, bv_flag), instance)
 }
 
 pub fn boogie_temp_from_suffix(_env: &GlobalEnv, suffix: &str, instance: usize) -> String {
@@ -470,33 +590,99 @@ pub fn boogie_num_type_string_capital(kind: &str, num: &str, bv_flag: bool) -> S
     [pre, num].join("")
 }
 
-pub fn boogie_num_type_base(env: &GlobalEnv, loc: Option<Loc>, ty: &Type) -> String {
+/// Boogie procedure-name suffix for an integer-typed dest of an arithmetic op,
+/// e.g. `U64`, `I128`, `Bv32`. Used by the `Add`/`Sub`/`Mul`/`Div`/`Mod` arms of
+/// the bytecode translator to dispatch to the right per-type Boogie procedure.
+/// Panics if `ty` is not a primitive integer.
+pub fn boogie_int_suffix(ty: &Type, bv_flag: bool) -> String {
     use PrimitiveType::*;
-    use Type::*;
     match ty {
-        Primitive(p) => match p {
-            U8 => "8".to_string(),
-            U16 => "16".to_string(),
-            U32 => "32".to_string(),
-            U64 => "64".to_string(),
-            U128 => "128".to_string(),
-            U256 => "256".to_string(),
-            I8 | I16 | I32 | I64 | I128 | I256 => {
-                env.error(&loc.unwrap_or_default(), BV_TYPE_NOT_ENABLED_ERROR);
-                "<<signed integer is not supported here>>".to_string()
-            },
-            Num => {
-                env.error(&loc.unwrap_or_default(), NUM_TYPE_BASE_ERROR);
-                "<<num is not supported here>>".to_string()
-            },
-            _ => format!("<<unsupported {:?}>>", ty),
-        },
-        _ => format!("<<unsupported {:?}>>", ty),
+        Type::Primitive(U8) => boogie_num_type_string_capital("U", "8", bv_flag),
+        Type::Primitive(U16) => boogie_num_type_string_capital("U", "16", bv_flag),
+        Type::Primitive(U32) => boogie_num_type_string_capital("U", "32", bv_flag),
+        Type::Primitive(U64) => boogie_num_type_string_capital("U", "64", bv_flag),
+        Type::Primitive(U128) => boogie_num_type_string_capital("U", "128", bv_flag),
+        Type::Primitive(U256) => boogie_num_type_string_capital("U", "256", bv_flag),
+        // Signed integers have no bv rendering; ignore `bv_flag` rather than
+        // alias to the unsigned bv procedure names.
+        Type::Primitive(I8) => "I8".to_string(),
+        Type::Primitive(I16) => "I16".to_string(),
+        Type::Primitive(I32) => "I32".to_string(),
+        Type::Primitive(I64) => "I64".to_string(),
+        Type::Primitive(I128) => "I128".to_string(),
+        Type::Primitive(I256) => "I256".to_string(),
+        _ => unreachable!("non-integer dest for arithmetic op"),
     }
 }
 
-/// Returns the suffix to specialize a name for the given type instance.
-pub fn boogie_type_suffix_bv(env: &GlobalEnv, ty: &Type, bv_flag: bool) -> String {
+/// Return the boogie base type for a number type.
+/// If `bv_flag` is true, returns "Bv8", "Bv16", etc. for bitvector types.
+/// Otherwise returns "8", "16", etc. for integer types.
+pub fn boogie_num_type_base(env: &GlobalEnv, loc: Option<Loc>, ty: &Type, bv_flag: bool) -> String {
+    use PrimitiveType::*;
+    use Type::*;
+    let base = match ty.skip_reference() {
+        Primitive(p) => match p {
+            U8 => {
+                if bv_flag {
+                    "Bv8"
+                } else {
+                    "8"
+                }
+            },
+            U16 => {
+                if bv_flag {
+                    "Bv16"
+                } else {
+                    "16"
+                }
+            },
+            U32 => {
+                if bv_flag {
+                    "Bv32"
+                } else {
+                    "32"
+                }
+            },
+            U64 => {
+                if bv_flag {
+                    "Bv64"
+                } else {
+                    "64"
+                }
+            },
+            U128 => {
+                if bv_flag {
+                    "Bv128"
+                } else {
+                    "128"
+                }
+            },
+            U256 => {
+                if bv_flag {
+                    "Bv256"
+                } else {
+                    "256"
+                }
+            },
+            I8 | I16 | I32 | I64 | I128 | I256 => {
+                env.error(&loc.unwrap_or_default(), BV_TYPE_NOT_ENABLED_ERROR);
+                "<<signed integer is not supported here>>"
+            },
+            Num => {
+                env.error(&loc.unwrap_or_default(), NUM_TYPE_BASE_ERROR);
+                "<<num is not supported here>>"
+            },
+            _ => return format!("<<unsupported {:?}>>", ty),
+        },
+        _ => return format!("<<unsupported {:?}>>", ty),
+    };
+    base.to_string()
+}
+
+/// Return the suffix to specialize a name for the given type instance.
+/// If `bv_flag` is true, uses bitvector type suffixes.
+pub fn boogie_type_suffix(env: &GlobalEnv, ty: &Type, bv_flag: bool) -> String {
     use PrimitiveType::*;
     use Type::*;
 
@@ -508,15 +694,17 @@ pub fn boogie_type_suffix_bv(env: &GlobalEnv, ty: &Type, bv_flag: bool) -> Strin
             U64 => boogie_num_type_string("u", "64", bv_flag),
             U128 => boogie_num_type_string("u", "128", bv_flag),
             U256 => boogie_num_type_string("u", "256", bv_flag),
-            I8 => boogie_num_type_string("i", "8", bv_flag),
-            I16 => boogie_num_type_string("i", "16", bv_flag),
-            I32 => boogie_num_type_string("i", "32", bv_flag),
-            I64 => boogie_num_type_string("i", "64", bv_flag),
-            I128 => boogie_num_type_string("i", "128", bv_flag),
-            I256 => boogie_num_type_string("i", "256", bv_flag),
+            // Signed integers have no bv rendering; ignore `bv_flag` rather
+            // than alias to the unsigned bv suffixes.
+            I8 => "i8".to_string(),
+            I16 => "i16".to_string(),
+            I32 => "i32".to_string(),
+            I64 => "i64".to_string(),
+            I128 => "i128".to_string(),
+            I256 => "i256".to_string(),
             Num => {
                 if bv_flag {
-                    //TODO(tengzhang): add error message with accurate location info
+                    //TODO(#19036): add error message with accurate location info
                     "<<num is not supported here>>".to_string()
                 } else {
                     "num".to_string()
@@ -530,7 +718,7 @@ pub fn boogie_type_suffix_bv(env: &GlobalEnv, ty: &Type, bv_flag: bool) -> Strin
         },
         Vector(et) => format!(
             "vec{}",
-            boogie_inst_suffix_bv(env, &[et.as_ref().to_owned()], &[bv_flag])
+            boogie_inst_suffix(env, &[et.as_ref().to_owned()], &[bv_flag])
         ),
         Struct(mid, sid, inst) => {
             boogie_type_suffix_for_struct(&env.get_module(*mid).into_struct(*sid), inst, bv_flag)
@@ -538,20 +726,27 @@ pub fn boogie_type_suffix_bv(env: &GlobalEnv, ty: &Type, bv_flag: bool) -> Strin
         TypeParameter(idx) => boogie_type_param(env, *idx),
         Fun(params, results, abilities) => fun_type(env, params, results, *abilities),
         Reference(ReferenceKind::Immutable, ty) => {
-            format!("$ref'{}'", boogie_type_suffix_bv(env, ty, bv_flag))
+            format!("$ref'{}'", boogie_type_suffix(env, ty, bv_flag))
         },
         Reference(ReferenceKind::Mutable, ty) => {
-            format!("$mut'{}'", boogie_type_suffix_bv(env, ty, bv_flag))
+            format!("$mut'{}'", boogie_type_suffix(env, ty, bv_flag))
         },
-        Tuple(..) | TypeDomain(..) | ResourceDomain(..) | Error | Var(..) => {
+        Tuple(elems) => {
+            let n = elems.len();
+            if n == 0 || n == 1 {
+                format!("<<unsupported {:?}>>", ty)
+            } else {
+                let suffixes = elems
+                    .iter()
+                    .map(|t| boogie_type_suffix(env, t, bv_flag))
+                    .join("_");
+                format!("$tup{}'{}'", n, suffixes)
+            }
+        },
+        TypeDomain(..) | ResourceDomain(..) | StateDomain | Error | Var(..) => {
             format!("<<unsupported {:?}>>", ty)
         },
     }
-}
-
-/// Return the suffix to specialize a name for the given type instance.
-pub fn boogie_type_suffix(env: &GlobalEnv, ty: &Type) -> String {
-    boogie_type_suffix_bv(env, ty, false)
 }
 
 pub fn boogie_type_suffix_for_struct(
@@ -564,10 +759,12 @@ pub fn boogie_type_suffix_for_struct(
             "${}_{}{}",
             boogie_module_name(&struct_env.module_env),
             struct_env.get_name().display(struct_env.symbol_pool()),
-            boogie_inst_suffix_bv_pair(struct_env.module_env.env, inst, &[false, bv_flag])
+            boogie_inst_suffix(struct_env.module_env.env, inst, &[false, bv_flag])
         )
     } else {
-        boogie_struct_name(struct_env, inst)
+        // bv_flag does not affect non-Table struct names (boogie_struct_name ignores it for
+        // non-intrinsic structs); pass false explicitly to make that clear at the call site.
+        boogie_struct_name(struct_env, inst, false)
     }
 }
 
@@ -579,49 +776,30 @@ pub fn boogie_type_suffix_for_struct_variant(
     boogie_struct_variant_name(struct_env, inst, *variant)
 }
 
-/// Generate suffix after instantiation of type parameters
-pub fn boogie_inst_suffix_bv(env: &GlobalEnv, inst: &[Type], bv_flag: &[bool]) -> String {
+/// Generate suffix after instantiation of type parameters.
+/// If `bv_flag` is empty, uses standard type suffixes for all types.
+/// If `bv_flag` has one element, applies that flag to all types.
+/// Otherwise, `bv_flag` must have the same length as `inst` and each flag is paired with its type.
+pub fn boogie_inst_suffix(env: &GlobalEnv, inst: &[Type], bv_flag: &[bool]) -> String {
     if inst.is_empty() {
         "".to_owned()
     } else {
-        let suffix = if bv_flag.len() == 1 {
+        let suffix = if bv_flag.is_empty() {
             inst.iter()
-                .map(|ty| boogie_type_suffix_bv(env, ty, bv_flag[0]))
+                .map(|ty| boogie_type_suffix(env, ty, false))
+                .join("_")
+        } else if bv_flag.len() == 1 {
+            inst.iter()
+                .map(|ty| boogie_type_suffix(env, ty, bv_flag[0]))
                 .join("_")
         } else {
             assert_eq!(inst.len(), bv_flag.len());
             inst.iter()
                 .zip(bv_flag.iter())
-                .map(|(ty, flag)| boogie_type_suffix_bv(env, ty, *flag))
+                .map(|(ty, flag)| boogie_type_suffix(env, ty, *flag))
                 .join("_")
         };
         format!("'{}'", suffix)
-    }
-}
-
-pub fn boogie_inst_suffix_bv_pair(env: &GlobalEnv, inst: &[Type], bv_flag: &[bool]) -> String {
-    if inst.is_empty() {
-        "".to_owned()
-    } else {
-        assert_eq!(inst.len(), bv_flag.len());
-        format!(
-            "'{}'",
-            inst.iter()
-                .zip(bv_flag.iter())
-                .map(|(ty, flag)| boogie_type_suffix_bv(env, ty, *flag))
-                .join("_")
-        )
-    }
-}
-
-pub fn boogie_inst_suffix(env: &GlobalEnv, inst: &[Type]) -> String {
-    if inst.is_empty() {
-        "".to_owned()
-    } else {
-        format!(
-            "'{}'",
-            inst.iter().map(|ty| boogie_type_suffix(env, ty)).join("_")
-        )
     }
 }
 
@@ -629,37 +807,26 @@ pub fn boogie_equality_for_type(env: &GlobalEnv, eq: bool, ty: &Type, bv_flag: b
     format!(
         "{}'{}'",
         if eq { "$IsEqual" } else { "!$IsEqual" },
-        boogie_type_suffix_bv(env, ty, bv_flag)
+        boogie_type_suffix(env, ty, bv_flag)
     )
 }
 
-/// Create boogie well-formed boolean expression
-/// TODO(tengzhang): combine with boogie_well_formed_expr
-pub fn boogie_well_formed_expr_bv(env: &GlobalEnv, name: &str, ty: &Type, bv_flag: bool) -> String {
-    let target = if ty.is_reference() {
-        format!("$Dereference({})", name)
-    } else {
-        name.to_owned()
-    };
-    let suffix = boogie_type_suffix_bv(env, ty.skip_reference(), bv_flag);
-    format!("$IsValid'{}'({})", suffix, target)
-}
-
 /// Create boogie well-formed boolean expression.
-pub fn boogie_well_formed_expr(env: &GlobalEnv, name: &str, ty: &Type) -> String {
+/// If `bv_flag` is true, uses bitvector type suffix.
+pub fn boogie_well_formed_expr(env: &GlobalEnv, name: &str, ty: &Type, bv_flag: bool) -> String {
     let target = if ty.is_reference() {
         format!("$Dereference({})", name)
     } else {
         name.to_owned()
     };
-    let suffix = boogie_type_suffix(env, ty.skip_reference());
+    let suffix = boogie_type_suffix(env, ty.skip_reference(), bv_flag);
     format!("$IsValid'{}'({})", suffix, target)
 }
 
 /// Create boogie well-formed check. The result will be either an empty string or a
 /// newline-terminated assume statement.
 pub fn boogie_well_formed_check(env: &GlobalEnv, name: &str, ty: &Type, bv_flag: bool) -> String {
-    let expr = boogie_well_formed_expr_bv(env, name, ty, bv_flag);
+    let expr = boogie_well_formed_expr(env, name, ty, bv_flag);
     if !expr.is_empty() {
         format!("assume {};", expr)
     } else {
@@ -673,7 +840,7 @@ pub fn boogie_declare_global(env: &GlobalEnv, name: &str, ty: &Type) -> String {
     format!(
         "var {} : {} where {};",
         name,
-        boogie_type(env, ty),
+        boogie_type(env, ty, false),
         // TODO: boogie crash boogie_well_formed_expr(env, name, ty)
         // boogie_well_formed_expr(env, name, ty)"
         "true"
@@ -796,10 +963,12 @@ fn boogie_debug_track(
     ty: &Type,
     bv_flag: bool,
 ) -> String {
-    let fun_def_idx = fun_target
-        .func_env
-        .get_def_idx()
-        .expect(COMPILED_MODULE_AVAILABLE);
+    // Functions without a def_idx (e.g. intrinsics) skip debug tracking.
+    // Note: lemma functions now get synthetic def_idx assigned in attach_compiled_module.
+    let fun_def_idx = match fun_target.func_env.get_def_idx() {
+        Some(idx) => idx,
+        None => return String::new(),
+    };
     let value = format!("$t{}", idx);
     if ty.is_reference() {
         let temp_name = boogie_temp(fun_target.global_env(), ty.skip_reference(), 0, bv_flag);
@@ -888,14 +1057,10 @@ impl TypeIdentToken {
         fn get_char_array(tokens: &[TypeIdentToken], start: usize, end: usize) -> String {
             let elements = (start..end)
                 .map(|k| {
-                    format!(
-                        "[{} := {}]",
-                        k - start,
-                        match &tokens[k] {
-                            TypeIdentToken::Char(c) => *c,
-                            TypeIdentToken::Variable(_) => unreachable!(),
-                        }
-                    )
+                    format!("[{} := {}]", k - start, match &tokens[k] {
+                        TypeIdentToken::Char(c) => *c,
+                        TypeIdentToken::Variable(_) => unreachable!(),
+                    })
                 })
                 .join("");
             format!("Vec(DefaultVecMap(){}, {})", elements, end - start)
@@ -1040,7 +1205,8 @@ fn type_name_to_ident_tokens(
         | Type::Primitive(PrimitiveType::EventStore)
         | Type::Fun(..)
         | Type::TypeDomain(..)
-        | Type::ResourceDomain(..) => {
+        | Type::ResourceDomain(..)
+        | Type::StateDomain => {
             unreachable!("Unexpected spec-only type in type_name call");
         },
         // temporary types
@@ -1138,7 +1304,8 @@ fn type_name_to_info_pack(env: &GlobalEnv, ty: &Type) -> Option<TypeInfoPack> {
         | Type::Primitive(PrimitiveType::EventStore)
         | Type::Fun(..)
         | Type::TypeDomain(..)
-        | Type::ResourceDomain(..) => {
+        | Type::ResourceDomain(..)
+        | Type::StateDomain => {
             unreachable!("Unexpected spec-only type in type_name call");
         },
         // temporary types
@@ -1210,7 +1377,7 @@ pub fn boogie_reflection_type_is_struct(env: &GlobalEnv, ty: &Type) -> String {
 
 /// Return name of generated function for applying a function value.
 pub fn boogie_fun_apply_name(env: &GlobalEnv, ty: &Type) -> String {
-    format!("$apply'{}'", boogie_type_suffix(env, ty))
+    format!("$apply'{}'", boogie_type_suffix(env, ty, false))
 }
 
 /// Return name of generated function for constructing a closure based on given function and mask.
@@ -1220,6 +1387,277 @@ pub fn boogie_closure_pack_name(
     mask: ClosureMask,
 ) -> String {
     let fun_env = env.get_function(fun.to_qualified_id());
-    let fun_name = boogie_function_name(&fun_env, &fun.inst);
+    let fun_name = boogie_function_name(&fun_env, &fun.inst, &[]);
     format!("$closure'{}'_{}", fun_name, mask)
+}
+
+/// Return name of the datatype constructor for a function parameter variant.
+/// These variants represent function-typed parameters of verification targets.
+pub fn boogie_fun_param_name(
+    env: &GlobalEnv,
+    fun: &QualifiedInstId<FunId>,
+    param_sym: Symbol,
+) -> String {
+    let fun_env = env.get_function(fun.to_qualified_id());
+    let fun_name = boogie_function_name(&fun_env, &fun.inst, &[]);
+    let param_name = param_sym.display(env.symbol_pool());
+    format!("$param'{}${}'", fun_name, param_name)
+}
+
+/// Return name of a behavioral predicate spec function (requires_of, aborts_of, ensures_of)
+/// for a function-typed parameter in Boogie.
+pub fn boogie_behavioral_spec_fun_name(
+    env: &GlobalEnv,
+    fun: &QualifiedInstId<FunId>,
+    param_sym: Symbol,
+    kind: BehaviorKind,
+    inst: &[Type],
+) -> String {
+    let fun_env = env.get_function(fun.to_qualified_id());
+    let module_name = boogie_module_name(&fun_env.module_env);
+    let fun_name_sym = fun_env.get_name();
+    let fun_name = fun_name_sym.display(env.symbol_pool());
+    let param_name = param_sym.display(env.symbol_pool());
+    // The spec function name format matches what spec_rewriter generates and what
+    // spec_translator expects: ${module}_$${kind}$${fun}$${param}${suffix}
+    format!(
+        "${}_${}${}${}{}",
+        module_name,
+        kind,
+        fun_name,
+        param_name,
+        boogie_inst_suffix(env, inst, &[])
+    )
+}
+
+/// Return name of a behavioral predicate result function for ensures_of.
+/// This is an uninterpreted function that returns the result value(s) for a given input.
+/// When `multi_result` is false (single result), the format is
+/// `${module}_$ensures_of_result$${fun}$${param}${suffix}`.
+/// When `multi_result` is true (2+ results as a tuple), the format is
+/// `${module}_$ensures_of_results$${fun}$${param}${suffix}`.
+pub fn boogie_behavioral_result_fun_name(
+    env: &GlobalEnv,
+    fun: &QualifiedInstId<FunId>,
+    param_sym: Symbol,
+    inst: &[Type],
+    multi_result: bool,
+) -> String {
+    let fun_env = env.get_function(fun.to_qualified_id());
+    let module_name = boogie_module_name(&fun_env.module_env);
+    let fun_name_sym = fun_env.get_name();
+    let fun_name = fun_name_sym.display(env.symbol_pool());
+    let param_name = param_sym.display(env.symbol_pool());
+    let plural = if multi_result { "s" } else { "" };
+    format!(
+        "${}_$ensures_of_result{}${}${}{}",
+        module_name,
+        plural,
+        fun_name,
+        param_name,
+        boogie_inst_suffix(env, inst, &[])
+    )
+}
+
+/// Return name of the datatype constructor for a struct field variant.
+/// These variants represent storable function-typed fields in structs.
+/// Format: `$struct_field'StructName$field'`
+pub fn boogie_struct_field_name(
+    env: &GlobalEnv,
+    struct_id: &QualifiedInstId<StructId>,
+    field_sym: Symbol,
+) -> String {
+    let struct_env = env.get_struct_qid(struct_id.to_qualified_id());
+    let struct_name = boogie_struct_name(&struct_env, &struct_id.inst, false);
+    let field_name = field_sym.display(env.symbol_pool());
+    format!("$struct_field'{}${}'", struct_name, field_name)
+}
+
+/// Return name of a behavioral predicate spec function for a struct field variant.
+/// These are uninterpreted functions parameterized by instance id `n`.
+/// Format: `${module}_$sf_{kind}${struct}${field}${suffix}`
+pub fn boogie_struct_field_spec_fun_name(
+    env: &GlobalEnv,
+    struct_id: &QualifiedInstId<StructId>,
+    field_sym: Symbol,
+    kind: BehaviorKind,
+    inst: &[Type],
+) -> String {
+    let struct_env = env.get_struct_qid(struct_id.to_qualified_id());
+    let module_name = boogie_module_name(&struct_env.module_env);
+    let struct_name_sym = struct_env.get_name();
+    let struct_name = struct_name_sym.display(env.symbol_pool());
+    let field_name = field_sym.display(env.symbol_pool());
+    format!(
+        "${}_$sf_{}${}${}{}",
+        module_name,
+        kind,
+        struct_name,
+        field_name,
+        boogie_inst_suffix(env, inst, &[])
+    )
+}
+
+/// Return name of a behavioral predicate result function for a struct field variant.
+/// Format: `${module}_$sf_ensures_of_result(s?)${struct}${field}${suffix}`
+pub fn boogie_struct_field_result_fun_name(
+    env: &GlobalEnv,
+    struct_id: &QualifiedInstId<StructId>,
+    field_sym: Symbol,
+    inst: &[Type],
+    multi_result: bool,
+) -> String {
+    let struct_env = env.get_struct_qid(struct_id.to_qualified_id());
+    let module_name = boogie_module_name(&struct_env.module_env);
+    let struct_name_sym = struct_env.get_name();
+    let struct_name = struct_name_sym.display(env.symbol_pool());
+    let field_name = field_sym.display(env.symbol_pool());
+    let plural = if multi_result { "s" } else { "" };
+    format!(
+        "${}_$sf_ensures_of_result{}${}${}{}",
+        module_name,
+        plural,
+        struct_name,
+        field_name,
+        boogie_inst_suffix(env, inst, &[])
+    )
+}
+
+/// Return name of the behavioral predicate evaluation function for a function type.
+/// These inline functions dispatch on closure variants to evaluate behavioral predicates.
+/// Format: `${kind}'${type_suffix}'`
+///
+/// `ResultOf` and `WriteOf(j)` share a single tuple-returning Skolem symbol:
+/// the Skolem returns `Tuple<declared..., post_states...>` and callers project
+/// the appropriate slice. Sharing the symbol is what keeps `ensures_of` and
+/// `result_of` mutually consistent — the alternative (separate `write_of_j`
+/// Skolems pinned by a functionality axiom) is unsound when combined with a
+/// universal axiom over post-state inputs.
+pub fn boogie_behavioral_eval_fun_name(
+    env: &GlobalEnv,
+    fun_type: &Type,
+    kind: BehaviorKind,
+) -> String {
+    let kind_name = match kind {
+        BehaviorKind::ResultOf | BehaviorKind::WriteOf(_) => "result_of".to_string(),
+        _ => kind.to_string(),
+    };
+    format!(
+        "${}'{}'",
+        kind_name,
+        boogie_type_suffix(env, fun_type, false)
+    )
+}
+
+/// Return name of a per-function behavioral spec function for a closure target function.
+/// These inline functions have concrete bodies derived from the function's spec.
+/// Format: `$bp_{kind}'{fun_name}'`
+/// For example: `$bp_ensures_of'$1_m_callee'`
+pub fn boogie_behavioral_fun_spec_name(
+    env: &GlobalEnv,
+    fun: &QualifiedInstId<FunId>,
+    kind: BehaviorKind,
+) -> String {
+    let fun_env = env.get_function(fun.to_qualified_id());
+    let fun_name = boogie_function_name(&fun_env, &fun.inst, &[]);
+    format!("$bp_{}'{}'", kind, fun_name)
+}
+
+/// Return name of a per-function behavioral result function for a closure target function.
+/// This is an uninterpreted function that returns the result value(s) for given inputs.
+/// Format: `$bp_ensures_of_result'{fun_name}'` (single) or `$bp_ensures_of_results'{fun_name}'` (multi)
+pub fn boogie_behavioral_fun_result_name(
+    env: &GlobalEnv,
+    fun: &QualifiedInstId<FunId>,
+    multi_result: bool,
+) -> String {
+    let fun_env = env.get_function(fun.to_qualified_id());
+    let fun_name = boogie_function_name(&fun_env, &fun.inst, &[]);
+    let plural = if multi_result { "s" } else { "" };
+    format!("$bp_ensures_of_result{}'{}'", plural, fun_name)
+}
+
+/// Compute the union of (used_memory, old_memory) for all closure/param/field
+/// variants matching the given function type in MonoInfo.
+/// This is used by the Boogie code generator for emitting memory arguments in
+/// behavioral predicate evaluators and by the label analysis for discovering
+/// which (label, memory) pairs need Boogie variable declarations.
+pub fn compute_evaluator_memory_union(
+    env: &GlobalEnv,
+    fun_type: &Type,
+) -> (
+    BTreeSet<QualifiedInstId<StructId>>,
+    BTreeSet<QualifiedInstId<StructId>>,
+) {
+    use move_prover_bytecode_pipeline::mono_analysis;
+
+    let mono_info = mono_analysis::get_info(env);
+    let boogie_name = boogie_type(env, fun_type, false);
+
+    let mut union_used_memory = BTreeSet::new();
+    let mut union_old_memory = BTreeSet::new();
+
+    // From closures
+    for (ty, closure_infos) in &mono_info.fun_infos {
+        if boogie_type(env, ty, false) != boogie_name {
+            continue;
+        }
+        for info in closure_infos {
+            let fun_env = env.get_function(info.fun.to_qualified_id());
+            for mem in fun_env.get_spec_used_memory().iter() {
+                union_used_memory.insert(mem.clone().instantiate(&info.fun.inst));
+            }
+            for mem in fun_env.get_spec_old_memory().iter() {
+                union_old_memory.insert(mem.clone().instantiate(&info.fun.inst));
+            }
+        }
+    }
+
+    // From function parameters
+    for (ty, param_infos) in &mono_info.fun_param_infos {
+        if boogie_type(env, ty, false) != boogie_name {
+            continue;
+        }
+        for info in param_infos {
+            let fun_env = env.get_function(info.fun.to_qualified_id());
+            for access in fun_env.get_fun_param_access_of() {
+                if access.fun_param == info.param_sym {
+                    for mem in &access.used_memory {
+                        union_used_memory.insert(mem.clone().instantiate(&info.fun.inst));
+                    }
+                    for mem in &access.old_memory {
+                        union_old_memory.insert(mem.clone().instantiate(&info.fun.inst));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    // From struct fields (with wildcard modifies_all/reads_all handling)
+    for (ty, field_infos) in &mono_info.fun_struct_field_infos {
+        if boogie_type(env, ty, false) != boogie_name {
+            continue;
+        }
+        for info in field_infos {
+            let struct_env = env.get_struct_qid(info.struct_id.to_qualified_id());
+            for access in struct_env.get_field_access_of() {
+                if access.fun_param == info.field_sym {
+                    if access.frame_spec.modifies_all || access.frame_spec.reads_all {
+                        for qid in mono_info.all_memory_qids(env) {
+                            union_used_memory.insert(qid.clone());
+                            if access.frame_spec.modifies_all {
+                                union_old_memory.insert(qid);
+                            }
+                        }
+                    } else {
+                        union_used_memory.extend(access.used_memory.iter().cloned());
+                        union_old_memory.extend(access.old_memory.iter().cloned());
+                    }
+                }
+            }
+        }
+    }
+
+    (union_used_memory, union_old_memory)
 }

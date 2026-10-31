@@ -1,7 +1,6 @@
 /// The `function_info` module defines the `FunctionInfo` type which simulates a function pointer.
 module aptos_framework::function_info {
-    use std::error;
-    use std::features;
+    use std::reflect;
     use std::signer;
     use std::string::{Self, String};
 
@@ -13,8 +12,6 @@ module aptos_framework::function_info {
     const EINVALID_IDENTIFIER: u64 = 1;
     /// Function specified in the FunctionInfo doesn't exist on chain.
     const EINVALID_FUNCTION: u64 = 2;
-    /// Feature hasn't been activated yet.
-    const ENOT_ACTIVATED: u64 = 3;
 
     /// A `String` holds a sequence of bytes which is guaranteed to be in utf8 format.
     struct FunctionInfo has copy, drop, store {
@@ -42,11 +39,11 @@ module aptos_framework::function_info {
         function_name: String,
     ): FunctionInfo {
         assert!(
-            is_identifier(string::bytes(&module_name)),
+            is_identifier(module_name.bytes()),
             EINVALID_IDENTIFIER
         );
         assert!(
-            is_identifier(string::bytes(&function_name)),
+            is_identifier(function_name.bytes()),
             EINVALID_IDENTIFIER
         );
         FunctionInfo {
@@ -70,10 +67,6 @@ module aptos_framework::function_info {
         framework_function: &FunctionInfo,
         dispatch_target: &FunctionInfo,
     ): bool {
-        assert!(
-            features::dispatchable_fungible_asset_enabled(),
-            error::aborted(ENOT_ACTIVATED)
-        );
         load_function_impl(dispatch_target);
         check_dispatch_type_compatibility_impl(framework_function, dispatch_target)
     }
@@ -89,6 +82,19 @@ module aptos_framework::function_info {
     /// if such module isn't accessed previously in the transaction.
     public(friend) fun load_module_from_function(f: &FunctionInfo) {
         load_function_impl(f)
+    }
+
+    /// Resolves the function referenced by `self` into a function value of type `FuncType`.
+    /// Aborts with `EINVALID_FUNCTION` on failure; unreachable for targets validated via
+    /// `check_dispatch_type_compatibility`, whose signatures are frozen by upgrade rules.
+    public(friend) fun load_function_value<FuncType>(self: &FunctionInfo): FuncType {
+        let result = reflect::resolve<FuncType>(
+            self.module_address,
+            &self.module_name,
+            &self.function_name,
+        );
+        assert!(result.is_ok(), EINVALID_FUNCTION);
+        result.unwrap()
     }
 
     native fun check_dispatch_type_compatibility_impl(lhs: &FunctionInfo, r: &FunctionInfo): bool;

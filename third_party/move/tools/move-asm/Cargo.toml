@@ -9,6 +9,16 @@ license = "Apache-2.0"
 publish = false
 edition = { workspace = true }
 
+[lib]
+doctest = false
+
+[[bin]]
+name = "move-bytecode-stats"
+path = "src/bytecode_stats.rs"
+
+[features]
+default = []
+
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
@@ -17,6 +27,7 @@ codespan-reporting = { workspace = true, features = ["serde", "serialization"] }
 either = { workspace = true }
 move-binary-format = { workspace = true }
 move-core-types = { workspace = true }
+move-coverage = { workspace = true }
 
 [dev-dependencies]
 itertools = { workspace = true }
@@ -24,12 +35,6 @@ libtest-mimic = { workspace = true }
 move-transactional-test-runner = { workspace = true }
 walkdir = { workspace = true }
 
-[features]
-default = []
-
 [[test]]
 name = "testsuite"
 harness = false
-
-[lib]
-doctest = false

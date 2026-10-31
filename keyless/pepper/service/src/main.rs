@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_crypto::constant_time;
 use aptos_keyless_pepper_common::PepperInput;
@@ -14,7 +14,7 @@ use aptos_keyless_pepper_service::{
     deployment_information::DeploymentInformation,
     external_resources::{
         jwk_fetcher,
-        jwk_fetcher::{JWKCache, JWKIssuer},
+        jwk_types::{FederatedJWKIssuer, FederatedJWKs, JWKCache, JWKIssuer},
         resource_fetcher,
         resource_fetcher::CachedResources,
     },
@@ -22,7 +22,9 @@ use aptos_keyless_pepper_service::{
     metrics::DEFAULT_METRICS_SERVER_PORT,
     request_handler,
     request_handler::DEFAULT_PEPPER_SERVICE_PORT,
-    utils, vuf_keypair,
+    utils,
+    utils::HttpHeader,
+    vuf_keypair,
     vuf_keypair::VUFKeypair,
 };
 use aptos_logger::{error, info, warn};
@@ -121,6 +123,16 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_PEPPER_SERVICE_PORT)]
     pepper_service_port: u16,
 
+    /// Additional HTTP headers to attach to resource fetch requests (e.g., on-chain
+    /// Groth16 VK and keyless config). Useful for internal auth when using an internal
+    /// API gateway URL instead of the public endpoint.
+    ///
+    /// For example:
+    /// --resource-fetch-headers="x-internal-application-id my-app-id"
+    /// --resource-fetch-headers="authorization Bearer my-token"
+    #[arg(long)]
+    resource_fetch_headers: Vec<HttpHeader>,
+
     /// The hex-encoded VUF private key (used directly if provided, otherwise derived from the seed)
     #[arg(
         long,
@@ -188,10 +200,55 @@ async fn main() {
     let account_recovery_managers =
         Arc::new(AccountRecoveryManagers::new(args.account_recovery_managers));
 
+    // Build the default headers for resource fetch requests.
+    // Start with any headers passed via CLI args, then merge in headers from env vars
+    // (INTERNAL_NODE_API_HEADER_<i>_NAME / INTERNAL_NODE_API_HEADER_<i>_VALUE).
+    let mut resource_fetch_headers = args.resource_fetch_headers;
+    {
+        let mut i = 0usize;
+        loop {
+            let name = std::env::var(format!("INTERNAL_NODE_API_HEADER_{i}_NAME")).ok();
+            let value = std::env::var(format!("INTERNAL_NODE_API_HEADER_{i}_VALUE")).ok();
+            match (name, value) {
+                (Some(name), Some(value)) if !name.is_empty() && !value.is_empty() => {
+                    resource_fetch_headers.push(HttpHeader { name, value });
+                    i += 1;
+                },
+                _ => break,
+            }
+        }
+    }
+    let resource_fetch_header_map = utils::http_headers_to_header_map(&resource_fetch_headers);
+
+    // If INTERNAL_NODE_API is set, use it as the base URL for on-chain resource fetching
+    // (overrides the --on-chain-groth16-vk-url / --on-chain-keyless-config-url args).
+    const GROTH16_VK_PATH: &str =
+        "/v1/accounts/0x1/resource/0x1::keyless_account::Groth16VerificationKey";
+    const KEYLESS_CONFIG_PATH: &str =
+        "/v1/accounts/0x1/resource/0x1::keyless_account::Configuration";
+    let (on_chain_groth16_vk_url, on_chain_keyless_config_url) =
+        if let Ok(internal_node_api) = std::env::var("INTERNAL_NODE_API") {
+            let base = internal_node_api.trim_end_matches('/');
+            info!(
+            "INTERNAL_NODE_API is set; using it as the base URL for on-chain resource fetching: {}",
+            base
+        );
+            (
+                Some(format!("{}{}", base, GROTH16_VK_PATH)),
+                Some(format!("{}{}", base, KEYLESS_CONFIG_PATH)),
+            )
+        } else {
+            (
+                args.on_chain_groth16_vk_url,
+                args.on_chain_keyless_config_url,
+            )
+        };
+
     // Start the cached resource fetcher
     let cached_resources = resource_fetcher::start_cached_resource_fetcher(
-        args.on_chain_groth16_vk_url,
-        args.on_chain_keyless_config_url,
+        on_chain_groth16_vk_url,
+        on_chain_keyless_config_url,
+        resource_fetch_header_map,
     );
 
     // Create the account recovery database
@@ -217,13 +274,15 @@ async fn main() {
         };
 
     // Start the JWK fetchers
-    let jwk_cache = jwk_fetcher::start_jwk_fetchers(args.jwk_issuers_override.clone());
+    let (jwk_cache, federated_jwks) =
+        jwk_fetcher::start_jwk_fetchers(args.jwk_issuers_override.clone());
 
     // Start the pepper service
     start_pepper_service(
         args.pepper_service_port,
         vuf_keypair,
         jwk_cache,
+        federated_jwks,
         cached_resources,
         account_recovery_managers,
         account_recovery_db,
@@ -256,6 +315,7 @@ async fn start_pepper_service(
     pepper_service_port: u16,
     vuf_keypair: Arc<VUFKeypair>,
     jwk_cache: JWKCache,
+    federated_jwks: FederatedJWKs<FederatedJWKIssuer>,
     cached_resources: CachedResources,
     account_recovery_managers: Arc<AccountRecoveryManagers>,
     account_recovery_db: Arc<dyn AccountRecoveryDBInterface + Send + Sync>,
@@ -271,6 +331,7 @@ async fn start_pepper_service(
         // Clone the required Arcs for the service function
         let vuf_keypair = vuf_keypair.clone();
         let jwk_cache = jwk_cache.clone();
+        let federated_jwks = federated_jwks.clone();
         let cached_resources = cached_resources.clone();
         let account_recovery_managers = account_recovery_managers.clone();
         let account_recovery_db = account_recovery_db.clone();
@@ -289,6 +350,7 @@ async fn start_pepper_service(
                 // Clone the required Arcs for the request handler
                 let vuf_keypair = vuf_keypair.clone();
                 let jwk_cache = jwk_cache.clone();
+                let federated_jwks = federated_jwks.clone();
                 let cached_resources = cached_resources.clone();
                 let account_recovery_managers = account_recovery_managers.clone();
                 let account_recovery_db = account_recovery_db.clone();
@@ -301,6 +363,7 @@ async fn start_pepper_service(
                         request,
                         vuf_keypair.clone(),
                         jwk_cache.clone(),
+                        federated_jwks.clone(),
                         cached_resources.clone(),
                         account_recovery_managers.clone(),
                         account_recovery_db.clone(),

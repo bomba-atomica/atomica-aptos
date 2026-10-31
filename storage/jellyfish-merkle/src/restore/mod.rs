@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module implements the functionality to restore a `JellyfishMerkleTree` from small chunks
 //! of states.
@@ -316,13 +315,10 @@ where
             // partial node and we do not know its hash yet. For the lowest partial node, we just
             // find all its known children from storage in the loop above.
             if let Some(index) = previous_child_index {
-                internal_info.set_child(
-                    index,
-                    ChildInfo::Internal {
-                        hash: None,
-                        leaf_count: None,
-                    },
-                );
+                internal_info.set_child(index, ChildInfo::Internal {
+                    hash: None,
+                    leaf_count: None,
+                });
             }
 
             partial_nodes.push(internal_info);
@@ -341,6 +337,18 @@ where
     /// using the proof and root hash, then write things to storage. If the chunk is invalid, an
     /// error will be returned and nothing will be written to storage.
     pub fn add_chunk_impl(
+        &mut self,
+        chunk: Vec<(&K, HashValue)>,
+        proof: SparseMerkleRangeProof,
+    ) -> Result<()> {
+        self.verify_chunk(chunk, proof)?;
+        self.commit_chunk()
+    }
+
+    /// Verifies a chunk and stages frozen nodes in memory; call [`Self::commit_chunk`] to
+    /// flush. On error, in-memory state is partially updated — abort the restore rather
+    /// than calling again.
+    pub fn verify_chunk(
         &mut self,
         mut chunk: Vec<(&K, HashValue)>,
         proof: SparseMerkleRangeProof,
@@ -393,8 +401,16 @@ where
 
         // Verify what we have added so far is all correct.
         self.verify(proof)?;
+        Ok(())
+    }
 
-        // Write the frozen nodes to storage.
+    /// Flushes frozen nodes staged by [`Self::verify_chunk`]. With async commit, awaits the
+    /// previous write before spawning the new one.
+    pub fn commit_chunk(&mut self) -> Result<()> {
+        if self.finished || self.frozen_nodes.is_empty() {
+            return Ok(());
+        }
+
         if self.async_commit {
             self.wait_for_async_commit()?;
             let (tx, rx) = channel();
@@ -507,13 +523,10 @@ where
             let new_node_key = NodeKey::new(self.version, visited_nibbles);
 
             let mut internal_info = InternalInfo::new_empty(new_node_key);
-            internal_info.set_child(
-                u8::from(next_nibble) as usize,
-                ChildInfo::Internal {
-                    hash: None,
-                    leaf_count: None,
-                },
-            );
+            internal_info.set_child(u8::from(next_nibble) as usize, ChildInfo::Internal {
+                hash: None,
+                leaf_count: None,
+            });
             self.partial_nodes.push(internal_info);
         }
 

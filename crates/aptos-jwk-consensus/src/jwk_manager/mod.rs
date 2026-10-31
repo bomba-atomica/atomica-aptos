@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     jwk_observer::JWKObserver,
@@ -299,11 +299,16 @@ impl IssuerLevelConsensusManager {
         } = rpc_req;
         match msg {
             JWKConsensusMsg::ObservationRequest(request) => {
-                let state = self.states_by_issuer.entry(request.issuer).or_default();
-                let response: Result<JWKConsensusMsg> = match &state.consensus_state {
-                    ConsensusState::NotStarted => Err(anyhow!("observed update unavailable")),
-                    ConsensusState::InProgress { my_proposal, .. }
-                    | ConsensusState::Finished { my_proposal, .. } => Ok(
+                let response: Result<JWKConsensusMsg> = match self
+                    .states_by_issuer
+                    .get(&request.issuer)
+                    .map(|s| &s.consensus_state)
+                {
+                    None | Some(ConsensusState::NotStarted) => {
+                        Err(anyhow!("observed update unavailable"))
+                    },
+                    Some(ConsensusState::InProgress { my_proposal, .. })
+                    | Some(ConsensusState::Finished { my_proposal, .. }) => Ok(
                         JWKConsensusMsg::ObservationResponse(ObservedUpdateResponse {
                             epoch: self.epoch_state.epoch,
                             update: my_proposal.clone(),

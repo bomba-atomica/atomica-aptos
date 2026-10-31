@@ -1,9 +1,9 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{builder::GenesisConfiguration, config::ValidatorConfiguration};
 use aptos_config::config::{
-    RocksdbConfigs, StorageDirPaths, BUFFERED_STATE_TARGET_ITEMS,
+    HotStateConfig, RocksdbConfigs, StorageDirPaths, BUFFERED_STATE_TARGET_ITEMS,
     DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD, NO_OP_STORAGE_PRUNER_CONFIG,
 };
 use aptos_db::AptosDB;
@@ -12,7 +12,9 @@ use aptos_storage_interface::DbReaderWriter;
 use aptos_temppath::TempPath;
 use aptos_types::{
     chain_id::ChainId,
-    on_chain_config::{Features, OnChainJWKConsensusConfig, OnChainRandomnessConfig},
+    on_chain_config::{
+        Features, OnChainChunkyDKGConfig, OnChainJWKConsensusConfig, OnChainRandomnessConfig,
+    },
     transaction::Transaction,
     waypoint::Waypoint,
 };
@@ -63,6 +65,8 @@ pub struct MainnetGenesisInfo {
     initial_features_override: Option<Features>,
     /// An optional randomness config to replace `OnChainRandomnessConfig::default_for_genesis()`.
     randomness_config_override: Option<OnChainRandomnessConfig>,
+    /// An optional chunky DKG config to replace `OnChainChunkyDKGConfig::default_for_genesis()`.
+    chunky_dkg_config_override: Option<OnChainChunkyDKGConfig>,
     /// An optional feature vec to replace `OnChainJWKConsensusConfig::default_for_genesis()`.
     jwk_consensus_config_override: Option<OnChainJWKConsensusConfig>,
 }
@@ -106,6 +110,7 @@ impl MainnetGenesisInfo {
             employee_vesting_period_duration,
             initial_features_override: genesis_config.initial_features_override.clone(),
             randomness_config_override: genesis_config.randomness_config_override.clone(),
+            chunky_dkg_config_override: genesis_config.chunky_dkg_config_override.clone(),
             jwk_consensus_config_override: genesis_config.jwk_consensus_config_override.clone(),
         })
     }
@@ -142,9 +147,11 @@ impl MainnetGenesisInfo {
                 employee_vesting_period_duration: self.employee_vesting_period_duration,
                 initial_features_override: self.initial_features_override.clone(),
                 randomness_config_override: self.randomness_config_override.clone(),
+                chunky_dkg_config_override: self.chunky_dkg_config_override.clone(),
                 jwk_consensus_config_override: self.jwk_consensus_config_override.clone(),
                 initial_jwks: vec![],
                 keyless_groth16_vk: None,
+                initialize_decryption_at_genesis: true,
             },
         )
     }
@@ -154,13 +161,13 @@ impl MainnetGenesisInfo {
         let path = TempPath::new();
         let aptosdb = AptosDB::open(
             StorageDirPaths::from_path(path),
-            false,
+            /* readonly = */ false,
             NO_OP_STORAGE_PRUNER_CONFIG,
             RocksdbConfigs::default(),
-            false, /* indexer */
             BUFFERED_STATE_TARGET_ITEMS,
             DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
-            None,
+            /* internal_indexer_db = */ None,
+            HotStateConfig::default(),
         )?;
         let db_rw = DbReaderWriter::new(aptosdb);
         aptos_executor::db_bootstrapper::generate_waypoint::<AptosVMBlockExecutor>(&db_rw, genesis)

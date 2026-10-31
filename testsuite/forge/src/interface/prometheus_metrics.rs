@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::Swarm;
 use anyhow::Error;
@@ -161,7 +161,7 @@ impl LatencyBreakdown {
 }
 
 pub async fn fetch_latency_breakdown(
-    swarm: Arc<tokio::sync::RwLock<Box<(dyn Swarm)>>>,
+    swarm: Arc<tokio::sync::RwLock<Box<dyn Swarm>>>,
     start_time: u64,
     end_time: u64,
 ) -> anyhow::Result<LatencyBreakdown> {

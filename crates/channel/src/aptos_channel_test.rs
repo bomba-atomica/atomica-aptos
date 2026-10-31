@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{aptos_channel, aptos_channel::ElementStatus, message_queues::QueueStyle};
 use aptos_types::account_address::AccountAddress;
@@ -151,4 +150,11 @@ fn test_feedback_on_drop() {
         assert_eq!(receiver.select_next_some().now_or_never(), None);
     };
     block_on(task);
+}
+
+#[test]
+fn test_push_expect_enqueued_on_drop() {
+    let (sender, _receiver) = aptos_channel::new(QueueStyle::FIFO, 1, None);
+    sender.push_expect_enqueued(0, 'a').unwrap();
+    assert!(sender.push_expect_enqueued(0, 'b').is_err());
 }

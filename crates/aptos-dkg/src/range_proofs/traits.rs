@@ -1,27 +1,45 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use crate::algebra::GroupGenerators;
-use aptos_crypto::arkworks::random::UniformRand;
-use ark_ec::pairing::Pairing;
+use crate::{fiat_shamir::SerializeForFiatShamirTranscript, pcs::univariate_hiding_kzg};
+use aptos_crypto::arkworks::{random::UniformRand, GroupGenerators};
+use ark_ec::pairing::{Pairing, PairingOutput};
+use ark_ff::AdditiveGroup;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use rand::{CryptoRng, RngCore};
+use std::fmt::Debug;
 
+// TODO: split this into `BatchedRangeProof` and `PairingBatchedRangeProof: BatchedRangeProof`? Or only do PairingBatchedRangeProof for now?
 pub trait BatchedRangeProof<E: Pairing>: Clone + CanonicalSerialize + CanonicalDeserialize {
-    type PublicStatement: CanonicalSerialize;
-    type ProverKey;
-    type VerificationKey: Clone + CanonicalSerialize; // Serialization is needed because this key is often appended to a Fiat-Shamir transcript
-    type Input: From<u64>; // TODO: slightly hacky. It's used in `range_proof_random_instance()` to generate (chunks of) inputs that have a certain bit size
-    type Commitment;
-    type CommitmentRandomness: Clone + UniformRand;
+    type PublicStatement: CanonicalSerialize; // Serialization is needed because this is often appended to a Fiat-Shamir transcript
+    type ProverKey: CanonicalSerialize + CanonicalDeserialize + Eq + Debug;
+    type VerificationKey: CanonicalSerialize
+        + CanonicalDeserialize
+        + Eq
+        + Debug
+        + Clone
+        + SerializeForFiatShamirTranscript; // This is often appended to a Fiat-Shamir transcript
+    type Input: From<u64>; // Slightly hacky. It's used in `range_proof_random_instance()` to generate (chunks of) inputs that have a certain bit size
+    type Commitment: Clone + Into<Self::CommitmentNormalised>;
+    type CommitmentNormalised: Clone;
+    type CommitmentRandomness: UniformRand;
     type CommitmentKey;
+    type ProofProjective: Into<Self>; // TODO: Might want to expand this by making it return its projective elements, and building Self from affinisations of those. But not needed atm
 
     const DST: &[u8];
 
     fn commitment_key_from_prover_key(pk: &Self::ProverKey) -> Self::CommitmentKey;
 
     /// Setup generates the prover and verifier keys used in the batched range proof.
-    fn setup<R: RngCore + CryptoRng>(
+    #[allow(non_snake_case)]
+    fn setup(
+        max_ell: usize,
+        vk_hkzg: univariate_hiding_kzg::VerificationKey<E>,
+        ck_S: univariate_hiding_kzg::CommitmentKey<E>,
+    ) -> (Self::ProverKey, Self::VerificationKey);
+
+    /// Setup generates the prover and verifier keys used in the batched range proof.
+    fn setup_for_testing<R: RngCore + CryptoRng>(
         max_n: usize,
         max_ell: usize,
         group_generators: GroupGenerators<E>,
@@ -34,7 +52,7 @@ pub trait BatchedRangeProof<E: Pairing>: Clone + CanonicalSerialize + CanonicalD
         rng: &mut R,
     ) -> (Self::Commitment, Self::CommitmentRandomness) {
         let r = Self::CommitmentRandomness::rand(rng);
-        let comm = Self::commit_with_randomness(ck, values, &r.clone());
+        let comm = Self::commit_with_randomness(ck, values, &r);
         (comm, r)
     }
 
@@ -44,24 +62,38 @@ pub trait BatchedRangeProof<E: Pairing>: Clone + CanonicalSerialize + CanonicalD
         r: &Self::CommitmentRandomness,
     ) -> Self::Commitment;
 
-    fn prove<R: rand_core::RngCore + rand_core::CryptoRng>(
+    fn prove<R: RngCore + CryptoRng>(
         pk: &Self::ProverKey,
         values: &[Self::Input],
         ell: usize,
-        comm: &Self::Commitment,
+        comm: &Self::CommitmentNormalised,
         r: &Self::CommitmentRandomness,
-        fs_transcript: &mut merlin::Transcript,
         rng: &mut R,
-    ) -> Self;
+    ) -> Self::ProofProjective;
 
-    fn verify(
+    fn verify<R: RngCore + CryptoRng>(
         &self,
         vk: &Self::VerificationKey,
         n: usize,
         ell: usize,
-        comm: &Self::Commitment,
-        fs_transcript: &mut merlin::Transcript,
-    ) -> anyhow::Result<()>;
+        comm: &Self::CommitmentNormalised,
+        rng: &mut R,
+    ) -> anyhow::Result<()> {
+        let (g1_terms, g2_terms) = self.pairing_for_verify(vk, n, ell, comm, rng)?;
+        let check = E::multi_pairing(g1_terms, g2_terms);
+        anyhow::ensure!(PairingOutput::<E>::ZERO == check);
+
+        Ok(())
+    }
+
+    fn pairing_for_verify<R: RngCore + CryptoRng>(
+        &self,
+        vk: &Self::VerificationKey,
+        n: usize,
+        ell: usize,
+        comm: &Self::CommitmentNormalised,
+        rng: &mut R,
+    ) -> anyhow::Result<(Vec<E::G1Affine>, Vec<E::G2Affine>)>;
 
     fn maul(&mut self);
 }

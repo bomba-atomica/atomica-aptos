@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::unwrap_used)]
 use crate::{
@@ -100,11 +99,13 @@ fn build_empty_tree_inner(
         max_pruned_blocks_in_mem, // max pruned blocks in mem
         Arc::new(SimulatedTimeService::new()),
         10,
+        60,
         Arc::from(DirectMempoolPayloadManager::new()),
         false,
         window_size,
         Arc::new(Mutex::new(PendingBlocks::new())),
         pipeline_builder,
+        None,
     )
 }
 
@@ -211,7 +212,7 @@ impl TreeInserter {
                 parent_qc,
                 parent.timestamp_usecs() + 1,
                 round,
-                Payload::empty(false, true),
+                Payload::empty(false),
                 vec![],
             ))
             .await

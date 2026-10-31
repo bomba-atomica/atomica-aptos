@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! The handshake module implements the handshake part of the protocol.
 //! This module also implements additional anti-DoS mitigation,
@@ -1019,11 +1018,10 @@ mod test {
                 PeerRole::ValidatorFullNode,
             ),
         );
-        insert_new_trusted_peers(
-            &peers_and_metadata,
-            NetworkId::Public,
-            vec![client_peer, server_peer],
-        );
+        insert_new_trusted_peers(&peers_and_metadata, NetworkId::Public, vec![
+            client_peer,
+            server_peer,
+        ]);
 
         // Create an in-memory socket for testing
         let (dialer_socket, listener_socket) = MemorySocket::new_pair();

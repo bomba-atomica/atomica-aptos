@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // Live variable analysis with subsequent dead assignment elimination and
 // computation of new Destroy instructions.
@@ -425,8 +426,14 @@ impl TransferFunctions for LiveVarAnalysis<'_> {
             Ret(_, srcs) => {
                 state.insert(srcs);
             },
-            Abort(_, src) | Branch(_, _, _, src) => {
+            Branch(_, _, _, src) => {
                 state.insert(&[*src]);
+            },
+            Abort(_, src0, src1) => {
+                state.insert(&[*src0]);
+                if let Some(src1) = src1 {
+                    state.insert(&[*src1]);
+                }
             },
             Prop(_, _, exp) => {
                 for (idx, _) in exp.used_temporaries_with_types(self.func_target.global_env()) {

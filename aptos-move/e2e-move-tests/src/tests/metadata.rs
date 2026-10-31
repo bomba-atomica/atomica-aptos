@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{assert_success, assert_vm_status, MoveHarness};
 use aptos_cached_packages::aptos_stdlib;
@@ -175,13 +175,10 @@ fn test_compilation_metadata_with_changes(
     );
     let path = builder.write_to_temp().unwrap();
 
-    let package = BuiltPackage::build(
-        path.path().to_path_buf(),
-        BuildOptions {
-            compiler_version: Some(compiler_version),
-            ..BuildOptions::default()
-        },
-    )
+    let package = BuiltPackage::build(path.path().to_path_buf(), BuildOptions {
+        compiler_version: Some(compiler_version),
+        ..BuildOptions::default()
+    })
     .expect("building package must succeed");
     let origin_code = package.extract_code();
     let mut compiled_module = CompiledModule::deserialize(&origin_code[0]).unwrap();
@@ -225,13 +222,10 @@ fn test_compilation_metadata_internal(
     } else {
         CompilerVersion::latest_stable()
     };
-    let package = BuiltPackage::build(
-        path.path().to_path_buf(),
-        BuildOptions {
-            compiler_version: Some(compiler_version),
-            ..BuildOptions::default()
-        },
-    )
+    let package = BuiltPackage::build(path.path().to_path_buf(), BuildOptions {
+        compiler_version: Some(compiler_version),
+        ..BuildOptions::default()
+    })
     .expect("building package must succeed");
 
     let package_metadata = package
@@ -284,13 +278,10 @@ fn test_compilation_metadata_script_internal(
     } else {
         CompilerVersion::latest_stable()
     };
-    let package = BuiltPackage::build(
-        path.path().to_path_buf(),
-        BuildOptions {
-            compiler_version: Some(compiler_version),
-            ..BuildOptions::default()
-        },
-    )
+    let package = BuiltPackage::build(path.path().to_path_buf(), BuildOptions {
+        compiler_version: Some(compiler_version),
+        ..BuildOptions::default()
+    })
     .expect("building package must succeed");
 
     let code = package.extract_script_code().into_iter().next().unwrap();

@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::path::{CanonicalPath, NormalizedPath};
 use git2::Oid;
@@ -43,20 +43,16 @@ impl SourceLocation {
     ) -> fmt::Result {
         match self {
             SourceLocation::Local { path } => {
-                write!(
-                    f,
-                    "local:{}",
-                    match strip_root_path {
-                        Some(root_path) => {
-                            if let Ok(stripped) = path.strip_prefix(root_path) {
-                                stripped.display()
-                            } else {
-                                path.display()
-                            }
-                        },
-                        None => path.display(),
-                    }
-                )
+                write!(f, "local:{}", match strip_root_path {
+                    Some(root_path) => {
+                        if let Ok(stripped) = path.strip_prefix(root_path) {
+                            stripped.display()
+                        } else {
+                            path.display()
+                        }
+                    },
+                    None => path.display(),
+                })
             },
             SourceLocation::OnChain { node, package_addr } => {
                 write!(f, "onchain:{}::{}", node, package_addr)

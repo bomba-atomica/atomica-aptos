@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::bail;
 use codespan_reporting::{diagnostic::Severity, term::termcolor::Buffer};
@@ -111,6 +110,13 @@ impl TestConfig {
             ..self
         }
     }
+
+    fn compile_verify_code(self, on: bool) -> Self {
+        Self {
+            options: self.options.clone().set_compile_verify_code(on),
+            ..self
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Default)]
@@ -173,6 +179,23 @@ const TEST_CONFIGS: Lazy<BTreeMap<&str, TestConfig>> = Lazy::new(|| {
     opts.testing = true;
     let config = || TestConfig::new(opts.clone());
     let configs = vec![
+        // --- Tests for match exhaustiveness and unreachable arm checking
+        TestConfig {
+            name: "match-checks",
+            runner: |p| run_test(p, get_config_by_name("match-checks")),
+            include: vec!["/match-checks/"],
+            stop_after: StopAfter::FirstAstPipeline,
+            ..config()
+        },
+        // --- Tests to showcase match transforms
+        TestConfig {
+            name: "match-transforms",
+            runner: |p| run_test(p, get_config_by_name("match-transforms")),
+            include: vec!["/match-transforms/"],
+            stop_after: StopAfter::FirstAstPipeline,
+            dump_ast: DumpLevel::EndStage,
+            ..config()
+        },
         // --- Tests for checking and ast processing
         // Tests for model building and various post-processing checking
         TestConfig {
@@ -189,17 +212,15 @@ const TEST_CONFIGS: Lazy<BTreeMap<&str, TestConfig>> = Lazy::new(|| {
             exclude: vec!["/inlining/", "/more-v1/"],
             stop_after: StopAfter::FirstBytecodeGen, // FileFormat,
             dump_ast: DumpLevel::EndStage,
-            ..config().lang(LanguageVersion::V2_1)
+            ..config().lang(LanguageVersion::V2_2)
         },
-        // Tests for checking v2 language features only supported if v2
-        // language is selected
         TestConfig {
-            name: "checking-lang-v1",
-            runner: |p| run_test(p, get_config_by_name("checking-lang-v1")),
-            include: vec!["/checking-lang-v1/"],
-            stop_after: StopAfter::FirstAstPipeline,
+            name: "macros",
+            runner: |p| run_test(p, get_config_by_name("macros")),
+            include: vec!["/macros/"],
+            exclude: vec![],
             dump_ast: DumpLevel::EndStage,
-            ..config().lang(LanguageVersion::V1)
+            ..config()
         },
         // Tests for checking v2 language features only supported if 2.2 or later
         // is selected
@@ -211,15 +232,25 @@ const TEST_CONFIGS: Lazy<BTreeMap<&str, TestConfig>> = Lazy::new(|| {
             dump_ast: DumpLevel::EndStage,
             ..config().lang(LanguageVersion::V2_2)
         },
-        // Tests for checking v2 language features only supported if 2.3 or later
+        // Tests for checking v2 language features only supported if 2.5 or later
         // is selected
         TestConfig {
-            name: "checking-lang-v2.3",
-            runner: |p| run_test(p, get_config_by_name("checking-lang-v2.3")),
-            include: vec!["/checking-lang-v2.3/"],
+            name: "checking-lang-v2.5",
+            runner: |p| run_test(p, get_config_by_name("checking-lang-v2.5")),
+            include: vec!["/checking-lang-v2.5/"],
             stop_after: StopAfter::FirstAstPipeline,
             dump_ast: DumpLevel::EndStage,
-            ..config().lang(LanguageVersion::V2_3)
+            ..config().lang(LanguageVersion::V2_5)
+        },
+        TestConfig {
+            name: "checking-lang-v2.4",
+            runner: |p| run_test(p, get_config_by_name("checking-lang-v2.4")),
+            include: vec!["/checking-lang-v2.4/"],
+            stop_after: StopAfter::FileFormat,
+            dump_ast: DumpLevel::EndStage,
+            dump_bytecode: DumpLevel::EndStage,
+            dump_bytecode_filter: Some(vec![INITIAL_BYTECODE_STAGE, FILE_FORMAT_STAGE]),
+            ..config().lang(LanguageVersion::V2_4)
         },
         TestConfig {
             name: "unused-assignment",
@@ -242,6 +273,33 @@ const TEST_CONFIGS: Lazy<BTreeMap<&str, TestConfig>> = Lazy::new(|| {
                 .exp(Experiment::LIFT_INLINE_FUNS)
                 .exp_off(Experiment::KEEP_INLINE_FUNS)
                 .lang(LanguageVersion::V2_2)
+        },
+        // Tests for specs on inline functions: functions without function-typed
+        // parameters may carry specs and are compiled in verify mode (with
+        // `pragma opaque` their calls are retained); functions with
+        // function-typed parameters reject specs.
+        TestConfig {
+            name: "inline-opaque",
+            runner: |p| run_test(p, get_config_by_name("inline-opaque")),
+            include: vec!["/inline-opaque/"],
+            exp_suffix: Some("verify.exp"),
+            dump_ast: DumpLevel::EndStage,
+            dump_bytecode: DumpLevel::EndStage,
+            dump_bytecode_filter: Some(vec![FILE_FORMAT_STAGE]),
+            ..config()
+                .lang(LanguageVersion::V2_4)
+                .compile_verify_code(true)
+        },
+        // The same tests in normal compilation mode, where the functions are
+        // expanded as usual and the opaque specs are dropped.
+        TestConfig {
+            name: "inline-opaque-off",
+            runner: |p| run_test(p, get_config_by_name("inline-opaque-off")),
+            include: vec!["/inline-opaque/"],
+            dump_ast: DumpLevel::EndStage,
+            dump_bytecode: DumpLevel::EndStage,
+            dump_bytecode_filter: Some(vec![FILE_FORMAT_STAGE]),
+            ..config().lang(LanguageVersion::V2_4)
         },
         // Tests for simplifier in full mode, with code elimination
         TestConfig {
@@ -269,7 +327,7 @@ const TEST_CONFIGS: Lazy<BTreeMap<&str, TestConfig>> = Lazy::new(|| {
             runner: |p| run_test(p, get_config_by_name("more-v1")),
             include: vec!["/more-v1/"],
             ..config()
-                .lang(LanguageVersion::V2_1)
+                .lang(LanguageVersion::V2_2)
                 .exp(Experiment::AST_SIMPLIFY)
         },
         // Tests for inlining, simplifier, and folding
@@ -280,7 +338,7 @@ const TEST_CONFIGS: Lazy<BTreeMap<&str, TestConfig>> = Lazy::new(|| {
             exclude: vec!["/more-v1/"],
             dump_ast: DumpLevel::EndStage,
             ..config()
-                .lang(LanguageVersion::V2_1)
+                .lang(LanguageVersion::V2_2)
                 .exp(Experiment::AST_SIMPLIFY)
         },
         // Tests for targets in non-simplifier
@@ -395,9 +453,7 @@ const TEST_CONFIGS: Lazy<BTreeMap<&str, TestConfig>> = Lazy::new(|| {
             name: "acquires-checker",
             runner: |p| run_test(p, get_config_by_name("acquires-checker")),
             include: vec!["/acquires-checker/"],
-            ..config()
-                // after 2.2, acquires is no longer enforced
-                .lang(LanguageVersion::V2_1)
+            ..config().lang(LanguageVersion::V2_2)
         },
         // Bytecode verifier tests
         TestConfig {
@@ -619,9 +675,8 @@ fn run_test(path: &Path, config: TestConfig) -> anyhow::Result<()> {
     logging::setup_logging_for_testing(None);
     let path_str = path.display().to_string();
     let mut options = config.options.clone();
-    options.warn_unused = path_str.contains("/unused/");
-    options.warn_deprecated = path_str.contains("/deprecated/");
-    options.compile_verify_code = path_str.contains("/verification/verify/");
+    options.compile_verify_code =
+        options.compile_verify_code || path_str.contains("/verification/verify/");
     options.sources_deps = extract_test_directives(path, "// dep:")?;
     options.sources = vec![path_str.clone()];
     options.dependencies = if extract_test_directives(path, "// no-stdlib")?.is_empty() {
@@ -729,6 +784,8 @@ fn run_flow_similar_to_compiler(config: &TestConfig, options: &Options) -> anyho
                 out.push_str("\n============ disassembled file-format ==================\n");
                 out.push_str(&disassemble_compiled_units(&units)?);
             }
+            // Mirror `run_move_compiler_to_model` and `run_move_compiler`: the
+            // bytecode verifier runs in verify mode as well.
             let annotated_units = annotate_units(units);
             if run_bytecode_verifier(&annotated_units, &mut env) {
                 out.push_str("\n============ bytecode verification succeeded ========\n");

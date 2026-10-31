@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block_transaction_filter::{BlockMatcher, BlockTransactionFilter, BlockTransactionMatcher},
@@ -465,24 +465,15 @@ fn test_get_denied_block_transactions() {
         // Create a filter that denies transactions from specific senders
         let transactions = utils::create_entry_function_transactions(use_new_txn_payload_format);
         let filter = BlockTransactionFilter::empty()
-            .add_multiple_matchers_filter(
-                false,
-                vec![BlockTransactionMatcher::Transaction(
-                    TransactionMatcher::Sender(transactions[0].sender()),
-                )],
-            )
-            .add_multiple_matchers_filter(
-                false,
-                vec![BlockTransactionMatcher::Transaction(
-                    TransactionMatcher::Sender(transactions[1].sender()),
-                )],
-            )
-            .add_multiple_matchers_filter(
-                false,
-                vec![BlockTransactionMatcher::Transaction(
-                    TransactionMatcher::Sender(transactions[2].sender()),
-                )],
-            )
+            .add_multiple_matchers_filter(false, vec![BlockTransactionMatcher::Transaction(
+                TransactionMatcher::Sender(transactions[0].sender()),
+            )])
+            .add_multiple_matchers_filter(false, vec![BlockTransactionMatcher::Transaction(
+                TransactionMatcher::Sender(transactions[1].sender()),
+            )])
+            .add_multiple_matchers_filter(false, vec![BlockTransactionMatcher::Transaction(
+                TransactionMatcher::Sender(transactions[2].sender()),
+            )])
             .add_all_filter(true);
 
         // Verify that the filter denies transactions from the specified senders
@@ -497,18 +488,12 @@ fn test_get_denied_block_transactions() {
 
         // Create a filter that allows transactions from specific senders
         let filter = BlockTransactionFilter::empty()
-            .add_multiple_matchers_filter(
-                true,
-                vec![BlockTransactionMatcher::Transaction(
-                    TransactionMatcher::Sender(transactions[0].sender()),
-                )],
-            )
-            .add_multiple_matchers_filter(
-                true,
-                vec![BlockTransactionMatcher::Transaction(
-                    TransactionMatcher::Sender(transactions[1].sender()),
-                )],
-            )
+            .add_multiple_matchers_filter(true, vec![BlockTransactionMatcher::Transaction(
+                TransactionMatcher::Sender(transactions[0].sender()),
+            )])
+            .add_multiple_matchers_filter(true, vec![BlockTransactionMatcher::Transaction(
+                TransactionMatcher::Sender(transactions[1].sender()),
+            )])
             .add_all_filter(false);
 
         // Verify that the filter allows transactions from the specified senders

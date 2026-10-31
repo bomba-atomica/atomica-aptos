@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     algebra::polynomials::shamir_secret_share,
@@ -8,10 +8,12 @@ use crate::{
         contribution::{batch_verify_soks, Contribution, SoK},
         das, encryption_dlog, schnorr,
         traits::{
-            self, transcript::MalleableTranscript, HasEncryptionPublicParams, SecretSharingConfig,
+            self, transcript::MalleableTranscript, AggregatableTranscript,
+            HasEncryptionPublicParams,
         },
-        LowDegreeTest, Player, WeightedConfig,
+        LowDegreeTest, Player, ThresholdConfigBlstrs, WeightedConfigBlstrs,
     },
+    traits::transcript::{Aggregatable, Aggregated},
     utils::{
         g1_multi_exp, g2_multi_exp,
         random::{
@@ -24,6 +26,8 @@ use anyhow::bail;
 use aptos_crypto::{
     bls12381,
     blstrs::{multi_pairing, random_scalar},
+    traits::TSecretSharingConfig as _,
+    weighted_config::WeightedConfig,
     CryptoMaterialError, Genesis, SigningKey, ValidCryptoMaterial,
 };
 use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
@@ -85,16 +89,72 @@ impl TryFrom<&[u8]> for Transcript {
     }
 }
 
-impl traits::Transcript for Transcript {
+impl traits::TranscriptCore for Transcript {
     type DealtPubKey = pvss::dealt_pub_key::g2::DealtPubKey;
     type DealtPubKeyShare = Vec<pvss::dealt_pub_key_share::g2::DealtPubKeyShare>;
     type DealtSecretKey = pvss::dealt_secret_key::g1::DealtSecretKey;
     type DealtSecretKeyShare = Vec<pvss::dealt_secret_key_share::g1::DealtSecretKeyShare>;
     type DecryptPrivKey = encryption_dlog::g1::DecryptPrivKey;
     type EncryptPubKey = encryption_dlog::g1::EncryptPubKey;
-    type InputSecret = pvss::input_secret::InputSecret;
     type PublicParameters = das::PublicParameters;
-    type SecretSharingConfig = WeightedConfig;
+    type SecretSharingConfig = WeightedConfigBlstrs;
+
+    fn get_public_key_share(
+        &self,
+        sc: &Self::SecretSharingConfig,
+        player: &Player,
+    ) -> Self::DealtPubKeyShare {
+        let weight = sc
+            .get_player_weight(player)
+            .expect("player id is in bounds");
+        let mut pk_shares = Vec::with_capacity(weight);
+
+        for j in 0..weight {
+            let k = sc.get_share_index(player.id, j).unwrap();
+            pk_shares.push(pvss::dealt_pub_key_share::g2::DealtPubKeyShare::new(
+                Self::DealtPubKey::new(self.V_hat[k]),
+            ));
+        }
+
+        pk_shares
+    }
+
+    fn get_dealt_public_key(&self) -> Self::DealtPubKey {
+        Self::DealtPubKey::new(*self.V_hat.last().unwrap())
+    }
+
+    #[allow(non_snake_case)]
+    fn decrypt_own_share(
+        &self,
+        sc: &Self::SecretSharingConfig,
+        player: &Player,
+        dk: &Self::DecryptPrivKey,
+        _pp: &Self::PublicParameters,
+    ) -> (Self::DealtSecretKeyShare, Self::DealtPubKeyShare) {
+        let weight = sc
+            .get_player_weight(player)
+            .expect("player id is in bounds");
+        let mut sk_shares = Vec::with_capacity(weight);
+        let pk_shares = self.get_public_key_share(sc, player);
+
+        for j in 0..weight {
+            let k = sc.get_share_index(player.id, j).unwrap();
+
+            let ctxt = self.C[k]; // h_1^{f(s_i + j - 1)} \ek_i^{r_{s_i + j}}
+            let ephemeral_key = self.R[k].mul(dk.dk); // (g_1^{r_{s_i + j}})
+            let dealt_secret_key_share = ctxt.sub(ephemeral_key);
+
+            sk_shares.push(pvss::dealt_secret_key_share::g1::DealtSecretKeyShare::new(
+                Self::DealtSecretKey::new(dealt_secret_key_share),
+            ));
+        }
+
+        (sk_shares, pk_shares)
+    }
+}
+
+impl traits::Transcript for Transcript {
+    type InputSecret = pvss::input_secret::InputSecret;
     type SigningPubKey = bls12381::PublicKey;
     type SigningSecretKey = bls12381::PrivateKey;
 
@@ -111,7 +171,8 @@ impl traits::Transcript for Transcript {
         sc: &Self::SecretSharingConfig,
         pp: &Self::PublicParameters,
         ssk: &Self::SigningSecretKey,
-        eks: &Vec<Self::EncryptPubKey>,
+        _spk: &Self::SigningPubKey,
+        eks: &[Self::EncryptPubKey],
         s: &Self::InputSecret,
         aux: &A,
         dealer: &Player,
@@ -151,7 +212,9 @@ impl traits::Transcript for Transcript {
 
         let mut C = Vec::with_capacity(W);
         for i in 0..n {
-            let w_i = sc.get_player_weight(&sc.get_player(i));
+            let w_i = sc
+                .get_player_weight(&sc.get_player(i))
+                .expect("player id from sc.get_player is in bounds");
 
             let bases = vec![h, Into::<G1Projective>::into(&eks[i])];
             for j in 0..w_i {
@@ -182,14 +245,54 @@ impl traits::Transcript for Transcript {
         t
     }
 
+    fn get_dealers(&self) -> Vec<Player> {
+        self.soks
+            .iter()
+            .map(|(p, _, _, _)| *p)
+            .collect::<Vec<Player>>()
+    }
+
+    #[allow(non_snake_case)]
+    fn generate<R>(
+        sc: &Self::SecretSharingConfig,
+        _pp: &Self::PublicParameters,
+        rng: &mut R,
+    ) -> Self
+    where
+        R: rand_core::RngCore + rand_core::CryptoRng,
+    {
+        let W = sc.get_total_weight();
+        let sk = bls12381::PrivateKey::genesis();
+        Transcript {
+            soks: vec![(
+                sc.get_player(0),
+                random_g1_point(rng),
+                sk.sign(&Contribution::<G1Projective, usize> {
+                    comm: random_g1_point(rng),
+                    player: sc.get_player(0),
+                    aux: 0,
+                })
+                .unwrap(),
+                (random_g1_point(rng), random_scalar(rng)),
+            )],
+            R: insecure_random_g1_points(W, rng),
+            R_hat: insecure_random_g2_points(W, rng),
+            V: insecure_random_g1_points(W + 1, rng),
+            V_hat: insecure_random_g2_points(W + 1, rng),
+            C: insecure_random_g1_points(W, rng),
+        }
+    }
+}
+
+impl AggregatableTranscript for Transcript {
     #[allow(non_snake_case)]
     fn verify<A: Serialize + Clone>(
         &self,
-        sc: &Self::SecretSharingConfig,
+        sc: &<Self as traits::TranscriptCore>::SecretSharingConfig,
         pp: &Self::PublicParameters,
-        spks: &Vec<Self::SigningPubKey>,
-        eks: &Vec<Self::EncryptPubKey>,
-        auxs: &Vec<A>,
+        spks: &[Self::SigningPubKey],
+        eks: &[Self::EncryptPubKey],
+        auxs: &[A],
     ) -> anyhow::Result<()> {
         self.check_sizes(sc)?;
         let n = sc.get_total_num_players();
@@ -247,7 +350,7 @@ impl traits::Transcript for Transcript {
 
         for i in 0..n {
             let p = sc.get_player(i);
-            let weight = sc.get_player_weight(&p);
+            let weight = sc.get_player_weight(&p)?;
             let s_i = sc.get_player_starting_index(&p);
 
             lc_R_hat.push(g2_multi_exp(
@@ -274,23 +377,31 @@ impl traits::Transcript for Transcript {
             bail!(
                 "Expected zero during multi-pairing check for {} {}, but got {}",
                 sc,
-                Self::scheme_name(),
+                <Self as traits::Transcript>::scheme_name(),
                 res
             );
         }
 
         return Ok(());
     }
+}
 
-    fn get_dealers(&self) -> Vec<Player> {
-        self.soks
-            .iter()
-            .map(|(p, _, _, _)| *p)
-            .collect::<Vec<Player>>()
+impl Aggregatable for Transcript {
+    type Aggregated = Self;
+    type SecretSharingConfig = WeightedConfig<ThresholdConfigBlstrs>;
+
+    fn to_aggregated(&self) -> Self::Aggregated {
+        self.clone()
     }
+}
 
+impl Aggregated<Transcript> for Transcript {
     #[allow(non_snake_case)]
-    fn aggregate_with(&mut self, sc: &Self::SecretSharingConfig, other: &Transcript) {
+    fn aggregate_with(
+        &mut self,
+        sc: &WeightedConfig<ThresholdConfigBlstrs>,
+        other: &Transcript,
+    ) -> anyhow::Result<()> {
         let W = sc.get_total_weight();
 
         debug_assert!(self.check_sizes(sc).is_ok());
@@ -310,88 +421,18 @@ impl traits::Transcript for Transcript {
         for sok in &other.soks {
             self.soks.push(sok.clone());
         }
+
+        Ok(())
     }
 
-    fn get_public_key_share(
-        &self,
-        sc: &Self::SecretSharingConfig,
-        player: &Player,
-    ) -> Self::DealtPubKeyShare {
-        let weight = sc.get_player_weight(player);
-        let mut pk_shares = Vec::with_capacity(weight);
-
-        for j in 0..weight {
-            let k = sc.get_share_index(player.id, j).unwrap();
-            pk_shares.push(pvss::dealt_pub_key_share::g2::DealtPubKeyShare::new(
-                Self::DealtPubKey::new(self.V_hat[k]),
-            ));
-        }
-
-        pk_shares
-    }
-
-    fn get_dealt_public_key(&self) -> Self::DealtPubKey {
-        Self::DealtPubKey::new(*self.V_hat.last().unwrap())
-    }
-
-    #[allow(non_snake_case)]
-    fn decrypt_own_share(
-        &self,
-        sc: &Self::SecretSharingConfig,
-        player: &Player,
-        dk: &Self::DecryptPrivKey,
-        _pp: &Self::PublicParameters,
-    ) -> anyhow::Result<(Self::DealtSecretKeyShare, Self::DealtPubKeyShare)> {
-        let weight = sc.get_player_weight(player);
-        let mut sk_shares = Vec::with_capacity(weight);
-        let pk_shares = self.get_public_key_share(sc, player);
-
-        for j in 0..weight {
-            let k = sc.get_share_index(player.id, j).unwrap();
-
-            let ctxt = self.C[k]; // h_1^{f(s_i + j - 1)} \ek_i^{r_{s_i + j}}
-            let ephemeral_key = self.R[k].mul(dk.dk); // (g_1^{r_{s_i + j}})
-            let dealt_secret_key_share = ctxt.sub(ephemeral_key);
-
-            sk_shares.push(pvss::dealt_secret_key_share::g1::DealtSecretKeyShare::new(
-                Self::DealtSecretKey::new(dealt_secret_key_share),
-            ));
-        }
-
-        Ok((sk_shares, pk_shares))
-    }
-
-    #[allow(non_snake_case)]
-    fn generate<R>(sc: &Self::SecretSharingConfig, rng: &mut R) -> Self
-    where
-        R: rand_core::RngCore + rand_core::CryptoRng,
-    {
-        let W = sc.get_total_weight();
-        let sk = bls12381::PrivateKey::genesis();
-        Transcript {
-            soks: vec![(
-                sc.get_player(0),
-                random_g1_point(rng),
-                sk.sign(&Contribution::<G1Projective, usize> {
-                    comm: random_g1_point(rng),
-                    player: sc.get_player(0),
-                    aux: 0,
-                })
-                .unwrap(),
-                (random_g1_point(rng), random_scalar(rng)),
-            )],
-            R: insecure_random_g1_points(W, rng),
-            R_hat: insecure_random_g2_points(W, rng),
-            V: insecure_random_g1_points(W + 1, rng),
-            V_hat: insecure_random_g2_points(W + 1, rng),
-            C: insecure_random_g1_points(W, rng),
-        }
+    fn normalize(self) -> Transcript {
+        self
     }
 }
 
 impl Transcript {
     #[allow(non_snake_case)]
-    fn check_sizes(&self, sc: &WeightedConfig) -> anyhow::Result<()> {
+    fn check_sizes(&self, sc: &WeightedConfigBlstrs) -> anyhow::Result<()> {
         let W = sc.get_total_weight();
 
         if self.V.len() != W + 1 {
@@ -437,7 +478,7 @@ impl Transcript {
     #[allow(non_snake_case, unused)]
     fn slow_verify(
         &self,
-        sc: &WeightedConfig,
+        sc: &WeightedConfigBlstrs,
         pp: &das::PublicParameters,
         eks: &Vec<encryption_dlog::g1::EncryptPubKey>,
     ) -> anyhow::Result<()> {
@@ -483,7 +524,7 @@ impl Transcript {
             .collect::<Vec<G1Affine>>();
         for i in 0..n {
             let p = sc.get_player(i);
-            let weight = sc.get_player_weight(&p);
+            let weight = sc.get_player_weight(&p)?;
             for j in 0..weight {
                 let k = sc.get_share_index(i, j).unwrap();
                 let lhs = pairing(&h_1_aff, &V_hat_aff[k]).add(pairing(&eks[i], &R_hat_aff[k]));

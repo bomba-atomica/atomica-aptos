@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     error::StateSyncError, payload_manager::TPayloadManager, state_replication::StateComputer,
@@ -59,9 +58,17 @@ impl StateComputer for RandomComputeResultStateComputer {
         _: BlockExecutorConfigFromOnchain,
         _: Arc<dyn TransactionDeduper>,
         _: bool,
+        _: bool,
         _: OnChainConsensusConfig,
         _: u8,
         _: Arc<crate::network::NetworkSender>,
+        _: Option<aptos_types::secret_sharing::SecretShareConfig>,
+        _: Option<
+            std::sync::Arc<
+                crate::consensus_observer::publisher::consensus_publisher::ConsensusPublisher,
+            >,
+        >,
+        _: bool,
     ) {
     }
 

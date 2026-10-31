@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::{new_test_context, new_test_context_with_orderless_flags};
 use aptos_api_test_context::{current_function_name, find_value, TestContext};
@@ -48,21 +47,12 @@ async fn test_get_account_resources_by_address_0x0() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_get_account_resources_by_valid_account_address() {
     let context = new_test_context(current_function_name!());
-    let addresses = vec!["0x1", "0x00000000000000000000000000000001"];
-    let mut res = vec![];
-    for address in &addresses {
-        let resp = context.get(&account_resources(address)).await;
-        res.push(resp);
-    }
-
-    let shard_context = new_test_context(current_function_name!());
-    let mut shard_res = vec![];
-    for address in &addresses {
-        let resp = shard_context.get(&account_resources(address)).await;
-        shard_res.push(resp);
-    }
-
-    assert_eq!(res, shard_res);
+    // Both address formats should resolve to the same account and return identical resources.
+    let short_resp = context.get(&account_resources("0x1")).await;
+    let full_resp = context
+        .get(&account_resources("0x00000000000000000000000000000001"))
+        .await;
+    assert_eq!(short_resp, full_resp);
 }
 
 // Unstable due to framework changes
@@ -137,7 +127,7 @@ async fn test_account_resources_by_ledger_version_with_context(mut context: Test
 
     let account = context.gen_account();
     let txn = context.create_user_account(&account).await;
-    context.commit_block(&vec![txn.clone()]).await;
+    context.commit_block(std::slice::from_ref(&txn)).await;
 
     if let Some(indexer_reader) = context.context.indexer_reader.as_ref() {
         // Waiting for the above transaction, block metadata and state checkpoint to get indexed.
@@ -213,25 +203,6 @@ async fn test_get_account_resources_by_ledger_version(
     );
     test_account_resources_by_ledger_version_with_context(context).await;
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[rstest(
-    use_txn_payload_v2_format,
-    use_orderless_transactions,
-    case(false, false),
-    case(true, false),
-    case(true, true)
-)]
-async fn test_get_account_resources_by_ledger_version_with_shard_context(
-    use_txn_payload_v2_format: bool,
-    use_orderless_transactions: bool,
-) {
-    let shard_context = new_test_context_with_orderless_flags(
-        current_function_name!(),
-        use_txn_payload_v2_format,
-        use_orderless_transactions,
-    );
-    test_account_resources_by_ledger_version_with_context(shard_context).await;
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_get_account_resources_by_too_large_ledger_version() {
@@ -271,9 +242,7 @@ async fn test_account_auto_creation() {
     let txn2 = root_account.sign_with_transaction_builder(context.transaction_factory().payload(
         aptos_stdlib::aptos_account_fungible_transfer_only(account.address(), 10_000_000_000),
     ));
-    context
-        .commit_block(&vec![txn1.clone(), txn2.clone()])
-        .await;
+    context.commit_block(&[txn1.clone(), txn2.clone()]).await;
     let txn = account.sign_with_transaction_builder(
         context
             .transaction_factory()
@@ -283,7 +252,7 @@ async fn test_account_auto_creation() {
             ))
             .gas_unit_price(1),
     );
-    context.commit_block(&vec![txn.clone()]).await;
+    context.commit_block(std::slice::from_ref(&txn)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -325,7 +294,7 @@ async fn test_get_account_balance(
                 context.use_orderless_transactions,
             ),
     );
-    context.commit_block(&vec![txn.clone()]).await;
+    context.commit_block(std::slice::from_ref(&txn)).await;
 
     // Check coin balance after migration
     let coin_balance_after = context
@@ -364,7 +333,7 @@ async fn test_get_account_balance(
                 context.use_orderless_transactions,
             ),
     );
-    context.commit_block(&vec![txn.clone()]).await;
+    context.commit_block(std::slice::from_ref(&txn)).await;
 
     // Check concurrent fungible asset balance
     let concurrent_fa_balance = context
@@ -393,7 +362,7 @@ async fn test_get_account_modules_by_ledger_version_with_context(mut context: Te
                 context.use_orderless_transactions,
             ),
     );
-    context.commit_block(&vec![txn.clone()]).await;
+    context.commit_block(std::slice::from_ref(&txn)).await;
 
     if let Some(indexer_reader) = context.context.indexer_reader.as_ref() {
         // Waiting for the above transaction, block metadata, and state checkpoint to be indexed.
@@ -420,29 +389,9 @@ async fn test_get_account_modules_by_ledger_version_with_context(mut context: Te
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[rstest(
-    use_txn_payload_v2_format,
-    use_orderless_transactions,
-    case(false, false),
-    case(true, false),
-    case(true, true)
-)]
-async fn test_get_account_modules_by_ledger_version(
-    use_txn_payload_v2_format: bool,
-    use_orderless_transactions: bool,
-) {
-    let context = new_test_context_with_orderless_flags(
-        current_function_name!(),
-        use_txn_payload_v2_format,
-        use_orderless_transactions,
-    );
+async fn test_get_account_modules_by_ledger_version() {
+    let context = new_test_context(current_function_name!());
     test_get_account_modules_by_ledger_version_with_context(context).await;
-    let shard_context = new_test_context_with_orderless_flags(
-        current_function_name!(),
-        use_txn_payload_v2_format,
-        use_orderless_transactions,
-    );
-    test_get_account_modules_by_ledger_version_with_context(shard_context).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

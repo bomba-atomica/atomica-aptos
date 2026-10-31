@@ -1,18 +1,18 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     sigma_protocol,
-    sigma_protocol::{
-        homomorphism,
-        homomorphism::{fixed_base_msms::Trait, EntrywiseMap},
-    },
+    sigma_protocol::homomorphism::{self, fixed_base_msms, EntrywiseMap},
 };
-use ark_ec::pairing::Pairing;
+use anyhow::Result;
+use aptos_crypto::arkworks::msm::MsmInput;
+use ark_ec::CurveGroup;
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, Read, SerializationError, Valid,
 };
-pub use ark_std::io::Write;
+use ark_std::io::Write;
+use rand_core::{CryptoRng, RngCore};
 use std::fmt::Debug;
 
 /// `TupleHomomorphism` combines two homomorphisms with the same domain
@@ -37,12 +37,52 @@ where
     pub hom2: H2,
 }
 
+// When we know that the two homomorphisms are both going to be `FixedBaseMsms` with the same curve group,
+// we can perform certain optimizations in the verifier of the sigma protocol by exploiting the group; hence
+// we set up a separate struct for this case.
+#[derive(CanonicalSerialize, Debug, Clone, PartialEq, Eq)]
+pub struct CurveGroupTupleHomomorphism<C, H1, H2>
+where
+    C: CurveGroup,
+    H1: homomorphism::Trait,
+    H2: homomorphism::Trait<Domain = H1::Domain>,
+{
+    pub hom1: H1,
+    pub hom2: H2,
+    pub _group: std::marker::PhantomData<C>,
+}
+
+/// Shared logic for the two tuple homomorphism structs: apply both components and normalize.
+fn tuple_apply<H1, H2>(
+    hom1: &H1,
+    hom2: &H2,
+    x: &H1::Domain,
+) -> Result<TupleCodomainShape<H1::Codomain, H2::Codomain>>
+where
+    H1: homomorphism::Trait,
+    H2: homomorphism::Trait<Domain = H1::Domain>,
+{
+    Ok(TupleCodomainShape(hom1.apply(x)?, hom2.apply(x)?))
+}
+
+fn tuple_normalize<H1, H2>(
+    hom1: &H1,
+    hom2: &H2,
+    value: TupleCodomainShape<H1::Codomain, H2::Codomain>,
+) -> TupleCodomainShape<H1::CodomainNormalized, H2::CodomainNormalized>
+where
+    H1: homomorphism::Trait,
+    H2: homomorphism::Trait<Domain = H1::Domain>,
+{
+    TupleCodomainShape(H1::normalize(hom1, value.0), H2::normalize(hom2, value.1))
+}
+
 /// Implements `Homomorphism` for `TupleHomomorphism` by applying both
 /// component homomorphisms to the same input and returning their results
 /// as a tuple.
 ///
-/// In other words, for input `x: Domain`, this produces
-/// `(hom1(x), hom2(x))`. For technical reasons, we then put the output inside a wrapper.
+/// In other words, for input `x: Domain`, this produces `(hom1(x), hom2(x))`.
+/// For technical reasons, we then put the output inside a wrapper.
 impl<H1, H2> homomorphism::Trait for TupleHomomorphism<H1, H2>
 where
     H1: homomorphism::Trait,
@@ -51,10 +91,36 @@ where
     H2::Codomain: CanonicalSerialize + CanonicalDeserialize,
 {
     type Codomain = TupleCodomainShape<H1::Codomain, H2::Codomain>;
+    type CodomainNormalized = TupleCodomainShape<H1::CodomainNormalized, H2::CodomainNormalized>;
     type Domain = H1::Domain;
 
-    fn apply(&self, x: &Self::Domain) -> Self::Codomain {
-        TupleCodomainShape(self.hom1.apply(x), self.hom2.apply(x))
+    fn apply(&self, x: &Self::Domain) -> Result<Self::Codomain> {
+        tuple_apply(&self.hom1, &self.hom2, x)
+    }
+
+    fn normalize(&self, value: Self::Codomain) -> Self::CodomainNormalized {
+        tuple_normalize(&self.hom1, &self.hom2, value)
+    }
+}
+
+impl<C, H1, H2> homomorphism::Trait for CurveGroupTupleHomomorphism<C, H1, H2>
+where
+    C: CurveGroup,
+    H1: homomorphism::Trait,
+    H2: homomorphism::Trait<Domain = H1::Domain>,
+    H1::Codomain: CanonicalSerialize + CanonicalDeserialize,
+    H2::Codomain: CanonicalSerialize + CanonicalDeserialize,
+{
+    type Codomain = TupleCodomainShape<H1::Codomain, H2::Codomain>;
+    type CodomainNormalized = TupleCodomainShape<H1::CodomainNormalized, H2::CodomainNormalized>;
+    type Domain = H1::Domain;
+
+    fn apply(&self, x: &Self::Domain) -> Result<Self::Codomain> {
+        tuple_apply(&self.hom1, &self.hom2, x)
+    }
+
+    fn normalize(&self, value: Self::Codomain) -> Self::CodomainNormalized {
+        tuple_normalize(&self.hom1, &self.hom2, value)
     }
 }
 
@@ -62,6 +128,8 @@ where
 ///
 /// This is necessary because Rust tuples do **not** inherit traits like `IntoIterator`,
 /// but `fixed_base_msms::CodomainShape<T>` requires them.
+///
+/// ArkSize(A=TrivialShape<Bls12_381::G1Affine>, B=chunked_elgamal::CodomainShape<Bls12_381::G1Affine>): 64 + 8·(n + W + max_w) + 48·(W + max_w)·c.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TupleCodomainShape<A, B>(pub A, pub B);
 
@@ -134,77 +202,115 @@ where
     type Output<U: CanonicalSerialize + CanonicalDeserialize + Clone + Debug + Eq> =
         TupleCodomainShape<A::Output<U>, B::Output<U>>;
 
-    fn map<U, F>(self, f: F) -> Self::Output<U>
+    fn try_map<U, E, F>(self, mut f: F) -> Result<Self::Output<U>, E>
     where
-        F: Fn(T) -> U,
+        F: FnMut(T) -> Result<U, E>,
         U: CanonicalSerialize + CanonicalDeserialize + Clone + Debug + Eq,
     {
-        TupleCodomainShape(self.0.map(&f), self.1.map(f))
+        Ok(TupleCodomainShape(
+            self.0.try_map(&mut f)?,
+            self.1.try_map(f)?,
+        ))
     }
 }
 
-/// Implementation of `FixedBaseMsms` for a tuple of two homomorphisms.
+/// Implementation of `FixedBaseMsms` for a tuple of two homomorphisms over the same group.
 ///
 /// This allows combining two homomorphisms that share the same `Domain`.
-/// For simplicity, we currently require that the MSM types (`MsmInput` and `MsmOutput`) match;
-/// this ensures compatibility with batch verification in a Σ-protocol and may be relaxed in the future.
-/// For the moment, we **implicitly** assume that the two msm_eval methods are identical, but is probably
-/// not necessary through enums.
+/// Because they share the same group we **implicitly** assume that the two msm_eval methods
+/// are identical. // TODO: maybe derive it automatically?
 ///
 /// The codomain shapes of the two homomorphisms are combined using `TupleCodomainShape`.
-impl<H1, H2> Trait for TupleHomomorphism<H1, H2>
+impl<C, H1, H2> fixed_base_msms::Trait for CurveGroupTupleHomomorphism<C, H1, H2>
 where
-    H1: Trait,
-    H2: Trait<
+    C: CurveGroup,
+    H1: fixed_base_msms::Trait<Base = C::Affine, Scalar = C::ScalarField, MsmOutput = C>,
+    H2: fixed_base_msms::Trait<
         Domain = H1::Domain,
-        Scalar = H1::Scalar,
-        Base = H1::Base,
-        MsmInput = H1::MsmInput,
-        MsmOutput = H1::MsmOutput,
+        Base = C::Affine,
+        Scalar = C::ScalarField,
+        MsmOutput = C,
     >,
 {
-    type Base = H1::Base;
+    type Base = C::Affine;
     type CodomainShape<T>
         = TupleCodomainShape<H1::CodomainShape<T>, H2::CodomainShape<T>>
     where
         T: CanonicalSerialize + CanonicalDeserialize + Clone + Debug + Eq;
-    type MsmInput = H1::MsmInput;
-    type MsmOutput = H1::MsmOutput;
-    type Scalar = H1::Scalar;
+    type MsmOutput = C;
+    type Scalar = C::ScalarField;
 
     /// Returns the MSM terms for each homomorphism, combined into a tuple.
-    fn msm_terms(&self, input: &Self::Domain) -> Self::CodomainShape<Self::MsmInput> {
-        let terms1 = self.hom1.msm_terms(input);
-        let terms2 = self.hom2.msm_terms(input);
-        TupleCodomainShape(terms1, terms2)
+    fn msm_terms(
+        &self,
+        input: &Self::Domain,
+    ) -> Result<Self::CodomainShape<MsmInput<Self::Base, Self::Scalar>>> {
+        let terms1 = self.hom1.msm_terms(input)?;
+        let terms2 = self.hom2.msm_terms(input)?;
+        Ok(TupleCodomainShape(terms1, terms2))
     }
 
-    fn msm_eval(bases: &[Self::Base], scalars: &[Self::Scalar]) -> Self::MsmOutput {
-        H1::msm_eval(bases, scalars)
+    fn msm_eval(input: MsmInput<Self::Base, Self::Scalar>) -> Result<Self::MsmOutput> {
+        H1::msm_eval(input)
+    }
+
+    fn batch_normalize(msm_output: Vec<Self::MsmOutput>) -> Vec<Self::Base> {
+        H1::batch_normalize(msm_output)
     }
 }
 
-impl<E: Pairing, H1, H2> sigma_protocol::Trait<E> for TupleHomomorphism<H1, H2>
+impl<C, H1, H2> sigma_protocol::CurveGroupTrait for CurveGroupTupleHomomorphism<C, H1, H2>
 where
-    H1: sigma_protocol::Trait<E>,
-    H2: sigma_protocol::Trait<E>,
-    H2: Trait<Domain = H1::Domain, MsmInput = H1::MsmInput>,
+    C: CurveGroup,
+    H1: sigma_protocol::CurveGroupTrait<Group = C>,
+    H2: sigma_protocol::CurveGroupTrait<Group = C>,
+    H2: homomorphism::Trait<Domain = H1::Domain>,
 {
+    type Group = C;
+
+    /// Concatenate the DSTs of the two homomorphisms, plus some
+    /// additional metadata to ensure uniqueness.
     fn dst(&self) -> Vec<u8> {
-        let mut dst = Vec::new();
+        homomorphism::domain_separate_dsts(
+            b"TupleHomomorphism(",
+            &[self.hom1.dst(), self.hom2.dst()],
+            b")",
+        )
+    }
+}
 
-        let dst1 = self.hom1.dst();
-        let dst2 = self.hom2.dst();
+impl<H1, H2> sigma_protocol::Trait for TupleHomomorphism<H1, H2>
+where
+    H1: sigma_protocol::Trait,
+    H2: sigma_protocol::Trait<Scalar = H1::Scalar>,
+    H2: homomorphism::Trait<Domain = H1::Domain>,
+    H1::Codomain: CanonicalSerialize + CanonicalDeserialize,
+    H2::Codomain: CanonicalSerialize + CanonicalDeserialize,
+{
+    type Scalar = H1::Scalar;
 
-        // Domain-separate them properly so concatenation is unambiguous.
-        // Prefix with their lengths so [a|b] and [ab|] don't collide.
-        dst.extend_from_slice(b"TupleHomomorphism(");
-        dst.extend_from_slice(&(dst1.len() as u32).to_be_bytes());
-        dst.extend_from_slice(&dst1);
-        dst.extend_from_slice(&(dst2.len() as u32).to_be_bytes());
-        dst.extend_from_slice(&dst2);
-        dst.extend_from_slice(b")");
+    fn dst(&self) -> Vec<u8> {
+        homomorphism::domain_separate_dsts(
+            b"GenericTupleHomomorphism(",
+            &[self.hom1.dst(), self.hom2.dst()],
+            b")",
+        )
+    }
 
-        dst
+    fn verify_with_challenge<R: RngCore + CryptoRng>(
+        &self,
+        public_statement: &Self::CodomainNormalized,
+        prover_commitment: &Self::CodomainNormalized,
+        challenge: Self::Scalar,
+        response: &Self::Domain,
+        rng: &mut R,
+    ) -> anyhow::Result<()> {
+        let (stmt1, stmt2) = (&public_statement.0, &public_statement.1);
+        let (commit1, commit2) = (&prover_commitment.0, &prover_commitment.1);
+        self.hom1
+            .verify_with_challenge(stmt1, commit1, challenge, response, rng)?;
+        self.hom2
+            .verify_with_challenge(stmt2, commit2, challenge, response, rng)?;
+        Ok(())
     }
 }

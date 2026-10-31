@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{create_emitter_and_request, LoadDestination, NetworkLoadTest};
 use anyhow::Context;
@@ -342,14 +342,14 @@ impl NetworkTest for LoadVsPerfBenchmark {
         let ctx = ctx_locker.deref_mut();
 
         let mut background_job = if let Some(background_traffic) = &self.background_traffic {
-            let nodes_to_send_load_to = LoadDestination::FullnodesOtherwiseValidators
-                .get_destination_nodes(ctx.swarm.clone())
+            let clients_to_send_load_to = LoadDestination::FullnodesOtherwiseValidators
+                .get_destination_clients(ctx.swarm.clone())
                 .await;
             let rng = SeedableRng::from_rng(ctx.core().rng())?;
             let (mut emitter, emit_job_request) = create_emitter_and_request(
                 ctx.swarm.clone(),
                 background_traffic.traffic.clone(),
-                &nodes_to_send_load_to,
+                clients_to_send_load_to,
                 rng,
             )
             .await

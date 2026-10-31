@@ -1,146 +1,371 @@
-/// IBE (Identity-Based Encryption) configuration and Timelock Registry module.
+/// IBE configuration and timelock registry.
 ///
-/// This module implements the on-chain components for Atomica's timelock encryption system.
+/// On-chain part of Atomica's timelock encryption. Design:
+/// `atomica/docs/decisions/aptos-upgrade-ibe-chunky-spec.md` (sections 4, 7 and 8).
 ///
-/// ## Core Types
+/// ## Types
 ///
-/// - `IBEPublicParams`: Stores the Master Public Key (MPK) from DKG
-/// - `TimelockRegistry`: Manages all registered timelocks
-/// - `TimelockInfo`: Per-timelock state including shares and DK
+/// - `IBEPublicParams`: the master public key (MPK) and the epoch it belongs to.
+/// - `TimelockEpochConfig`: written once per epoch from the timelock chunky DKG result. Holds the MPK,
+///   the reconstruction threshold, the per-validator weights and the epoch interval.
+/// - `TimelockRegistry`: all registered timelocks plus the queue of pending ones.
+/// - `TimelockInfo`: per-timelock state: epoch, deadline, status, shares and the revealed key.
 ///
-/// ## Workflow
+/// ## Lifecycle of one timelock
 ///
-/// 1. Registration - User calls `register_timelock(deadline_us)` → gets `timelock_id`
-/// 2. Encryption - Client queries MPK and identity, encrypts with IBE
-/// 3. DKG - Validators run DKG, produce shares, publish MPK
-/// 4. Reveal - After deadline, validators submit scalar shares
-/// 5. Reconstruction - Native function reconstructs DK when threshold met
-/// 6. Decryption - Anyone queries DK, decrypts ciphertext
+/// 1. `register_timelock(deadline_us)` records the epoch and the identity. It aborts unless the MPK of the
+///    current epoch is ready and the deadline leaves room for the reveal window before the epoch ends.
+/// 2. After the deadline the validator transaction handler submits verified key shares (`submit_dk_shares`).
+///    The share check happens in Rust before the share reaches this module.
+/// 3. When verified weight reaches the threshold the handler passes the reconstructed key to
+///    `finalize_timelock_reveal`. The key is checked again here with `ibe::verify_decryption_key`.
+/// 4. Status moves one way: `Pending` to `Revealed` or `Expired(reason)`. It never reopens.
 ///
-/// ## Data Format
+/// ## Epoch rule
 ///
-/// The native function `ibe::reconstruct_ibe_dk` accepts:
-/// - `validator_indices`: `vector<u64>` - Validator indices (0-based)
-/// - `scalar_shares`: `vector<vector<u8>>` - 32-byte little-endian scalars
-/// - `weights`: `vector<u64>` - Full weights for ALL validators
-/// - `total_weight`: `u64` - Sum of all weights
-/// - `identity`: `vector<u8>` - 32-byte IBE identity
+/// A timelock lives in one epoch. A `Pending` timelock of an earlier epoch reads as `Expired(epoch-ended)`
+/// from the first block of the new epoch, because every view and every guard compares `info.epoch` with the
+/// current epoch. `on_new_block` then writes the status and drops the stored shares, in bounded batches.
 ///
-/// Returns 48-byte compressed G1 (the reconstructed DK).
+/// ## Identity
 ///
-/// ## Error Codes
-///
-/// | Code | Description |
-/// |------|-------------|
-/// | 1 | MPK must be 96 bytes (G2 compressed) |
-/// | 2 | MPK not yet set by DKG |
-/// | 3 | Deadline has not passed |
-/// | 4 | Timelock ID not registered |
-/// | 5 | DK not yet revealed |
-/// | 6 | Threshold must be positive |
-/// | 7 | Validator already submitted share |
+/// `compute_identity` returns
+/// `SHA3-256("ATOMICA_TIMELOCK_IBE_V2_ID" || chain_id(u8) || epoch(u64 LE) || timelock_id(u64 LE) || deadline_us(u64 LE))`.
 module aptos_framework::ibe_config {
-    use std::vector;
-    use std::hash::sha3_256;
     use std::bcs;
+    use std::hash::sha3_256;
     use std::signer;
+    use std::vector;
+    use aptos_std::ibe;
+    use aptos_std::table::{Self, Table};
+    use aptos_framework::big_ordered_map::{Self, BigOrderedMap};
+    use aptos_framework::chain_id;
+    use aptos_framework::event;
+    use aptos_framework::reconfiguration;
+    use aptos_framework::stake;
     use aptos_framework::system_addresses;
     use aptos_framework::timestamp;
-    use aptos_framework::event;
-    use aptos_framework::account;
-    use aptos_framework::stake;
-    use aptos_std::table::{Self, Table};
-    use aptos_std::bls12381_algebra::G1;
-    use aptos_std::ibe;
 
     friend aptos_framework::reconfiguration_with_dkg;
+    friend aptos_framework::timelock_dkg;
     friend aptos_framework::block;
 
+    // ================================
+    // Errors
+    // ================================
+
+    /// MPK must be 96 bytes (compressed G2).
     const E_INVALID_MPK_LENGTH: u64 = 1;
+    /// No MPK for the current epoch.
     const E_IBE_NOT_READY: u64 = 2;
+    /// The deadline has not passed yet (share submission) .
     const E_DEADLINE_NOT_PASSED: u64 = 3;
+    /// Timelock id is not registered.
     const E_TIMELOCK_NOT_FOUND: u64 = 4;
+    /// The key is not revealed.
     const E_DECRYPTION_KEY_NOT_REVEALED: u64 = 5;
+    /// The share count differs from the validator's weight, or the threshold is invalid.
     const E_INVALID_THRESHOLD: u64 = 6;
+    /// Validator already has an accepted share set for this timelock.
     const E_SHARE_ALREADY_SUBMITTED: u64 = 7;
+    /// The deadline is not in the future.
+    const E_DEADLINE_IN_PAST: u64 = 8;
+    /// The deadline is later than the epoch end minus the guard.
+    const E_DEADLINE_AFTER_EPOCH_END: u64 = 9;
+    /// The share, the timelock or the config belongs to another epoch.
+    const E_WRONG_EPOCH: u64 = 10;
+    /// The timelock is not `Pending`.
+    const E_NOT_PENDING: u64 = 11;
+    /// Verified weight is below the reconstruction threshold.
+    const E_BELOW_THRESHOLD: u64 = 12;
+    /// The registry was not initialized at genesis.
+    const E_REGISTRY_NOT_INITIALIZED: u64 = 13;
+    /// The validator index is not in the epoch config.
+    const E_UNKNOWN_VALIDATOR_INDEX: u64 = 14;
+    /// The reveal window has elapsed.
+    const E_REVEAL_WINDOW_ELAPSED: u64 = 15;
+    /// The epoch config is invalid (empty weights, zero threshold, threshold above total weight).
+    const E_INVALID_EPOCH_CONFIG: u64 = 16;
+
+    // ================================
+    // Constants
+    // ================================
 
     const G2_COMPRESSED_LENGTH: u64 = 96;
     const G1_LENGTH: u64 = 48;
-    const DEFAULT_REVEAL_THRESHOLD_NUMERATOR: u64 = 2;
-    const DEFAULT_REVEAL_THRESHOLD_DENOMINATOR: u64 = 3;
+
+    const MICROS_PER_MINUTE: u64 = 60_000_000;
+    /// A deadline must be at least this long before the epoch end (spec section 8, rule 2).
+    const EPOCH_END_GUARD_US: u64 = 900_000_000;
+    /// The reveal window after the deadline (spec section 7, rule 3).
+    const REVEAL_WINDOW_US: u64 = 600_000_000;
+    /// Upper bound of timelocks expired per block (spec section 7, rule 6). Initial value, tune by measurement.
+    const MAX_EXPIRE_PER_BLOCK: u64 = 50;
+
+    /// Status codes returned by `get_status`.
+    const STATUS_PENDING: u8 = 0;
+    const STATUS_REVEALED: u8 = 1;
+    const STATUS_EXPIRED: u8 = 2;
+
+    /// Expiry reasons returned by `get_expiry_reason`. `0` means no expiry reason.
+    const REASON_NONE: u8 = 0;
+    const REASON_EPOCH_ENDED: u8 = 1;
+    const REASON_REVEAL_WINDOW_ELAPSED: u8 = 2;
+    const REASON_KEY_CHECK_FAILED: u8 = 3;
+
+    const IDENTITY_TAG: vector<u8> = b"ATOMICA_TIMELOCK_IBE_V2_ID";
+
+    // ================================
+    // State
+    // ================================
 
     struct IBEPublicParams has key {
         mpk: vector<u8>,
+        epoch: u64
+    }
+
+    /// Written once per epoch, after the epoch change, from the timelock chunky DKG result.
+    struct TimelockEpochConfig has key, drop {
         epoch: u64,
+        mpk: vector<u8>,
+        /// Weight needed to reconstruct. Comes from the DKG, not from the vtxn author.
+        reconstruct_threshold_weight: u64,
+        total_weight: u64,
+        /// Per-validator weights from the DKG rounding profile, indexed by validator index.
+        weights: vector<u64>,
+        /// Length of the epoch. The epoch ends at `last_reconfiguration_time + epoch_interval_us`.
+        epoch_interval_us: u64,
+        public_parameters_hash: vector<u8>,
+        subtranscript_hash: vector<u8>,
+        /// Verification key `g2^{s_p}` (compressed G2, 96 bytes) of every virtual player, in player order.
+        /// Validator `i` owns the `weights[i]` entries that start at `weights[0] + ... + weights[i - 1]`.
+        /// The Rust share check reads the keys of the share's author from here.
+        verification_keys: vector<vector<u8>>
+    }
+
+    enum TimelockStatus has copy, drop, store {
+        Pending,
+        Revealed,
+        Expired { reason: u8 }
     }
 
     struct TimelockInfo has store {
         timelock_id: u64,
+        /// Epoch the timelock was registered in.
+        epoch: u64,
         deadline_us: u64,
+        /// `min(deadline_us + 10 minutes, epoch end)`.
+        reveal_expiry_us: u64,
         identity: vector<u8>,
         decryption_key: vector<u8>,
-        is_revealed: bool,
+        status: TimelockStatus,
+        /// Accepted share weight.
         share_count: u64,
+        /// Reconstruction threshold weight, copied from the epoch config at registration.
         reveal_threshold: u64,
         validator_indices: vector<u64>,
-        /// Nested shares: submitted_shares[validator_index][virtual_player_share]
+        /// `submitted_shares[i]` holds the shares of `validator_indices[i]`, one per virtual player.
         submitted_shares: vector<vector<vector<u8>>>,
         validator_weights: vector<u64>,
-        submitters: vector<address>,
+        submitters: vector<address>
+    }
+
+    /// Ordering key of the pending queue.
+    struct PendingKey has copy, drop, store {
+        reveal_expiry_us: u64,
+        timelock_id: u64
     }
 
     struct TimelockRegistry has key {
         timelocks: Table<u64, TimelockInfo>,
-        pending_timelock_ids: vector<u64>,
-        next_timelock_id: u64,
-        registration_events: event::EventHandle<TimelockRegistrationEvent>,
-        reveal_events: event::EventHandle<TimelockRevealEvent>,
-        expired_events: event::EventHandle<TimelockExpiredEvent>,
+        /// Pending timelocks in order of `(reveal_expiry_us, timelock_id)`.
+        pending: BigOrderedMap<PendingKey, bool>,
+        next_timelock_id: u64
     }
 
+    // ================================
+    // Events
+    // ================================
+
+    #[event]
     struct TimelockRegistrationEvent has drop, store {
         timelock_id: u64,
+        epoch: u64,
         deadline_us: u64,
+        reveal_expiry_us: u64,
         sender: address,
-        timestamp_us: u64,
+        timestamp_us: u64
     }
 
+    #[event]
     struct TimelockRevealEvent has drop, store {
         timelock_id: u64,
-        timestamp_us: u64,
+        timestamp_us: u64
     }
 
+    /// A share set that failed the Rust share check. Nothing was stored, so the validator can submit again.
+    /// `validator` is the author named in the transaction. No signature backs it, so the event is a claim
+    /// about a message, not proof of misbehavior.
+    #[event]
+    struct TimelockShareRejectedEvent has drop, store {
+        timelock_id: u64,
+        epoch: u64,
+        validator: address,
+        timestamp_us: u64
+    }
+
+    #[event]
     struct TimelockExpiredEvent has drop, store {
         timelock_id: u64,
-        timestamp_us: u64,
+        /// See `REASON_*`.
+        reason: u8,
+        timestamp_us: u64
     }
 
+    // ================================
+    // Initialization and per-epoch config
+    // ================================
+
+    /// Called in genesis. Creates the public params and the registry.
     public fun initialize(aptos_framework: &signer) {
         system_addresses::assert_aptos_framework(aptos_framework);
         if (!exists<IBEPublicParams>(@aptos_framework)) {
-            move_to(aptos_framework, IBEPublicParams {
-                mpk: vector::empty(),
-                epoch: 0,
-            });
+            move_to(aptos_framework, IBEPublicParams { mpk: vector::empty(), epoch: 0 });
         };
+        initialize_timelock_registry(aptos_framework);
     }
 
+    public fun initialize_timelock_registry(aptos_framework: &signer) {
+        system_addresses::assert_aptos_framework(aptos_framework);
+        if (!exists<TimelockRegistry>(@aptos_framework)) {
+            move_to(
+                aptos_framework,
+                TimelockRegistry {
+                    timelocks: table::new(),
+                    pending: big_ordered_map::new_with_type_size_hints(16, 16, 1, 1),
+                    next_timelock_id: 0
+                }
+            );
+        }
+    }
+
+    /// Stores the MPK of an epoch. Kept for callers that only know the MPK.
     public(friend) fun set_mpk(mpk: vector<u8>, epoch: u64) acquires IBEPublicParams {
-        assert!(
-            vector::length(&mpk) == G2_COMPRESSED_LENGTH,
-            E_INVALID_MPK_LENGTH
-        );
-        let params = borrow_global_mut<IBEPublicParams>(@aptos_framework);
+        assert!(mpk.length() == G2_COMPRESSED_LENGTH, E_INVALID_MPK_LENGTH);
+        let params = &mut IBEPublicParams[@aptos_framework];
         params.mpk = mpk;
         params.epoch = epoch;
     }
+
+    /// Writes the epoch config. Must run after the epoch change, so that
+    /// `reconfiguration::last_reconfiguration_time` is the start of `epoch`.
+    /// Replaces any config of an earlier epoch. Also updates `IBEPublicParams`.
+    public(friend) fun set_epoch_config(
+        aptos_framework: &signer,
+        epoch: u64,
+        mpk: vector<u8>,
+        reconstruct_threshold_weight: u64,
+        weights: vector<u64>,
+        epoch_interval_us: u64,
+        public_parameters_hash: vector<u8>,
+        subtranscript_hash: vector<u8>,
+        verification_keys: vector<vector<u8>>
+    ) acquires IBEPublicParams, TimelockEpochConfig {
+        system_addresses::assert_aptos_framework(aptos_framework);
+        let total_weight = weights.fold(0u64, |acc, w| acc + w);
+        assert!(verification_keys.length() == total_weight, E_INVALID_EPOCH_CONFIG);
+        verification_keys.for_each_ref(|vk| {
+            assert!(vk.length() == G2_COMPRESSED_LENGTH, E_INVALID_EPOCH_CONFIG);
+        });
+        set_epoch_config_internal(
+            aptos_framework,
+            epoch,
+            mpk,
+            reconstruct_threshold_weight,
+            weights,
+            epoch_interval_us,
+            public_parameters_hash,
+            subtranscript_hash,
+            verification_keys
+        );
+    }
+
+    /// True when the ibe_config state exists, so that `set_epoch_config` cannot abort for a missing resource.
+    public fun is_initialized(): bool {
+        exists<IBEPublicParams>(@aptos_framework)
+    }
+
+    /// True when `set_epoch_config` accepts these values. Lets the epoch change skip a bad config
+    /// instead of aborting.
+    public fun is_valid_epoch_config(
+        mpk: &vector<u8>,
+        reconstruct_threshold_weight: u64,
+        weights: &vector<u64>,
+        epoch_interval_us: u64,
+        verification_keys: &vector<vector<u8>>
+    ): bool {
+        if (mpk.length() != G2_COMPRESSED_LENGTH || epoch_interval_us == 0) { return false };
+        let total_weight = 0u64;
+        weights.for_each_ref(|w| { total_weight += *w; });
+        if (reconstruct_threshold_weight == 0 || reconstruct_threshold_weight > total_weight) {
+            return false
+        };
+        if (verification_keys.length() != total_weight) { return false };
+        let ok = true;
+        verification_keys.for_each_ref(|vk| {
+            if (vk.length() != G2_COMPRESSED_LENGTH) { ok = false; }
+        });
+        ok
+    }
+
+    fun set_epoch_config_internal(
+        aptos_framework: &signer,
+        epoch: u64,
+        mpk: vector<u8>,
+        reconstruct_threshold_weight: u64,
+        weights: vector<u64>,
+        epoch_interval_us: u64,
+        public_parameters_hash: vector<u8>,
+        subtranscript_hash: vector<u8>,
+        verification_keys: vector<vector<u8>>
+    ) acquires IBEPublicParams, TimelockEpochConfig {
+        assert!(mpk.length() == G2_COMPRESSED_LENGTH, E_INVALID_MPK_LENGTH);
+        let total_weight = weights.fold(0u64, |acc, w| acc + w);
+        assert!(
+            reconstruct_threshold_weight > 0 && reconstruct_threshold_weight <= total_weight,
+            E_INVALID_EPOCH_CONFIG
+        );
+        assert!(epoch_interval_us > 0, E_INVALID_EPOCH_CONFIG);
+
+        let config = TimelockEpochConfig {
+            epoch,
+            mpk,
+            reconstruct_threshold_weight,
+            total_weight,
+            weights,
+            epoch_interval_us,
+            public_parameters_hash,
+            subtranscript_hash,
+            verification_keys
+        };
+        if (exists<TimelockEpochConfig>(@aptos_framework)) {
+            *&mut TimelockEpochConfig[@aptos_framework] = config;
+        } else {
+            move_to(aptos_framework, config);
+        };
+        set_mpk(mpk, epoch);
+    }
+
+    // ================================
+    // Config views
+    // ================================
 
     #[view]
     public fun get_mpk(): vector<u8> acquires IBEPublicParams {
         if (!exists<IBEPublicParams>(@aptos_framework)) {
             return vector::empty()
         };
-        borrow_global<IBEPublicParams>(@aptos_framework).mpk
+        IBEPublicParams[@aptos_framework].mpk
     }
 
     #[view]
@@ -148,257 +373,534 @@ module aptos_framework::ibe_config {
         if (!exists<IBEPublicParams>(@aptos_framework)) {
             return 0
         };
-        borrow_global<IBEPublicParams>(@aptos_framework).epoch
+        IBEPublicParams[@aptos_framework].epoch
     }
 
     #[view]
-    public fun is_ready(): bool acquires IBEPublicParams {
-        if (!exists<IBEPublicParams>(@aptos_framework)) {
+    /// True when the epoch config is for the current epoch and holds a valid MPK.
+    public fun is_ready(): bool acquires TimelockEpochConfig {
+        if (!exists<TimelockEpochConfig>(@aptos_framework)) {
             return false
         };
-        vector::length(&borrow_global<IBEPublicParams>(@aptos_framework).mpk) == G2_COMPRESSED_LENGTH
+        let config = &TimelockEpochConfig[@aptos_framework];
+        config.epoch == reconfiguration::current_epoch()
+            && config.mpk.length() == G2_COMPRESSED_LENGTH
     }
 
-    public fun initialize_timelock_registry(aptos_framework: &signer) {
-        system_addresses::assert_aptos_framework(aptos_framework);
-        if (!exists<TimelockRegistry>(@aptos_framework)) {
-            move_to(aptos_framework, TimelockRegistry {
-                timelocks: table::new(),
-                pending_timelock_ids: vector::empty<u64>(),
-                next_timelock_id: 0,
-                registration_events: account::new_event_handle<TimelockRegistrationEvent>(aptos_framework),
-                reveal_events: account::new_event_handle<TimelockRevealEvent>(aptos_framework),
-                expired_events: account::new_event_handle<TimelockExpiredEvent>(aptos_framework),
-            });
-        }
+    #[view]
+    /// `(epoch, reconstruct_threshold_weight, total_weight)` of the epoch config.
+    public fun get_epoch_config(): (u64, u64, u64) acquires TimelockEpochConfig {
+        assert!(exists<TimelockEpochConfig>(@aptos_framework), E_IBE_NOT_READY);
+        let config = &TimelockEpochConfig[@aptos_framework];
+        (config.epoch, config.reconstruct_threshold_weight, config.total_weight)
     }
 
-    public entry fun register_timelock(
-        account: &signer,
-        deadline_us: u64
-    ) acquires TimelockRegistry {
-        let current_time = timestamp::now_microseconds();
-        assert!(current_time < deadline_us, E_DEADLINE_NOT_PASSED);
+    /// The verification keys of the virtual players of `validator_address`, in player order. The share check
+    /// of the `TimelockShare` handler reads them here, so every validator checks against chain state.
+    /// Aborts unless the config is of the current epoch and the address is in the active validator set.
+    public fun get_share_verification_keys(validator_address: address): vector<vector<u8>>
+    acquires TimelockEpochConfig {
+        assert!(exists<TimelockEpochConfig>(@aptos_framework), E_IBE_NOT_READY);
+        let config = &TimelockEpochConfig[@aptos_framework];
+        assert!(config.epoch == reconfiguration::current_epoch(), E_WRONG_EPOCH);
+        let validator_index = stake::get_validator_index(validator_address);
+        get_player_keys(config, validator_index)
+    }
 
-        if (!exists<TimelockRegistry>(@aptos_framework)) {
-            initialize_timelock_registry(account);
+    fun get_player_keys(config: &TimelockEpochConfig, validator_index: u64): vector<vector<u8>> {
+        assert!(validator_index < config.weights.length(), E_UNKNOWN_VALIDATOR_INDEX);
+        let start = 0u64;
+        let i = 0u64;
+        while (i < validator_index) {
+            start += config.weights[i];
+            i += 1;
         };
+        let weight = config.weights[validator_index];
+        assert!(start + weight <= config.verification_keys.length(), E_INVALID_EPOCH_CONFIG);
+        let keys = vector[];
+        let j = 0u64;
+        while (j < weight) {
+            keys.push_back(config.verification_keys[start + j]);
+            j += 1;
+        };
+        keys
+    }
 
-        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
+    #[view]
+    /// End of the current epoch: `last_reconfiguration_time + epoch_interval_us`.
+    public fun epoch_end_us(): u64 acquires TimelockEpochConfig {
+        assert!(exists<TimelockEpochConfig>(@aptos_framework), E_IBE_NOT_READY);
+        reconfiguration::last_reconfiguration_time()
+            + TimelockEpochConfig[@aptos_framework].epoch_interval_us
+    }
+
+    // ================================
+    // Registration
+    // ================================
+
+    /// Registers a timelock for `deadline_us`.
+    ///
+    /// Aborts unless the MPK of the current epoch is ready, the deadline is in the future and the deadline is at
+    /// most `epoch_end - 15 minutes`.
+    public entry fun register_timelock(account: &signer, deadline_us: u64) acquires TimelockRegistry, TimelockEpochConfig {
+        assert!(exists<TimelockRegistry>(@aptos_framework), E_REGISTRY_NOT_INITIALIZED);
+        assert!(is_ready(), E_IBE_NOT_READY);
+
+        let now = timestamp::now_microseconds();
+        assert!(now < deadline_us, E_DEADLINE_IN_PAST);
+
+        let epoch_end = epoch_end_us();
+        let config = &TimelockEpochConfig[@aptos_framework];
+        let epoch = config.epoch;
+        assert!(epoch_end >= EPOCH_END_GUARD_US, E_DEADLINE_AFTER_EPOCH_END);
+        assert!(deadline_us <= epoch_end - EPOCH_END_GUARD_US, E_DEADLINE_AFTER_EPOCH_END);
+        let reveal_expiry_us = deadline_us + REVEAL_WINDOW_US;
+        if (reveal_expiry_us > epoch_end) {
+            reveal_expiry_us = epoch_end;
+        };
+        let reveal_threshold = config.reconstruct_threshold_weight;
+
+        let registry = &mut TimelockRegistry[@aptos_framework];
         let timelock_id = registry.next_timelock_id;
         registry.next_timelock_id = timelock_id + 1;
 
-        let identity = compute_identity(timelock_id, deadline_us);
+        let identity = compute_identity(chain_id::get(), epoch, timelock_id, deadline_us);
 
-        let timelock_info = TimelockInfo {
+        registry.timelocks.add(
             timelock_id,
-            deadline_us,
-            identity,
-            decryption_key: vector::empty(),
-            is_revealed: false,
-            share_count: 0,
-            reveal_threshold: 0,
-            validator_indices: vector::empty(),
-            submitted_shares: vector::empty(),
-            validator_weights: vector::empty(),
-            submitters: vector::empty(),
-        };
+            TimelockInfo {
+                timelock_id,
+                epoch,
+                deadline_us,
+                reveal_expiry_us,
+                identity,
+                decryption_key: vector::empty(),
+                status: TimelockStatus::Pending,
+                share_count: 0,
+                reveal_threshold,
+                validator_indices: vector::empty(),
+                submitted_shares: vector::empty(),
+                validator_weights: vector::empty(),
+                submitters: vector::empty()
+            }
+        );
+        registry.pending.add(PendingKey { reveal_expiry_us, timelock_id }, true);
 
-        table::add(&mut registry.timelocks, timelock_id, timelock_info);
-        vector::push_back(&mut registry.pending_timelock_ids, timelock_id);
-
-        event::emit_event(&mut registry.registration_events, TimelockRegistrationEvent {
-            timelock_id,
-            deadline_us,
-            sender: signer::address_of(account),
-            timestamp_us: current_time,
-        });
+        event::emit(
+            TimelockRegistrationEvent {
+                timelock_id,
+                epoch,
+                deadline_us,
+                reveal_expiry_us,
+                sender: signer::address_of(account),
+                timestamp_us: now
+            }
+        );
     }
 
+    // ================================
+    // Share submission and reveal
+    // ================================
+
+    /// Stores a share set of `validator_address` for a timelock. Called by the timelock validator transaction
+    /// handler after the Rust share check passed. Weight and threshold come from the epoch config.
     public(friend) fun submit_dk_shares(
         timelock_id: u64,
         shares: vector<vector<u8>>,
         validator_address: address,
-        weight: u64,
-        total_weight: u64
-    ) acquires TimelockRegistry {
-        let num_shares = vector::length(&shares);
-        assert!(num_shares == weight, E_INVALID_THRESHOLD);
-
-        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
-        let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
-
-        let current_time = timestamp::now_microseconds();
-        assert!(current_time >= timelock_info.deadline_us, E_DEADLINE_NOT_PASSED);
-        assert!(!timelock_info.is_revealed, E_DECRYPTION_KEY_NOT_REVEALED);
-        assert!(!vector::contains(&timelock_info.submitters, &validator_address), E_SHARE_ALREADY_SUBMITTED);
-
-        if (timelock_info.reveal_threshold == 0) {
-            timelock_info.reveal_threshold = (total_weight * DEFAULT_REVEAL_THRESHOLD_NUMERATOR) / DEFAULT_REVEAL_THRESHOLD_DENOMINATOR + 1;
-        };
-
+        share_epoch: u64
+    ) acquires TimelockRegistry, TimelockEpochConfig {
         let validator_index = stake::get_validator_index(validator_address);
-        vector::push_back(&mut timelock_info.validator_indices, validator_index);
-        vector::push_back(&mut timelock_info.submitted_shares, shares);
-        vector::push_back(&mut timelock_info.validator_weights, weight);
-        vector::push_back(&mut timelock_info.submitters, validator_address);
-        timelock_info.share_count = timelock_info.share_count + weight;
+        submit_dk_shares_internal(timelock_id, shares, validator_index, validator_address, share_epoch);
     }
 
-    public(friend) fun finalize_timelock_reveal(
+    fun submit_dk_shares_internal(
         timelock_id: u64,
-        total_weight: u64
-    ) acquires TimelockRegistry {
-        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
-        let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
+        shares: vector<vector<u8>>,
+        validator_index: u64,
+        validator_address: address,
+        share_epoch: u64
+    ) acquires TimelockRegistry, TimelockEpochConfig {
+        let weight = assert_can_submit(timelock_id, validator_index, validator_address, share_epoch);
+        assert!(shares.length() == weight, E_INVALID_THRESHOLD);
+        let registry = &mut TimelockRegistry[@aptos_framework];
+        let info = registry.timelocks.borrow_mut(timelock_id);
+        info.validator_indices.push_back(validator_index);
+        info.submitted_shares.push_back(shares);
+        info.validator_weights.push_back(weight);
+        info.submitters.push_back(validator_address);
+        info.share_count += weight;
+    }
 
-        assert!(timelock_info.share_count >= timelock_info.reveal_threshold, 0);
-        assert!(!timelock_info.is_revealed, 0);
+    /// The cheap checks of a share submission: current epoch, the timelock's epoch, pending status, deadline
+    /// passed in the committed block time, reveal window open and one slot per validator. Returns the weight
+    /// of the validator.
+    fun assert_can_submit(
+        timelock_id: u64,
+        validator_index: u64,
+        validator_address: address,
+        share_epoch: u64
+    ): u64 acquires TimelockRegistry, TimelockEpochConfig {
+        assert!(exists<TimelockEpochConfig>(@aptos_framework), E_IBE_NOT_READY);
+        let config = &TimelockEpochConfig[@aptos_framework];
+        let current_epoch = reconfiguration::current_epoch();
+        assert!(config.epoch == current_epoch && share_epoch == current_epoch, E_WRONG_EPOCH);
+        assert!(validator_index < config.weights.length(), E_UNKNOWN_VALIDATOR_INDEX);
+        let weight = config.weights[validator_index];
 
-        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
-            timelock_info.validator_indices,
-            timelock_info.submitted_shares,
-            timelock_info.validator_weights,
-            timelock_info.reveal_threshold,
-            total_weight,
-            timelock_info.identity
+        let registry = &TimelockRegistry[@aptos_framework];
+        assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
+        let info = registry.timelocks.borrow(timelock_id);
+        assert!(info.status is TimelockStatus::Pending, E_NOT_PENDING);
+        assert!(info.epoch == current_epoch, E_WRONG_EPOCH);
+
+        let now = timestamp::now_microseconds();
+        assert!(now >= info.deadline_us, E_DEADLINE_NOT_PASSED);
+        assert!(now < info.reveal_expiry_us, E_REVEAL_WINDOW_ELAPSED);
+        assert!(!info.submitters.contains(&validator_address), E_SHARE_ALREADY_SUBMITTED);
+        weight
+    }
+
+    /// Records that the share set of `validator_address` failed the Rust share check. Stores nothing, so
+    /// the validator's slot stays free. Emits `TimelockShareRejectedEvent`. Runs the same cheap checks as a
+    /// submission, so an event exists only for a submission that was otherwise acceptable.
+    public(friend) fun report_rejected_share(
+        timelock_id: u64,
+        validator_address: address,
+        share_epoch: u64
+    ) acquires TimelockRegistry, TimelockEpochConfig {
+        let validator_index = stake::get_validator_index(validator_address);
+        assert_can_submit(timelock_id, validator_index, validator_address, share_epoch);
+        event::emit(
+            TimelockShareRejectedEvent {
+                timelock_id,
+                epoch: share_epoch,
+                validator: validator_address,
+                timestamp_us: timestamp::now_microseconds()
+            }
         );
-
-        timelock_info.decryption_key = reconstructed_dk;
-        timelock_info.is_revealed = true;
-        remove_pending_timelock_id(registry, timelock_id);
-
-        let current_time = timestamp::now_microseconds();
-        event::emit_event(&mut registry.reveal_events, TimelockRevealEvent {
-            timelock_id,
-            timestamp_us: current_time,
-        });
     }
 
-    fun remove_pending_timelock_id(registry: &mut TimelockRegistry, timelock_id: u64) {
-        let (found, index) = vector::index_of(&registry.pending_timelock_ids, &timelock_id);
-        if (found) {
-            vector::swap_remove(&mut registry.pending_timelock_ids, index);
+    /// Everything the handler needs to reconstruct the key:
+    /// `(validator_indices, dk_shares, weights, threshold, total_weight, identity)`.
+    /// Aborts unless the timelock is `Pending` in the current epoch and verified weight reached the threshold.
+    public fun get_reconstruction_inputs(timelock_id: u64): (vector<u64>, vector<vector<vector<u8>>>, vector<u64>, u64, u64, vector<u8>)
+    acquires TimelockRegistry, TimelockEpochConfig {
+        assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
+        let registry = &TimelockRegistry[@aptos_framework];
+        assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
+        let info = registry.timelocks.borrow(timelock_id);
+        assert!(effective_status(info) is TimelockStatus::Pending, E_NOT_PENDING);
+        assert!(info.share_count >= info.reveal_threshold, E_BELOW_THRESHOLD);
+        let total_weight = TimelockEpochConfig[@aptos_framework].total_weight;
+        (
+            info.validator_indices,
+            info.submitted_shares,
+            info.validator_weights,
+            info.reveal_threshold,
+            total_weight,
+            info.identity
+        )
+    }
+
+    /// Stores the reconstructed key after checking `e(dk, g2) = e(H1(id), mpk)` again.
+    ///
+    /// Returns true when the timelock is now `Revealed`. When the check fails the timelock becomes
+    /// `Expired(key-check-failed)`, its shares are dropped, and the function returns false. It does not abort in
+    /// that case, so that the status change persists. There is no retry after either outcome.
+    public(friend) fun finalize_timelock_reveal(timelock_id: u64, dk: vector<u8>): bool
+    acquires TimelockRegistry, TimelockEpochConfig {
+        let (_, _, _, _, _, identity) = get_reconstruction_inputs(timelock_id);
+        let mpk = TimelockEpochConfig[@aptos_framework].mpk;
+        let key_ok = dk.length() == G1_LENGTH && ibe::verify_decryption_key(dk, identity, mpk);
+        finalize_internal(timelock_id, dk, key_ok)
+    }
+
+    /// Called by the handler when the key it rebuilt in Rust failed the pairing check. Sets
+    /// `Expired(key-check-failed)` and drops the stored shares. There is no retry.
+    public(friend) fun fail_timelock_key_check(timelock_id: u64) acquires TimelockRegistry, TimelockEpochConfig {
+        get_reconstruction_inputs(timelock_id);
+        finalize_internal(timelock_id, vector::empty(), false);
+    }
+
+    /// True when the timelock is `Pending` in the current epoch and verified weight reached the threshold.
+    /// The handler uses it to decide whether to rebuild the key after storing a share.
+    public fun is_reconstructable(timelock_id: u64): bool acquires TimelockRegistry {
+        if (!exists<TimelockRegistry>(@aptos_framework)) {
+            return false
         };
+        let registry = &TimelockRegistry[@aptos_framework];
+        if (!registry.timelocks.contains(timelock_id)) {
+            return false
+        };
+        let info = registry.timelocks.borrow(timelock_id);
+        (effective_status(info) is TimelockStatus::Pending) && info.share_count >= info.reveal_threshold
     }
 
+    fun finalize_internal(timelock_id: u64, dk: vector<u8>, key_ok: bool): bool acquires TimelockRegistry {
+        let registry = &mut TimelockRegistry[@aptos_framework];
+        assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
+        let info = registry.timelocks.borrow_mut(timelock_id);
+        assert!(info.status is TimelockStatus::Pending, E_NOT_PENDING);
+        assert!(info.epoch == reconfiguration::current_epoch(), E_WRONG_EPOCH);
+        assert!(info.share_count >= info.reveal_threshold, E_BELOW_THRESHOLD);
+
+        let now = timestamp::now_microseconds();
+        assert!(now < info.reveal_expiry_us, E_REVEAL_WINDOW_ELAPSED);
+
+        let key = PendingKey { reveal_expiry_us: info.reveal_expiry_us, timelock_id };
+        if (key_ok) {
+            info.decryption_key = dk;
+            info.status = TimelockStatus::Revealed;
+            registry.pending.remove(&key);
+            event::emit(TimelockRevealEvent { timelock_id, timestamp_us: now });
+            true
+        } else {
+            expire(info, REASON_KEY_CHECK_FAILED);
+            registry.pending.remove(&key);
+            event::emit(
+                TimelockExpiredEvent { timelock_id, reason: REASON_KEY_CHECK_FAILED, timestamp_us: now }
+            );
+            false
+        }
+    }
+
+    /// Sets `Expired(reason)` and drops the stored shares.
+    fun expire(info: &mut TimelockInfo, reason: u8) {
+        info.status = TimelockStatus::Expired { reason };
+        info.validator_indices = vector::empty();
+        info.submitted_shares = vector::empty();
+        info.validator_weights = vector::empty();
+        info.submitters = vector::empty();
+        info.share_count = 0;
+    }
+
+    /// Marks due timelocks `Expired` and emits one event each. Takes at most `MAX_EXPIRE_PER_BLOCK` per
+    /// block, in order of `(reveal_expiry_us, timelock_id)`.
+    ///
+    /// Timelocks of an earlier epoch always have `reveal_expiry_us` at or before that epoch's end, so they sit at
+    /// the front of the queue and are drained here with reason `epoch-ended`.
     public(friend) fun on_new_block(vm: &signer) acquires TimelockRegistry {
         system_addresses::assert_vm(vm);
+        on_new_block_internal();
+    }
 
+    fun on_new_block_internal() acquires TimelockRegistry {
         if (!exists<TimelockRegistry>(@aptos_framework)) {
             return
         };
+        let now = timestamp::now_microseconds();
+        let current_epoch = reconfiguration::current_epoch();
+        let registry = &mut TimelockRegistry[@aptos_framework];
 
-        let current_time = timestamp::now_microseconds();
-        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
-
-        let i = 0;
-        let len = vector::length(&registry.pending_timelock_ids);
-        while (i < len) {
-            let timelock_id = *vector::borrow(&registry.pending_timelock_ids, i);
-            let timelock_info = table::borrow(&registry.timelocks, timelock_id);
-
-            if (current_time >= timelock_info.deadline_us) {
-                event::emit_event(&mut registry.expired_events, TimelockExpiredEvent {
-                    timelock_id,
-                    timestamp_us: current_time,
-                });
+        let processed = 0;
+        while (processed < MAX_EXPIRE_PER_BLOCK && !registry.pending.is_empty()) {
+            let (front, _) = registry.pending.borrow_front();
+            if (front.reveal_expiry_us > now && registry.timelocks.borrow(front.timelock_id).epoch == current_epoch) {
+                break
             };
-
-            i = i + 1;
+            let (key, _) = registry.pending.pop_front();
+            let info = registry.timelocks.borrow_mut(key.timelock_id);
+            let reason =
+                if (info.epoch != current_epoch) { REASON_EPOCH_ENDED }
+                else { REASON_REVEAL_WINDOW_ELAPSED };
+            expire(info, reason);
+            event::emit(TimelockExpiredEvent { timelock_id: key.timelock_id, reason, timestamp_us: now });
+            processed += 1;
         };
     }
 
+    // ================================
+    // Views
+    // ================================
+
+    fun borrow_info(registry: &TimelockRegistry, timelock_id: u64): &TimelockInfo {
+        assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
+        registry.timelocks.borrow(timelock_id)
+    }
+
+    /// The stored status, except that a `Pending` timelock of an earlier epoch reads as `Expired(epoch-ended)`.
+    fun effective_status(info: &TimelockInfo): TimelockStatus {
+        if ((info.status is TimelockStatus::Pending) && info.epoch != reconfiguration::current_epoch()) {
+            TimelockStatus::Expired { reason: REASON_EPOCH_ENDED }
+        } else {
+            info.status
+        }
+    }
+
     #[view]
+    /// `(deadline_us, identity, is_revealed, share_count)`.
     public fun get_timelock(timelock_id: u64): (u64, vector<u8>, bool, u64) acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
-        let registry = borrow_global<TimelockRegistry>(@aptos_framework);
-        assert!(table::contains(&registry.timelocks, timelock_id), E_TIMELOCK_NOT_FOUND);
-        let info = table::borrow(&registry.timelocks, timelock_id);
-        (info.deadline_us, info.identity, info.is_revealed, info.share_count)
+        let info = borrow_info(&TimelockRegistry[@aptos_framework], timelock_id);
+        (info.deadline_us, info.identity, info.status is TimelockStatus::Revealed, info.share_count)
     }
 
     #[view]
     public fun get_deadline(timelock_id: u64): u64 acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
-        let registry = borrow_global<TimelockRegistry>(@aptos_framework);
-        assert!(table::contains(&registry.timelocks, timelock_id), E_TIMELOCK_NOT_FOUND);
-        table::borrow(&registry.timelocks, timelock_id).deadline_us
+        borrow_info(&TimelockRegistry[@aptos_framework], timelock_id).deadline_us
     }
 
     #[view]
     public fun get_identity(timelock_id: u64): vector<u8> acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
-        let registry = borrow_global<TimelockRegistry>(@aptos_framework);
-        assert!(table::contains(&registry.timelocks, timelock_id), E_TIMELOCK_NOT_FOUND);
-        table::borrow(&registry.timelocks, timelock_id).identity
+        borrow_info(&TimelockRegistry[@aptos_framework], timelock_id).identity
+    }
+
+    #[view]
+    /// Epoch the timelock was registered in.
+    public fun get_timelock_epoch(timelock_id: u64): u64 acquires TimelockRegistry {
+        assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
+        borrow_info(&TimelockRegistry[@aptos_framework], timelock_id).epoch
+    }
+
+    #[view]
+    public fun get_reveal_expiry(timelock_id: u64): u64 acquires TimelockRegistry {
+        assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
+        borrow_info(&TimelockRegistry[@aptos_framework], timelock_id).reveal_expiry_us
     }
 
     #[view]
     public fun get_decryption_key(timelock_id: u64): vector<u8> acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
-        let registry = borrow_global<TimelockRegistry>(@aptos_framework);
-        assert!(table::contains(&registry.timelocks, timelock_id), E_TIMELOCK_NOT_FOUND);
-        let info = table::borrow(&registry.timelocks, timelock_id);
-        assert!(info.is_revealed, E_DECRYPTION_KEY_NOT_REVEALED);
+        let info = borrow_info(&TimelockRegistry[@aptos_framework], timelock_id);
+        assert!(info.status is TimelockStatus::Revealed, E_DECRYPTION_KEY_NOT_REVEALED);
         info.decryption_key
+    }
+
+    #[view]
+    /// `0` pending, `1` revealed, `2` expired. Aborts for an unknown timelock.
+    public fun get_status(timelock_id: u64): u8 acquires TimelockRegistry {
+        assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
+        let info = borrow_info(&TimelockRegistry[@aptos_framework], timelock_id);
+        match (effective_status(info)) {
+            TimelockStatus::Pending => STATUS_PENDING,
+            TimelockStatus::Revealed => STATUS_REVEALED,
+            TimelockStatus::Expired { reason: _ } => STATUS_EXPIRED
+        }
+    }
+
+    #[view]
+    /// `1` epoch-ended, `2` reveal-window-elapsed, `3` key-check-failed, `0` when the timelock is not expired.
+    /// The auction contract uses this for the refund path.
+    public fun get_expiry_reason(timelock_id: u64): u8 acquires TimelockRegistry {
+        assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
+        let info = borrow_info(&TimelockRegistry[@aptos_framework], timelock_id);
+        match (effective_status(info)) {
+            TimelockStatus::Expired { reason } => reason,
+            _ => REASON_NONE
+        }
     }
 
     #[view]
     public fun is_revealed(timelock_id: u64): bool acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
-        let registry = borrow_global<TimelockRegistry>(@aptos_framework);
-        if (!table::contains(&registry.timelocks, timelock_id)) {
+        let registry = &TimelockRegistry[@aptos_framework];
+        if (!registry.timelocks.contains(timelock_id)) {
             return false
         };
-        table::borrow(&registry.timelocks, timelock_id).is_revealed
+        registry.timelocks.borrow(timelock_id).status is TimelockStatus::Revealed
     }
 
     #[view]
-    public fun is_expired(timelock_id: u64): bool acquires TimelockRegistry {
+    /// True once the deadline has passed. This is not the `Expired` status. See `is_expired`.
+    public fun is_deadline_passed(timelock_id: u64): bool acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
-        let registry = borrow_global<TimelockRegistry>(@aptos_framework);
-        if (!table::contains(&registry.timelocks, timelock_id)) {
+        let registry = &TimelockRegistry[@aptos_framework];
+        if (!registry.timelocks.contains(timelock_id)) {
             return false
         };
-        timestamp::now_microseconds() >= table::borrow(&registry.timelocks, timelock_id).deadline_us
+        timestamp::now_microseconds() >= registry.timelocks.borrow(timelock_id).deadline_us
+    }
+
+    #[view]
+    /// True when the status is `Expired`, for any reason.
+    public fun is_expired(timelock_id: u64): bool acquires TimelockRegistry {
+        assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
+        let registry = &TimelockRegistry[@aptos_framework];
+        if (!registry.timelocks.contains(timelock_id)) {
+            return false
+        };
+        effective_status(registry.timelocks.borrow(timelock_id)) is TimelockStatus::Expired
     }
 
     #[view]
     public fun get_next_timelock_id(): u64 acquires TimelockRegistry {
-        borrow_global<TimelockRegistry>(@aptos_framework).next_timelock_id
+        TimelockRegistry[@aptos_framework].next_timelock_id
     }
 
-    /// Compute the IBE identity for a timelock.
-    /// Identity = SHA3-256(timelock_id || deadline_us)
-    fun compute_identity(timelock_id: u64, deadline_us: u64): vector<u8> {
-        let input = bcs::to_bytes(&timelock_id);
-        vector::append(&mut input, bcs::to_bytes(&deadline_us));
+    /// Identity of a timelock. See the module doc for the byte layout.
+    public fun compute_identity(chain: u8, epoch: u64, timelock_id: u64, deadline_us: u64): vector<u8> {
+        let input = IDENTITY_TAG;
+        input.append(bcs::to_bytes(&chain));
+        input.append(bcs::to_bytes(&epoch));
+        input.append(bcs::to_bytes(&timelock_id));
+        input.append(bcs::to_bytes(&deadline_us));
         sha3_256(input)
     }
 
     // ================================
-    // Test-Only Helper Functions
+    // Test-only helpers
     // ================================
 
     #[test_only]
     public fun initialize_for_testing(aptos_framework: &signer) {
-        account::create_account_for_test(@aptos_framework);
+        aptos_framework::account::create_account_for_test(@aptos_framework);
         timestamp::set_time_has_started_for_testing(aptos_framework);
+        chain_id::initialize_for_test(aptos_framework, 4);
+        reconfiguration::initialize_for_test(aptos_framework);
         initialize(aptos_framework);
-        initialize_timelock_registry(aptos_framework);
     }
 
     #[test_only]
-    public fun set_mpk_for_testing(mpk: vector<u8>, epoch: u64) acquires IBEPublicParams {
-        let params = borrow_global_mut<IBEPublicParams>(@aptos_framework);
-        params.mpk = mpk;
-        params.epoch = epoch;
+    public fun set_epoch_config_for_testing(
+        aptos_framework: &signer,
+        epoch: u64,
+        mpk: vector<u8>,
+        threshold: u64,
+        weights: vector<u64>,
+        epoch_interval_us: u64
+    ) acquires IBEPublicParams, TimelockEpochConfig {
+        set_epoch_config_internal(aptos_framework, epoch, mpk, threshold, weights, epoch_interval_us, vector[], vector[], vector[]);
     }
 
     #[test_only]
-    public fun on_new_block_for_testing(vm: &signer) acquires TimelockRegistry {
-        on_new_block(vm);
+    public fun set_epoch_config_with_keys_for_testing(
+        aptos_framework: &signer,
+        epoch: u64,
+        mpk: vector<u8>,
+        threshold: u64,
+        weights: vector<u64>,
+        epoch_interval_us: u64,
+        verification_keys: vector<vector<u8>>
+    ) acquires IBEPublicParams, TimelockEpochConfig {
+        set_epoch_config(
+            aptos_framework, epoch, mpk, threshold, weights, epoch_interval_us, vector[], vector[], verification_keys
+        );
+    }
+
+    #[test_only]
+    public fun get_player_keys_for_testing(validator_index: u64): vector<vector<u8>> acquires TimelockEpochConfig {
+        get_player_keys(&TimelockEpochConfig[@aptos_framework], validator_index)
+    }
+
+    #[test_only]
+    public fun report_rejected_share_for_testing(
+        timelock_id: u64,
+        validator_index: u64,
+        validator_address: address,
+        share_epoch: u64
+    ) acquires TimelockRegistry, TimelockEpochConfig {
+        assert_can_submit(timelock_id, validator_index, validator_address, share_epoch);
+        event::emit(
+            TimelockShareRejectedEvent {
+                timelock_id,
+                epoch: share_epoch,
+                validator: validator_address,
+                timestamp_us: timestamp::now_microseconds()
+            }
+        );
     }
 
     #[test_only]
@@ -407,234 +909,26 @@ module aptos_framework::ibe_config {
         shares: vector<vector<u8>>,
         validator_index: u64,
         validator_address: address,
-        weight: u64,
-        total_weight: u64
-    ) acquires TimelockRegistry {
-        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
-        let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
-
-        let current_time = timestamp::now_microseconds();
-        assert!(current_time >= timelock_info.deadline_us, E_DEADLINE_NOT_PASSED);
-        assert!(!timelock_info.is_revealed, E_DECRYPTION_KEY_NOT_REVEALED);
-        assert!(!vector::contains(&timelock_info.submitters, &validator_address), E_SHARE_ALREADY_SUBMITTED);
-
-        if (timelock_info.reveal_threshold == 0) {
-            timelock_info.reveal_threshold = (total_weight * DEFAULT_REVEAL_THRESHOLD_NUMERATOR) / DEFAULT_REVEAL_THRESHOLD_DENOMINATOR + 1;
-        };
-
-        vector::push_back(&mut timelock_info.validator_indices, validator_index);
-        vector::push_back(&mut timelock_info.submitted_shares, shares);
-        vector::push_back(&mut timelock_info.validator_weights, weight);
-        vector::push_back(&mut timelock_info.submitters, validator_address);
-        timelock_info.share_count = timelock_info.share_count + weight;
+        share_epoch: u64
+    ) acquires TimelockRegistry, TimelockEpochConfig {
+        submit_dk_shares_internal(timelock_id, shares, validator_index, validator_address, share_epoch);
     }
 
     #[test_only]
-    public fun finalize_timelock_reveal_for_testing(
-        timelock_id: u64,
-        total_weight: u64
-    ) acquires TimelockRegistry {
-        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
-        let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
-
-        assert!(timelock_info.share_count >= timelock_info.reveal_threshold, 0);
-        assert!(!timelock_info.is_revealed, 0);
-
-        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
-            timelock_info.validator_indices,
-            timelock_info.submitted_shares,
-            timelock_info.validator_weights,
-            timelock_info.reveal_threshold,
-            total_weight,
-            timelock_info.identity
-        );
-
-        timelock_info.decryption_key = reconstructed_dk;
-        timelock_info.is_revealed = true;
-        remove_pending_timelock_id(registry, timelock_id);
-
-        let current_time = timestamp::now_microseconds();
-        event::emit_event(&mut registry.reveal_events, TimelockRevealEvent {
-            timelock_id,
-            timestamp_us: current_time,
-        });
+    /// Runs the finalize logic with a chosen key-check result, because the pairing native is not available to
+    /// Move unit tests.
+    public fun finalize_for_testing(timelock_id: u64, dk: vector<u8>, key_ok: bool): bool
+    acquires TimelockRegistry {
+        finalize_internal(timelock_id, dk, key_ok)
     }
 
     #[test_only]
-    public fun finalize_timelock_reveal_with_threshold_for_testing(
-        timelock_id: u64,
-        threshold: u64,
-        total_weight: u64
-    ) acquires TimelockRegistry {
-        let registry = borrow_global_mut<TimelockRegistry>(@aptos_framework);
-        let timelock_info = table::borrow_mut(&mut registry.timelocks, timelock_id);
-
-        assert!(!timelock_info.is_revealed, 0);
-
-        let reconstructed_dk = ibe::reconstruct_ibe_dk<G1>(
-            timelock_info.validator_indices,
-            timelock_info.submitted_shares,
-            timelock_info.validator_weights,
-            threshold,
-            total_weight,
-            timelock_info.identity
-        );
-
-        timelock_info.decryption_key = reconstructed_dk;
-        timelock_info.is_revealed = true;
-        remove_pending_timelock_id(registry, timelock_id);
-
-        let current_time = timestamp::now_microseconds();
-        event::emit_event(&mut registry.reveal_events, TimelockRevealEvent {
-            timelock_id,
-            timestamp_us: current_time,
-        });
+    public fun fail_key_check_for_testing(timelock_id: u64) acquires TimelockRegistry, TimelockEpochConfig {
+        fail_timelock_key_check(timelock_id);
     }
 
-    // ================================
-    // Test Specifications
-    // ================================
-    //
-    // The following specifications describe WHAT each test should verify.
-    // Tests should be implemented at a higher level (Rust integration tests)
-    // using real PVSS golden vectors and actual DKG output.
-    //
-    // === IBE Initialization Tests ===
-    //
-    // Test: initialize creates IBEPublicParams with empty MPK
-    // - Verifies IBEPublicParams exists at framework address
-    // - Verifies MPK is empty vector
-    // - Verifies epoch is 0
-    //
-    // Test: set_mpk updates MPK and epoch
-    // - Provides 96-byte MPK (simulated G2)
-    // - Verifies MPK is stored correctly
-    // - Verifies epoch is updated
-    //
-    // Test: is_ready returns false before MPK set
-    // - Calls is_ready before set_mpk
-    // - Verifies returns false
-    //
-    // Test: is_ready returns true after valid MPK set
-    // - Sets 96-byte MPK
-    // - Calls is_ready
-    // - Verifies returns true
-    //
-    // Test: set_mpk rejects invalid length
-    // - Attempts to set MPK with length != 96
-    // - Verifies transaction aborts
-    //
-    // === Timelock Registration Tests ===
-    //
-    // Test: register_timelock creates new TimelockInfo
-    // - Registers timelock with future deadline
-    // - Verifies TimelockInfo exists with correct fields
-    // - Verifies identity is computed correctly
-    // - Verifies events are emitted
-    //
-    // Test: get_identity returns correct 32-byte hash
-    // - Registers timelock
-    // - Retrieves identity via get_identity
-    // - Verifies identity is 32 bytes
-    // - Verifies identity matches SHA3-256(timelock_id || deadline_us)
-    //
-    // Test: identity is unique across (timelock_id, deadline_us) pairs
-    // - Registers multiple timelocks with different IDs or deadlines
-    // - Verifies each identity is distinct
-    //
-    // Test: get_timelock returns correct state
-    // - Registers timelock
-    // - Calls get_timelock
-    // - Verifies deadline, identity, is_revealed, share_count
-    //
-    // Test: get_deadline returns registered deadline
-    // - Registers timelock
-    // - Retrieves deadline
-    // - Verifies matches input
-    //
-    // === DK Share Submission Tests ===
-    //
-    // Test: submit_dk_share stores share correctly
-    // - Registers timelock and advances past deadline
-    // - Submits share (48-byte G1)
-    // - Verifies share is stored
-    // - Verifies validator index is recorded
-    // - Verifies weight is recorded
-    // - Verifies share_count is incremented
-    //
-    // Test: submit_dk_share rejects duplicate validator
-    // - Same validator submits twice
-    // - Verifies transaction aborts
-    //
-    // Test: submit_dk_share rejects before deadline
-    // - Attempts to submit before deadline
-    // - Verifies transaction aborts
-    //
-    // Test: submit_dk_share rejects invalid share length
-    // - Attempts to submit share with length != 48
-    // - Verifies transaction aborts
-    //
-    // === DK Reconstruction Tests ===
-    //
-    // Test: reconstruction triggers at threshold
-    // - Registers timelock
-    // - Submits shares totaling >= threshold weight
-    // - Verifies is_revealed becomes true
-    // - Verifies decryption_key is populated
-    // - Verifies DK matches expected value from golden vectors
-    //
-    // Test: reconstruction uses correct weights
-    // - Uses validators with different weights (e.g., [2, 1, 2])
-    // - Submits shares from subset of validators
-    // - Verifies reconstruction succeeds when weight threshold met
-    // - Verifies DK matches expected value
-    //
-    // Test: reconstruction works with sparse validator indices
-    // - Network has 5 validators
-    // - Only validators 0 and 2 submit shares
-    // - Verifies reconstruction still works
-    // - Verifies DK matches expected value
-    //
-    // Test: get_decryption_key returns populated key
-    // - After threshold is reached
-    // - Calls get_decryption_key
-    // - Verifies returns 48-byte G1
-    // - Verifies matches reconstructed DK
-    //
-    // Test: get_decryption_key aborts before reveal
-    // - Before threshold is reached
-    // - Calls get_decryption_key
-    // - Verifies transaction aborts
-    //
-    // === Event Emission Tests ===
-    //
-    // Test: registration emits TimelockRegistrationEvent
-    // - Registers timelock
-    // - Verifies event contains correct timelock_id, deadline, sender
-    //
-    // Test: reveal emits TimelockRevealEvent
-    // - After threshold is reached
-    // - Verifies event contains correct timelock_id and timestamp
-    //
-    // Test: expiration emits TimelockExpiredEvent
-    // - on_new_block called after deadline
-    // - Verifies event is emitted
-    //
-    // === Integration Tests ===
-    //
-    // Test: full reveal flow with golden vectors
-    // - Uses real PVSS golden vectors from atomica/golden_vectors/
-    // - Registers timelock
-    // - Submits shares from participating validators
-    // - Verifies reconstruction produces expected DK
-    // - Verifies DK correctly decrypts test ciphertext
-    //
-    // Test: identity computation matches golden vectors
-    // - Computes identity for known (timelock_id, deadline_us) pairs
-    // - Verifies matches golden vector expected values
-    //
-    // Test: multiple timelocks with different identities
-    // - Registers multiple timelocks
-    // - Verifies each has unique identity
-    // - Verifies DK reconstruction works independently
+    #[test_only]
+    public fun on_new_block_for_testing() acquires TimelockRegistry {
+        on_new_block_internal();
+    }
 }

@@ -1,8 +1,9 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::config::{
     config_optimizer::ConfigOptimizer, node_config_loader::NodeType, Error, NodeConfig,
+    MAX_SENDING_BLOCK_TXNS_AFTER_FILTERING,
 };
 use aptos_types::chain_id::ChainId;
 use serde::{Deserialize, Serialize};
@@ -58,6 +59,14 @@ pub struct ConsensusObserverConfig {
     pub observer_fallback_progress_threshold_ms: u64,
     /// Duration (in milliseconds) of acceptable sync lag before entering fallback mode
     pub observer_fallback_sync_lag_threshold_ms: u64,
+
+    /// Maximum number of proof-of-store batches allowed in a single block payload message
+    pub max_num_payload_proofs: u64,
+
+    /// Whether to send V2 ordered block messages (with secret_shared_key).
+    /// Set to true only after all nodes in the fleet have been upgraded to
+    /// understand V2 messages.
+    pub enable_v2_message_sending: bool,
 }
 
 impl Default for ConsensusObserverConfig {
@@ -80,6 +89,8 @@ impl Default for ConsensusObserverConfig {
             observer_fallback_startup_period_ms: 60_000, // 60 seconds
             observer_fallback_progress_threshold_ms: 10_000, // 10 seconds
             observer_fallback_sync_lag_threshold_ms: 15_000, // 15 seconds
+            max_num_payload_proofs: MAX_SENDING_BLOCK_TXNS_AFTER_FILTERING,
+            enable_v2_message_sending: true,
         }
     }
 }

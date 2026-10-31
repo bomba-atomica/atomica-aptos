@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module defines the AptosNet v1 message types, how they are
 //! serialized/deserialized, and provides a `Sink` and `Stream` implementation
@@ -105,7 +104,10 @@ pub type Priority = u8;
 
 pub trait IncomingRequest {
     fn protocol_id(&self) -> crate::ProtocolId;
-    fn data(&self) -> &Vec<u8>;
+    /// Returns a reference to the raw payload bytes.
+    /// Note: returns `&[u8]` (slice) instead of `&Vec<u8>` for flexibility.
+    /// This allows future migration to `bytes::Bytes` without changing the trait.
+    fn data(&self) -> &[u8];
 
     /// Converts the `SerializedMessage` into its deserialized version of `TMessage` based on the
     /// `ProtocolId`.  See: [`crate::ProtocolId::from_bytes`]
@@ -133,7 +135,7 @@ impl IncomingRequest for RpcRequest {
         self.protocol_id
     }
 
-    fn data(&self) -> &Vec<u8> {
+    fn data(&self) -> &[u8] {
         &self.raw_request
     }
 }
@@ -168,7 +170,7 @@ impl IncomingRequest for DirectSendMsg {
         self.protocol_id
     }
 
-    fn data(&self) -> &Vec<u8> {
+    fn data(&self) -> &[u8] {
         &self.raw_msg
     }
 }

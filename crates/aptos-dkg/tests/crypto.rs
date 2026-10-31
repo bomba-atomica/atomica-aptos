@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_crypto::blstrs::{multi_pairing, random_scalar};
 use aptos_dkg::{
@@ -187,7 +187,7 @@ fn test_parallel_multi_pairing() {
     let pool1 = spawn_rayon_thread_pool("testmultpair".to_string(), Some(1));
     let pool32 = spawn_rayon_thread_pool("testmultpair".to_string(), Some(32));
 
-    for (g1, g2) in vec![
+    for (g1, g2) in [
         ([G1Projective::identity(), r1[0]], r2),
         (r1, r2),
         (r1, [G2Projective::identity(), r2[0]]),

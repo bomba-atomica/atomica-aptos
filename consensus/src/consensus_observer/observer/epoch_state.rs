@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     consensus_observer::{
@@ -18,6 +18,7 @@ use aptos_logger::{error, info, warn};
 use aptos_types::{
     epoch_state::EpochState,
     on_chain_config::{
+        ChunkyDKGConfigMoveStruct, ChunkyDKGConfigSeqNum, Features, OnChainChunkyDKGConfig,
         OnChainConsensusConfig, OnChainExecutionConfig, OnChainRandomnessConfig,
         RandomnessConfigMoveStruct, RandomnessConfigSeqNum, ValidatorSet,
     },
@@ -91,10 +92,18 @@ impl ObserverEpochState {
         OnChainConsensusConfig,
         OnChainExecutionConfig,
         OnChainRandomnessConfig,
+        OnChainChunkyDKGConfig,
+        Features,
     ) {
         // Extract the epoch state and on-chain configs
-        let (epoch_state, consensus_config, execution_config, randomness_config) =
-            extract_on_chain_configs(&self.node_config, &mut self.reconfig_events).await;
+        let (
+            epoch_state,
+            consensus_config,
+            execution_config,
+            randomness_config,
+            chunky_dkg_config,
+            features,
+        ) = extract_on_chain_configs(&self.node_config, &mut self.reconfig_events).await;
 
         // Update the local epoch state and quorum store config
         self.epoch_state = Some(epoch_state.clone());
@@ -123,6 +132,8 @@ impl ObserverEpochState {
             consensus_config,
             execution_config,
             randomness_config,
+            chunky_dkg_config,
+            features,
         )
     }
 }
@@ -136,6 +147,8 @@ async fn extract_on_chain_configs(
     OnChainConsensusConfig,
     OnChainExecutionConfig,
     OnChainRandomnessConfig,
+    OnChainChunkyDKGConfig,
+    Features,
 ) {
     // Fetch the next reconfiguration notification
     let reconfig_notification = reconfig_events
@@ -209,12 +222,50 @@ async fn extract_on_chain_configs(
         onchain_randomness_config.ok(),
     );
 
+    // Extract the chunky DKG config sequence number (or use the default if it's missing)
+    let onchain_chunky_dkg_config_seq_num: anyhow::Result<ChunkyDKGConfigSeqNum> =
+        on_chain_configs.get();
+    if let Err(error) = &onchain_chunky_dkg_config_seq_num {
+        warn!(
+            LogSchema::new(LogEntry::ConsensusObserver).message(&format!(
+                "Failed to read on-chain chunky DKG config seq num! Error: {:?}",
+                error
+            ))
+        );
+    }
+    let onchain_chunky_dkg_config_seq_num = onchain_chunky_dkg_config_seq_num
+        .unwrap_or_else(|_| ChunkyDKGConfigSeqNum::default_if_missing());
+
+    // Extract the chunky DKG config
+    let onchain_chunky_dkg_config: anyhow::Result<ChunkyDKGConfigMoveStruct> =
+        on_chain_configs.get();
+    if let Err(error) = &onchain_chunky_dkg_config {
+        error!(
+            LogSchema::new(LogEntry::ConsensusObserver).message(&format!(
+                "Failed to read on-chain chunky DKG config! Error: {:?}",
+                error
+            ))
+        );
+    }
+    let chunky_dkg_config = OnChainChunkyDKGConfig::from_configs(
+        node_config.chunky_dkg_override_seq_num,
+        onchain_chunky_dkg_config_seq_num.seq_num,
+        onchain_chunky_dkg_config.ok(),
+    );
+
+    // Extract the Features
+    let features: Features = on_chain_configs
+        .get()
+        .expect("Failed to get the features from the on-chain configs!");
+
     // Return the extracted epoch state and on-chain configs
     (
         epoch_state,
         consensus_config,
         execution_config,
         onchain_randomness_config,
+        chunky_dkg_config,
+        features,
     )
 }
 

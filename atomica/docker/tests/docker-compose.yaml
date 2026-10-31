@@ -44,7 +44,7 @@ services:
       - 6180  # Validator network
       - 6181  # VFN network
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/v1 || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/v1/-/healthy || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10

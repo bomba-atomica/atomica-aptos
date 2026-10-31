@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module implements lambda lifting, rewriting function definitions
 //! in the global environment.
@@ -93,7 +93,9 @@ pub fn lift_lambdas(options: LambdaLiftingOptions, env: &mut GlobalEnv) {
         let mut updated_funs = BTreeMap::new();
         let mut new_funs = vec![];
         for fun in module.get_functions() {
-            if fun.is_inline() && !options.include_inline_functions || fun.is_native_or_intrinsic()
+            if fun.is_inline() && !fun.is_inline_verified() && !options.include_inline_functions
+                || fun.is_native_or_intrinsic()
+                || fun.is_lemma()
             {
                 continue;
             }
@@ -518,7 +520,8 @@ impl ExpRewriterFunctions for LambdaLifter<'_> {
         if !self.options.include_inline_functions {
             if let ExpData::Call(_, Operation::MoveFunction(mid, fid), args) = exp.as_ref() {
                 let env = self.fun_env.module_env.env;
-                if env.get_function(mid.qualified(*fid)).is_inline() {
+                let callee = env.get_function(mid.qualified(*fid));
+                if callee.is_inline() {
                     for arg in args {
                         if matches!(arg.as_ref(), ExpData::Lambda(..)) {
                             self.exempted_lambdas.insert(arg.node_id());
@@ -551,13 +554,10 @@ impl ExpRewriterFunctions for LambdaLifter<'_> {
 
     fn rewrite_local_var(&mut self, node_id: NodeId, sym: Symbol) -> Option<Exp> {
         // duplicates are OK -- they are all the same local at different locations
-        self.try_insert_free_local(
-            sym,
-            VarInfo {
-                node_id,
-                modified: false,
-            },
-        );
+        self.try_insert_free_local(sym, VarInfo {
+            node_id,
+            modified: false,
+        });
         None
     }
 
@@ -572,13 +572,10 @@ impl ExpRewriterFunctions for LambdaLifter<'_> {
 
     fn rewrite_assign(&mut self, _node_id: NodeId, lhs: &Pattern, _rhs: &Exp) -> Option<Exp> {
         for (node_id, name) in lhs.vars() {
-            self.try_insert_free_local(
-                name,
-                VarInfo {
-                    node_id,
-                    modified: true,
-                },
-            );
+            self.try_insert_free_local(name, VarInfo {
+                node_id,
+                modified: true,
+            });
         }
         None
     }
@@ -587,22 +584,16 @@ impl ExpRewriterFunctions for LambdaLifter<'_> {
         if matches!(oper, Operation::Borrow(ReferenceKind::Mutable)) {
             match args[0].as_ref() {
                 ExpData::LocalVar(node_id, name) => {
-                    self.try_insert_free_local(
-                        *name,
-                        VarInfo {
-                            node_id: *node_id,
-                            modified: true,
-                        },
-                    );
+                    self.try_insert_free_local(*name, VarInfo {
+                        node_id: *node_id,
+                        modified: true,
+                    });
                 },
                 ExpData::Temporary(node_id, param) => {
-                    self.free_params.insert(
-                        *param,
-                        VarInfo {
-                            node_id: *node_id,
-                            modified: true,
-                        },
-                    );
+                    self.free_params.insert(*param, VarInfo {
+                        node_id: *node_id,
+                        modified: true,
+                    });
                 },
                 _ => {},
             }

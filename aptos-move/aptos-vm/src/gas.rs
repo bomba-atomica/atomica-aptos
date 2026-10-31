@@ -1,16 +1,21 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{move_vm_ext::AptosMoveResolver, transaction_metadata::TransactionMetadata};
 use aptos_gas_algebra::{Gas, GasExpression, InternalGas};
 use aptos_gas_meter::{StandardGasAlgebra, StandardGasMeter};
 use aptos_gas_schedule::{
-    gas_feature_versions::RELEASE_V1_13, gas_params::txn::KEYLESS_BASE_COST, AptosGasParameters,
-    VMGasParameters,
+    gas_feature_versions::{RELEASE_V1_13, RELEASE_V1_45},
+    gas_params::txn::{
+        ENCRYPTED_TXN_DECRYPTION_BASE_COST, KEYLESS_BASE_COST, SLH_DSA_SHA2_128S_BASE_COST,
+    },
+    AptosGasParameters, VMGasParameters,
 };
 use aptos_logger::{enabled, Level};
-use aptos_memory_usage_tracker::MemoryTrackedGasMeter;
-use aptos_types::on_chain_config::Features;
+use aptos_memory_usage_tracker::{
+    MemoryAlgebra, MemoryTrackedGasMeter, MemoryTrackedGasMeterImpl, StandardMemoryAlgebra,
+};
+use aptos_types::{on_chain_config::Features, transaction::TxnLimitsRequest};
 use aptos_vm_logging::{log_schema::AdapterLogSchema, speculative_log, speculative_warn};
 use aptos_vm_types::{
     resolver::BlockSynchronizationKillSwitch,
@@ -28,22 +33,46 @@ pub type ProdGasMeter<'a, T> = MemoryTrackedGasMeter<StandardGasMeter<StandardGa
 /// Creates a gas meter intended for executing transactions in the production.
 ///
 /// The current setup consists of the standard gas meter & algebra + the memory usage tracker.
-pub fn make_prod_gas_meter<T: BlockSynchronizationKillSwitch>(
+pub fn make_prod_gas_meter<'a, T: BlockSynchronizationKillSwitch>(
     gas_feature_version: u64,
     vm_gas_params: VMGasParameters,
     storage_gas_params: StorageGasParameters,
-    is_approved_gov_script: bool,
+    txn_limits_request: Option<&TxnLimitsRequest>,
     meter_balance: Gas,
-    block_synchronization_kill_switch: &T,
-) -> ProdGasMeter<'_, T> {
-    MemoryTrackedGasMeter::new(StandardGasMeter::new(StandardGasAlgebra::new(
+    block_synchronization_kill_switch: &'a T,
+    meter_value_nodes_on_deserialize: bool,
+) -> ProdGasMeter<'a, T> {
+    make_prod_gas_meter_impl::<T, StandardMemoryAlgebra>(
         gas_feature_version,
         vm_gas_params,
         storage_gas_params,
-        is_approved_gov_script,
+        txn_limits_request,
         meter_balance,
         block_synchronization_kill_switch,
-    )))
+        meter_value_nodes_on_deserialize,
+    )
+}
+
+pub fn make_prod_gas_meter_impl<'a, T: BlockSynchronizationKillSwitch, M: MemoryAlgebra>(
+    gas_feature_version: u64,
+    vm_gas_params: VMGasParameters,
+    storage_gas_params: StorageGasParameters,
+    txn_limits_request: Option<&TxnLimitsRequest>,
+    meter_balance: Gas,
+    block_synchronization_kill_switch: &'a T,
+    meter_value_nodes_on_deserialize: bool,
+) -> MemoryTrackedGasMeterImpl<StandardGasMeter<StandardGasAlgebra<'a, T>>, M> {
+    MemoryTrackedGasMeterImpl::new(StandardGasMeter::new(
+        StandardGasAlgebra::new(
+            gas_feature_version,
+            vm_gas_params,
+            storage_gas_params,
+            txn_limits_request,
+            meter_balance,
+            block_synchronization_kill_switch,
+        ),
+        meter_value_nodes_on_deserialize,
+    ))
 }
 
 pub(crate) fn check_gas(
@@ -53,31 +82,30 @@ pub(crate) fn check_gas(
     module_storage: &impl ModuleStorage,
     txn_metadata: &TransactionMetadata,
     features: &Features,
-    is_approved_gov_script: bool,
     log_context: &AdapterLogSchema,
 ) -> Result<(), VMStatus> {
     let txn_gas_params = &gas_params.vm.txn;
-    let raw_bytes_len = txn_metadata.transaction_size;
+    let txn_bytes_len = txn_metadata.transaction_size;
 
-    if is_approved_gov_script {
+    if txn_metadata.is_approved_gov_script() {
         let max_txn_size_gov = if gas_feature_version >= RELEASE_V1_13 {
             gas_params.vm.txn.max_transaction_size_in_bytes_gov
         } else {
             MAXIMUM_APPROVED_TRANSACTION_SIZE_LEGACY.into()
         };
 
-        if txn_metadata.transaction_size > max_txn_size_gov
+        if txn_bytes_len > max_txn_size_gov
             // Ensure that it is only the approved payload that exceeds the
             // maximum. The (unknown) user input should be restricted to the original
             // maximum transaction size.
-            || txn_metadata.transaction_size
+            || txn_bytes_len
                 > txn_metadata.script_size + txn_gas_params.max_transaction_size_in_bytes
         {
             speculative_warn!(
                 log_context,
                 format!(
                     "[VM] Governance transaction size too big {} payload size {}",
-                    txn_metadata.transaction_size, txn_metadata.script_size,
+                    txn_bytes_len, txn_metadata.script_size,
                 ),
             );
             return Err(VMStatus::error(
@@ -85,12 +113,12 @@ pub(crate) fn check_gas(
                 None,
             ));
         }
-    } else if txn_metadata.transaction_size > txn_gas_params.max_transaction_size_in_bytes {
+    } else if txn_bytes_len > txn_gas_params.max_transaction_size_in_bytes {
         speculative_warn!(
             log_context,
             format!(
                 "[VM] Transaction size too big {} (max {})",
-                txn_metadata.transaction_size, txn_gas_params.max_transaction_size_in_bytes
+                txn_bytes_len, txn_gas_params.max_transaction_size_in_bytes
             ),
         );
         return Err(VMStatus::error(
@@ -118,17 +146,49 @@ pub(crate) fn check_gas(
     }
 
     // The submitted transactions max gas units needs to be at least enough to cover the
-    // intrinsic cost of the transaction as calculated against the size of the
-    // underlying `RawTransaction`.
+    // intrinsic cost of the transaction as calculated against the transaction size.
     let keyless = if txn_metadata.is_keyless() {
         KEYLESS_BASE_COST.evaluate(gas_feature_version, &gas_params.vm)
     } else {
         InternalGas::zero()
     };
+    let slh_dsa_sha2_128s = if txn_metadata.is_slh_dsa_sha2_128s() {
+        SLH_DSA_SHA2_128S_BASE_COST.evaluate(gas_feature_version, &gas_params.vm)
+    } else {
+        InternalGas::zero()
+    };
+    let encrypted_txn_cost =
+        if txn_metadata.is_encrypted_txn() && gas_feature_version >= RELEASE_V1_45 {
+            // Encrypted txns must meet a higher minimum gas unit price (priority pricing).
+            // Uses max() so encrypted floor never goes below base minimum.
+            let encrypted_min = std::cmp::max(
+                txn_gas_params.min_price_per_gas_unit,
+                txn_gas_params.encrypted_txn_min_price_per_gas_unit,
+            );
+            if txn_metadata.gas_unit_price() < encrypted_min {
+                speculative_warn!(
+                    log_context,
+                    format!(
+                        "[VM] Encrypted txn gas unit price too low; min {}, submitted {}",
+                        encrypted_min,
+                        txn_metadata.gas_unit_price()
+                    ),
+                );
+                return Err(VMStatus::error(
+                    StatusCode::ENCRYPTED_TXN_GAS_UNIT_PRICE_BELOW_MIN_BOUND,
+                    None,
+                ));
+            }
+            // Flat surcharge for decryption cost.
+            ENCRYPTED_TXN_DECRYPTION_BASE_COST.evaluate(gas_feature_version, &gas_params.vm)
+        } else {
+            InternalGas::zero()
+        };
     let intrinsic_gas = txn_gas_params
-        .calculate_intrinsic_gas(raw_bytes_len)
+        .calculate_intrinsic_gas(txn_bytes_len)
         .evaluate(gas_feature_version, &gas_params.vm);
-    let total_rounded: Gas = (intrinsic_gas + keyless).to_unit_round_up_with_params(txn_gas_params);
+    let total_rounded: Gas = (intrinsic_gas + keyless + slh_dsa_sha2_128s + encrypted_txn_cost)
+        .to_unit_round_up_with_params(txn_gas_params);
     if txn_metadata.max_gas_amount() < total_rounded {
         speculative_warn!(
             log_context,
@@ -162,6 +222,24 @@ pub(crate) fn check_gas(
             StatusCode::GAS_UNIT_PRICE_BELOW_MIN_BOUND,
             None,
         ));
+    }
+
+    if matches!(
+        &txn_metadata.txn_limits,
+        Some(TxnLimitsRequest::Staking(..))
+    ) {
+        if txn_metadata.gas_unit_price() < txn_gas_params.high_limit_txn_min_price_per_gas_unit {
+            let msg = format!(
+                "[VM] High-limit txn gas price too low; min {}, submitted {}",
+                txn_gas_params.high_limit_txn_min_price_per_gas_unit,
+                txn_metadata.gas_unit_price(),
+            );
+            speculative_warn!(log_context, msg.clone());
+            return Err(VMStatus::error(
+                StatusCode::HIGH_LIMIT_TXN_GAS_UNIT_PRICE_BELOW_MIN_BOUND,
+                Some(msg),
+            ));
+        }
     }
 
     // The submitted gas price is greater than the maximum gas unit price set by the VM.

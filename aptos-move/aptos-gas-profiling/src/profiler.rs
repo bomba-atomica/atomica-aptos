@@ -1,12 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::log::{
     CallFrame, Dependency, EventStorage, EventTransient, ExecutionAndIOCosts, ExecutionGasEvent,
     FrameName, StorageFees, TransactionGasLog, WriteOpType, WriteStorage, WriteTransient,
 };
 use aptos_gas_algebra::{Fee, FeePerGasUnit, InternalGas, NumArgs, NumBytes, NumTypeNodes};
-use aptos_gas_meter::{AptosGasMeter, GasAlgebra};
+use aptos_gas_meter::{AptosGasMeter, GasAlgebra, PeakMemoryUsage};
 use aptos_gas_schedule::gas_feature_versions::RELEASE_V1_30;
 use aptos_types::{
     contract_event::ContractEvent, state_store::state_key::StateKey, write_set::WriteOpSize,
@@ -37,6 +37,8 @@ pub struct GasProfiler<G> {
 
     intrinsic_cost: Option<InternalGas>,
     keyless_cost: Option<InternalGas>,
+    slh_dsa_sha2_128s_cost: Option<InternalGas>,
+    encrypted_txn_decryption_cost: Option<InternalGas>,
     dependencies: Vec<Dependency>,
     frames: Vec<CallFrame>,
     transaction_transient: Option<InternalGas>,
@@ -94,6 +96,8 @@ impl<G> GasProfiler<G> {
 
             intrinsic_cost: None,
             keyless_cost: None,
+            slh_dsa_sha2_128s_cost: None,
+            encrypted_txn_decryption_cost: None,
             dependencies: vec![],
             frames: vec![CallFrame::new_script()],
             transaction_transient: None,
@@ -114,6 +118,8 @@ impl<G> GasProfiler<G> {
 
             intrinsic_cost: None,
             keyless_cost: None,
+            slh_dsa_sha2_128s_cost: None,
+            encrypted_txn_decryption_cost: None,
             dependencies: vec![],
             frames: vec![CallFrame::new_function(module_id, func_name, ty_args)],
             transaction_transient: None,
@@ -205,12 +211,16 @@ where
     }
 
     fn charge_native_execution(&mut self, amount: InternalGas) -> PartialVMResult<()> {
+        // Delegate first so we can record the actual amount charged -- this matters
+        // when the base meter only partially charges (e.g. hitting OUT_OF_GAS).
+        let (cost, res) = self.delegate_charge(|base| base.charge_native_execution(amount));
+
         self.frames
             .last_mut()
             .expect("Native function must have recorded the frame")
-            .native_gas += amount;
+            .native_gas += cost;
 
-        self.base.charge_native_execution(amount)
+        res
     }
 }
 
@@ -367,6 +377,9 @@ where
 
         [VEC_SWAP]
         fn charge_vec_swap(&mut self) -> PartialVMResult<()>;
+
+        [ABORT_MSG]
+        fn charge_abort_message(&mut self, bytes: &[u8]) -> PartialVMResult<()>;
     }
 
     fn balance_internal(&self) -> InternalGas {
@@ -702,9 +715,33 @@ where
     }
 
     fn charge_keyless(&mut self) -> VMResult<()> {
-        let (_cost, res) = self.delegate_charge(|base| base.charge_keyless());
+        let (cost, res) = self.delegate_charge(|base| base.charge_keyless());
 
-        // TODO: add keyless
+        self.keyless_cost = Some(cost);
+
+        res
+    }
+
+    fn charge_slh_dsa_sha2_128s(&mut self) -> VMResult<()> {
+        let (cost, res) = self.delegate_charge(|base| base.charge_slh_dsa_sha2_128s());
+
+        self.slh_dsa_sha2_128s_cost = Some(
+            self.slh_dsa_sha2_128s_cost
+                .unwrap_or_else(InternalGas::zero)
+                + cost,
+        );
+
+        res
+    }
+
+    fn charge_encrypted_txn_decryption(&mut self) -> VMResult<()> {
+        let (cost, res) = self.delegate_charge(|base| base.charge_encrypted_txn_decryption());
+
+        self.encrypted_txn_decryption_cost = Some(
+            self.encrypted_txn_decryption_cost
+                .unwrap_or_else(InternalGas::zero)
+                + cost,
+        );
 
         res
     }
@@ -712,42 +749,92 @@ where
 
 impl<G> GasProfiler<G>
 where
-    G: AptosGasMeter,
+    G: AptosGasMeter + PeakMemoryUsage,
 {
-    pub fn finish(mut self) -> TransactionGasLog {
+    /// Finalizes the profiler and produces a [`TransactionGasLog`]. Runs the
+    /// consistency checks and panics on failure. Used by tests and internal
+    /// tools that want strict behavior.
+    pub fn finish(self) -> TransactionGasLog {
+        let log = self.finish_without_consistency_check();
+        log.exec_io.assert_consistency();
+        log.storage.assert_consistency();
+        log
+    }
+
+    /// Finalizes the profiler and produces a [`TransactionGasLog`] *without*
+    /// running the consistency checks. Intended for callers that want to
+    /// render a custom error for consistency failures and/or offer their own
+    /// way to bypass the check; such callers should invoke
+    /// [`TransactionGasLog::exec_io`]'s `check_consistency` and
+    /// [`TransactionGasLog::storage`]'s `check_consistency` themselves.
+    pub fn finish_without_consistency_check(mut self) -> TransactionGasLog {
         while self.frames.len() > 1 {
             let cur = self.frames.pop().expect("frame must exist");
             let last = self.frames.last_mut().expect("frame must exist");
-            last.events.push(ExecutionGasEvent::Call(cur));
+            // A frame with non-zero native_gas belongs to a native function
+            // that accumulated costs via charge_native_execution but never
+            // reached charge_native_function (e.g. native returned Err after
+            // direct-meter charging hit a limit). Emit as CallNative so the
+            // cost is counted, and hoist any child events into the parent
+            // first -- matching the normal charge_native_function path, which
+            // preserves events recorded while the native frame was live.
+            match cur.name {
+                FrameName::Function {
+                    module_id,
+                    name,
+                    ty_args,
+                } if !cur.native_gas.is_zero() => {
+                    last.events.extend(cur.events);
+                    last.events.push(ExecutionGasEvent::CallNative {
+                        module_id,
+                        fn_name: name,
+                        ty_args,
+                        cost: cur.native_gas,
+                    });
+                },
+                name => {
+                    last.events.push(ExecutionGasEvent::Call(CallFrame {
+                        name,
+                        events: cur.events,
+                        native_gas: cur.native_gas,
+                    }));
+                },
+            }
         }
 
         let exec_io = ExecutionAndIOCosts {
             gas_scaling_factor: self.base.gas_unit_scaling_factor(),
-            total: self.algebra().execution_gas_used() + self.algebra().io_gas_used(),
-            intrinsic_cost: self.intrinsic_cost.unwrap_or_else(|| 0.into()),
-            keyless_cost: self.keyless_cost.unwrap_or_else(|| 0.into()),
+            execution_gas: self.algebra().execution_gas_used(),
+            io_gas: self.algebra().io_gas_used(),
+            intrinsic_cost: self.intrinsic_cost.unwrap_or_else(InternalGas::zero),
+            keyless_cost: self.keyless_cost.unwrap_or_else(InternalGas::zero),
+            slh_dsa_sha2_128s_cost: self
+                .slh_dsa_sha2_128s_cost
+                .unwrap_or_else(InternalGas::zero),
+            encrypted_txn_decryption_cost: self
+                .encrypted_txn_decryption_cost
+                .unwrap_or_else(InternalGas::zero),
             dependencies: self.dependencies,
             call_graph: self.frames.pop().expect("frame must exist"),
             transaction_transient: self.transaction_transient,
             events_transient: self.events_transient,
             write_set_transient: self.write_set_transient,
         };
-        exec_io.assert_consistency();
 
         let storage = self.storage_fees.unwrap_or_else(|| StorageFees {
-            total: 0.into(),
-            total_refund: 0.into(),
+            total: Fee::zero(),
+            total_refund: Fee::zero(),
             write_set_storage: vec![],
             events: vec![],
-            event_discount: 0.into(),
-            txn_storage: 0.into(),
+            event_discount: Fee::zero(),
+            txn_storage: Fee::zero(),
         });
-        storage.assert_consistency();
 
         TransactionGasLog {
             exec_io,
             storage,
             num_txns: 1,
+            peak_memory_usage: self.base.peak_memory_usage(),
         }
     }
 }

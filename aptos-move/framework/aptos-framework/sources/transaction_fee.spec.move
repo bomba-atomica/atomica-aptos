@@ -72,6 +72,7 @@ spec aptos_framework::transaction_fee {
 
     /// `AptosCoinCapabilities` should be exists.
     spec burn_fee(account: address, fee: u64) {
+        use std::option;
         use aptos_std::type_info;
         use aptos_framework::optional_aggregator;
         use aptos_framework::coin;
@@ -96,11 +97,11 @@ spec aptos_framework::transaction_fee {
         aborts_if coin_store.coin.value < amount;
 
         let maybe_supply = global<CoinInfo<AptosCoin>>(aptos_addr).supply;
-        let supply_aggr = option::spec_borrow(maybe_supply);
+        let supply_aggr = option::borrow(maybe_supply);
         let value = optional_aggregator::optional_aggregator_value(supply_aggr);
 
         let post post_maybe_supply = global<CoinInfo<AptosCoin>>(aptos_addr).supply;
-        let post post_supply = option::spec_borrow(post_maybe_supply);
+        let post post_supply = option::borrow(post_maybe_supply);
         let post post_value = optional_aggregator::optional_aggregator_value(post_supply);
 
         aborts_if option::is_some(maybe_supply) && value < amount;
@@ -157,13 +158,33 @@ spec aptos_framework::transaction_fee {
     }
 
     /// Ensure caller is admin.
-    /// Aborts if `AptosCoinMintCapability` already exists.
+    /// Aborts if `AptosFAMintCapabilities` or `AptosCoinMintCapability` already exists.
     spec store_aptos_coin_mint_cap(aptos_framework: &signer, mint_cap: MintCapability<AptosCoin>) {
         use std::signer;
+
+        // TODO(fa_migration)
+        pragma verify = false;
+
         let addr = signer::address_of(aptos_framework);
         aborts_if !system_addresses::is_aptos_framework_address(addr);
+        aborts_if exists<AptosFAMintCapabilities>(addr);
         aborts_if exists<AptosCoinMintCapability>(addr);
+        ensures exists<AptosFAMintCapabilities>(addr);
         ensures exists<AptosCoinMintCapability>(addr);
+    }
+
+    /// Ensure caller is admin.
+    spec convert_to_aptos_fa_mint_ref(aptos_framework: &signer) {
+        use std::signer;
+
+        // TODO(fa_migration)
+        pragma verify = false;
+
+        let addr = signer::address_of(aptos_framework);
+        aborts_if !system_addresses::is_aptos_framework_address(addr);
+        aborts_if !exists<AptosCoinMintCapability>(addr);
+        aborts_if exists<AptosFAMintCapabilities>(addr);
+        ensures exists<AptosFAMintCapabilities>(addr);
     }
 
     /// Historical. Aborts.

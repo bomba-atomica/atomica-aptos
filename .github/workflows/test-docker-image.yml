@@ -35,6 +35,7 @@ on:
   workflow_dispatch:
 
 env:
+  RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Reduce memory pressure during builds
@@ -51,7 +52,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
 
@@ -64,10 +65,10 @@ jobs:
           echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
           echo "Git commit: $GIT_SHA (full: $GIT_SHA_FULL)"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.75.0
+      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
 
       - name: Free up disk space
         run: |
@@ -99,7 +100,7 @@ jobs:
             libdw-dev
 
       - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.7.8
         with:
           shared-key: "aptos-build"
           cache-on-failure: true
@@ -202,7 +203,7 @@ jobs:
           ls -lh atomica/docker/binaries/
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v3.8.0
 
       - name: Build Docker image
         run: |
@@ -277,9 +278,18 @@ jobs:
           # 5. Fail if network cannot make progress
           bun run test-network.ts
 
+      # Strict coverage: a run that wrote no results file proved nothing.
+      - name: Require test results
+        run: |
+          r=atomica/docker/tests/logs/ci-test/test-results.json
+          if [ ! -s "$r" ]; then
+            echo "::error title=test coverage invariant::$r missing or empty, zero tests recorded"
+            exit 1
+          fi
+
       - name: Upload test logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: docker-test-logs-${{ steps.git-commit.outputs.sha }}
           path: atomica/docker/tests/logs/

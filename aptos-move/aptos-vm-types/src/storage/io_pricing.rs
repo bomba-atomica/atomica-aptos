@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_gas_algebra::GasExpression;
 use aptos_gas_schedule::{
@@ -249,7 +249,10 @@ impl IoPricing {
 
         match feature_version {
             0 => V1(IoPricingV1::new(gas_params)),
-            1..=9 => match StorageGasSchedule::fetch_config(config_storage) {
+            1..=9 => match StorageGasSchedule::fetch_config(config_storage)
+                .ok()
+                .flatten()
+            {
                 None => V1(IoPricingV1::new(gas_params)),
                 Some(schedule) => V2(IoPricingV2::new_with_storage_curves(
                     feature_version,
@@ -273,11 +276,13 @@ impl IoPricing {
         use IoPricing::*;
 
         match self {
-            V1(v1) => Either::Left(v1.calculate_read_gas(if resource_exists {
-                Some(bytes_loaded)
-            } else {
-                None
-            })),
+            V1(v1) => Either::Left(v1.calculate_read_gas(
+                if resource_exists {
+                    Some(bytes_loaded)
+                } else {
+                    None
+                },
+            )),
             V2(v2) => Either::Left(v2.calculate_read_gas(bytes_loaded)),
             V3(v3) => Either::Right(Either::Left(v3.calculate_read_gas(bytes_loaded))),
             V4(v4) => Either::Right(Either::Right(v4.calculate_read_gas(bytes_loaded))),

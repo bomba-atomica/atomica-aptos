@@ -1,6 +1,6 @@
 #[test_only]
-module 0xcafe::nil_op_token {
-    use aptos_framework::fungible_asset::{Self, FungibleAsset, TransferRef};
+module aptos_framework::nil_op_token {
+    use aptos_framework::fungible_asset::{FungibleAsset, TransferRef};
     use aptos_framework::dispatchable_fungible_asset;
     use aptos_framework::object::{ConstructorRef, Object};
     use aptos_framework::function_info;
@@ -10,7 +10,7 @@ module 0xcafe::nil_op_token {
     use std::string;
 
     public fun initialize(account: &signer, constructor_ref: &ConstructorRef) {
-        assert!(signer::address_of(account) == @0xcafe, 1);
+        assert!(signer::address_of(account) == @aptos_framework, 1);
         let withdraw = function_info::new_function_info(
             account,
             string::utf8(b"nil_op_token"),
@@ -31,6 +31,6 @@ module 0xcafe::nil_op_token {
         transfer_ref: &TransferRef,
     ): FungibleAsset {
         // Always return a one FA.
-        fungible_asset::withdraw_with_ref(transfer_ref, store, 1)
+        transfer_ref.withdraw_with_ref(store, 1)
     }
 }

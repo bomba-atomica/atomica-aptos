@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::endpoints::RejectionReason;
 use aptos_metrics_core::{
@@ -31,14 +31,6 @@ static REJECTION_REASONS: Lazy<IntCounterVec> = Lazy::new(|| {
         "aptos_tap_rejection_reason_count",
         "Number of times the tap has returned the given rejection reason.",
         &["rejection_reason_code"]
-    )
-    .unwrap()
-});
-
-pub static NUM_OUTSTANDING_TRANSACTIONS: Lazy<IntGauge> = Lazy::new(|| {
-    register_int_gauge!(
-        "aptos_tap_num_outstanding_transactions",
-        "Number of transactions we've submitted but have not been processed by the blockchain.",
     )
     .unwrap()
 });

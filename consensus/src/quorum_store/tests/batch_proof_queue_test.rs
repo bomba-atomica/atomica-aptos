@@ -1,12 +1,13 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::quorum_store::{
     batch_proof_queue::BatchProofQueue, tests::batch_store_test::batch_store_for_test,
 };
 use aptos_consensus_types::{
     common::TxnSummaryWithExpiration,
-    proof_of_store::{BatchInfo, ProofOfStore},
+    payload_pull_params::PerBatchKindTxnLimits,
+    proof_of_store::{BatchInfo, BatchInfoExt, ProofOfStore, TBatchInfo},
     utils::PayloadTxnsSize,
 };
 use aptos_crypto::HashValue;
@@ -23,7 +24,7 @@ fn proof_of_store(
     batch_id: BatchId,
     gas_bucket_start: u64,
     expiration: u64,
-) -> ProofOfStore {
+) -> ProofOfStore<BatchInfoExt> {
     ProofOfStore::new(
         BatchInfo::new(
             author,
@@ -34,7 +35,8 @@ fn proof_of_store(
             1,
             1,
             gas_bucket_start,
-        ),
+        )
+        .into(),
         AggregateSignature::empty(),
     )
 }
@@ -45,7 +47,7 @@ fn proof_of_store_with_size(
     gas_bucket_start: u64,
     expiration: u64,
     num_txns: u64,
-) -> ProofOfStore {
+) -> ProofOfStore<BatchInfoExt> {
     ProofOfStore::new(
         BatchInfo::new(
             author,
@@ -56,7 +58,8 @@ fn proof_of_store_with_size(
             num_txns,
             num_txns,
             gas_bucket_start,
-        ),
+        )
+        .into(),
         AggregateSignature::empty(),
     )
 }
@@ -90,17 +93,20 @@ async fn test_proof_queue_sorting() {
     }
 
     // Expect: [600, 300]
-    let (pulled, _, num_unique_txns, _) = proof_queue.pull_proofs(
-        &hashset![],
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
+    let (pulled, _, num_unique_txns, _, _) = proof_queue.pull_proofs(
+        &mut session,
         PayloadTxnsSize::new(4, 10),
         2,
         2,
         true,
         aptos_infallible::duration_since_epoch(),
+        &PerBatchKindTxnLimits::default(),
     );
     let mut count_author_0 = 0;
     let mut count_author_1 = 0;
-    let mut prev: Option<&ProofOfStore> = None;
+    let mut prev: Option<&ProofOfStore<BatchInfoExt>> = None;
     for batch in &pulled {
         if let Some(prev) = prev {
             assert!(prev.gas_bucket_start() >= batch.gas_bucket_start());
@@ -119,17 +125,20 @@ async fn test_proof_queue_sorting() {
     assert_eq!(num_unique_txns, 2);
 
     // Expect: [600, 500, 300, 100]
-    let (pulled, _, num_unique_txns, _) = proof_queue.pull_proofs(
-        &hashset![],
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
+    let (pulled, _, num_unique_txns, _, _) = proof_queue.pull_proofs(
+        &mut session,
         PayloadTxnsSize::new(6, 10),
         4,
         4,
         true,
         aptos_infallible::duration_since_epoch(),
+        &PerBatchKindTxnLimits::default(),
     );
     let mut count_author_0 = 0;
     let mut count_author_1 = 0;
-    let mut prev: Option<&ProofOfStore> = None;
+    let mut prev: Option<&ProofOfStore<BatchInfoExt>> = None;
     for batch in &pulled {
         if let Some(prev) = prev {
             assert!(prev.gas_bucket_start() >= batch.gas_bucket_start());
@@ -157,7 +166,7 @@ async fn test_proof_calculate_remaining_txns_and_proofs() {
     let now_in_usecs = aptos_infallible::duration_since_epoch().as_micros() as u64;
     let author_0 = PeerId::random();
     let author_1 = PeerId::random();
-    let txns = vec![
+    let txns = [
         TxnSummaryWithExpiration::new(
             PeerId::ONE,
             ReplayProtector::SequenceNumber(0),
@@ -184,7 +193,7 @@ async fn test_proof_calculate_remaining_txns_and_proofs() {
         ),
     ];
 
-    let author_0_batches = vec![
+    let author_0_batches = [
         proof_of_store(
             author_0,
             BatchId::new_for_test(0),
@@ -206,7 +215,7 @@ async fn test_proof_calculate_remaining_txns_and_proofs() {
         ),
     ];
 
-    let author_1_batches = vec![
+    let author_1_batches = [
         proof_of_store(
             author_1,
             BatchId::new_for_test(4),
@@ -435,7 +444,7 @@ async fn test_proof_pull_proofs_with_duplicates() {
     let mut proof_queue = BatchProofQueue::new(my_peer_id, batch_store, 1);
     let now_in_secs = aptos_infallible::duration_since_epoch().as_secs() as u64;
     let now_in_usecs = now_in_secs * 1_000_000;
-    let txns = vec![
+    let txns = [
         TxnSummaryWithExpiration::new(
             PeerId::ONE,
             ReplayProtector::SequenceNumber(0),
@@ -465,7 +474,7 @@ async fn test_proof_pull_proofs_with_duplicates() {
     let author_0 = PeerId::random();
     let author_1 = PeerId::random();
 
-    let author_0_batches = vec![
+    let author_0_batches = [
         proof_of_store(
             author_0,
             BatchId::new_for_test(0),
@@ -492,7 +501,7 @@ async fn test_proof_pull_proofs_with_duplicates() {
         ),
     ];
 
-    let author_1_batches = vec![
+    let author_1_batches = [
         proof_of_store(
             author_1,
             BatchId::new_for_test(4),
@@ -541,13 +550,16 @@ async fn test_proof_pull_proofs_with_duplicates() {
     }
     assert_eq!(proof_queue.remaining_txns_and_proofs(), (4, 8));
 
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         4,
         4,
         true,
         Duration::from_micros(now_in_usecs),
+        &PerBatchKindTxnLimits::default(),
     );
     assert_eq!(result.2, 4);
 
@@ -567,13 +579,16 @@ async fn test_proof_pull_proofs_with_duplicates() {
     }
     assert_eq!(pulled_txns.len(), 4);
 
+    let excluded = hashset![info_0.clone()];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![info_0.clone()],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         4,
         4,
         true,
         Duration::from_micros(now_in_usecs),
+        &PerBatchKindTxnLimits::default(),
     );
     assert_eq!(result.0.len(), 7);
     // filtered_txns: txn_0 (included in excluded batches)
@@ -581,114 +596,141 @@ async fn test_proof_pull_proofs_with_duplicates() {
 
     proof_queue.handle_updated_block_timestamp(now_in_usecs + 500_000);
     // Nothing changes
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         5,
         5,
         true,
         Duration::from_micros(now_in_usecs + 500_100),
+        &PerBatchKindTxnLimits::default(),
     );
     assert_eq!(result.2, 4);
 
     proof_queue.handle_updated_block_timestamp(now_in_usecs + 1_000_000);
     // txn_1 expired
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         5,
         5,
         true,
         Duration::from_micros(now_in_usecs + 1_000_100),
+        &PerBatchKindTxnLimits::default(),
     );
     assert_eq!(result.0.len(), 8);
     assert_eq!(result.2, 3);
 
     proof_queue.handle_updated_block_timestamp(now_in_usecs + 1_200_000);
     // author_0_batches[0] is removed. txn_1 expired.
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         4,
         4,
         true,
         Duration::from_micros(now_in_usecs + 1_200_100),
+        &PerBatchKindTxnLimits::default(),
     );
     assert_eq!(result.0.len(), 7);
     assert_eq!(result.2, 3);
 
     proof_queue.handle_updated_block_timestamp(now_in_usecs + 2_000_000);
     // author_0_batches[0] is removed. txn_0, txn_1 are expired.
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         4,
         4,
         true,
         Duration::from_micros(now_in_usecs + 2_000_100),
+        &PerBatchKindTxnLimits::default(),
     );
     assert_eq!(result.0.len(), 7);
     assert_eq!(result.2, 2);
 
     proof_queue.handle_updated_block_timestamp(now_in_usecs + 2_500_000);
     // author_0_batches[0], author_1_batches[1] is removed. txn_0, txn_1 is expired.
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         4,
         4,
         true,
         Duration::from_micros(now_in_usecs + 2_500_100),
+        &PerBatchKindTxnLimits::default(),
     );
     assert_eq!(result.0.len(), 6);
     assert_eq!(result.2, 2);
 
+    let excluded = hashset![info_7];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![info_7],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         4,
         4,
         true,
         Duration::from_micros(now_in_usecs + 2_500_100),
+        &PerBatchKindTxnLimits::default(),
     );
     // author_0_batches[0], author_1_batches[1] is removed. author_1_batches[2] is excluded. txn_0, txn_1 are expired.
     assert_eq!(result.0.len(), 5);
     assert_eq!(result.2, 1);
 
     proof_queue.handle_updated_block_timestamp(now_in_usecs + 3_000_000);
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         8,
         8,
         true,
         Duration::from_micros(now_in_usecs + 3_000_100),
+        &PerBatchKindTxnLimits::default(),
     );
     // author_0_batches[0], author_0_batches[1], author_1_batches[1] are removed. txn_0, txn_1, txn_2 are expired.
     assert_eq!(result.0.len(), 5);
     assert_eq!(result.2, 1);
 
     proof_queue.handle_updated_block_timestamp(now_in_usecs + 3_500_000);
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         4,
         4,
         true,
         Duration::from_micros(now_in_usecs + 3_500_100),
+        &PerBatchKindTxnLimits::default(),
     );
     // author_0_batches[0], author_0_batches[1], author_1_batches[1], author_1_batches[2] are removed. txn_0, txn_1, txn_0 are expired.
     assert_eq!(result.0.len(), 4);
     assert_eq!(result.2, 0);
 
     proof_queue.handle_updated_block_timestamp(now_in_usecs + 4_000_000);
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
     let result = proof_queue.pull_proofs(
-        &hashset![],
+        &mut session,
         PayloadTxnsSize::new(8, 400),
         4,
         4,
         true,
         Duration::from_micros(now_in_usecs + 4_000_100),
+        &PerBatchKindTxnLimits::default(),
     );
     // author_0_batches[0], author_0_batches[1], author_0_batches[3], author_1_batches[0], author_1_batches[1], author_1_batches[2] are removed.
     // txn_0, txn_1, txn_2 are expired.
@@ -716,25 +758,31 @@ async fn test_proof_queue_soft_limit() {
         proof_queue.insert_proof(batch);
     }
 
-    let (pulled, _, num_unique_txns, _) = proof_queue.pull_proofs(
-        &hashset![],
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
+    let (pulled, _, num_unique_txns, _, _) = proof_queue.pull_proofs(
+        &mut session,
         PayloadTxnsSize::new(100, 100),
         12,
         12,
         true,
         aptos_infallible::duration_since_epoch(),
+        &PerBatchKindTxnLimits::default(),
     );
 
     assert_eq!(pulled.len(), 1);
     assert_eq!(num_unique_txns, 10);
 
-    let (pulled, _, num_unique_txns, _) = proof_queue.pull_proofs(
-        &hashset![],
+    let excluded = hashset![];
+    let mut session = proof_queue.create_pull_session(&excluded);
+    let (pulled, _, num_unique_txns, _, _) = proof_queue.pull_proofs(
+        &mut session,
         PayloadTxnsSize::new(100, 100),
         30,
         12,
         true,
         aptos_infallible::duration_since_epoch(),
+        &PerBatchKindTxnLimits::default(),
     );
 
     assert_eq!(pulled.len(), 2);
@@ -795,14 +843,17 @@ async fn test_proof_queue_pull_full_utilization() {
     assert_eq!(remaining_proofs, 3);
 
     let now_in_secs = aptos_infallible::duration_since_epoch();
-    let (proof_block, txns_with_proof_size, cur_unique_txns, proof_queue_fully_utilized) =
+    let excluded = HashSet::new();
+    let mut session = proof_queue.create_pull_session(&excluded);
+    let (proof_block, txns_with_proof_size, cur_unique_txns, proof_queue_fully_utilized, _) =
         proof_queue.pull_proofs(
-            &HashSet::new(),
+            &mut session,
             PayloadTxnsSize::new(10, 10),
             10,
             10,
             true,
             now_in_secs,
+            &PerBatchKindTxnLimits::default(),
         );
 
     assert_eq!(proof_block.len(), 1);
@@ -811,14 +862,17 @@ async fn test_proof_queue_pull_full_utilization() {
     assert!(!proof_queue_fully_utilized);
 
     let now_in_secs = aptos_infallible::duration_since_epoch();
-    let (proof_block, txns_with_proof_size, cur_unique_txns, proof_queue_fully_utilized) =
+    let excluded = HashSet::new();
+    let mut session = proof_queue.create_pull_session(&excluded);
+    let (proof_block, txns_with_proof_size, cur_unique_txns, proof_queue_fully_utilized, _) =
         proof_queue.pull_proofs(
-            &HashSet::new(),
+            &mut session,
             PayloadTxnsSize::new(50, 50),
             50,
             50,
             true,
             now_in_secs,
+            &PerBatchKindTxnLimits::default(),
         );
 
     assert_eq!(proof_block.len(), 3);
@@ -827,5 +881,232 @@ async fn test_proof_queue_pull_full_utilization() {
     assert!(proof_queue_fully_utilized);
 
     proof_queue.handle_updated_block_timestamp(10);
+    assert!(proof_queue.is_empty());
+}
+
+/// Regression test for a BatchKey-collision crash. An attacker that controls one
+/// active validator can send two well-formed batches with the same (author, batch_id)
+/// but different digests/metadata, then aggregate a quorum-valid ProofOfStore for
+/// the second one. Previously the proof queue would attach the colliding proof to
+/// the existing item and underflow `remaining_txns_with_duplicates` when the shared
+/// expiration fired. The queue must instead reject the colliding insert at ingress.
+#[tokio::test]
+async fn test_proof_queue_rejects_batch_key_collision() {
+    let my_peer_id = PeerId::random();
+    let batch_store = batch_store_for_test(5 * 1024 * 1024);
+    let mut proof_queue = BatchProofQueue::new(my_peer_id, batch_store, 1);
+    let now_in_secs = aptos_infallible::duration_since_epoch().as_secs();
+    let now_in_usecs = aptos_infallible::duration_since_epoch().as_micros() as u64;
+
+    let attacker = PeerId::random();
+    let batch_id = BatchId::new_for_test(42);
+    let expiration = now_in_usecs + 100_000;
+
+    // Two batches that collide on (author, batch_id) but differ everywhere else.
+    let info_a: BatchInfoExt = BatchInfo::new(
+        attacker,
+        batch_id,
+        0,
+        expiration,
+        HashValue::random(),
+        1,
+        1,
+        0,
+    )
+    .into();
+    let proof_b: ProofOfStore<BatchInfoExt> = ProofOfStore::new(
+        BatchInfo::new(
+            attacker,
+            batch_id,
+            0,
+            expiration,
+            HashValue::random(),
+            0,
+            0,
+            1,
+        )
+        .into(),
+        AggregateSignature::empty(),
+    );
+    assert_ne!(info_a.digest(), proof_b.info().digest());
+
+    let txn = TxnSummaryWithExpiration::new(
+        PeerId::ONE,
+        ReplayProtector::SequenceNumber(0),
+        now_in_secs + 1,
+        HashValue::zero(),
+    );
+
+    // Summary for A lands first.
+    proof_queue.insert_batches(vec![(info_a.clone(), vec![txn])]);
+    assert_eq!(proof_queue.batch_summaries_len(), 1);
+    assert_eq!(proof_queue.remaining_txns_and_proofs(), (0, 0));
+
+    // Colliding proof for B must be rejected — no crash, no state mutation.
+    proof_queue.insert_proof(proof_b.clone());
+    assert_eq!(proof_queue.batch_summaries_len(), 1);
+    assert_eq!(proof_queue.remaining_txns_and_proofs(), (0, 0));
+
+    // Driving expiration past T must not panic (previously underflowed
+    // remaining_txns_with_duplicates because the proof was incremented with
+    // num_txns_B=0 but A's num_txns_A=1 was used at decrement time).
+    proof_queue.handle_updated_block_timestamp(expiration);
+    assert!(proof_queue.is_empty());
+}
+
+/// Reverse ordering of the same collision: proof for B arrives first, then a
+/// summary for the colliding info A. The second insert must be rejected.
+#[tokio::test]
+async fn test_proof_queue_rejects_batch_key_collision_proof_first() {
+    let my_peer_id = PeerId::random();
+    let batch_store = batch_store_for_test(5 * 1024 * 1024);
+    let mut proof_queue = BatchProofQueue::new(my_peer_id, batch_store, 1);
+    let now_in_secs = aptos_infallible::duration_since_epoch().as_secs();
+    let now_in_usecs = aptos_infallible::duration_since_epoch().as_micros() as u64;
+
+    let attacker = PeerId::random();
+    let batch_id = BatchId::new_for_test(7);
+    let expiration = now_in_usecs + 100_000;
+
+    let proof_b: ProofOfStore<BatchInfoExt> = ProofOfStore::new(
+        BatchInfo::new(
+            attacker,
+            batch_id,
+            0,
+            expiration,
+            HashValue::random(),
+            0,
+            0,
+            1,
+        )
+        .into(),
+        AggregateSignature::empty(),
+    );
+    let info_a: BatchInfoExt = BatchInfo::new(
+        attacker,
+        batch_id,
+        0,
+        expiration,
+        HashValue::random(),
+        1,
+        1,
+        0,
+    )
+    .into();
+    assert_ne!(info_a.digest(), proof_b.info().digest());
+
+    let txn = TxnSummaryWithExpiration::new(
+        PeerId::ONE,
+        ReplayProtector::SequenceNumber(0),
+        now_in_secs + 1,
+        HashValue::zero(),
+    );
+
+    proof_queue.insert_proof(proof_b.clone());
+    assert_eq!(proof_queue.remaining_txns_and_proofs(), (0, 1));
+
+    // Colliding summary for A is dropped; no second sort key, no extra summary.
+    proof_queue.insert_batches(vec![(info_a, vec![txn])]);
+    assert_eq!(proof_queue.batch_summaries_len(), 0);
+    assert_eq!(proof_queue.remaining_txns_and_proofs(), (0, 1));
+
+    proof_queue.handle_updated_block_timestamp(expiration);
+    assert!(proof_queue.is_empty());
+}
+
+/// `mark_committed` is driven by the *committed block*'s PoS, which can disagree
+/// with what the local queue holds for the same (author, batch_id) if a colliding
+/// BatchInfo gathered 2f+1 signatures over the network. Accounting must come from
+/// the queue's stored info, not the incoming committed BatchInfo, otherwise
+/// remaining_txns_with_duplicates underflows.
+#[tokio::test]
+async fn test_mark_committed_with_colliding_info_uses_stored_num_txns() {
+    let my_peer_id = PeerId::random();
+    let batch_store = batch_store_for_test(5 * 1024 * 1024);
+    let mut proof_queue = BatchProofQueue::new(my_peer_id, batch_store, 1);
+    let now_in_usecs = aptos_infallible::duration_since_epoch().as_micros() as u64;
+
+    let attacker = PeerId::random();
+    let batch_id = BatchId::new_for_test(11);
+    let expiration = now_in_usecs + 100_000;
+
+    // Local queue has a proof for A with num_txns=1.
+    let proof_a: ProofOfStore<BatchInfoExt> = ProofOfStore::new(
+        BatchInfo::new(
+            attacker,
+            batch_id,
+            0,
+            expiration,
+            HashValue::random(),
+            1,
+            1,
+            0,
+        )
+        .into(),
+        AggregateSignature::empty(),
+    );
+    proof_queue.insert_proof(proof_a);
+    assert_eq!(proof_queue.remaining_txns_and_proofs(), (1, 1));
+
+    // Network commits a colliding PoS_B with num_txns=5 (different digest, gas
+    // bucket, and tx count). With the old code, dec_remaining_proofs would use
+    // batch.num_txns()=5 here, underflowing the counter that was only incremented
+    // by 1 at insert_proof time.
+    let info_b: BatchInfoExt = BatchInfo::new(
+        attacker,
+        batch_id,
+        0,
+        expiration,
+        HashValue::random(),
+        5,
+        5,
+        1,
+    )
+    .into();
+    proof_queue.mark_committed(vec![info_b]);
+
+    // No underflow. Accounting reflects the stored info_A, not info_B.
+    assert_eq!(proof_queue.remaining_txns_and_proofs(), (0, 0));
+
+    // Expiration cleans up cleanly.
+    proof_queue.handle_updated_block_timestamp(expiration);
+    assert!(proof_queue.is_empty());
+}
+
+/// A re-send of the exact same BatchInfo (same digest + metadata) must still be
+/// accepted as an idempotent retransmit, both for proof and summary paths.
+#[tokio::test]
+async fn test_proof_queue_accepts_identical_resend() {
+    let my_peer_id = PeerId::random();
+    let batch_store = batch_store_for_test(5 * 1024 * 1024);
+    let mut proof_queue = BatchProofQueue::new(my_peer_id, batch_store, 1);
+    let now_in_secs = aptos_infallible::duration_since_epoch().as_secs();
+    let now_in_usecs = aptos_infallible::duration_since_epoch().as_micros() as u64;
+
+    let author = PeerId::random();
+    let batch_id = BatchId::new_for_test(99);
+    let expiration = now_in_usecs + 100_000;
+    let digest = HashValue::random();
+
+    let info: BatchInfoExt =
+        BatchInfo::new(author, batch_id, 0, expiration, digest, 1, 1, 0).into();
+    let proof = ProofOfStore::new(info.clone(), AggregateSignature::empty());
+
+    let txn = TxnSummaryWithExpiration::new(
+        PeerId::ONE,
+        ReplayProtector::SequenceNumber(0),
+        now_in_secs + 1,
+        HashValue::zero(),
+    );
+
+    proof_queue.insert_batches(vec![(info.clone(), vec![txn])]);
+    proof_queue.insert_batches(vec![(info.clone(), vec![txn])]); // dup summary
+    proof_queue.insert_proof(proof.clone());
+    proof_queue.insert_proof(proof); // dup proof
+
+    assert_eq!(proof_queue.batch_summaries_len(), 1);
+    assert_eq!(proof_queue.remaining_txns_and_proofs(), (1, 1));
+
+    proof_queue.handle_updated_block_timestamp(expiration);
     assert!(proof_queue.is_empty());
 }

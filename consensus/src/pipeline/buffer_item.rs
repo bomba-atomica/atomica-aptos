@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{counters, pipeline::hashable::Hashable};
 use anyhow::anyhow;
@@ -22,6 +21,62 @@ use futures::future::BoxFuture;
 use itertools::zip_eq;
 use std::{collections::HashMap, sync::Arc};
 use tokio::time::Instant;
+
+fn log_execution_state_for_mismatch(
+    label: &str,
+    executed_blocks: &[Arc<PipelinedBlock>],
+    local: &BlockInfo,
+    incoming: &BlockInfo,
+) {
+    error!(
+        label = label,
+        local_commit_info = %local,
+        incoming_commit_info = %incoming,
+        num_executed_blocks = executed_blocks.len(),
+        "commit_info mismatch detected — about to panic; dumping StateComputeResult per executed block"
+    );
+
+    for b in executed_blocks {
+        let cr = b.compute_result();
+        let lu = &cr.ledger_update_output;
+        let parent_version = lu.parent_accumulator.num_leaves;
+        let next_version = lu.transaction_accumulator.num_leaves;
+
+        error!(
+            label = label,
+            block_id = %b.id(),
+            parent_id = %b.parent_id(),
+            epoch = b.epoch(),
+            round = b.round(),
+            executed_state_id = ?cr.root_hash(),
+            parent_state_id = ?lu.parent_accumulator.root_hash,
+            version_start = parent_version,
+            version_end = next_version,
+            num_input_txns = cr.num_input_transactions(),
+            num_to_commit = cr.num_transactions_to_commit(),
+            has_reconfiguration = cr.has_reconfiguration(),
+            next_epoch = cr.epoch_state().as_ref().map(|e| e.epoch),
+            block_end_info = ?cr.execution_output.block_end_info,
+            "commit_info mismatch — dumping executed block state before panic"
+        );
+
+        for (i, (info, info_hash)) in lu
+            .transaction_infos
+            .iter()
+            .zip(lu.transaction_info_hashes.iter())
+            .enumerate()
+        {
+            error!(
+                label = label,
+                block_id = %b.id(),
+                version = parent_version + i as u64,
+                info_hash = ?info_hash,
+                info = ?info,
+                "commit_info mismatch — dumping txn info before panic"
+            );
+        }
+    }
+}
 
 fn generate_commit_ledger_info(
     commit_info: &BlockInfo,
@@ -147,6 +202,14 @@ impl BufferItem {
                 if let Some(commit_proof) = commit_proof {
                     // We have already received the commit proof in fast forward sync path,
                     // we can just use that proof and proceed to aggregated
+                    if *commit_proof.commit_info() != commit_info {
+                        log_execution_state_for_mismatch(
+                            "ordered→aggregated",
+                            &executed_blocks,
+                            &commit_info,
+                            commit_proof.commit_info(),
+                        );
+                    }
                     assert_eq!(commit_proof.commit_info().clone(), commit_info);
                     debug!(
                         "{} advance to aggregated from ordered",
@@ -241,6 +304,14 @@ impl BufferItem {
                     partial_commit_proof: local_commit_proof,
                     ..
                 } = *signed_item;
+                if local_commit_proof.data().commit_info() != commit_proof.commit_info() {
+                    log_execution_state_for_mismatch(
+                        "signed→aggregated",
+                        &executed_blocks,
+                        local_commit_proof.data().commit_info(),
+                        commit_proof.commit_info(),
+                    );
+                }
                 assert_eq!(
                     local_commit_proof.data().commit_info(),
                     commit_proof.commit_info()
@@ -260,6 +331,14 @@ impl BufferItem {
                     commit_info,
                     ..
                 } = *executed_item;
+                if commit_info != *commit_proof.commit_info() {
+                    log_execution_state_for_mismatch(
+                        "executed→aggregated",
+                        &executed_blocks,
+                        &commit_info,
+                        commit_proof.commit_info(),
+                    );
+                }
                 assert_eq!(commit_info, *commit_proof.commit_info());
                 debug!(
                     "{} advance to aggregated with commit decision",
@@ -528,23 +607,23 @@ mod test {
         let mut partial_signatures = BTreeMap::new();
         partial_signatures.insert(
             validator_signers[0].author(),
-            commit_votes[0].signature().clone(),
+            commit_votes[0].decompressed_signature().unwrap(),
         );
         partial_signatures.insert(
             validator_signers[1].author(),
-            commit_votes[1].signature().clone(),
+            commit_votes[1].decompressed_signature().unwrap(),
         );
         partial_signatures.insert(
             validator_signers[2].author(),
-            commit_votes[2].signature().clone(),
+            commit_votes[2].decompressed_signature().unwrap(),
         );
         partial_signatures.insert(
             validator_signers[3].author(),
-            commit_votes[3].signature().clone(),
+            commit_votes[3].decompressed_signature().unwrap(),
         );
         partial_signatures.insert(
             validator_signers[4].author(),
-            commit_votes[4].signature().clone(),
+            commit_votes[4].decompressed_signature().unwrap(),
         );
         let li_with_sig = validator_verifier
             .aggregate_signatures(partial_signatures.iter())
@@ -576,10 +655,9 @@ mod test {
 
         match executed_item {
             BufferItem::Executed(ref executed_item_inner) => {
-                assert_eq!(
-                    executed_item_inner.executed_blocks,
-                    vec![pipelined_block.clone()]
-                );
+                assert_eq!(executed_item_inner.executed_blocks, vec![
+                    pipelined_block.clone()
+                ]);
                 assert_eq!(executed_item_inner.commit_info, block_info);
                 assert_eq!(
                     executed_item_inner
@@ -633,23 +711,23 @@ mod test {
         let mut partial_signatures = BTreeMap::new();
         partial_signatures.insert(
             validator_signers[0].author(),
-            commit_votes[0].signature().clone(),
+            commit_votes[0].decompressed_signature().unwrap(),
         );
         partial_signatures.insert(
             validator_signers[1].author(),
-            commit_votes[1].signature().clone(),
+            commit_votes[1].decompressed_signature().unwrap(),
         );
         partial_signatures.insert(
             validator_signers[2].author(),
-            commit_votes[2].signature().clone(),
+            commit_votes[2].decompressed_signature().unwrap(),
         );
         partial_signatures.insert(
             validator_signers[4].author(),
-            commit_votes[4].signature().clone(),
+            commit_votes[4].decompressed_signature().unwrap(),
         );
         partial_signatures.insert(
             validator_signers[6].author(),
-            commit_votes[6].signature().clone(),
+            commit_votes[6].decompressed_signature().unwrap(),
         );
         let li_with_sig = validator_verifier
             .aggregate_signatures(partial_signatures.iter())
@@ -682,10 +760,9 @@ mod test {
 
         match executed_item {
             BufferItem::Executed(ref executed_item_inner) => {
-                assert_eq!(
-                    executed_item_inner.executed_blocks,
-                    vec![pipelined_block.clone()]
-                );
+                assert_eq!(executed_item_inner.executed_blocks, vec![
+                    pipelined_block.clone()
+                ]);
                 assert_eq!(executed_item_inner.commit_info, block_info);
                 assert_eq!(
                     executed_item_inner
@@ -706,10 +783,9 @@ mod test {
         let mut executed_item = executed_item.try_advance_to_aggregated(&validator_verifier);
         match executed_item {
             BufferItem::Executed(ref executed_item_inner) => {
-                assert_eq!(
-                    executed_item_inner.executed_blocks,
-                    vec![pipelined_block.clone()]
-                );
+                assert_eq!(executed_item_inner.executed_blocks, vec![
+                    pipelined_block.clone()
+                ]);
                 assert_eq!(executed_item_inner.commit_info, block_info);
                 assert_eq!(
                     executed_item_inner
@@ -731,10 +807,9 @@ mod test {
         let mut executed_item = executed_item.try_advance_to_aggregated(&validator_verifier);
         match executed_item {
             BufferItem::Executed(ref executed_item_inner) => {
-                assert_eq!(
-                    executed_item_inner.executed_blocks,
-                    vec![pipelined_block.clone()]
-                );
+                assert_eq!(executed_item_inner.executed_blocks, vec![
+                    pipelined_block.clone()
+                ]);
                 assert_eq!(executed_item_inner.commit_info, block_info);
                 assert_eq!(
                     executed_item_inner

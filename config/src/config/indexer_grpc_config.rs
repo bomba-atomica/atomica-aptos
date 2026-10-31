@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::config::{
     config_optimizer::ConfigOptimizer, config_sanitizer::ConfigSanitizer,
@@ -14,10 +14,19 @@ use std::{
 };
 
 // Useful indexer defaults
-const DEFAULT_PROCESSOR_TASK_COUNT: u16 = 20;
 const DEFAULT_PROCESSOR_BATCH_SIZE: u16 = 1000;
 const DEFAULT_OUTPUT_BATCH_SIZE: u16 = 100;
+const DEFAULT_TRANSACTION_CHANNEL_SIZE: usize = 35;
 pub const DEFAULT_GRPC_STREAM_PORT: u16 = 50051;
+const DEFAULT_MAX_TRANSACTION_FILTER_SIZE_BYTES: usize = 10_000;
+
+pub fn get_default_processor_task_count(use_data_service_interface: bool) -> u16 {
+    if use_data_service_interface {
+        1
+    } else {
+        20
+    }
+}
 
 #[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -28,19 +37,28 @@ pub struct IndexerGrpcConfig {
     /// instead of the standard fullnode GRPC stream interface. In other words, with
     /// this enabled, you can use an indexer fullnode like it is an instance of the
     /// indexer-grpc data service (aka the Transaction Stream Service API).
+    ///
+    /// TODO(#20246): the dual interface exists because the v1 (cache-worker) and v2
+    /// (manager) stream pipelines coexist; remove once v1 is retired.
     pub use_data_service_interface: bool,
 
     /// The address that the grpc server will listen on.
     pub address: SocketAddr,
 
     /// Number of processor tasks to fan out
-    pub processor_task_count: u16,
+    pub processor_task_count: Option<u16>,
 
     /// Number of transactions each processor will process
     pub processor_batch_size: u16,
 
     /// Number of transactions returned in a single stream response
     pub output_batch_size: u16,
+
+    /// Size of the transaction channel buffer for streaming.
+    pub transaction_channel_size: usize,
+
+    /// Maximum size in bytes for transaction filters.
+    pub max_transaction_filter_size_bytes: usize,
 }
 
 impl Debug for IndexerGrpcConfig {
@@ -55,6 +73,11 @@ impl Debug for IndexerGrpcConfig {
             .field("processor_task_count", &self.processor_task_count)
             .field("processor_batch_size", &self.processor_batch_size)
             .field("output_batch_size", &self.output_batch_size)
+            .field("transaction_channel_size", &self.transaction_channel_size)
+            .field(
+                "max_transaction_filter_size_bytes",
+                &self.max_transaction_filter_size_bytes,
+            )
             .finish()
     }
 }
@@ -71,9 +94,11 @@ impl Default for IndexerGrpcConfig {
                 Ipv4Addr::new(0, 0, 0, 0),
                 DEFAULT_GRPC_STREAM_PORT,
             )),
-            processor_task_count: DEFAULT_PROCESSOR_TASK_COUNT,
+            processor_task_count: None,
             processor_batch_size: DEFAULT_PROCESSOR_BATCH_SIZE,
             output_batch_size: DEFAULT_OUTPUT_BATCH_SIZE,
+            transaction_channel_size: DEFAULT_TRANSACTION_CHANNEL_SIZE,
+            max_transaction_filter_size_bytes: DEFAULT_MAX_TRANSACTION_FILTER_SIZE_BYTES,
         }
     }
 }
@@ -90,15 +115,14 @@ impl ConfigSanitizer for IndexerGrpcConfig {
             return Ok(());
         }
 
-        if !node_config.storage.enable_indexer
-            && !node_config
-                .indexer_table_info
-                .table_info_service_mode
-                .is_enabled()
+        if !node_config
+            .indexer_table_info
+            .table_info_service_mode
+            .is_enabled()
         {
             return Err(Error::ConfigSanitizerFailed(
                 sanitizer_name,
-                "storage.enable_indexer must be true or indexer_table_info.table_info_service_mode must be IndexingOnly if indexer_grpc.enabled is true".to_string(),
+                "indexer_table_info.table_info_service_mode must be enabled if indexer_grpc.enabled is true".to_string(),
             ));
         }
         Ok(())
@@ -125,45 +149,22 @@ impl ConfigOptimizer for IndexerGrpcConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{IndexerTableInfoConfig, StorageConfig, TableInfoServiceMode};
+    use crate::config::{IndexerTableInfoConfig, TableInfoServiceMode};
 
     #[test]
-    fn test_sanitize_enable_indexer() {
-        // Create a storage config and disable the storage indexer
-        let mut storage_config = StorageConfig::default();
-        let mut table_info_config = IndexerTableInfoConfig::default();
-        storage_config.enable_indexer = false;
-        table_info_config.table_info_service_mode = TableInfoServiceMode::Disabled;
-
-        // Create a node config with the indexer enabled, but the storage indexer disabled
+    fn test_sanitize_table_info_service() {
+        // Create a node config with the indexer gRPC enabled, but table info service disabled
         let mut node_config = NodeConfig {
-            storage: storage_config,
-            indexer_table_info: table_info_config,
+            indexer_table_info: IndexerTableInfoConfig {
+                table_info_service_mode: TableInfoServiceMode::Disabled,
+                ..Default::default()
+            },
             indexer_grpc: IndexerGrpcConfig {
                 enabled: true,
                 ..Default::default()
             },
             ..Default::default()
         };
-
-        // Sanitize the config and verify that it fails
-        let error = IndexerGrpcConfig::sanitize(
-            &node_config,
-            NodeType::Validator,
-            Some(ChainId::mainnet()),
-        )
-        .unwrap_err();
-        assert!(matches!(error, Error::ConfigSanitizerFailed(_, _)));
-
-        // Enable the storage indexer
-        node_config.storage.enable_indexer = true;
-
-        // Sanitize the config and verify that it now succeeds
-        IndexerGrpcConfig::sanitize(&node_config, NodeType::Validator, Some(ChainId::mainnet()))
-            .unwrap();
-
-        // Disable the storage indexer and enable the table info service
-        node_config.storage.enable_indexer = false;
 
         // Sanitize the config and verify that it fails
         let error = IndexerGrpcConfig::sanitize(

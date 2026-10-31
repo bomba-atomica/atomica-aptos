@@ -1,6 +1,7 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
+use ambassador::delegatable_trait;
 use aptos_aggregator::resolver::{TAggregatorV1View, TDelayedFieldView};
 use aptos_types::{
     serde_helper::bcs_utils::size_u32_as_uleb128,
@@ -11,7 +12,6 @@ use aptos_types::{
         state_value::{StateValue, StateValueMetadata},
         StateView, StateViewId,
     },
-    write_set::WriteOp,
 };
 use bytes::Bytes;
 use move_binary_format::errors::{PartialVMError, PartialVMResult};
@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 /// Allows requesting an immediate interrupt to ongoing transaction execution. For example, this
 /// allows an early return from a useless speculative execution when block execution has already
 /// halted (e.g. due to gas limit, committing only a block prefix).
+#[delegatable_trait]
 pub trait BlockSynchronizationKillSwitch {
     fn interrupt_requested(&self) -> bool;
 }
@@ -168,7 +169,7 @@ pub trait StateStorageView {
 /// TODO: audit and reconsider the default implementation (e.g. should not
 /// resolve AggregatorV2 via the state-view based default implementation, as it
 /// doesn't provide a value exchange functionality).
-pub trait TExecutorView<K, T, L, V>:
+pub trait TExecutorView<K, T, L>:
     TResourceView<Key = K, Layout = L>
     + TAggregatorV1View<Identifier = K>
     + TDelayedFieldView<Identifier = DelayedFieldID, ResourceKey = K, ResourceGroupTag = T>
@@ -176,7 +177,7 @@ pub trait TExecutorView<K, T, L, V>:
 {
 }
 
-impl<A, K, T, L, V> TExecutorView<K, T, L, V> for A where
+impl<A, K, T, L> TExecutorView<K, T, L> for A where
     A: TResourceView<Key = K, Layout = L>
         + TAggregatorV1View<Identifier = K>
         + TDelayedFieldView<Identifier = DelayedFieldID, ResourceKey = K, ResourceGroupTag = T>
@@ -184,9 +185,9 @@ impl<A, K, T, L, V> TExecutorView<K, T, L, V> for A where
 {
 }
 
-pub trait ExecutorView: TExecutorView<StateKey, StructTag, MoveTypeLayout, WriteOp> {}
+pub trait ExecutorView: TExecutorView<StateKey, StructTag, MoveTypeLayout> {}
 
-impl<T> ExecutorView for T where T: TExecutorView<StateKey, StructTag, MoveTypeLayout, WriteOp> {}
+impl<T> ExecutorView for T where T: TExecutorView<StateKey, StructTag, MoveTypeLayout> {}
 
 pub trait ResourceGroupView:
     TResourceGroupView<GroupKey = StateKey, ResourceTag = StructTag, Layout = MoveTypeLayout>

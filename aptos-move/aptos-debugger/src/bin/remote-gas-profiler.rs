@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::{bail, Result};
 use aptos_move_debugger::aptos_debugger::AptosDebugger;
@@ -61,8 +61,13 @@ async fn main() -> Result<()> {
         AuxiliaryInfo::new(aux_info, None),
     )?;
 
-    let txn_output =
-        output.try_materialize_into_transaction_output(&debugger.state_view_at_version(version))?;
+    // The debugger returns the log unchecked (so user-facing tools can render
+    // custom errors). This binary has no such requirement, so just run the
+    // checks strictly.
+    gas_log.exec_io.check_consistency()?;
+    gas_log.storage.check_consistency()?;
+
+    let txn_output = output.try_materialize_into_transaction_output()?;
 
     // Show results to the user
     println!("{:#?}", txn_output);

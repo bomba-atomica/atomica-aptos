@@ -1,0 +1,176 @@
+# Module `0x42::N` <a id="0x42_N"></a>
+
+
+
+- Attributes:
+    - `#[attr8]`
+
+
+
+-  [Function `bar`](#0x42_N_bar)
+
+
+<pre><code></code></pre>
+
+
+## Function `bar` <a id="0x42_N_bar"></a>
+
+
+
+<pre><code>#[attr10]
+<b>public</b> <b>fun</b> <a href="attribute_placement.md#0x42_N_bar">bar</a>()
+</code></pre>
+
+
+
+##### Implementation
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="attribute_placement.md#0x42_N_bar">bar</a>() {}
+</code></pre>
+
+
+# Module `0x42::M` <a id="0x42_M"></a>
+
+
+
+- Attributes:
+    - `#[attr2]`
+    - `#[attr7]`
+
+
+
+-  [Struct `S`](#0x42_M_S)
+-  [Struct `T`](#0x42_M_T)
+-  [Constants](#@Constants_0)
+-  [Function `foo`](#0x42_M_foo)
+
+
+<pre><code><b>use</b> <a href="attribute_placement.md#0x42_N">0x42::N</a>;
+</code></pre>
+
+
+## Struct `S` <a id="0x42_M_S"></a>
+
+
+
+<pre><code>#[attr4]
+<b>struct</b> <a href="attribute_placement.md#0x42_M_S">S</a>
+</code></pre>
+
+
+
+##### Fields
+
+
+<dl>
+<dt>
+<code>dummy_field: bool</code>
+</dt>
+<dd>
+
+</dd>
+</dl>
+
+## Struct `T` <a id="0x42_M_T"></a>
+
+
+
+<pre><code>#[attr4b]
+#[resource_group(#[scope = <b>global</b>])]
+<b>struct</b> <a href="attribute_placement.md#0x42_M_T">T</a>
+</code></pre>
+
+
+
+##### Fields
+
+
+<dl>
+<dt>
+<code>dummy_field: bool</code>
+</dt>
+<dd>
+
+</dd>
+</dl>
+
+## Constants <a id="@Constants_0"></a>
+
+
+<a id="0x42_M_C"></a>
+
+
+
+<pre><code><b>const</b> <a href="attribute_placement.md#0x42_M_C">C</a>: u64 = 0;
+</code></pre>
+
+
+## Function `foo` <a id="0x42_M_foo"></a>
+
+
+
+<pre><code>#[attr6]
+#[resource_group_member(#[group = <a href="_String">0x1::string::String</a>])]
+<b>public</b> <b>fun</b> <a href="attribute_placement.md#0x42_M_foo">foo</a>()
+</code></pre>
+
+
+
+##### Implementation
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="attribute_placement.md#0x42_M_foo">foo</a>() { <a href="attribute_placement.md#0x42_N_bar">N::bar</a>() }
+</code></pre>
+
+
+
+##### Specification
+
+
+# Script `<SELF>_0` <a id="<SELF>_0"></a>
+
+
+
+- Attributes:
+    - `#[attr11]`
+
+
+
+-  [Constants](#@Constants_0)
+
+
+<pre><code><b>use</b> <a href="attribute_placement.md#0x42_M">0x42::M</a>;
+</code></pre>
+
+
+## Constants <a id="@Constants_0"></a>
+
+
+<a id="<SELF>_0_C"></a>
+
+
+
+<pre><code><b>const</b> <a href="attribute_placement.md#<SELF>_0_C">C</a>: u64 = 0;
+</code></pre>
+
+
+
+
+<pre><code>#[attr14]
+<b>fun</b> <a href="attribute_placement.md#<SELF>_0_main">main</a>()
+</code></pre>
+
+
+
+##### Implementation
+
+
+<pre><code><b>fun</b> <a href="attribute_placement.md#<SELF>_0_main">main</a>() {
+    <a href="attribute_placement.md#0x42_M_foo">M::foo</a>();
+}
+</code></pre>
+
+
+
+##### Specification

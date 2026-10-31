@@ -1,15 +1,18 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
+    add_aptos_packages_to_state_store, check_aptos_packages_availability, compile_aptos_packages,
     data_state_view::DataStateView, dump_and_compile_from_package_metadata, is_aptos_package,
-    CompilationCache, DataManager, IndexWriter, PackageInfo, TxnIndex,
+    CompilationCache, DataManager, IndexWriter, PackageInfo, TxnIndex, APTOS_COMMONS,
 };
 use anyhow::{format_err, Result};
 use aptos_block_executor::txn_provider::default::DefaultTxnProvider;
 use aptos_framework::natives::code::PackageMetadata;
 use aptos_rest_client::Client;
+use aptos_transaction_simulation::InMemoryStateStore;
 use aptos_types::{
+    on_chain_config::FeatureFlag,
     state_store::{state_key::StateKey, state_value::StateValue, TStateView},
     transaction::{
         signature_verified_transaction::SignatureVerifiedTransaction, AuxiliaryInfo,
@@ -32,7 +35,10 @@ pub struct DataCollection {
     current_dir: PathBuf,
     batch_size: u64,
     dump_write_set: bool,
+    skip_txn_execution: bool,
     filter_condition: FilterCondition,
+    enable_features: Vec<FeatureFlag>,
+    disable_features: Vec<FeatureFlag>,
 }
 
 impl DataCollection {
@@ -43,20 +49,26 @@ impl DataCollection {
         skip_failed_txns: bool,
         skip_publish_txns: bool,
         dump_write_set: bool,
+        skip_txn_execution: bool,
         skip_source_code: bool,
         target_account: Option<AccountAddress>,
+        enable_features: Vec<FeatureFlag>,
+        disable_features: Vec<FeatureFlag>,
     ) -> Self {
         Self {
             debugger,
             current_dir,
             batch_size,
             dump_write_set,
+            skip_txn_execution,
             filter_condition: FilterCondition {
                 skip_failed_txns,
                 skip_publish_txns,
                 check_source_code: !skip_source_code,
                 target_account,
             },
+            enable_features,
+            disable_features,
         }
     }
 
@@ -67,8 +79,11 @@ impl DataCollection {
         skip_failed_txns: bool,
         skip_publish_txns: bool,
         dump_write_set: bool,
+        skip_txn_execution: bool,
         skip_source_code: bool,
         target_account: Option<AccountAddress>,
+        enable_features: Vec<FeatureFlag>,
+        disable_features: Vec<FeatureFlag>,
     ) -> Result<Self> {
         Ok(Self::new(
             Arc::new(RestDebuggerInterface::new(rest_client)),
@@ -77,8 +92,11 @@ impl DataCollection {
             skip_failed_txns,
             skip_publish_txns,
             dump_write_set,
+            skip_txn_execution,
             skip_source_code,
             target_account,
+            enable_features,
+            disable_features,
         ))
     }
 
@@ -114,6 +132,8 @@ impl DataCollection {
         map: HashMap<(AccountAddress, String), PackageMetadata>,
         compilation_cache: &mut CompilationCache,
         current_dir: PathBuf,
+        base_experiments: &[String],
+        skip_source_compilation: bool,
     ) -> Option<PackageInfo> {
         let upgrade_number = if is_aptos_package(&package_name) {
             None
@@ -127,7 +147,10 @@ impl DataCollection {
             package_name: package_name.clone(),
             upgrade_number,
         };
-        if compilation_cache.failed_packages_v1.contains(&package_info) {
+        if compilation_cache
+            .failed_packages_base
+            .contains(&package_info)
+        {
             return None;
         }
         if !is_aptos_package(&package_name)
@@ -141,9 +164,12 @@ impl DataCollection {
                 &map,
                 compilation_cache,
                 None,
+                base_experiments,
+                &[],
+                skip_source_compilation,
             );
-            if res.is_err() {
-                eprintln!("{} at: {}", res.unwrap_err(), version);
+            if let Err(err) = res {
+                eprintln!("{} at: {}", err, version);
                 return None;
             }
         }
@@ -170,12 +196,40 @@ impl DataCollection {
         }
     }
 
-    pub async fn dump_data(&self, begin: Version, limit: u64) -> Result<()> {
+    /// Dump txn data from txn `begin` with number no larger than `limit`
+    /// `base_experiments` is the experiments to be used for compiling the source code
+    pub async fn dump_data(
+        &self,
+        begin: Version,
+        limit: u64,
+        base_experiments: Vec<String>,
+    ) -> Result<()> {
         println!("begin dumping data");
-        let compilation_cache = Arc::new(Mutex::new(CompilationCache::default()));
-        let data_manager = Arc::new(Mutex::new(DataManager::new_with_dir_creation(
-            &self.current_dir,
-        )));
+        let aptos_commons_path = self.current_dir.join(APTOS_COMMONS);
+        if self.filter_condition.check_source_code
+            && !check_aptos_packages_availability(aptos_commons_path.clone())
+        {
+            return Err(anyhow::Error::msg("aptos packages are missing"));
+        }
+        let mut compiled_cache = CompilationCache::default();
+        // the compiled framework is only needed for txn execution
+        if !self.skip_txn_execution {
+            compile_aptos_packages(
+                &aptos_commons_path,
+                &mut compiled_cache.base_compiled_package_cache,
+                &base_experiments,
+                "base",
+            )?;
+        }
+        let compilation_cache: Arc<Mutex<CompilationCache>> = Arc::new(Mutex::new(compiled_cache));
+        // create no replay artifacts in source-only mode, so `execute` rejects such dumps
+        let data_manager_opt = if self.skip_txn_execution {
+            None
+        } else {
+            Some(Arc::new(Mutex::new(DataManager::new_with_dir_creation(
+                &self.current_dir,
+            ))))
+        };
         let index_writer = Arc::new(Mutex::new(IndexWriter::new(&self.current_dir)));
 
         let mut cur_version = begin;
@@ -201,53 +255,69 @@ impl DataCollection {
                     .lock()
                     .unwrap()
                     .write_err(&format!("{}:{}", cur_version, batch));
+                // the skipped range may contain publish txns whose cache
+                // invalidation never ran, so drop all cached package data
+                module_registry_map.clear();
             }
             let txns = res_txns.unwrap_or_default();
             if !txns.is_empty() {
-                let mut txn_execution_ths = vec![];
+                let mut txn_execution_ths = Vec::with_capacity(txns.len());
                 for (version, txn, source_code_data) in txns {
                     println!("get txn at version:{}", version);
 
                     let compilation_cache = compilation_cache.clone();
                     let current_dir = self.current_dir.clone();
                     let dump_write_set = self.dump_write_set;
-                    let data_manager = data_manager.clone();
+                    let data_manager = data_manager_opt.clone();
                     let index = index_writer.clone();
-
-                    let state_view =
-                        DataStateView::new_with_data_reads(self.debugger.clone(), version);
+                    let base_experiments = base_experiments.clone();
+                    let skip_txn_execution = self.skip_txn_execution;
+                    // in source-only mode, compile-validation is skipped too
+                    let skip_source_compilation = self.skip_txn_execution;
+                    // no state view (and no remote state reads) when txns are not executed
+                    let state_view_opt = if self.skip_txn_execution {
+                        None
+                    } else {
+                        let data_state = InMemoryStateStore::default();
+                        let features_to_enable = self.enable_features.clone();
+                        let features_to_disable = self.disable_features.clone();
+                        let cache_v1 = compilation_cache
+                            .lock()
+                            .unwrap()
+                            .base_compiled_package_cache
+                            .clone();
+                        add_aptos_packages_to_state_store(&data_state, &cache_v1);
+                        Some(DataStateView::new_with_data_reads_and_code(
+                            self.debugger.clone(),
+                            version,
+                            data_state,
+                            features_to_enable,
+                            features_to_disable,
+                        ))
+                    };
 
                     let txn_execution_thread = tokio::task::spawn_blocking(move || {
-                        // Get auxiliary info for this transaction from the debugger
-                        let aux_info = tokio::runtime::Handle::current().block_on(async {
-                            match state_view
-                                .debugger()
-                                .get_committed_transactions(version, 1)
-                                .await
-                            {
-                                Ok((_, _, mut aux_infos)) => {
-                                    aux_infos.pop().unwrap_or(PersistedAuxiliaryInfo::None)
-                                },
-                                Err(_) => {
-                                    // Fallback to default auxiliary info if not found
-                                    PersistedAuxiliaryInfo::None
-                                },
-                            }
-                        });
+                        let epoch_result_opt = if let Some(state_view) = &state_view_opt {
+                            // Use default info to improve performance
+                            let aux_info = PersistedAuxiliaryInfo::None;
 
-                        let epoch_result_res =
-                            Self::execute_transactions_at_version_with_state_view(
+                            match Self::execute_transactions_at_version_with_state_view(
                                 vec![txn.clone()],
                                 vec![aux_info],
-                                &state_view,
-                            );
-                        if let Err(err) = epoch_result_res {
-                            println!(
-                                "execution error during transaction at version:{} :{}",
-                                version, err
-                            );
-                            return;
-                        }
+                                state_view,
+                            ) {
+                                Ok(outputs) => Some(outputs),
+                                Err(err) => {
+                                    println!(
+                                        "execution error during transaction at version:{} :{}",
+                                        version, err
+                                    );
+                                    return;
+                                },
+                            }
+                        } else {
+                            None
+                        };
 
                         let mut version_idx = TxnIndex {
                             version,
@@ -264,6 +334,8 @@ impl DataCollection {
                                 map,
                                 &mut compilation_cache.lock().unwrap(),
                                 current_dir.clone(),
+                                &base_experiments,
+                                skip_source_compilation,
                             );
                             if package_info_opt.is_none() {
                                 return;
@@ -271,17 +343,23 @@ impl DataCollection {
                             version_idx.package_info = package_info_opt.unwrap();
                         }
 
-                        // dump through data_manager
-                        Self::dump_txn_index(
-                            &mut data_manager.lock().unwrap(),
-                            version_idx,
-                            &state_view.get_state_keys().lock().unwrap(),
-                            epoch_result_res,
-                            dump_write_set,
-                        );
+                        // dump through data_manager (skipped in source-only mode)
+                        if let (Some(state_view), Some(outputs), Some(data_manager)) =
+                            (state_view_opt, epoch_result_opt, data_manager)
+                        {
+                            Self::dump_txn_index(
+                                &mut data_manager.lock().unwrap(),
+                                version_idx,
+                                &state_view.get_state_keys().lock().unwrap(),
+                                Ok(outputs),
+                                dump_write_set,
+                            );
+                        }
 
-                        // Log version
-                        index.lock().unwrap().add_version(version);
+                        // only replayable (executed) txns are indexed
+                        if !skip_txn_execution {
+                            index.lock().unwrap().add_version(version);
+                        }
                     });
                     txn_execution_ths.push(txn_execution_thread);
                 }

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::utils;
 use anyhow::{anyhow, ensure, Result};
@@ -30,7 +30,7 @@ mod enable_feature_0;
 mod enable_feature_1;
 mod enable_feature_2;
 mod entry_func_attrs;
-mod ibe_mpk_on_chain;
+mod optimistic_verification;
 mod randomness_stall_recovery;
 mod validator_restart_during_dkg;
 

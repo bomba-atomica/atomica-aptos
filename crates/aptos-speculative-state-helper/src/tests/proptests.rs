@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{SpeculativeCounter, SpeculativeEvent, SpeculativeEvents};
 use claims::{assert_err, assert_ok};
@@ -134,7 +134,7 @@ fn test_counter(counter_ops: Vec<(usize, usize)>, test_total: bool) {
 
     let idx_gen = AtomicUsize::new(0);
     let clear_barriers: Vec<CachePadded<RwLock<usize>>> = (0..num_counters)
-        .map(|_| (CachePadded::new(RwLock::new(0))))
+        .map(|_| CachePadded::new(RwLock::new(0)))
         .collect();
     rayon::scope(|s| {
         for _ in 0..num_workers {
@@ -202,7 +202,7 @@ fn test_events(counter_ops: Vec<(usize, usize)>) {
     let idx_gen = AtomicUsize::new(0);
     let worker_done_cnt = AtomicUsize::new(0);
     let clear_barriers: Vec<CachePadded<RwLock<usize>>> = (0..num_counters)
-        .map(|_| (CachePadded::new(RwLock::new(0))))
+        .map(|_| CachePadded::new(RwLock::new(0)))
         .collect();
     // This is the number of events we expect to be dispatched at the end.
     let recorded_final_event_cnt = AtomicUsize::new(0);

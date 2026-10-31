@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     smoke_test_environment::SwarmBuilder,
@@ -14,6 +14,7 @@ use aptos::{
     },
     test::{CliTestFramework, ValidatorPerformance},
 };
+use aptos_api_types::ViewRequest;
 use aptos_bitvec::BitVec;
 use aptos_cached_packages::aptos_stdlib;
 use aptos_crypto::{bls12381, ed25519::Ed25519PrivateKey, x25519, ValidCryptoMaterialStringExt};
@@ -27,8 +28,9 @@ use aptos_types::{
     network_address::DnsName,
     on_chain_config::{
         ConsensusAlgorithmConfig, ConsensusConfigV1, ExecutionConfigV1, LeaderReputationType,
-        OnChainConsensusConfig, OnChainExecutionConfig, OnChainRandomnessConfig,
-        ProposerAndVoterConfig, ProposerElectionType, TransactionShufflerType, ValidatorSet,
+        OnChainChunkyDKGConfig, OnChainConsensusConfig, OnChainExecutionConfig,
+        OnChainRandomnessConfig, ProposerAndVoterConfig, ProposerElectionType,
+        TransactionShufflerType, ValidatorSet,
     },
     PeerId,
 };
@@ -562,8 +564,12 @@ async fn test_large_total_stake() {
             genesis_config.epoch_duration_secs = 4;
             genesis_config.recurring_lockup_duration_secs = 4;
             genesis_config.voting_duration_secs = 3;
+            genesis_config.min_stake = 10_000_000;
             genesis_config.randomness_config_override =
                 Some(OnChainRandomnessConfig::default_disabled());
+            // Chunky DKG depends on randomness; keep it off.
+            genesis_config.chunky_dkg_config_override =
+                Some(OnChainChunkyDKGConfig::default_disabled());
         }))
         .build_with_cli(0)
         .await;
@@ -572,7 +578,8 @@ async fn test_large_total_stake() {
     let rest_client = swarm.validators().next().unwrap().rest_client();
 
     let mut keygen = KeyGen::from_os_rng();
-    let (validator_cli_index, keys) = init_validator_account(&mut cli, &mut keygen, None).await;
+    let (validator_cli_index, keys) =
+        init_validator_account(&mut cli, &mut keygen, Some(200_000_000)).await;
     // faucet can make our root LocalAccount sequence number get out of sync.
     swarm
         .chain_info()
@@ -592,6 +599,10 @@ async fn test_large_total_stake() {
     )
     .await
     .unwrap();
+
+    cli.add_stake(validator_cli_index, 100_000_000)
+        .await
+        .unwrap();
 
     cli.join_validator_set(validator_cli_index, None)
         .await
@@ -742,9 +753,19 @@ async fn test_nodes_rewards() {
         .await
         .unwrap();
 
-    cli.leave_validator_set(validator_cli_indices[3], None)
-        .await
-        .unwrap();
+    // Retry leave_validator_set in case a reconfiguration is already in progress.
+    for attempt in 0..6 {
+        match cli
+            .leave_validator_set(validator_cli_indices[3], None)
+            .await
+        {
+            Ok(_) => break,
+            Err(e) if attempt < 5 && e.to_string().contains("ERECONFIGURATION_IN_PROGRESS") => {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            },
+            Err(e) => panic!("leave_validator_set failed: {e}"),
+        }
+    }
 
     reconfig(
         &rest_clients[0],
@@ -808,6 +829,7 @@ async fn test_nodes_rewards() {
         .unwrap();
 
     let mut previous_stats: Option<EpochStats> = None;
+    let mut previous_actual_vp: Option<HashMap<PeerId, u64>> = None;
     for epoch_info in epochs {
         println!(
             "Processing epoch {} for versions [{}, {}]",
@@ -815,28 +837,47 @@ async fn test_nodes_rewards() {
             epoch_info.blocks.first().unwrap().version,
             epoch_info.blocks.last().unwrap().version
         );
-        if let Some(previous) = previous_stats {
+        // The on-chain `ValidatorSet.voting_power` field is now a snapshot of the
+        // validator set pre-computed when reconfig started; it does not reflect
+        // fees, rewards on pending_inactive, or proposals that landed during the
+        // DKG window. For reward-rate accounting we read realized stake from the
+        // StakePool directly, at the first block of each epoch (post-on_new_epoch).
+        let first_version = epoch_info.blocks.first().unwrap().version;
+        let mut cur_actual_vp = HashMap::new();
+        for v in &epoch_info.validators {
+            cur_actual_vp.insert(
+                v.address,
+                fetch_actual_voting_power(&rest_clients[0], v.address, first_version).await,
+            );
+        }
+
+        if let Some(previous) = previous_stats.take() {
+            let prev_actual_vp = previous_actual_vp.take().unwrap();
             let mut estimates = Vec::new();
             for cur_validator in &epoch_info.validators {
                 let prev_stats = previous
                     .validator_stats
                     .get(&cur_validator.address)
                     .unwrap();
+                let cur_vp = *cur_actual_vp.get(&cur_validator.address).unwrap();
+                let prev_vp = match prev_actual_vp.get(&cur_validator.address) {
+                    Some(v) => *v,
+                    None => continue, // validator wasn't present in the previous epoch
+                };
                 if prev_stats.proposal_successes == 0 {
-                    assert_eq!(cur_validator.voting_power, prev_stats.voting_power);
+                    assert_eq!(cur_vp, prev_vp);
                 } else {
-                    assert!(cur_validator.voting_power > prev_stats.voting_power, "in epoch {} voting power for {} didn't increase with successful proposals (from {} to {})", epoch_info.epoch - 1, cur_validator.address, prev_stats.voting_power, cur_validator.voting_power);
-                    let earning = (cur_validator.voting_power - prev_stats.voting_power) as f64
-                        / prev_stats.voting_power as f64;
+                    assert!(cur_vp > prev_vp, "in epoch {} actual voting power for {} didn't increase with successful proposals (from {} to {})", epoch_info.epoch - 1, cur_validator.address, prev_vp, cur_vp);
+                    let earning = (cur_vp - prev_vp) as f64 / prev_vp as f64;
                     let failure_rate = prev_stats.failure_rate() as f64;
                     let epoch_reward_estimate = earning / (1.0 - failure_rate);
                     println!(
-                        "{}: {} / {} = {}, prev_voting_power = {}",
+                        "{}: {} / {} = {}, prev_actual_vp = {}",
                         cur_validator.address,
                         earning,
                         failure_rate,
                         epoch_reward_estimate,
-                        prev_stats.voting_power
+                        prev_vp
                     );
                     estimates.push(epoch_reward_estimate);
                 }
@@ -963,13 +1004,37 @@ async fn test_nodes_rewards() {
         }
 
         previous_stats = Some(epoch_stats);
+        previous_actual_vp = Some(cur_actual_vp);
     }
+}
+
+/// Query realized voting power for `address` at `version` via
+/// `0x1::stake::get_stake`, returning `active + pending_active + pending_inactive`.
+async fn fetch_actual_voting_power(client: &Client, address: PeerId, version: u64) -> u64 {
+    let req = ViewRequest {
+        function: "0x1::stake::get_stake".parse().unwrap(),
+        type_arguments: vec![],
+        arguments: vec![serde_json::Value::String(address.to_hex_literal())],
+    };
+    let result = client.view(&req, Some(version)).await.unwrap().into_inner();
+    let parse = |i: usize| -> u64 { result[i].as_str().unwrap().parse().unwrap() };
+    let active = parse(0);
+    let pending_active = parse(2);
+    let pending_inactive = parse(3);
+    active + pending_active + pending_inactive
 }
 
 #[tokio::test]
 async fn test_register_and_update_validator() {
     let (swarm, mut cli, _faucet) = SwarmBuilder::new_local(1)
         .with_aptos()
+        .with_init_genesis_config(Arc::new(|genesis_config| {
+            // Disable chunky DKG so it doesn't run a reconfig during the test's
+            // validator update; otherwise the update aborts with
+            // ERECONFIGURATION_IN_PROGRESS.
+            genesis_config.chunky_dkg_config_override =
+                Some(OnChainChunkyDKGConfig::default_disabled());
+        }))
         .build_with_cli(0)
         .await;
     let transaction_factory = swarm.chain_info().transaction_factory();
@@ -1080,6 +1145,9 @@ async fn test_join_and_leave_validator() {
             genesis_config.recurring_lockup_duration_secs = 10;
             genesis_config.voting_duration_secs = 5;
             genesis_config.randomness_config_override = Some(OnChainRandomnessConfig::Off);
+            // Chunky DKG depends on randomness; keep it off.
+            genesis_config.chunky_dkg_config_override =
+                Some(OnChainChunkyDKGConfig::default_disabled());
         }))
         .build_with_cli(0)
         .await;
@@ -1247,6 +1315,9 @@ async fn test_owner_create_and_delegate_flow() {
             genesis_config.voting_duration_secs = 5;
             genesis_config.min_stake = 500000;
             genesis_config.randomness_config_override = Some(OnChainRandomnessConfig::Off);
+            // Chunky DKG depends on randomness; keep it off.
+            genesis_config.chunky_dkg_config_override =
+                Some(OnChainChunkyDKGConfig::default_disabled());
         }))
         .build_with_cli(0)
         .await;

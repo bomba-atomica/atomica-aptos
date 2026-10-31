@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::config::{
     config_optimizer::ConfigOptimizer, config_sanitizer::ConfigSanitizer,
@@ -10,16 +9,16 @@ use aptos_types::chain_id::ChainId;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-// Whether to enable size and time-aware chunking (for non-production networks).
-// Note: once this becomes stable, we should enable it for all networks (e.g., Mainnet).
-const ENABLE_SIZE_AND_TIME_AWARE_CHUNKING: bool = true;
-
 // The maximum message size per state sync message
 const SERVER_MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
 
 // The maximum message size per state sync message (for v2 data requests)
-const CLIENT_MAX_MESSAGE_SIZE_V2: usize = 20 * 1024 * 1024; // 20 MiB (used for v2 data requests)
-const SERVER_MAX_MESSAGE_SIZE_V2: usize = 40 * 1024 * 1024; // 40 MiB (used for v2 data requests)
+const CLIENT_MAX_MESSAGE_SIZE_V2: usize = 40 * 1024 * 1024; // 40 MiB (used for v2 data requests)
+const SERVER_MAX_MESSAGE_SIZE_V2: usize = 50 * 1024 * 1024; // 50 MiB (used for v2 data requests)
+
+// The maximum transaction and output chunk sizes (for v2 data requests)
+const CLIENT_MAX_TRANSACTION_CHUNK_SIZE_V2: usize = 1000;
+const CLIENT_MAX_TRANSACTION_OUTPUT_CHUNK_SIZE_V2: usize = 1000;
 
 // The maximum chunk sizes for data client requests and response
 const MAX_EPOCH_CHUNK_SIZE: u64 = 200;
@@ -31,13 +30,31 @@ const MAX_TRANSACTION_OUTPUT_CHUNK_SIZE: u64 = 3000;
 const MAX_CONCURRENT_REQUESTS: u64 = 6;
 const MAX_CONCURRENT_STATE_REQUESTS: u64 = 6;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+// The default number of threads for the state sync runtime
+const DEFAULT_STATE_SYNC_RUNTIME_THREADS: usize = 16;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StateSyncConfig {
     pub data_streaming_service: DataStreamingServiceConfig,
     pub aptos_data_client: AptosDataClientConfig,
     pub state_sync_driver: StateSyncDriverConfig,
     pub storage_service: StorageServiceConfig,
+    /// Number of worker threads for the shared state sync runtime.
+    /// Defaults to 16. Set to `None` to use the tokio default (num_cpus).
+    pub num_runtime_threads: Option<usize>,
+}
+
+impl Default for StateSyncConfig {
+    fn default() -> Self {
+        Self {
+            data_streaming_service: DataStreamingServiceConfig::default(),
+            aptos_data_client: AptosDataClientConfig::default(),
+            state_sync_driver: StateSyncDriverConfig::default(),
+            storage_service: StorageServiceConfig::default(),
+            num_runtime_threads: Some(DEFAULT_STATE_SYNC_RUNTIME_THREADS),
+        }
+    }
 }
 
 /// The bootstrapping mode determines how the node will bootstrap to the latest
@@ -135,9 +152,9 @@ pub struct StateSyncDriverConfig {
 impl Default for StateSyncDriverConfig {
     fn default() -> Self {
         Self {
-            bootstrapping_mode: BootstrappingMode::ExecuteOrApplyFromGenesis,
+            bootstrapping_mode: BootstrappingMode::ApplyTransactionOutputsFromGenesis,
             commit_notification_timeout_ms: 5000,
-            continuous_syncing_mode: ContinuousSyncingMode::ExecuteTransactionsOrApplyOutputs,
+            continuous_syncing_mode: ContinuousSyncingMode::ApplyTransactionOutputs,
             enable_auto_bootstrapping: false,
             fallback_to_output_syncing_secs: 180, // 3 minutes
             progress_check_interval_ms: 100,
@@ -163,6 +180,9 @@ pub struct StorageServiceConfig {
     pub max_epoch_chunk_size: u64,
     /// Maximum number of invalid requests per peer
     pub max_invalid_requests_per_peer: u64,
+    /// Maximum number of requests per second per peer (if None, then no rate limiting is applied).
+    /// Note: this currently only applies for peers on the public network.
+    pub max_requests_per_second_per_peer: Option<u64>,
     /// Maximum number of items in the lru cache before eviction
     pub max_lru_cache_size: u64,
     /// Maximum number of pending network messages
@@ -185,7 +205,8 @@ pub struct StorageServiceConfig {
     pub max_transaction_chunk_size: u64,
     /// Maximum number of transaction outputs per chunk
     pub max_transaction_output_chunk_size: u64,
-    /// Minimum time (secs) to ignore peers after too many invalid requests
+    /// Minimum time (secs) to ignore peers after too many invalid requests.
+    /// Note: this currently only applies for peers on the public network.
     pub min_time_to_ignore_peers_secs: u64,
     /// The interval (ms) to refresh the request moderator state
     pub request_moderator_refresh_interval_ms: u64,
@@ -196,10 +217,11 @@ pub struct StorageServiceConfig {
 impl Default for StorageServiceConfig {
     fn default() -> Self {
         Self {
-            enable_size_and_time_aware_chunking: false,
+            enable_size_and_time_aware_chunking: true,
             enable_transaction_data_v2: true,
             max_epoch_chunk_size: MAX_EPOCH_CHUNK_SIZE,
             max_invalid_requests_per_peer: 500,
+            max_requests_per_second_per_peer: None,
             max_lru_cache_size: 500, // At ~0.6MiB per chunk, this should take no more than 0.5GiB
             max_network_channel_size: 4000,
             max_network_chunk_bytes: SERVER_MAX_MESSAGE_SIZE as u64,
@@ -474,8 +496,8 @@ impl Default for AptosDataClientConfig {
             max_response_timeout_ms: 60_000, // 60 seconds
             max_state_chunk_size: MAX_STATE_CHUNK_SIZE,
             max_subscription_lag_secs: 20, // 20 seconds
-            max_transaction_chunk_size: MAX_TRANSACTION_CHUNK_SIZE,
-            max_transaction_output_chunk_size: MAX_TRANSACTION_OUTPUT_CHUNK_SIZE,
+            max_transaction_chunk_size: CLIENT_MAX_TRANSACTION_CHUNK_SIZE_V2 as u64,
+            max_transaction_output_chunk_size: CLIENT_MAX_TRANSACTION_OUTPUT_CHUNK_SIZE_V2 as u64,
             optimistic_fetch_timeout_ms: 5000,         // 5 seconds
             progress_check_max_stall_time_secs: 86400, // 24 hours (long enough to debug any issues at runtime)
             response_timeout_ms: 10_000,               // 10 seconds
@@ -539,13 +561,7 @@ impl ConfigOptimizer for StateSyncConfig {
             chain_id,
         )?;
 
-        // Optimize the storage service
-        let modified_storage_service_config =
-            StorageServiceConfig::optimize(node_config, local_config_yaml, node_type, chain_id)?;
-
-        Ok(modified_driver_config
-            || modified_data_streaming_config
-            || modified_storage_service_config)
+        Ok(modified_driver_config || modified_data_streaming_config)
     }
 }
 
@@ -600,32 +616,6 @@ impl ConfigOptimizer for DataStreamingServiceConfig {
             if local_stream_config_yaml["max_concurrent_state_requests"].is_null() {
                 data_streaming_service_config.max_concurrent_state_requests =
                     MAX_CONCURRENT_STATE_REQUESTS * 2;
-                modified_config = true;
-            }
-        }
-
-        Ok(modified_config)
-    }
-}
-
-impl ConfigOptimizer for StorageServiceConfig {
-    fn optimize(
-        node_config: &mut NodeConfig,
-        local_config_yaml: &Value,
-        _node_type: NodeType,
-        chain_id: Option<ChainId>,
-    ) -> Result<bool, Error> {
-        let storage_service_config = &mut node_config.state_sync.storage_service;
-        let local_storage_config_yaml = &local_config_yaml["state_sync"]["storage_service"];
-
-        // Potentially enable size and time-aware chunking for all networks except Mainnet
-        let mut modified_config = false;
-        if let Some(chain_id) = chain_id {
-            if ENABLE_SIZE_AND_TIME_AWARE_CHUNKING
-                && !chain_id.is_mainnet()
-                && local_storage_config_yaml["enable_size_and_time_aware_chunking"].is_null()
-            {
-                storage_service_config.enable_size_and_time_aware_chunking = true;
                 modified_config = true;
             }
         }
@@ -830,103 +820,6 @@ mod tests {
             data_streaming_service_config.max_concurrent_state_requests,
             100
         );
-    }
-
-    #[test]
-    fn test_optimize_storage_service_devnet() {
-        // Create a node config with size and time-aware chunking disabled
-        let mut node_config = NodeConfig {
-            state_sync: StateSyncConfig {
-                storage_service: StorageServiceConfig {
-                    enable_size_and_time_aware_chunking: false,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        // Optimize the config and verify modifications are made
-        let modified_config = StateSyncConfig::optimize(
-            &mut node_config,
-            &serde_yaml::from_str("{}").unwrap(), // An empty local config,
-            NodeType::ValidatorFullnode,
-            Some(ChainId::new(40)), // Not mainnet or testnet
-        )
-        .unwrap();
-        assert!(modified_config);
-
-        // Verify that size and time-aware chunking is enabled
-        let storage_service_config = &node_config.state_sync.storage_service;
-        assert!(storage_service_config.enable_size_and_time_aware_chunking);
-    }
-
-    #[test]
-    fn test_optimize_storage_service_mainnet() {
-        // Create a node config with size and time-aware chunking disabled
-        let mut node_config = NodeConfig {
-            state_sync: StateSyncConfig {
-                storage_service: StorageServiceConfig {
-                    enable_size_and_time_aware_chunking: false,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        // Optimize the config and verify modifications are made
-        let modified_config = StateSyncConfig::optimize(
-            &mut node_config,
-            &serde_yaml::from_str("{}").unwrap(), // An empty local config,
-            NodeType::PublicFullnode,
-            Some(ChainId::mainnet()),
-        )
-        .unwrap();
-        assert!(modified_config);
-
-        // Verify that size and time-aware chunking is still disabled
-        let storage_service_config = &node_config.state_sync.storage_service;
-        assert!(!storage_service_config.enable_size_and_time_aware_chunking);
-    }
-
-    #[test]
-    fn test_optimize_storage_service_no_override() {
-        // Create a node config with size and time-aware chunking disabled
-        let mut node_config = NodeConfig {
-            state_sync: StateSyncConfig {
-                storage_service: StorageServiceConfig {
-                    enable_size_and_time_aware_chunking: false,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        // Create a local config YAML with size and time-aware chunking disabled
-        let local_config_yaml = serde_yaml::from_str(
-            r#"
-            state_sync:
-                storage_service:
-                    enable_size_and_time_aware_chunking: false
-            "#,
-        )
-        .unwrap();
-
-        // Optimize the config and verify modifications are made
-        let modified_config = StateSyncConfig::optimize(
-            &mut node_config,
-            &local_config_yaml,
-            NodeType::ValidatorFullnode,
-            Some(ChainId::testnet()),
-        )
-        .unwrap();
-        assert!(modified_config);
-
-        // Verify that size and time-aware chunking is still disabled
-        let storage_service_config = &node_config.state_sync.storage_service;
-        assert!(!storage_service_config.enable_size_and_time_aware_chunking);
     }
 
     #[test]

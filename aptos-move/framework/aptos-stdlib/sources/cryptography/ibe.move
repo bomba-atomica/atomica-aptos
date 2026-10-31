@@ -1,63 +1,34 @@
-/// IBE (Identity-Based Encryption) native function wrappers.
+/// Identity-based encryption (Boneh-Franklin on BLS12-381) native function declarations.
 ///
-/// This module provides Move wrappers for IBE native functions:
-/// - `reconstruct_ibe_dk_internal`: Reconstructs DK from G1 DK shares
+/// Design: `atomica/docs/decisions/aptos-upgrade-ibe-chunky-spec.md`.
 ///
-/// The native functions are implemented in Rust in the algebra natives
-/// and registered via the `natives::cryptography::algebra::ibe` module.
+/// The Rust implementations live in the natives crate (feature natives-port-timelock).
+/// This module only declares the Move signatures that the registry (`ibe_config`) and the
+/// auction contract call.
 ///
-/// # Data Flow (From Audit)
+/// | Native | Spec section | Purpose |
+/// |---|---|---|
+/// | `reconstruct_ibe_dk` | 5 | Weighted Lagrange interpolation of G1 key shares |
+/// | `verify_decryption_key` | 5 | Pairing check `e(dk, g2) = e(H1(id), mpk)` |
+/// | `verify_bid_ct` | 6 | Submission check of a bid ciphertext against its associated data |
 ///
-/// ```text
-/// Validator holds: s_i (32-byte scalars, private)
-/// Validator computes: dk_share_i = sum_j(s_i[j]) × H(identity) → 48-byte G1 point
-/// Validator submits: dk_share_i (48 bytes) → stored in submitted_shares
-/// Reconstruction: DK = Σ(Lagrange_i × dk_share_i) → 48-byte G1 point
-/// ```
-///
-/// # Data Format
-///
-/// The native function accepts and returns byte vectors:
-///
-/// | Parameter | Move Type | Description |
-/// |-----------|-----------|-------------|
-/// | `validator_indices` | `vector<u64>` | Validator indices (0-based) |
-/// | `dk_shares` | `vector<vector<u8>>` | 48-byte compressed G1 points |
-/// | `weights` | `vector<u64>` | Full weights for ALL validators |
-/// | `total_weight` | `u64` | Sum of all validator weights |
-/// | `identity` | `vector<u8>` | 32-byte IBE identity |
-/// | **Returns** | `vector<u8>` | 48-byte compressed G1 (DK) |
-///
-/// # Security Note
-///
-/// **CRITICAL**: The system accepts DK shares without cryptographic verification.
-/// A malicious validator can submit arbitrary G1 points. Consider adding:
-/// - Storage of public key shares from PVSS transcript
-/// - Verification: e(dk_share, g₂) == e(H(identity), aggregate(pk_shares))
+/// Abort codes of `reconstruct_ibe_dk` (from the native): 1 when the type argument is not
+/// `bls12381_algebra::G1`, 2 for malformed input (shape, bounds, weights, below threshold, or a
+/// share that is not a valid prime-order non-identity G1 point).
 module aptos_std::ibe {
-    use std::vector;
-
-    /// Reconstructs an IBE decryption key from G1 DK shares.
+    /// Reconstructs an IBE decryption key from G1 key shares.
     ///
-    /// This function performs weighted Lagrange interpolation directly on G1 points.
-    /// Each validator's DK share is a vector of contributions, one per virtual player:
-    /// `dk_share_i_j = s_i[j] × H(identity)`
+    /// Performs weighted Lagrange interpolation directly on G1 points. Each validator's entry
+    /// holds one 48-byte compressed G1 point per virtual player.
     ///
-    /// # Arguments
-    /// * `validator_indices` - Vector of validator indices (0-indexed, from DKG)
-    /// * `dk_shares` - Nested vector of 48-byte compressed G1 points.
-    ///   `dk_shares[i]` contains the shares for validator `validator_indices[i]`.
-    /// * `weights` - Full vector of validator weights (for ALL validators, not just participating)
-    /// * `threshold` - Minimum weight required for reconstruction (as defined during DKG)
-    /// * `total_weight` - Sum of all validator weights
-    /// * `identity` - 32-byte identity hash (from compute_identity)
+    /// * `validator_indices` - validator indices (0-based, from the DKG).
+    /// * `dk_shares` - `dk_shares[i]` holds the shares of validator `validator_indices[i]`.
+    /// * `weights` - weights of the submitting validators, aligned with `validator_indices`.
+    /// * `threshold` - minimum weight required for reconstruction.
+    /// * `total_weight` - sum of all validator weights.
+    /// * `identity` - 32-byte identity (see `ibe_config::compute_identity`).
     ///
-    /// # Returns
-    /// THE reconstructed decryption key as 48-byte compressed G1
-    ///
-    /// # Aborts
-    /// - If `validator_indices` and `dk_shares` have different lengths
-    /// - If any dk_share is not exactly 48 bytes
+    /// Returns the 48-byte compressed G1 decryption key. Aborts on malformed input.
     public fun reconstruct_ibe_dk<G1>(
         validator_indices: vector<u64>,
         dk_shares: vector<vector<vector<u8>>>,
@@ -67,16 +38,38 @@ module aptos_std::ibe {
         identity: vector<u8>,
     ): vector<u8> {
         reconstruct_ibe_dk_internal<G1>(
-            validator_indices,
-            dk_shares,
-            weights,
-            threshold,
-            total_weight,
-            identity
+            validator_indices, dk_shares, weights, threshold, total_weight, identity
         )
     }
 
-    /// Internal native function. Accepts 48-byte G1 DK shares, returns 48-byte compressed G1.
+    /// Checks `e(dk, g2) = e(H1(identity), mpk)`.
+    ///
+    /// * `dk` - 48-byte compressed G1 key. Decoded with subgroup validation.
+    /// * `identity` - 32-byte identity. The native derives `H1(identity)` with the V2 domain tag.
+    /// * `mpk` - 96-byte compressed G2 master public key.
+    ///
+    /// Returns false for any key that fails to decode or fails the pairing check.
+    public fun verify_decryption_key(
+        dk: vector<u8>, identity: vector<u8>, mpk: vector<u8>
+    ): bool {
+        verify_decryption_key_internal(dk, identity, mpk)
+    }
+
+    /// Verifies a bid ciphertext at submission time.
+    ///
+    /// * `ct` - BCS of the five byte vectors `(vk, U, nonce, C, sig)`: 32, 96, 12, at least 16 and
+    ///   64 bytes. Trailing bytes and any other length are rejected.
+    /// * `ad` - associated data the contract built on chain (BCS of tag, chain id, epoch,
+    ///   timelock id, auction id, bidder, deadline). It is not part of `ct`. It is bound by the
+    ///   one-time signature, so a caller cannot supply a different bidder or auction.
+    ///
+    /// Checks: `U` is a valid prime-order non-identity G2 point, and the one-time Ed25519
+    /// signature (strict verification) over `BCS(U, nonce, C, AD)` verifies for `vk`.
+    /// Returns false on any failure.
+    public fun verify_bid_ct(ct: vector<u8>, ad: vector<u8>): bool {
+        verify_bid_ct_internal(ct, ad)
+    }
+
     native fun reconstruct_ibe_dk_internal<G1>(
         validator_indices: vector<u64>,
         dk_shares: vector<vector<vector<u8>>>,
@@ -86,4 +79,9 @@ module aptos_std::ibe {
         identity: vector<u8>,
     ): vector<u8>;
 
+    native fun verify_decryption_key_internal(
+        dk: vector<u8>, identity: vector<u8>, mpk: vector<u8>
+    ): bool;
+
+    native fun verify_bid_ct_internal(ct: vector<u8>, ad: vector<u8>): bool;
 }

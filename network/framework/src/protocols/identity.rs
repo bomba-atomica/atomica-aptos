@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Protocol used to exchange supported protocol information with a remote.
 
@@ -77,7 +76,7 @@ mod tests {
         let server_handshake = HandshakeMsg {
             chain_id,
             network_id,
-            supported_protocols,
+            supported_protocols: std::sync::Arc::new(supported_protocols),
         };
         let mut supported_protocols = BTreeMap::new();
         supported_protocols.insert(
@@ -88,7 +87,7 @@ mod tests {
             ]),
         );
         let client_handshake = HandshakeMsg {
-            supported_protocols,
+            supported_protocols: std::sync::Arc::new(supported_protocols),
             chain_id,
             network_id,
         };

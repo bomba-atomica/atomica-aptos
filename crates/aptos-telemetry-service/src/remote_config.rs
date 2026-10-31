@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     auth::with_auth,
@@ -11,14 +11,11 @@ use warp::{filters::BoxedFilter, reply, Filter, Rejection, Reply};
 pub fn telemetry_log_env(context: Context) -> BoxedFilter<(impl Reply,)> {
     warp::path!("config" / "env" / "telemetry-log")
         .and(warp::get())
-        .and(with_auth(
-            context.clone(),
-            vec![
-                NodeType::Validator,
-                NodeType::ValidatorFullNode,
-                NodeType::PublicFullNode,
-            ],
-        ))
+        .and(with_auth(context.clone(), vec![
+            NodeType::Validator,
+            NodeType::ValidatorFullNode,
+            NodeType::PublicFullNode,
+        ]))
         .and(context.filter())
         .and_then(handle_telemetry_log_env)
         .boxed()

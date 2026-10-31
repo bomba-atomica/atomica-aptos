@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::{bail, format_err, Result};
 use aptos_config::keys::ConfigKey;
@@ -188,6 +188,12 @@ pub struct EmitArgs {
 
     #[clap(flatten)]
     pub account_type_args: AccountTypeArgs,
+
+    #[clap(long, default_value = "false", hide = true)]
+    pub encrypt_transactions: bool,
+
+    #[clap(long)]
+    pub encrypted_gas_price_multiplier: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Parser, Serialize)]

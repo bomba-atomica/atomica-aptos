@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Names of modules, functions, and types used by Aptos System.
 
@@ -38,6 +37,8 @@ pub static BLOCK_MODULE: Lazy<ModuleId> = Lazy::new(|| {
 
 pub const BLOCK_PROLOGUE: &IdentStr = ident_str!("block_prologue");
 pub const BLOCK_PROLOGUE_EXT: &IdentStr = ident_str!("block_prologue_ext");
+pub const BLOCK_PROLOGUE_EXT_V2: &IdentStr = ident_str!("block_prologue_ext_v2");
+pub const BLOCK_PROLOGUE_EXT_V3: &IdentStr = ident_str!("block_prologue_ext_v3");
 pub const BLOCK_EPILOGUE: &IdentStr = ident_str!("block_epilogue");
 
 pub static RECONFIGURATION_WITH_DKG_MODULE: Lazy<ModuleId> = Lazy::new(|| {
@@ -48,6 +49,29 @@ pub static RECONFIGURATION_WITH_DKG_MODULE: Lazy<ModuleId> = Lazy::new(|| {
 });
 
 pub const FINISH_WITH_DKG_RESULT: &IdentStr = ident_str!("finish_with_dkg_result");
+pub const FINISH_WITH_CHUNKY_DKG_RESULT: &IdentStr = ident_str!("finish_with_chunky_dkg_result");
+pub const FINISH_WITH_TIMELOCK_DKG_RESULT: &IdentStr =
+    ident_str!("finish_with_timelock_dkg_result");
+pub const GET_EPOCH_INTERVAL_SECS: &IdentStr = ident_str!("get_epoch_interval_secs");
+
+pub static IBE_CONFIG_MODULE: Lazy<ModuleId> = Lazy::new(|| {
+    ModuleId::new(
+        account_config::CORE_CODE_ADDRESS,
+        ident_str!("ibe_config").to_owned(),
+    )
+});
+
+pub const SUBMIT_DK_SHARES_FUNCTION: &IdentStr = ident_str!("submit_dk_shares");
+pub const FINALIZE_TIMELOCK_REVEAL_FUNCTION: &IdentStr = ident_str!("finalize_timelock_reveal");
+pub const FAIL_TIMELOCK_KEY_CHECK_FUNCTION: &IdentStr = ident_str!("fail_timelock_key_check");
+pub const IS_RECONSTRUCTABLE_FUNCTION: &IdentStr = ident_str!("is_reconstructable");
+pub const GET_RECONSTRUCTION_INPUTS_FUNCTION: &IdentStr = ident_str!("get_reconstruction_inputs");
+pub const GET_IDENTITY_FUNCTION: &IdentStr = ident_str!("get_identity");
+pub const GET_TIMELOCK_EPOCH_FUNCTION: &IdentStr = ident_str!("get_timelock_epoch");
+pub const GET_SHARE_VERIFICATION_KEYS_FUNCTION: &IdentStr =
+    ident_str!("get_share_verification_keys");
+pub const REPORT_REJECTED_SHARE_FUNCTION: &IdentStr = ident_str!("report_rejected_share");
+pub const GET_MPK_FUNCTION: &IdentStr = ident_str!("get_mpk");
 
 pub static JWKS_MODULE: Lazy<ModuleId> = Lazy::new(|| {
     ModuleId::new(
@@ -80,11 +104,12 @@ pub static TRANSACTION_FEE_MODULE: Lazy<ModuleId> = Lazy::new(|| {
 
 pub const EMIT_FEE_STATEMENT: &IdentStr = ident_str!("emit_fee_statement");
 
-pub static IBE_CONFIG_MODULE: Lazy<ModuleId> = Lazy::new(|| {
+pub static TRANSACTION_VALIDATION_MODULE: Lazy<ModuleId> = Lazy::new(|| {
     ModuleId::new(
         account_config::CORE_CODE_ADDRESS,
-        ident_str!("ibe_config").to_owned(),
+        ident_str!("transaction_validation").to_owned(),
     )
 });
 
-pub const SUBMIT_DK_SHARE_FUNCTION: &IdentStr = ident_str!("submit_dk_share");
+pub const VERSIONED_PROLOGUE_NAME: &IdentStr = ident_str!("versioned_prologue");
+pub const VERSIONED_EPILOGUE_NAME: &IdentStr = ident_str!("versioned_epilogue");

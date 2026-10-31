@@ -1,15 +1,8 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{assert_success, assert_vm_status, tests::common, MoveHarness};
 use aptos_types::{account_address::AccountAddress, vm_status::StatusCode};
-use serde::{Deserialize, Serialize};
-
-/// Mimics `0xcafe::test::ModuleData`
-#[derive(Serialize, Deserialize)]
-struct ModuleData {
-    state: Vec<u8>,
-}
 
 #[test]
 fn module_loop_depth_at_limit() {

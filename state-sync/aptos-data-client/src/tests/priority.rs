@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     client::AptosDataClient,
@@ -312,11 +312,9 @@ async fn prioritized_peer_optimistic_fetch_distance_latency_selection() {
         utils::verify_selected_peers_match(&client, hashset![last_priority_peer], &storage_request);
 
         // Disconnect the final high priority peer and remove it from the list of peers
-        disconnect_and_remove_peers(
-            &mut mock_network,
-            &mut high_priority_peers,
-            &hashset![last_priority_peer],
-        );
+        disconnect_and_remove_peers(&mut mock_network, &mut high_priority_peers, &hashset![
+            last_priority_peer
+        ]);
 
         // Verify a medium priority peer is selected by distance and latency
         verify_peers_selected_by_distance_and_latency(
@@ -633,14 +631,11 @@ async fn prioritized_peer_subscription_requests() {
         }
 
         // Disconnect all peers and verify no peers can service the request
-        utils::disconnect_all_peers(
-            &mut mock_network,
-            &hashset![
-                high_priority_peer_1,
-                high_priority_peer_2,
-                medium_priority_peer
-            ],
-        );
+        utils::disconnect_all_peers(&mut mock_network, &hashset![
+            high_priority_peer_1,
+            high_priority_peer_2,
+            medium_priority_peer
+        ]);
         utils::verify_request_is_unserviceable(&client, &storage_request, true);
     }
 }
@@ -751,11 +746,9 @@ async fn prioritized_peer_subscription_distance_latency_selection() {
         );
 
         // Disconnect the final high priority peer and remove it from the list of peers
-        disconnect_and_remove_peers(
-            &mut mock_network,
-            &mut high_priority_peers,
-            &hashset![last_priority_peer],
-        );
+        disconnect_and_remove_peers(&mut mock_network, &mut high_priority_peers, &hashset![
+            last_priority_peer
+        ]);
 
         // Verify the request is unserviceable (the last request went to the high priority peer)
         utils::verify_request_is_unserviceable(&client, &storage_request, false);
@@ -1142,6 +1135,42 @@ async fn validator_peer_prioritization() {
     let (priority_peers, regular_peers) = client.get_priority_and_regular_peers().unwrap();
     assert_eq!(priority_peers, hashset![validator_peer]);
     assert_eq!(regular_peers, hashset![vfn_peer]);
+}
+#[tokio::test]
+async fn validator_pfn_peer_prioritization() {
+    for base_config in [
+        utils::create_validator_base_config(),
+        utils::create_validator_base_config_with_pfn_connections(),
+    ] {
+        // Create a data client with multi-fetch disabled
+        let data_client_config = AptosDataClientConfig {
+            data_multi_fetch_config: AptosDataMultiFetchConfig {
+                enable_multi_fetch: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // Create the mock network and client
+        let (mut mock_network, _, client, _) =
+            MockNetwork::new(Some(base_config), Some(data_client_config), None);
+
+        // Create the storage request
+        let server_version_request =
+            StorageServiceRequest::new(DataRequest::GetServerProtocolVersion, true);
+
+        // Add a PFN peer and verify it can service the request (last resort; no other peers)
+        let pfn_peer = mock_network.add_peer_with_network_id(NetworkId::Public, false);
+        utils::verify_selected_peers_match(&client, hashset![pfn_peer], &server_version_request);
+
+        // Add a VFN peer and verify the VFN is now preferred over the PFN (higher priority)
+        let vfn_peer = mock_network.add_peer_with_network_id(NetworkId::Vfn, false);
+        utils::verify_selected_peers_match(&client, hashset![vfn_peer], &server_version_request);
+
+        // Disconnect the VFN peer and verify the PFN is used again (last resort)
+        mock_network.disconnect_peer(vfn_peer);
+        utils::verify_selected_peers_match(&client, hashset![pfn_peer], &server_version_request);
+    }
 }
 
 #[tokio::test]

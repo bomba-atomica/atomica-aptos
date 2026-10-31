@@ -1,13 +1,16 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module provides a mechanism to check whether a set of polynomial evaluations
 //! corresponds to a polynomial of bounded degree. It implements the dual code word
 //! approach of the SCRAPE protocol [CD17e].
 
-use crate::{arkworks, arkworks::random};
+use crate::{
+    arkworks,
+    arkworks::{msm::MsmInput, random},
+};
 use anyhow::{bail, ensure, Context};
-use ark_ec::CurveGroup;
+use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{FftField, PrimeField};
 use ark_poly::domain::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_std::vec::Vec;
@@ -71,14 +74,14 @@ impl<'a, F: PrimeField> LowDegreeTest<'a, F> {
 
     /// Creates a new LDT by picking a random polynomial `f` of expected degree `n-t-1`.
     pub fn random<R: rand::RngCore + rand::CryptoRng>(
-        mut rng: &mut R,
+        rng: &mut R,
         t: usize,
         n: usize,
         includes_zero: bool,
         batch_dom: &'a Radix2EvaluationDomain<F>,
     ) -> Self {
         Self::new(
-            random::sample_field_elements(n - t, &mut rng),
+            random::sample_field_elements(n - t, rng),
             t,
             n,
             includes_zero,
@@ -131,28 +134,53 @@ impl<'a, F: PrimeField> LowDegreeTest<'a, F> {
         ))
     }
 
-    /// Performs the LDT given group elements $G^{p(\omega^i)} \in
-    pub fn low_degree_test_group<C: CurveGroup<ScalarField = F>>(
-        self,
-        evals: &[C],
-    ) -> anyhow::Result<()> {
-        if evals.len() != self.n {
-            bail!("Expected {} evaluations; got {}", self.n, evals.len())
+    /// Constructs the MSM input used by the LDT: the affine group elements and
+    /// the corresponding dual-codeword scalars.
+    pub fn ldt_msm_input<A: AffineRepr<ScalarField = F>>(
+        &self,
+        bases: &[A],
+    ) -> anyhow::Result<MsmInput<A, F>> {
+        if bases.len() != self.n {
+            bail!("Expected {} evaluations; got {}", self.n, bases.len())
         }
 
         if self.t == self.n {
-            return Ok(());
+            // In this case the MSM is known to evaluate to zero, but we return an empty input
+            // so that the caller can still follow a uniform pipeline.
+            return Ok(MsmInput {
+                bases: vec![],
+                scalars: vec![],
+            });
         }
 
         let v_times_f = self.dual_code_word();
 
-        debug_assert_eq!(evals.len(), v_times_f.len());
-        let msm_result = C::msm(&C::normalize_batch(evals), v_times_f.as_slice()).unwrap();
+        let scalars = v_times_f;
 
+        MsmInput::new(bases.to_vec(), scalars)
+    }
+
+    /// Performs the LDT given group elements $G^{p(\omega^i)} \in
+    pub fn low_degree_test_group<C: CurveGroup<ScalarField = F>>(
+        &self,
+        evals: &[C::Affine],
+    ) -> anyhow::Result<()> {
+        // Step 1: build MSM input
+        let msm_input = self.ldt_msm_input(evals)?;
+
+        // Early return in the trivial case
+        if msm_input.bases.is_empty() {
+            return Ok(());
+        }
+
+        // Step 2: perform MSM
+        let result = C::msm(&msm_input.bases, &msm_input.scalars).unwrap();
+
+        // Step 3: enforce expected zero
         ensure!(
-            msm_result == C::ZERO,
+            result == C::ZERO,
             "the LDT MSM should have returned zero, but returned {}",
-            msm_result
+            result
         );
 
         Ok(())
@@ -208,7 +236,7 @@ impl<'a, F: PrimeField> LowDegreeTest<'a, F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arkworks::shamir::ThresholdConfig;
+    use crate::arkworks::shamir::ShamirThresholdConfig;
     use ark_bn254::Fr;
     use ark_ff::PrimeField;
     use ark_std::vec::Vec;
@@ -226,7 +254,7 @@ mod tests {
         // TODO: Move get_threshold_configs_for_testing() and the ThresholdConfig trait to aptos-crypto
         for t in 1..8 {
             for n in (t + 1)..(3 * t + 1) {
-                let sc = ThresholdConfig::new(t, n);
+                let sc = ShamirThresholdConfig::new(t, n);
 
                 // A degree t-1 polynomial p(X)
                 let p = sample_random_polynomial::<Fr, _>(t - 1, &mut rng);
@@ -258,7 +286,7 @@ mod tests {
 
         for t in 1..8 {
             for n in (t + 1)..(3 * t + 1) {
-                let sc = ThresholdConfig::new(t, n);
+                let sc = ShamirThresholdConfig::new(t, n);
 
                 // A degree t polynomial f(X), higher by 1 than what the LDT expects
                 let p = sample_random_polynomial::<Fr, _>(t, &mut rng);

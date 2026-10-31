@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     data_notification::DataPayload,
@@ -20,6 +19,7 @@ use crate::{
     },
 };
 use aptos_config::config::{AptosDataClientConfig, DataStreamingServiceConfig};
+use aptos_storage_interface::StateKind;
 use aptos_time_service::TimeService;
 use aptos_types::{
     ledger_info::LedgerInfoWithSignatures,
@@ -40,7 +40,7 @@ async fn test_notifications_state_values() {
 
     // Request a state value stream and get a data stream listener
     let mut stream_listener = streaming_client
-        .get_all_state_values(MAX_ADVERTISED_STATES, None)
+        .get_all_state_values(MAX_ADVERTISED_STATES, None, StateKind::MainState)
         .await
         .unwrap();
 
@@ -55,7 +55,7 @@ async fn test_notifications_state_values_limited_chunks() {
 
     // Request a new state value stream starting at the next expected index
     let mut stream_listener = streaming_client
-        .get_all_state_values(MAX_ADVERTISED_STATES, Some(0))
+        .get_all_state_values(MAX_ADVERTISED_STATES, Some(0), StateKind::MainState)
         .await
         .unwrap();
 
@@ -71,7 +71,11 @@ async fn test_notifications_state_values_multiple_streams() {
     // Request a new state value stream starting at the next expected index.
     let mut next_expected_index = 0;
     let mut stream_listener = streaming_client
-        .get_all_state_values(MAX_ADVERTISED_STATES, Some(next_expected_index))
+        .get_all_state_values(
+            MAX_ADVERTISED_STATES,
+            Some(next_expected_index),
+            StateKind::MainState,
+        )
         .await
         .unwrap();
 
@@ -79,7 +83,7 @@ async fn test_notifications_state_values_multiple_streams() {
     loop {
         let data_notification = get_data_notification(&mut stream_listener).await.unwrap();
         match data_notification.data_payload {
-            DataPayload::StateValuesWithProof(state_values_with_proof) => {
+            DataPayload::StateValuesWithProof(_, state_values_with_proof) => {
                 // Verify the indices
                 assert_eq!(state_values_with_proof.first_index, next_expected_index);
 
@@ -102,7 +106,11 @@ async fn test_notifications_state_values_multiple_streams() {
 
                     // Fetch a new stream
                     stream_listener = streaming_client
-                        .get_all_state_values(MAX_ADVERTISED_STATES, Some(next_expected_index))
+                        .get_all_state_values(
+                            MAX_ADVERTISED_STATES,
+                            Some(next_expected_index),
+                            StateKind::MainState,
+                        )
                         .await
                         .unwrap();
                 }
@@ -575,8 +583,8 @@ async fn test_notifications_continuous_transactions_or_outputs_target() {
         }
 
         // Update the next expected version
-        let num_transactions = if transactions_with_proof.is_some() {
-            transactions_with_proof.unwrap().get_num_transactions() as u64
+        let num_transactions = if let Some(txns) = transactions_with_proof {
+            txns.get_num_transactions() as u64
         } else {
             outputs_with_proof.unwrap().get_num_outputs() as u64
         };
@@ -642,8 +650,8 @@ async fn test_notifications_continuous_transactions_or_outputs_multiple_streams(
         assert_eq!(Some(next_expected_version), first_version);
 
         // Update the next expected version
-        let num_transactions = if transactions_with_proof.is_some() {
-            transactions_with_proof.unwrap().get_num_transactions() as u64
+        let num_transactions = if let Some(txns) = transactions_with_proof {
+            txns.get_num_transactions() as u64
         } else {
             outputs_with_proof.unwrap().get_num_outputs() as u64
         };
@@ -1247,19 +1255,19 @@ async fn test_stream_states() {
 
     // Request a state value stream and verify we get a data stream listener
     let result = streaming_client
-        .get_all_state_values(MAX_ADVERTISED_STATES - 1, None)
+        .get_all_state_values(MAX_ADVERTISED_STATES - 1, None, StateKind::MainState)
         .await;
     assert_ok!(result);
 
     // Request a stream where states are missing (we are lower than advertised)
     let result = streaming_client
-        .get_all_state_values(MIN_ADVERTISED_STATES - 1, None)
+        .get_all_state_values(MIN_ADVERTISED_STATES - 1, None, StateKind::MainState)
         .await;
     assert_matches!(result, Err(Error::DataIsUnavailable(_)));
 
     // Request a stream where states are missing (we are higher than advertised)
     let result = streaming_client
-        .get_all_state_values(MAX_ADVERTISED_EPOCH_END + 1, None)
+        .get_all_state_values(MAX_ADVERTISED_EPOCH_END + 1, None, StateKind::MainState)
         .await;
     assert_matches!(result, Err(Error::DataIsUnavailable(_)));
 }
@@ -1558,14 +1566,14 @@ async fn test_terminate_stream() {
 
     // Request a state value stream
     let mut stream_listener = streaming_client
-        .get_all_state_values(MAX_ADVERTISED_STATES - 1, None)
+        .get_all_state_values(MAX_ADVERTISED_STATES - 1, None, StateKind::MainState)
         .await
         .unwrap();
 
     // Fetch the first state value notification and then terminate the stream
     let data_notification = get_data_notification(&mut stream_listener).await.unwrap();
     match data_notification.data_payload {
-        DataPayload::StateValuesWithProof(_) => {},
+        DataPayload::StateValuesWithProof(_, _) => {},
         data_payload => unexpected_payload_type!(data_payload),
     }
 
@@ -1585,7 +1593,7 @@ async fn test_terminate_stream() {
     loop {
         let data_notification = get_data_notification(&mut stream_listener).await.unwrap();
         match data_notification.data_payload {
-            DataPayload::StateValuesWithProof(_) => {},
+            DataPayload::StateValuesWithProof(_, _) => {},
             DataPayload::EndOfStream => panic!("The stream should have terminated!"),
             data_payload => unexpected_payload_type!(data_payload),
         }
@@ -1715,7 +1723,7 @@ async fn verify_continuous_state_value_notifications(stream_listener: &mut DataS
     loop {
         let data_notification = get_data_notification(stream_listener).await.unwrap();
         match data_notification.data_payload {
-            DataPayload::StateValuesWithProof(state_values_with_proof) => {
+            DataPayload::StateValuesWithProof(_, state_values_with_proof) => {
                 // Verify the start index matches the expected index
                 assert_eq!(state_values_with_proof.first_index, next_expected_index);
 

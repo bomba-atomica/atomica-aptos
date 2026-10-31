@@ -1,14 +1,13 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! A helper for building expressions
 
 use crate::{
-    ast::{Exp, ExpData, Operation, Pattern, RewriteResult},
+    ast::{Exp, ExpData, Operation, Pattern, RewriteResult, Value},
     model::{GlobalEnv, Loc, NodeId},
     symbol::Symbol,
-    ty::Type,
+    ty::{PrimitiveType, Type},
 };
 use itertools::Itertools;
 use std::{collections::BTreeMap, vec};
@@ -62,6 +61,12 @@ impl<'a> ExpBuilder<'a> {
         } else {
             Call(id, Operation::And, vec![exp1, exp2]).into_exp()
         }
+    }
+
+    /// Creates a boolean constant expression.
+    pub fn bool_const(&self, loc: &Loc, val: bool) -> Exp {
+        let id = self.new_node_id(loc.clone(), Type::Primitive(PrimitiveType::Bool));
+        ExpData::Value(id, Value::Bool(val)).into_exp()
     }
 
     pub fn if_else(&self, cond: Exp, if_true: Exp, if_false: Exp) -> Exp {
@@ -161,7 +166,7 @@ impl<'a> ExpBuilder<'a> {
         match last.as_ref() {
             LoopCont(_, nest, false) if *nest == break_nest => Some(self.seq(default_loc, front)),
             LoopCont(.., nest, _) if allow_exit && *nest > break_nest => Some(exp),
-            Return(..) | Call(_, Operation::Abort, _) if allow_exit => Some(exp),
+            Return(..) | Call(_, Operation::Abort(_), _) if allow_exit => Some(exp),
             Block(id, pat, binding, scope) => {
                 let scope = self.extract_terminated_prefix(
                     default_loc,
@@ -464,6 +469,9 @@ impl<'a> ExpBuilder<'a> {
         if let Some(inst) = env.get_node_instantiation_opt(id) {
             env.set_node_instantiation(new_id, inst.clone())
         }
+        if let Some(weight) = env.get_quant_weight(id) {
+            env.set_quant_weight(new_id, weight);
+        }
         new_id
     }
 
@@ -473,5 +481,68 @@ impl<'a> ExpBuilder<'a> {
                 .collect_vec()
                 .as_slice(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ast::{Address, ModuleName, Spec},
+        model::{GlobalEnv, ModuleId},
+        ty::BOOL_TYPE,
+    };
+    use move_core_types::account_address::AccountAddress;
+    use std::collections::BTreeMap;
+
+    fn test_env() -> GlobalEnv {
+        let mut env = GlobalEnv::new();
+        let loc = Loc::default();
+        let addr = Address::Numerical(AccountAddress::ZERO);
+        let module_name = ModuleName::new(addr, env.symbol_pool().make("test_mod"));
+        env.add(
+            loc,
+            module_name,
+            vec![],
+            vec![],
+            vec![],
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            vec![],
+            vec![],
+            vec![],
+            Spec::default(),
+            vec![],
+        );
+        env
+    }
+
+    #[test]
+    fn clone_node_id_preserves_quant_weight() {
+        let env = test_env();
+        let _ = env.get_module(ModuleId::new(0));
+        let builder = ExpBuilder::new(&env);
+
+        let id = env.new_node(Loc::default(), BOOL_TYPE.clone());
+        env.set_quant_weight(id, 42);
+
+        let new_id = builder.clone_node_id(id);
+
+        assert_ne!(new_id, id);
+        assert_eq!(env.get_quant_weight(new_id), Some(42));
+        assert_eq!(env.get_quant_weight(id), Some(42));
+    }
+
+    #[test]
+    fn clone_node_id_no_weight_stays_unweighted() {
+        let env = test_env();
+        let _ = env.get_module(ModuleId::new(0));
+        let builder = ExpBuilder::new(&env);
+
+        let id = env.new_node(Loc::default(), BOOL_TYPE.clone());
+        let new_id = builder.clone_node_id(id);
+
+        assert_eq!(env.get_quant_weight(new_id), None);
     }
 }

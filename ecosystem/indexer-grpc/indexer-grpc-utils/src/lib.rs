@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub mod cache_operator;
 pub mod compression_util;
@@ -8,8 +8,10 @@ pub mod constants;
 pub mod counters;
 pub mod file_store_operator;
 pub mod file_store_operator_v2;
+pub mod filter_utils;
 pub mod in_memory_cache;
 pub mod status_page;
+pub mod trace_context;
 pub mod types;
 
 use anyhow::{Context, Result};

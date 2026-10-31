@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     config::{
@@ -14,12 +14,13 @@ use aptos_types::{
     state_store::state_key::StateKey,
     transaction::{Transaction, WriteSetPayload},
 };
+use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::path::Path;
 
 /// A simple enum to represent the type of a node
 /// as determined from the config file.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum NodeType {
     Validator,
     ValidatorFullnode,
@@ -33,6 +34,10 @@ impl NodeType {
 
     pub fn is_validator_fullnode(self) -> bool {
         self == NodeType::ValidatorFullnode
+    }
+
+    pub fn is_public_fullnode(self) -> bool {
+        self == NodeType::PublicFullnode
     }
 
     /// Returns the type of the node as determined by the node config
@@ -169,7 +174,7 @@ fn get_chain_id(node_config: &NodeConfig) -> Result<ChainId, Error> {
             let chain_id_state_key = StateKey::on_chain_config::<ChainId>()?;
 
             // Get the write op from the write set
-            let write_set_mut = change_set.clone().write_set().clone().into_mut();
+            let write_set_mut = change_set.clone().write_set().clone().into_value_writes();
             let write_op = write_set_mut.get(&chain_id_state_key).ok_or_else(|| {
                 Error::InvariantViolation(
                     "The genesis transaction does not contain the write op for the chain id!"

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     gas::get_gas_parameters,
@@ -14,15 +14,18 @@ use aptos_gas_schedule::{AptosGasParameters, MiscGasParameters, NativeGasParamet
 use aptos_native_interface::SafeNativeBuilder;
 use aptos_types::{
     chain_id::ChainId,
+    keyless::{Configuration, Groth16VerificationKey, KeylessOnchainConfig},
     on_chain_config::{
         ConfigurationResource, Features, OnChainConfig, TimedFeatures, TimedFeaturesBuilder,
     },
     state_store::StateView,
 };
 use aptos_vm_types::storage::StorageGasParameters;
+use ark_bn254::Bn254;
+use ark_groth16::PreparedVerifyingKey;
 use move_vm_runtime::{config::VMConfig, RuntimeEnvironment, WithRuntimeEnvironment};
 use sha3::{Digest, Sha3_256};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use triomphe::Arc as TriompheArc;
 
 /// A runtime environment which can be used for VM initialization and more. Contains features
@@ -82,6 +85,26 @@ impl AptosEnvironment {
         &self.0.timed_features
     }
 
+    /// Returns the prepared verifying key for keyless validation.
+    #[inline]
+    pub fn keyless_pvk(&self) -> Option<&PreparedVerifyingKey<Bn254>> {
+        self.0
+            .keyless_pvk
+            .get_or_init(|| {
+                self.0
+                    .keyless_vk
+                    .as_ref()
+                    .and_then(|vk| PreparedVerifyingKey::try_from(vk).ok())
+            })
+            .as_ref()
+    }
+
+    /// Returns keyless configurations.
+    #[inline]
+    pub fn keyless_configuration(&self) -> Option<&Configuration> {
+        self.0.keyless_configuration.as_ref()
+    }
+
     /// Returns the [VMConfig] used by this environment.
     #[inline]
     pub fn vm_config(&self) -> &VMConfig {
@@ -117,9 +140,9 @@ impl AptosEnvironment {
         self.0.inject_create_signer_for_gov_sim
     }
 
-    /// Returns bytes corresponding to the verifier config in this environment.
-    pub fn verifier_config_bytes(&self) -> &Vec<u8> {
-        &self.0.verifier_bytes
+    /// Returns the hash of the serialized verifier config in this environment.
+    pub fn verifier_config_hash(&self) -> &[u8; 32] {
+        self.0.runtime_environment.verifier_config_hash()
     }
 
     /// Returns true if runtime checks can be performed after execution.
@@ -157,6 +180,14 @@ struct Environment {
     /// Set of timed features enabled in this environment.
     timed_features: TimedFeatures,
 
+    /// The on-chain verification key for keyless accounts. Optional because it might not be set
+    /// on-chain.
+    keyless_vk: Option<Groth16VerificationKey>,
+    /// The prepared verification key for keyless accounts, derived lazily from `keyless_vk`.
+    keyless_pvk: OnceLock<Option<PreparedVerifyingKey<Bn254>>>,
+    /// Some keyless configurations which are not frequently updated.
+    keyless_configuration: Option<Configuration>,
+
     /// Gas feature version used in this environment.
     gas_feature_version: u64,
     /// Gas parameters used in this environment. Error is stored if gas parameters were not found
@@ -176,10 +207,6 @@ struct Environment {
 
     /// Hash of configs used in this environment. Used to be able to compare environments.
     hash: [u8; 32],
-    /// Bytes of serialized verifier config. Used to detect any changes in verification configs.
-    /// We stored bytes instead of hash because config is expected to be smaller than the crypto
-    /// hash itself.
-    verifier_bytes: Vec<u8>,
 
     /// If true, runtime checks such as paranoid may not be performed during speculative execution
     /// of transactions, but instead once at post-commit time based on the collected execution
@@ -234,7 +261,7 @@ impl Environment {
                 )
             },
             Err(_) => {
-                let ty_builder = aptos_default_ty_builder();
+                let ty_builder = aptos_default_ty_builder(true, true);
                 (
                     NativeGasParameters::zeros(),
                     MiscGasParameters::zeros(),
@@ -259,9 +286,24 @@ impl Environment {
             &timed_features,
             ty_builder,
         );
-        let verifier_bytes =
-            bcs::to_bytes(&vm_config.verifier_config).expect("Verifier config is serializable");
         let runtime_environment = RuntimeEnvironment::new_with_config(natives, vm_config);
+
+        // We use an `Option` to handle the VK not being set on-chain.
+        let keyless_vk =
+            Groth16VerificationKey::fetch_keyless_config(state_view).map(|(vk, vk_bytes)| {
+                sha3_256.update(&vk_bytes);
+                vk
+            });
+        let keyless_pvk: OnceLock<Option<PreparedVerifyingKey<Bn254>>> = if keyless_vk.is_none() {
+            OnceLock::from(None)
+        } else {
+            OnceLock::new()
+        };
+        let keyless_configuration =
+            Configuration::fetch_keyless_config(state_view).map(|(config, config_bytes)| {
+                sha3_256.update(&config_bytes);
+                config
+            });
 
         let hash = sha3_256.finalize().into();
 
@@ -270,13 +312,15 @@ impl Environment {
             chain_id,
             features,
             timed_features,
+            keyless_vk,
+            keyless_pvk,
+            keyless_configuration,
             gas_feature_version,
             gas_params,
             storage_gas_params,
             runtime_environment,
             inject_create_signer_for_gov_sim,
             hash,
-            verifier_bytes,
             async_runtime_checks_enabled: get_async_runtime_checks(),
         }
     }
@@ -294,7 +338,7 @@ fn fetch_config_and_update_hash<T: OnChainConfig>(
     sha3_256: &mut Sha3_256,
     state_view: &impl StateView,
 ) -> Option<T> {
-    let (config, bytes) = T::fetch_config_and_bytes(state_view)?;
+    let (config, bytes) = T::fetch_config_and_bytes(state_view).ok().flatten()?;
     sha3_256.update(&bytes);
     Some(config)
 }
@@ -303,11 +347,17 @@ fn fetch_config_and_update_hash<T: OnChainConfig>(
 pub mod tests {
     use super::*;
     use aptos_types::{
+        keyless::{Groth16VerificationKey, KeylessGroupResource, VERIFICATION_KEY_FOR_TESTING},
         on_chain_config::{FeatureFlag, GasScheduleV2},
         state_store::{state_key::StateKey, state_value::StateValue, MockStateView},
     };
+    use move_core_types::{language_storage::CORE_CODE_ADDRESS, move_resource::MoveStructType};
     use serde::Serialize;
-    use std::collections::HashMap;
+    use std::{
+        collections::{BTreeMap, HashMap},
+        sync::{Arc, Barrier},
+        thread,
+    };
 
     #[test]
     fn test_new_environment() {
@@ -323,6 +373,8 @@ pub mod tests {
                 .vm_config()
                 .delayed_field_optimization_enabled
         );
+        assert!(env.keyless_vk.is_none());
+        assert!(env.keyless_pvk.get().is_some_and(Option::is_none));
 
         let env = env.try_enable_delayed_field_optimization();
         assert!(
@@ -341,12 +393,85 @@ pub mod tests {
         )]))
     }
 
+    fn state_view_with_keyless_vk(vk: Groth16VerificationKey) -> MockStateView<StateKey> {
+        let keyless_group = KeylessGroupResource {
+            group: BTreeMap::from([(
+                Groth16VerificationKey::struct_tag(),
+                bcs::to_bytes(&vk).unwrap().into(),
+            )]),
+        };
+        MockStateView::new(HashMap::from([(
+            StateKey::resource_group(&CORE_CODE_ADDRESS, &KeylessGroupResource::struct_tag()),
+            StateValue::new_legacy(bcs::to_bytes(&keyless_group).unwrap().into()),
+        )]))
+    }
+
     #[test]
     fn test_environment_eq() {
         let state_view = MockStateView::empty();
         let environment_1 = AptosEnvironment::new(&state_view);
         let environment_2 = AptosEnvironment::new(&state_view);
         assert!(environment_1 == environment_2);
+    }
+
+    #[test]
+    fn test_keyless_pvk_is_prepared_lazily() {
+        let state_view = state_view_with_keyless_vk(Groth16VerificationKey::from(
+            VERIFICATION_KEY_FOR_TESTING.clone(),
+        ));
+
+        let environment = AptosEnvironment::new(&state_view);
+
+        assert!(environment.0.keyless_vk.is_some());
+        assert!(environment.0.keyless_pvk.get().is_none());
+
+        assert!(environment.keyless_pvk().is_some());
+        assert!(environment.0.keyless_pvk.get().unwrap().is_some());
+    }
+
+    #[test]
+    fn test_keyless_pvk_lazy_preparation_handles_concurrent_callers() {
+        let state_view = state_view_with_keyless_vk(Groth16VerificationKey::from(
+            VERIFICATION_KEY_FOR_TESTING.clone(),
+        ));
+
+        let environment = AptosEnvironment::new(&state_view);
+        let num_threads = 16;
+        let barrier = Arc::new(Barrier::new(num_threads));
+
+        assert!(environment.0.keyless_pvk.get().is_none());
+
+        let handles = (0..num_threads)
+            .map(|_| {
+                let environment = environment.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    assert!(environment.keyless_pvk().is_some());
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        assert!(environment.0.keyless_pvk.get().unwrap().is_some());
+    }
+
+    #[test]
+    fn test_malformed_keyless_vk_error_is_cached_lazily() {
+        let mut malformed_vk = Groth16VerificationKey::from(VERIFICATION_KEY_FOR_TESTING.clone());
+        malformed_vk.gamma_abc_g1.pop();
+        let state_view = state_view_with_keyless_vk(malformed_vk);
+
+        let environment = AptosEnvironment::new(&state_view);
+
+        assert!(environment.0.keyless_vk.is_some());
+        assert!(environment.0.keyless_pvk.get().is_none());
+
+        assert!(environment.keyless_pvk().is_none());
+        assert!(environment.0.keyless_pvk.get().unwrap().is_none());
     }
 
     #[test]

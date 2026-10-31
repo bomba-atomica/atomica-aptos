@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Implements an environment pipeline which checks for unused type parameters in struct definitions.
 //! Precondition: struct fields have valid types.
@@ -33,18 +33,13 @@ fn check_unused_params(struct_env: &StructEnv) {
     for (i, TypeParameter(name, kind, loc)) in struct_env.get_type_parameters().iter().enumerate() {
         if !kind.is_phantom && !used_params_in_fields.contains(&(i as u16)) {
             let name = name.display(struct_env.symbol_pool());
-            env.diag_with_labels(
-                Severity::Warning,
-                loc,
-                "unused type parameter",
-                vec![(
-                    loc.clone(),
-                    format!(
-                        "Unused type parameter `{}`. Consider declaring it as phantom",
-                        name
-                    ),
-                )],
-            );
+            env.diag_with_labels(Severity::Warning, loc, "unused type parameter", vec![(
+                loc.clone(),
+                format!(
+                    "Unused type parameter `{}`. Consider declaring it as phantom",
+                    name
+                ),
+            )]);
         }
     }
 }
@@ -71,7 +66,11 @@ fn used_type_parameters_in_ty(ty: &Type) -> BTreeSet<u16> {
             .flat_map(|t| used_type_parameters_in_ty(t))
             .collect(),
         Type::Reference(_, t) => used_type_parameters_in_ty(t),
-        Type::TypeDomain(..) | Type::ResourceDomain(..) | Type::Error | Type::Var(..) => {
+        Type::TypeDomain(..)
+        | Type::ResourceDomain(..)
+        | Type::StateDomain
+        | Type::Error
+        | Type::Var(..) => {
             unreachable!("unexpected type")
         },
     }

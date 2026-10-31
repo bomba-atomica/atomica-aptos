@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     jwk_manager::IssuerLevelConsensusManager,
@@ -202,6 +202,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                 self.self_sender.clone(),
             );
             let rb = ReliableBroadcast::new(
+                "jwk_consensus",
                 self.my_addr,
                 epoch_state.verifier.get_ordered_account_addresses(),
                 Arc::new(network_sender),

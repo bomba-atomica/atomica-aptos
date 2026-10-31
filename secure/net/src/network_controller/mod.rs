@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::network_controller::{
     inbound_handler::InboundHandler, outbound_handler::OutboundHandler,
@@ -13,6 +13,7 @@ use std::{
 };
 use tokio::{runtime::Runtime, sync::oneshot};
 
+#[allow(dead_code)] // TODO: remove.
 mod error;
 mod inbound_handler;
 pub(crate) mod metrics;

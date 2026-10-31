@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{keyless::Claims, move_any::AsMoveAny, move_utils::as_move_value::AsMoveValue};
 use anyhow::{anyhow, bail, ensure, Result};
@@ -42,7 +42,7 @@ pub static INSECURE_TEST_RSA_JWK: Lazy<RSA_JWK> =
 
 pub static INSECURE_TEST_RSA_KEY_PAIR: Lazy<RsaKeyPair> = Lazy::new(|| {
     // TODO(keyless): Hacking around the difficulty of parsing PKCS#8-encoded PEM files with the `pem` crate
-    let der = rsa::RsaPrivateKey::from_pkcs8_pem(include_str!("insecure_test_jwk_private_key.pem"))
+    let der = rsa::RsaPrivateKey::from_pkcs8_pem(include_str!("insecure_test_jwk_private_key.txt"))
         .unwrap()
         .to_pkcs1_der()
         .unwrap();

@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     persistent_safety_storage::PersistentSafetyStorage, serializer::SerializerService, SafetyRules,
@@ -80,7 +79,7 @@ pub fn make_proposal_with_qc(
     validator_signer: &ValidatorSigner,
 ) -> VoteProposal {
     make_proposal_with_qc_and_proof(
-        Payload::empty(false, true),
+        Payload::empty(false),
         round,
         empty_proof(),
         qc,
@@ -173,7 +172,12 @@ pub fn make_proposal_with_parent_and_overrides(
         PartialSignatures::empty(),
     );
 
-    ledger_info_with_signatures.add_signature(vote.author(), vote.signature().clone());
+    ledger_info_with_signatures.add_signature(
+        vote.author(),
+        vote.signature_with_status()
+            .decompressed_signature()
+            .unwrap(),
+    );
 
     let qc = QuorumCert::new(
         vote_data,

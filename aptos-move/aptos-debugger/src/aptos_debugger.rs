@@ -1,9 +1,10 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::{bail, format_err};
 use aptos_block_executor::txn_provider::{default::DefaultTxnProvider, TxnProvider};
 use aptos_gas_profiling::{GasProfiler, TransactionGasLog};
+use aptos_move_cli::{DynStateView, MoveDebugger};
 use aptos_rest_client::Client;
 use aptos_types::{
     account_address::AccountAddress,
@@ -14,9 +15,9 @@ use aptos_types::{
     contract_event::ContractEvent,
     state_store::TStateView,
     transaction::{
-        signature_verified_transaction::SignatureVerifiedTransaction, AuxiliaryInfo, BlockOutput,
-        PersistedAuxiliaryInfo, SignedTransaction, Transaction, TransactionExecutableRef,
-        TransactionInfo, TransactionOutput, TransactionPayload, Version,
+        signature_verified_transaction::SignatureVerifiedTransaction, AuxiliaryInfo, BlockError,
+        BlockOutput, PersistedAuxiliaryInfo, SignedTransaction, Transaction,
+        TransactionExecutableRef, TransactionInfo, TransactionOutput, TransactionPayload, Version,
     },
     vm_status::VMStatus,
 };
@@ -29,6 +30,7 @@ use aptos_vm::{
 use aptos_vm_environment::environment::AptosEnvironment;
 use aptos_vm_logging::log_schema::AdapterLogSchema;
 use aptos_vm_types::{module_and_script_storage::AsAptosCodeStorage, output::VMOutput};
+use async_trait::async_trait;
 use itertools::Itertools;
 use std::{path::Path, sync::Arc, time::Instant};
 
@@ -145,7 +147,7 @@ impl AptosDebugger {
         }
 
         let env = AptosEnvironment::new(&state_view);
-        let vm = AptosVM::new(&env, &state_view);
+        let vm = AptosVM::new(&env);
         let resolver = state_view.as_move_resolver();
         let code_storage = state_view.as_aptos_code_storage(&env);
 
@@ -172,12 +174,23 @@ impl AptosDebugger {
                         // TODO[Orderless]: Implement this
                         unimplemented!("not supported yet")
                     },
+                    // TODO(ibalajiarun)
+                    TransactionExecutableRef::Encrypted => unimplemented!("not supported"),
                 }
             },
             &auxiliary_info,
         )?;
 
-        Ok((status, output, gas_profiler.finish()))
+        // Note: we deliberately return the log without running the consistency
+        // check. Callers are responsible for invoking
+        // `log.exec_io.check_consistency()` and `log.storage.check_consistency()`
+        // themselves; this lets user-facing tools (e.g. the CLI) format their
+        // own error message and/or offer an opt-out flag.
+        Ok((
+            status,
+            output,
+            gas_profiler.finish_without_consistency_check(),
+        ))
     }
 
     pub async fn execute_past_transactions(
@@ -425,6 +438,7 @@ fn print_transaction_stats(sig_verified_txns: &[SignatureVerifiedTransaction], v
                     ),
                     Ok(TransactionExecutableRef::Script(_)) => "script".to_string(),
                     Ok(TransactionExecutableRef::Empty) => "empty".to_string(),
+                    Ok(TransactionExecutableRef::Encrypted) => "encrypted".to_string(),
                     Err(e) => {
                         panic!("deprecated transaction payload: {}", e)
                     },
@@ -464,6 +478,62 @@ fn print_transaction_stats(sig_verified_txns: &[SignatureVerifiedTransaction], v
     );
 }
 
+#[async_trait]
+impl MoveDebugger for AptosDebugger {
+    fn state_view_at_version(&self, version: u64) -> DynStateView {
+        DynStateView::new(Box::new(self.state_view_at_version(version)))
+    }
+
+    fn state_view_at_version_with_overrides(
+        &self,
+        version: u64,
+        overrides: std::sync::Arc<aptos_validator_interface::LocalModuleOverrides>,
+    ) -> DynStateView {
+        DynStateView::new(Box::new(DebuggerStateView::new_with_overrides(
+            self.debugger.clone(),
+            version,
+            overrides,
+        )))
+    }
+
+    fn execute_transaction_at_version_with_gas_profiler(
+        &self,
+        version: u64,
+        txn: SignedTransaction,
+        auxiliary_info: AuxiliaryInfo,
+    ) -> anyhow::Result<(VMStatus, VMOutput, TransactionGasLog)> {
+        self.execute_transaction_at_version_with_gas_profiler(version, txn, auxiliary_info)
+    }
+
+    fn execute_transaction_at_version(
+        &self,
+        version: u64,
+        transaction: Transaction,
+        auxiliary_info: PersistedAuxiliaryInfo,
+    ) -> anyhow::Result<TransactionOutput> {
+        // Route through the block-executor path so all Transaction variants
+        // (user + system) are handled uniformly. Single-element batch.
+        let outputs = self.execute_transactions_at_version(
+            version,
+            vec![transaction],
+            vec![auxiliary_info],
+            1,
+            &[1],
+        )?;
+        outputs
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("execute_transactions_at_version returned no outputs"))
+    }
+
+    async fn get_committed_transaction_at_version(
+        &self,
+        version: u64,
+    ) -> anyhow::Result<(Transaction, TransactionInfo, PersistedAuxiliaryInfo)> {
+        self.get_committed_transaction_at_version(version).await
+    }
+}
+
 fn is_reconfiguration(vm_output: &TransactionOutput) -> bool {
     vm_output
         .events()
@@ -475,7 +545,7 @@ fn execute_block_no_limit(
     txn_provider: &DefaultTxnProvider<SignatureVerifiedTransaction, AuxiliaryInfo>,
     state_view: &DebuggerStateView,
     concurrency_level: usize,
-) -> Result<Vec<TransactionOutput>, VMStatus> {
+) -> Result<Vec<TransactionOutput>, BlockError> {
     let executor = AptosVMBlockExecutor::new();
     executor
         .execute_block_with_config(
@@ -483,7 +553,7 @@ fn execute_block_no_limit(
             state_view,
             BlockExecutorConfig {
                 local: BlockExecutorLocalConfig::default_with_concurrency_level(concurrency_level),
-                onchain: BlockExecutorConfigFromOnchain::new_no_block_limit(),
+                onchain: BlockExecutorConfigFromOnchain::new_no_block_limit(), // TODO(HotState): will need to incorporate some features.
             },
             TransactionSliceMetadata::unknown(),
         )

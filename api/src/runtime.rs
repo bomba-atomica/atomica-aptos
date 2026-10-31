@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     accounts::AccountsApi,
@@ -10,6 +9,7 @@ use crate::{
     context::Context,
     error_converter::{convert_error, panic_handler},
     events::EventsApi,
+    headers_sanity_check::HeadersSanityCheck,
     index::IndexApi,
     log::middleware_log,
     set_failpoints,
@@ -251,9 +251,12 @@ pub fn attach_poem_to_runtime(
                         poem::get(set_failpoints::set_failpoint_poem).data(context.clone()),
                     ),
             )
+            // NOTE: The order of the middleware handlers are important here.
+            // Poem uses LIFO chaining: .with(A).with(B).with(C) executes as C → B → A → handler.
             .with(cors)
-            .with_if(config.api.compression_enabled, Compression::new())
             .with(PostSizeLimit::new(size_limit))
+            .with_if(config.api.compression_enabled, Compression::new())
+            .with(HeadersSanityCheck::new(size_limit))
             .with(CatchPanic::new().with_handler(panic_handler))
             // NOTE: Make sure to keep this after all the `with` middleware.
             .catch_all_error(convert_error)

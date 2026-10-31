@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use once_cell::sync::Lazy;
 use prometheus::{register_histogram_vec, Histogram, HistogramVec};
@@ -31,11 +31,11 @@ pub fn test_fail(test_name: &str, network_name: &str, run_id: &str) -> Histogram
 }
 
 pub static API_TEST_ERROR: Lazy<HistogramVec> = Lazy::new(|| {
-    register_histogram_vec!(
-        "api_test_error",
-        "Number of user flows which crashed",
-        &["test_name", "network_name", "run_id"],
-    )
+    register_histogram_vec!("api_test_error", "Number of user flows which crashed", &[
+        "test_name",
+        "network_name",
+        "run_id"
+    ],)
     .unwrap()
 });
 

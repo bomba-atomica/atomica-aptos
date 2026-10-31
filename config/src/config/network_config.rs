@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     config::{
@@ -41,8 +40,8 @@ pub const PING_TIMEOUT_MS: u64 = 20_000;
 pub const PING_FAILURES_TOLERATED: u64 = 3;
 pub const CONNECTIVITY_CHECK_INTERVAL_MS: u64 = 5000;
 pub const MAX_CONNECTION_DELAY_MS: u64 = 60_000; /* 1 minute */
-pub const MAX_FULLNODE_OUTBOUND_CONNECTIONS: usize = 6;
-pub const MAX_INBOUND_CONNECTIONS: usize = 100;
+pub const MAX_FULLNODE_OUTBOUND_CONNECTIONS: usize = 5;
+pub const MAX_INBOUND_CONNECTIONS: usize = 50;
 pub const MAX_MESSAGE_METADATA_SIZE: usize = 128 * 1024; /* 128 KiB: a buffer for metadata that might be added to messages by networking */
 pub const MESSAGE_PADDING_SIZE: usize = 2 * 1024 * 1024; /* 2 MiB: a safety buffer to allow messages to get larger during serialization */
 pub const MAX_APPLICATION_MESSAGE_SIZE: usize =
@@ -50,8 +49,40 @@ pub const MAX_APPLICATION_MESSAGE_SIZE: usize =
 pub const MAX_FRAME_SIZE: usize = 4 * 1024 * 1024; /* 4 MiB large messages will be chunked into multiple frames and streamed */
 pub const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024; /* 64 MiB */
 pub const CONNECTION_BACKOFF_BASE: u64 = 2;
-pub const IP_BYTE_BUCKET_RATE: usize = 102400 /* 100 KiB */;
-pub const IP_BYTE_BUCKET_SIZE: usize = IP_BYTE_BUCKET_RATE;
+pub const DEFAULT_PUBLIC_NETWORK_PORT: u16 = 6182;
+pub const DEFAULT_VALIDATOR_NETWORK_PORT: u16 = 6180;
+
+/// Access control policy for peer connections.
+/// Determines which peers are allowed or blocked from connecting.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessControlPolicy {
+    /// Only allow connections from peers in this list. All others are blocked.
+    AllowList(HashSet<PeerId>),
+    /// Block connections from peers in this list. All others are allowed.
+    BlockList(HashSet<PeerId>),
+}
+
+impl AccessControlPolicy {
+    /// Check if a peer is allowed based on this access control policy.
+    /// Returns true if the peer should be allowed, false if blocked.
+    pub fn is_peer_allowed(&self, peer_id: &PeerId) -> bool {
+        match self {
+            AccessControlPolicy::AllowList(allowed_peers) => allowed_peers.contains(peer_id),
+            AccessControlPolicy::BlockList(blocked_peers) => !blocked_peers.contains(peer_id),
+        }
+    }
+}
+
+/// Rate limiting configuration for inbound network traffic
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RateLimitConfig {
+    /// Max inbound bytes/sec per peer. None = unlimited.
+    pub inbound_bytes_per_second: Option<u64>,
+    /// Max inbound messages/sec per peer. None = unlimited.
+    pub inbound_messages_per_second: Option<u64>,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -110,20 +141,30 @@ pub struct NetworkConfig {
     pub ping_timeout_ms: u64,
     /// Number of failed healthcheck pings until a peer is marked unhealthy
     pub ping_failures_tolerated: u64,
+    /// Whether to disconnect from peers on health check failures
+    pub disconnect_on_health_check_failure: bool,
     /// Maximum number of outbound connections, limited by ConnectivityManager
     pub max_outbound_connections: usize,
     /// Maximum number of outbound connections, limited by PeerManager
     pub max_inbound_connections: usize,
-    /// Inbound rate limiting configuration, if not specified, no rate limiting
-    pub inbound_rate_limit_config: Option<RateLimitConfig>,
-    /// Outbound rate limiting configuration, if not specified, no rate limiting
-    pub outbound_rate_limit_config: Option<RateLimitConfig>,
     /// The maximum size of an inbound or outbound message (it may be divided into multiple frame)
     pub max_message_size: usize,
     /// The maximum number of parallel message deserialization tasks that can run (per application)
     pub max_parallel_deserialization_tasks: Option<usize>,
     /// Whether or not to enable latency aware peer dialing
     pub enable_latency_aware_dialing: bool,
+    /// Access control policy for peer connections. If not specified, all
+    /// peers are allowed. Otherwise, the specified policy is enforced.
+    pub access_control_policy: Option<AccessControlPolicy>,
+    /// Priority inbound peers that can bypass connection limits
+    pub priority_inbound_peers: Vec<PeerId>,
+    /// Rate limiting configuration for inbound network traffic (per peer).
+    /// If None, inbound rate limiting is disabled.
+    pub inbound_rate_limit_config: Option<RateLimitConfig>,
+    /// The minimum number of dial attempts before a peer is put into backoff mode
+    pub num_dials_before_backoff: usize,
+    /// The maximum number of addresses to ping in parallel per peer (for latency aware dialing)
+    pub max_parallel_peer_latency_pings: usize,
 }
 
 impl Default for NetworkConfig {
@@ -135,11 +176,15 @@ impl Default for NetworkConfig {
 impl NetworkConfig {
     pub fn network_with_id(network_id: NetworkId) -> NetworkConfig {
         let mutual_authentication = network_id.is_validator_network();
+        let listen_address = format!("/ip4/0.0.0.0/tcp/{}", DEFAULT_VALIDATOR_NETWORK_PORT)
+            .parse()
+            .unwrap();
+
         let mut config = Self {
             discovery_method: DiscoveryMethod::None,
             discovery_methods: Vec::new(),
             identity: Identity::None,
-            listen_address: "/ip4/0.0.0.0/tcp/6180".parse().unwrap(),
+            listen_address,
             mutual_authentication,
             network_id,
             runtime_threads: None,
@@ -154,10 +199,9 @@ impl NetworkConfig {
             ping_interval_ms: PING_INTERVAL_MS,
             ping_timeout_ms: PING_TIMEOUT_MS,
             ping_failures_tolerated: PING_FAILURES_TOLERATED,
+            disconnect_on_health_check_failure: false, // Disabled by default
             max_outbound_connections: MAX_FULLNODE_OUTBOUND_CONNECTIONS,
             max_inbound_connections: MAX_INBOUND_CONNECTIONS,
-            inbound_rate_limit_config: None,
-            outbound_rate_limit_config: None,
             max_message_size: MAX_MESSAGE_SIZE,
             inbound_rx_buffer_size_bytes: None,
             inbound_tx_buffer_size_bytes: None,
@@ -165,6 +209,11 @@ impl NetworkConfig {
             outbound_tx_buffer_size_bytes: None,
             max_parallel_deserialization_tasks: None,
             enable_latency_aware_dialing: true,
+            access_control_policy: None,
+            priority_inbound_peers: Vec::new(),
+            inbound_rate_limit_config: None,
+            num_dials_before_backoff: 2, // Attempt at least 2 dials before backing off
+            max_parallel_peer_latency_pings: 3, // Ping up to 3 addresses in parallel
         };
 
         // Configure the number of parallel deserialization tasks
@@ -364,30 +413,6 @@ pub struct RestDiscovery {
     pub interval_secs: u64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RateLimitConfig {
-    /// Maximum number of bytes/s for an IP
-    pub ip_byte_bucket_rate: usize,
-    /// Maximum burst of bytes for an IP
-    pub ip_byte_bucket_size: usize,
-    /// Initial amount of tokens initially in the bucket
-    pub initial_bucket_fill_percentage: u8,
-    /// Allow for disabling the throttles
-    pub enabled: bool,
-}
-
-impl Default for RateLimitConfig {
-    fn default() -> Self {
-        Self {
-            ip_byte_bucket_rate: IP_BYTE_BUCKET_RATE,
-            ip_byte_bucket_size: IP_BYTE_BUCKET_SIZE,
-            initial_bucket_fill_percentage: 25,
-            enabled: true,
-        }
-    }
-}
-
 pub type PeerSet = HashMap<PeerId, Peer>;
 
 // TODO: Combine with RoleType?
@@ -508,6 +533,7 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maplit::hashset;
 
     #[test]
     fn test_num_parallel_deserialization_tasks() {
@@ -527,5 +553,206 @@ mod tests {
         // Configure the number of deserialization tasks and verify that it is not overridden
         network_config.configure_num_deserialization_tasks();
         assert_eq!(network_config.max_parallel_deserialization_tasks, Some(1));
+    }
+
+    #[test]
+    fn test_access_control_policy_default() {
+        // Default config should have no access control policy
+        let network_config = NetworkConfig::default();
+        assert!(network_config.access_control_policy.is_none());
+    }
+
+    #[test]
+    fn test_access_control_policy_allow_list_serialization() {
+        // Create peer IDs for testing
+        let peer_1 = PeerId::random();
+        let peer_2 = PeerId::random();
+
+        // Create an access control policy with an allow list
+        let access_control_policy_yaml = format!(
+            r#"
+            allow_list:
+              - "{}"
+              - "{}"
+            "#,
+            peer_1, peer_2
+        );
+        let access_control_policy: AccessControlPolicy =
+            serde_yaml::from_str(&access_control_policy_yaml).unwrap();
+
+        // Verify the access control policy is correctly parsed
+        match access_control_policy {
+            AccessControlPolicy::AllowList(peers) => {
+                assert_eq!(peers.len(), 2);
+                assert!(peers.contains(&peer_1));
+                assert!(peers.contains(&peer_2));
+            },
+            _ => panic!("Expected allow list policy!"),
+        }
+    }
+
+    #[test]
+    fn test_access_control_policy_block_list_serialization() {
+        // Create peer IDs for testing
+        let peer_1 = PeerId::random();
+        let peer_2 = PeerId::random();
+        let peer_3 = PeerId::random();
+
+        // Create an access control policy with a block list
+        let access_control_policy_yaml = format!(
+            r#"
+            block_list:
+              - "{}"
+              - "{}"
+              - "{}"
+            "#,
+            peer_1, peer_2, peer_3
+        );
+        let access_control_policy: AccessControlPolicy =
+            serde_yaml::from_str(&access_control_policy_yaml).unwrap();
+
+        // Verify the access control policy is correctly parsed
+        match access_control_policy {
+            AccessControlPolicy::BlockList(peers) => {
+                assert_eq!(peers.len(), 3);
+                assert!(peers.contains(&peer_1));
+                assert!(peers.contains(&peer_2));
+                assert!(peers.contains(&peer_3));
+            },
+            _ => panic!("Expected block list policy!"),
+        }
+    }
+
+    #[test]
+    fn test_access_control_policy_allow_list() {
+        // Create an access control policy with an allow list
+        let peer_1 = PeerId::random();
+        let peer_2 = PeerId::random();
+        let peer_3 = PeerId::random();
+        let allow_list = hashset! {peer_1, peer_2};
+        let access_control_policy = AccessControlPolicy::AllowList(allow_list);
+
+        // Peers in the allow list should be allowed
+        assert!(access_control_policy.is_peer_allowed(&peer_1));
+        assert!(access_control_policy.is_peer_allowed(&peer_2));
+
+        // Peer not in the allow list should be blocked
+        assert!(!access_control_policy.is_peer_allowed(&peer_3));
+    }
+
+    #[test]
+    fn test_access_control_policy_block_list() {
+        // Create an access control policy with a block list
+        let peer_1 = PeerId::random();
+        let peer_2 = PeerId::random();
+        let peer_3 = PeerId::random();
+        let block_list = hashset! {peer_3};
+        let access_control_policy = AccessControlPolicy::BlockList(block_list);
+
+        // Peers not in the block list should be allowed
+        assert!(access_control_policy.is_peer_allowed(&peer_1));
+        assert!(access_control_policy.is_peer_allowed(&peer_2));
+
+        // Peer in the block list should be blocked
+        assert!(!access_control_policy.is_peer_allowed(&peer_3));
+    }
+
+    #[test]
+    fn test_discovery_methods_singular_field() {
+        // When only `discovery_method` is set (backwards compat), it should be returned
+        let config = NetworkConfig {
+            discovery_method: DiscoveryMethod::Onchain,
+            discovery_methods: Vec::new(),
+            ..NetworkConfig::default()
+        };
+        let methods = config.discovery_methods();
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0], &DiscoveryMethod::Onchain);
+    }
+
+    #[test]
+    fn test_discovery_methods_plural_field() {
+        // When `discovery_methods` is set (modern path), they are returned with None filtered out
+        let config = NetworkConfig {
+            discovery_method: DiscoveryMethod::None,
+            discovery_methods: vec![
+                DiscoveryMethod::Onchain,
+                DiscoveryMethod::None,
+                DiscoveryMethod::File(FileDiscovery {
+                    path: PathBuf::from("/tmp/test"),
+                    interval_secs: 1,
+                }),
+            ],
+            ..NetworkConfig::default()
+        };
+        let methods = config.discovery_methods();
+        assert_eq!(methods.len(), 2);
+        assert_eq!(methods[0], &DiscoveryMethod::Onchain);
+        assert!(matches!(methods[1], &DiscoveryMethod::File(_)));
+    }
+
+    #[test]
+    #[should_panic(expected = "Can't specify discovery_method and discovery_methods")]
+    fn test_discovery_methods_both_fields_panics() {
+        // Setting both singular and plural should panic
+        let config = NetworkConfig {
+            discovery_method: DiscoveryMethod::Onchain,
+            discovery_methods: vec![DiscoveryMethod::Onchain],
+            ..NetworkConfig::default()
+        };
+        let _ = config.discovery_methods();
+    }
+
+    #[test]
+    fn test_discovery_methods_all_none_returns_empty() {
+        // When both fields are effectively None, returns empty
+        let config = NetworkConfig {
+            discovery_method: DiscoveryMethod::None,
+            discovery_methods: vec![DiscoveryMethod::None, DiscoveryMethod::None],
+            ..NetworkConfig::default()
+        };
+        let methods = config.discovery_methods();
+        assert!(methods.is_empty());
+    }
+
+    #[test]
+    fn test_max_inbound_connections_default() {
+        let config = NetworkConfig::default();
+        assert_eq!(config.max_inbound_connections, MAX_INBOUND_CONNECTIONS);
+    }
+
+    #[test]
+    fn test_max_inbound_connections_zero() {
+        // A config with max_inbound_connections=0 should be constructible
+        // (used by smoke test_connection_limiting to reject all unknown inbound)
+        let config = NetworkConfig {
+            max_inbound_connections: 0,
+            ..NetworkConfig::default()
+        };
+        assert_eq!(config.max_inbound_connections, 0);
+    }
+
+    #[test]
+    fn test_rest_discovery_serialization() {
+        // Verify RestDiscovery round-trips through YAML
+        let rest_discovery = RestDiscovery {
+            url: "http://localhost:8080".parse().unwrap(),
+            interval_secs: 5,
+        };
+        let yaml = serde_yaml::to_string(&rest_discovery).unwrap();
+        let deserialized: RestDiscovery = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(rest_discovery, deserialized);
+    }
+
+    #[test]
+    fn test_file_discovery_serialization() {
+        // Verify FileDiscovery round-trips through YAML
+        let file_discovery = FileDiscovery {
+            path: PathBuf::from("/tmp/peers.yaml"),
+            interval_secs: 1,
+        };
+        let yaml = serde_yaml::to_string(&file_discovery).unwrap();
+        let deserialized: FileDiscovery = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(file_discovery, deserialized);
     }
 }

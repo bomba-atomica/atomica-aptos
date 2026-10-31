@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{multi_region_network_test::chunk_peers, LoadDestination, NetworkLoadTest};
 use aptos_forge::{
@@ -13,7 +13,7 @@ use rand::Rng;
 use std::sync::Arc;
 
 async fn add_execution_delay(
-    swarm: Arc<tokio::sync::RwLock<Box<(dyn Swarm)>>>,
+    swarm: Arc<tokio::sync::RwLock<Box<dyn Swarm>>>,
     config: &ExecutionDelayConfig,
 ) -> anyhow::Result<()> {
     let validators = { swarm.read().await.get_validator_clients_with_names() };
@@ -52,7 +52,7 @@ async fn add_execution_delay(
 }
 
 async fn remove_execution_delay(
-    swarm: Arc<tokio::sync::RwLock<Box<(dyn Swarm)>>>,
+    swarm: Arc<tokio::sync::RwLock<Box<dyn Swarm>>>,
 ) -> anyhow::Result<()> {
     let validators = { swarm.read().await.get_validator_clients_with_names() };
 
@@ -229,7 +229,7 @@ impl CpuChaosTest {
     /// not the fullnodes).
     async fn create_cpu_chaos(
         &self,
-        swarm: Arc<tokio::sync::RwLock<Box<(dyn Swarm)>>>,
+        swarm: Arc<tokio::sync::RwLock<Box<dyn Swarm>>>,
     ) -> SwarmCpuStress {
         let all_validators = swarm
             .read()

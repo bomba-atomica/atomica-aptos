@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Tests for deeply-nested function values. The Move VM must ensure that it is not possible to
 //! construct values that are too deep, as this can cause stack overflow.
@@ -38,20 +38,14 @@ fn test_vm_value_too_deep_with_function_values() {
     );
     assert_success!(status);
 
-    let status = h.run_entry_function(
-        &acc,
-        str::parse("0x99::m::run2").unwrap(),
-        vec![],
-        vec![bcs::to_bytes(&129_u64).unwrap()],
-    );
+    let status = h.run_entry_function(&acc, str::parse("0x99::m::run2").unwrap(), vec![], vec![
+        bcs::to_bytes(&129_u64).unwrap(),
+    ]);
     assert_vm_status!(status, StatusCode::VM_MAX_VALUE_DEPTH_REACHED);
 
-    let status = h.run_entry_function(
-        &acc,
-        str::parse("0x99::m::run2").unwrap(),
-        vec![],
-        vec![bcs::to_bytes(&128_u64).unwrap()],
-    );
+    let status = h.run_entry_function(&acc, str::parse("0x99::m::run2").unwrap(), vec![], vec![
+        bcs::to_bytes(&128_u64).unwrap(),
+    ]);
     assert_success!(status);
 }
 

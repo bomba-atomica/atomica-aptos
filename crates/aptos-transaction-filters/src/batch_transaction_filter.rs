@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::transaction_filter::TransactionMatcher;
 use aptos_crypto::HashValue;
@@ -130,10 +130,9 @@ impl BatchTransactionFilter {
     /// Adds a filter rule that matches a specific transaction sender
     pub fn add_sender_filter(self, allow: bool, sender: AccountAddress) -> Self {
         let transaction_matcher = TransactionMatcher::Sender(sender);
-        self.add_multiple_matchers_filter(
-            allow,
-            vec![BatchTransactionMatcher::Transaction(transaction_matcher)],
-        )
+        self.add_multiple_matchers_filter(allow, vec![BatchTransactionMatcher::Transaction(
+            transaction_matcher,
+        )])
     }
 }
 

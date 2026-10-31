@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     expansion::ast::{ModuleIdent, ModuleIdent_},
@@ -166,13 +167,10 @@ impl AliasMap {
                 // the alias was defined. The name represents JUST the module name, though, so we do
                 // not change location of the address as we don't have this information.
                 // TODO maybe we should also keep the alias reference (or its location)?
-                let sp!(
-                    _,
-                    ModuleIdent_ {
-                        address,
-                        module: ModuleName(sp!(_, module))
-                    }
-                ) = ident;
+                let sp!(_, ModuleIdent_ {
+                    address,
+                    module: ModuleName(sp!(_, module))
+                }) = ident;
                 let address = *address;
                 let module = ModuleName(sp(n.loc, *module));
                 Some(sp(n.loc, ModuleIdent_ { address, module }))

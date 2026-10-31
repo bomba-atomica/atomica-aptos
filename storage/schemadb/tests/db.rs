@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::Result;
 use aptos_schemadb::{
@@ -93,17 +92,17 @@ fn open_db(dir: &aptos_temppath::TempPath) -> DB {
     let mut db_opts = rocksdb::Options::default();
     db_opts.create_if_missing(true);
     db_opts.create_missing_column_families(true);
-    DB::open(dir.path(), "test", get_column_families(), &db_opts).expect("Failed to open DB.")
+    DB::open(dir.path(), "test", get_column_families(), db_opts).expect("Failed to open DB.")
 }
 
 fn open_db_read_only(dir: &aptos_temppath::TempPath) -> DB {
-    DB::open_cf_readonly(&rocksdb::Options::default(), dir.path(), "test", get_cfds())
+    DB::open_cf_readonly(rocksdb::Options::default(), dir.path(), "test", get_cfds())
         .expect("Failed to open DB.")
 }
 
 fn open_db_as_secondary(dir: &aptos_temppath::TempPath, dir_sec: &aptos_temppath::TempPath) -> DB {
     DB::open_cf_as_secondary(
-        &rocksdb::Options::default(),
+        rocksdb::Options::default(),
         dir.path(),
         dir_sec.path(),
         "test",
@@ -399,8 +398,8 @@ fn test_unrecognised_column_family() {
     opts.create_if_missing(true);
     opts.create_missing_column_families(true);
 
-    let db = DB::open(tmpdir.path(), "test", vec!["cf1", "cf2"], &opts).unwrap();
+    let db = DB::open(tmpdir.path(), "test", vec!["cf1", "cf2"], opts.clone()).unwrap();
     drop(db);
 
-    DB::open(tmpdir.path(), "test", vec!["cf1"], &opts).unwrap();
+    DB::open(tmpdir.path(), "test", vec!["cf1"], opts).unwrap();
 }

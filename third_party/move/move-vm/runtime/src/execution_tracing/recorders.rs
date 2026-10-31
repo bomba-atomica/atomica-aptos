@@ -1,16 +1,18 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Interfaces and implementations for [Trace] collection.
 
 use crate::{
     execution_tracing::{trace::DynamicCall, Trace},
-    instr::Instruction,
     LoadedFunction,
 };
 use bitvec::vec::BitVec;
 use fxhash::FxHasher64;
 use move_core_types::function::ClosureMask;
+use move_vm_types::instr::Instruction;
 use std::hash::{Hash, Hasher};
 
 /// Interface for recording the trace at runtime. It is sufficient to record branch decisions as

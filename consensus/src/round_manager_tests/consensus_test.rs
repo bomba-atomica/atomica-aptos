@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 // Parts of the project are originally copyright © Meta Platforms, Inc.
 
 use crate::{
@@ -25,16 +25,23 @@ use aptos_consensus_types::{
     common::{Author, Payload, Round},
     opt_proposal_msg::OptProposalMsg,
     proposal_msg::ProposalMsg,
+    quorum_cert::QuorumCert,
     sync_info::SyncInfo,
     timeout_2chain::{TwoChainTimeout, TwoChainTimeoutWithPartialSignatures},
+    vote_data::VoteData,
 };
-use aptos_crypto::HashValue;
+use aptos_crypto::{hash::CryptoHash, HashValue};
 use aptos_infallible::Mutex;
 use aptos_logger::prelude::info;
 use aptos_network::{protocols::network::Event, ProtocolId};
 use aptos_safety_rules::{PersistentSafetyStorage, SafetyRulesManager};
 use aptos_secure_storage::Storage;
-use aptos_types::validator_verifier::generate_validator_verifier;
+use aptos_types::{
+    aggregate_signature::AggregateSignature,
+    block_info::BlockInfo,
+    ledger_info::{LedgerInfo, LedgerInfoWithSignatures},
+    validator_verifier::generate_validator_verifier,
+};
 use futures::{channel::oneshot, StreamExt};
 use std::{sync::Arc, time::Duration};
 use tokio::{runtime::Runtime, time::timeout};
@@ -272,7 +279,7 @@ fn vote_on_successful_proposal() {
         node.next_proposal().await;
 
         let proposal = Block::new_proposal(
-            Payload::empty(false, true),
+            Payload::empty(false),
             1,
             1,
             genesis_qc.clone(),
@@ -290,6 +297,87 @@ fn vote_on_successful_proposal() {
         assert_eq!(consensus_state.last_voted_round(), 1);
         assert_eq!(consensus_state.preferred_round(), 0);
         assert!(consensus_state.in_validator_set());
+    });
+}
+
+#[test]
+/// A round-0 (genesis) QC is accepted by `QuorumCert::verify` without signatures, so a
+/// malicious proposer could embed a round-0 QC that reuses the real genesis block id but carries
+/// an attacker-chosen executed_state_id / version. `process_proposal` binds the round-0 parent
+/// QC's certified BlockInfo to the locally-trusted genesis and must reject the forged one.
+///
+/// The no-false-rejection direction (a proposal carrying the genuine genesis QC is accepted) is
+/// covered by `vote_on_successful_proposal`, which also exercises this binding.
+fn reject_proposal_with_forged_genesis_qc() {
+    let runtime = consensus_runtime();
+    let mut playground = NetworkPlayground::new(runtime.handle().clone());
+    let mut nodes = NodeSetup::create_nodes(
+        &mut playground,
+        runtime.handle().clone(),
+        1,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+    );
+    let node = &mut nodes[0];
+
+    let genesis_qc = certificate_for_genesis();
+    let genuine_genesis = genesis_qc.certified_block();
+    // Forge a round-0 BlockInfo: same genesis block id (so the proposal links to the local root)
+    // but with attacker-controlled execution state.
+    let forged_genesis = BlockInfo::new(
+        genuine_genesis.epoch(),
+        genuine_genesis.round(),
+        genuine_genesis.id(),
+        HashValue::random(),
+        genuine_genesis.version() + 1,
+        genuine_genesis.timestamp_usecs(),
+        genuine_genesis.next_epoch_state().cloned(),
+    );
+    assert_ne!(&forged_genesis, genuine_genesis);
+    // The forged QC is internally self-consistent (parent == certified == commit_info, no voters),
+    // so it passes the round-0 shortcut in `QuorumCert::verify`.
+    let forged_vote_data = VoteData::new(forged_genesis.clone(), forged_genesis.clone());
+    let forged_qc = QuorumCert::new(
+        forged_vote_data.clone(),
+        LedgerInfoWithSignatures::new(
+            LedgerInfo::new(forged_genesis, forged_vote_data.hash()),
+            AggregateSignature::empty(),
+        ),
+    );
+    forged_qc
+        .verify(&generate_validator_verifier(std::slice::from_ref(
+            &node.signer,
+        )))
+        .unwrap();
+
+    timed_block_on(&runtime, async {
+        // Start round 1 and clear the message queue.
+        node.next_proposal().await;
+
+        let forged_proposal = Block::new_proposal(
+            Payload::empty(false),
+            1,
+            1,
+            forged_qc,
+            &node.signer,
+            Vec::new(),
+        )
+        .unwrap();
+        let err = node
+            .round_manager
+            .process_proposal(forged_proposal)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("does not match the local genesis"),
+            "unexpected rejection reason: {}",
+            err
+        );
     });
 }
 
@@ -322,7 +410,7 @@ fn delay_proposal_processing_in_sync_only() {
         // Set sync only to true so that new proposal processing is delayed.
         node.block_store.set_back_pressure_for_test(true);
         let proposal = Block::new_proposal(
-            Payload::empty(false, true),
+            Payload::empty(false),
             1,
             1,
             genesis_qc.clone(),
@@ -383,7 +471,7 @@ fn no_vote_on_old_proposal() {
     let node = &mut nodes[0];
     let genesis_qc = certificate_for_genesis();
     let new_block = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         1,
         genesis_qc.clone(),
@@ -393,7 +481,7 @@ fn no_vote_on_old_proposal() {
     .unwrap();
     let new_block_id = new_block.id();
     let old_block = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         2,
         genesis_qc,
@@ -444,7 +532,7 @@ fn no_vote_on_mismatch_round() {
     .unwrap();
     let genesis_qc = certificate_for_genesis();
     let correct_block = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         1,
         genesis_qc.clone(),
@@ -453,7 +541,7 @@ fn no_vote_on_mismatch_round() {
     )
     .unwrap();
     let block_skip_round = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         2,
         2,
         genesis_qc.clone(),
@@ -579,7 +667,7 @@ fn no_vote_on_invalid_proposer() {
     let mut node = nodes.pop().unwrap();
     let genesis_qc = certificate_for_genesis();
     let correct_block = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         1,
         genesis_qc.clone(),
@@ -588,7 +676,7 @@ fn no_vote_on_invalid_proposer() {
     )
     .unwrap();
     let block_incorrect_proposer = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         1,
         genesis_qc.clone(),
@@ -649,7 +737,7 @@ fn new_round_on_timeout_certificate() {
     .unwrap();
     let genesis_qc = certificate_for_genesis();
     let correct_block = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         1,
         genesis_qc.clone(),
@@ -658,7 +746,7 @@ fn new_round_on_timeout_certificate() {
     )
     .unwrap();
     let block_skip_round = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         2,
         2,
         genesis_qc.clone(),
@@ -742,7 +830,7 @@ fn reject_invalid_failed_authors() {
 
     let create_proposal = |round: Round, failed_authors: Vec<(Round, Author)>| {
         let block = Block::new_proposal(
-            Payload::empty(false, true),
+            Payload::empty(false),
             round,
             2,
             genesis_qc.clone(),
@@ -828,7 +916,7 @@ fn response_on_block_retrieval() {
 
     let genesis_qc = certificate_for_genesis();
     let block = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         1,
         genesis_qc.clone(),
@@ -958,7 +1046,7 @@ fn recover_on_restart() {
             genesis_qc.clone(),
             i,
             i,
-            Payload::empty(false, true),
+            Payload::empty(false),
             (std::cmp::max(1, i.saturating_sub(10))..i)
                 .map(|i| (i, inserter.signer().author()))
                 .collect(),

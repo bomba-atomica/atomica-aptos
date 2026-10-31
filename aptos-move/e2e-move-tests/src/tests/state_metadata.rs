@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::MoveHarness;
 use aptos_sdk::types::get_apt_primary_store_address;
@@ -27,13 +27,10 @@ fn test_metadata_tracking() {
     let account1 = harness.new_account_at(address1);
 
     // Disable storage slot metadata tracking
-    harness.enable_features(
-        vec![],
-        vec![
-            FeatureFlag::STORAGE_SLOT_METADATA,
-            FeatureFlag::REFUNDABLE_BYTES,
-        ],
-    );
+    harness.enable_features(vec![], vec![
+        FeatureFlag::STORAGE_SLOT_METADATA,
+        FeatureFlag::REFUNDABLE_BYTES,
+    ]);
     // Create and fund account2
     harness.run_transaction_payload(
         &account1,

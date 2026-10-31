@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_metrics_core::{
     exponential_buckets, register_avg_counter_vec, register_histogram, register_histogram_vec,
@@ -88,6 +88,24 @@ pub static EXCEED_PER_BLOCK_OUTPUT_LIMIT_COUNT: Lazy<IntCounterVec> = Lazy::new(
         "aptos_execution_output_limit_count",
         "Count of times the BlockSTM is early halted due to exceeding the per-block output size limit",
         &["mode"]
+    )
+    .unwrap()
+});
+
+/// Histogram of txns cut when BlockSTM early-halts due to a per-block limit.
+/// Label `reason`: `gas` (effective block gas limit) or `output_size` (block output limit).
+/// Only recorded when an early halt occurred; observations of 0 indicate the halt fired on the
+/// last txn (no remaining input txns to cut).
+pub static BLOCK_TXNS_CUT_BY_LIMIT: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "aptos_execution_block_txns_cut_by_limit",
+        "Histogram of txns cut when BlockSTM early-halts due to a per-block gas or output limit.",
+        &["reason", "mode"],
+        // Most halts cut a modest tail; cover 1..8k with doubling buckets.
+        vec![
+            1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0, 4096.0,
+            8192.0
+        ],
     )
     .unwrap()
 });
@@ -361,6 +379,14 @@ pub static BLOCKSTM_VERSION_NUMBER: Lazy<IntGauge> = Lazy::new(|| {
     .unwrap()
 });
 
+pub static PAR_EXEC_POOL_SIZE: Lazy<IntGauge> = Lazy::new(|| {
+    register_int_gauge!(
+        "par_exec_pool_size",
+        "Number of worker threads currently spawned in the BlockSTM worker pool"
+    )
+    .unwrap()
+});
+
 pub static GLOBAL_MODULE_CACHE_SIZE_IN_BYTES: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!(
         "global_module_cache_size_in_bytes",
@@ -388,7 +414,7 @@ pub static GLOBAL_MODULE_CACHE_MISS_SECONDS: Lazy<Histogram> = Lazy::new(|| {
     .unwrap()
 });
 
-pub static GLOBAL_LAYOUT_CACHE_NUM_NON_ENTRIES: Lazy<IntGauge> = Lazy::new(|| {
+pub static GLOBAL_LAYOUT_CACHE_NUM_ENTRIES: Lazy<IntGauge> = Lazy::new(|| {
     register_int_gauge!(
         "global_layout_cache_num_entries",
         "Number of struct/enum layouts cached in global cache"
@@ -420,6 +446,17 @@ pub static HOT_STATE_OP_ACCUMULATOR_COUNTER: Lazy<IntCounterVec> = Lazy::new(|| 
         "Various counters for BlockHotStateOpAccumulator",
         // metric labels (dimensions)
         &["name"],
+    )
+    .unwrap()
+});
+
+pub static HOT_STATE_PROMOTIONS_PER_BLOCK: Lazy<Histogram> = Lazy::new(|| {
+    register_histogram!(
+        // metric name
+        "aptos_execution_hot_state_promotions_per_block",
+        // metric description
+        "Number of keys the block end info designates for hot state promotion",
+        exponential_buckets(/*start=*/ 1.0, /*factor=*/ 2.0, /*count=*/ 16).unwrap(),
     )
     .unwrap()
 });

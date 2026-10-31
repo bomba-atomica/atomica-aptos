@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -13,7 +13,7 @@ pub mod test_utils;
 
 use crate::{builder::GenesisConfiguration, config::ValidatorConfiguration};
 use aptos_config::config::{
-    RocksdbConfigs, StorageDirPaths, BUFFERED_STATE_TARGET_ITEMS,
+    HotStateConfig, RocksdbConfigs, StorageDirPaths, BUFFERED_STATE_TARGET_ITEMS,
     DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD, NO_OP_STORAGE_PRUNER_CONFIG,
 };
 use aptos_crypto::ed25519::Ed25519PublicKey;
@@ -26,8 +26,8 @@ use aptos_types::{
     jwks::patch::IssuerJWK,
     keyless::Groth16VerificationKey,
     on_chain_config::{
-        Features, GasScheduleV2, OnChainConsensusConfig, OnChainExecutionConfig,
-        OnChainJWKConsensusConfig, OnChainRandomnessConfig,
+        Features, GasScheduleV2, OnChainChunkyDKGConfig, OnChainConsensusConfig,
+        OnChainExecutionConfig, OnChainJWKConsensusConfig, OnChainRandomnessConfig,
     },
     transaction::Transaction,
     waypoint::Waypoint,
@@ -77,9 +77,12 @@ pub struct GenesisInfo {
     pub gas_schedule: GasScheduleV2,
     pub initial_features_override: Option<Features>,
     pub randomness_config_override: Option<OnChainRandomnessConfig>,
+    pub chunky_dkg_config_override: Option<OnChainChunkyDKGConfig>,
     pub jwk_consensus_config_override: Option<OnChainJWKConsensusConfig>,
     pub initial_jwks: Vec<IssuerJWK>,
     pub keyless_groth16_vk: Option<Groth16VerificationKey>,
+    /// See `aptos_vm_genesis::GenesisConfiguration::initialize_decryption_at_genesis`.
+    pub initialize_decryption_at_genesis: bool,
 }
 
 impl GenesisInfo {
@@ -118,9 +121,11 @@ impl GenesisInfo {
             gas_schedule: genesis_config.gas_schedule.clone(),
             initial_features_override: genesis_config.initial_features_override.clone(),
             randomness_config_override: genesis_config.randomness_config_override.clone(),
+            chunky_dkg_config_override: genesis_config.chunky_dkg_config_override.clone(),
             jwk_consensus_config_override: genesis_config.jwk_consensus_config_override.clone(),
             initial_jwks: genesis_config.initial_jwks.clone(),
             keyless_groth16_vk: genesis_config.keyless_groth16_vk.clone(),
+            initialize_decryption_at_genesis: genesis_config.initialize_decryption_at_genesis,
         })
     }
 
@@ -155,9 +160,11 @@ impl GenesisInfo {
                 employee_vesting_period_duration: 5 * 60, // 5 minutes
                 initial_features_override: self.initial_features_override.clone(),
                 randomness_config_override: self.randomness_config_override.clone(),
+                chunky_dkg_config_override: self.chunky_dkg_config_override.clone(),
                 jwk_consensus_config_override: self.jwk_consensus_config_override.clone(),
                 initial_jwks: self.initial_jwks.clone(),
                 keyless_groth16_vk: self.keyless_groth16_vk.clone(),
+                initialize_decryption_at_genesis: self.initialize_decryption_at_genesis,
             },
             &self.consensus_config,
             &self.execution_config,
@@ -170,13 +177,13 @@ impl GenesisInfo {
         let path = TempPath::new();
         let aptosdb = AptosDB::open(
             StorageDirPaths::from_path(path),
-            false,
+            /* readonly = */ false,
             NO_OP_STORAGE_PRUNER_CONFIG,
             RocksdbConfigs::default(),
-            false, /* indexer */
             BUFFERED_STATE_TARGET_ITEMS,
             DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
-            None,
+            /* internal_indexer_db = */ None,
+            HotStateConfig::default(),
         )?;
         let db_rw = DbReaderWriter::new(aptosdb);
         aptos_executor::db_bootstrapper::generate_waypoint::<AptosVMBlockExecutor>(&db_rw, genesis)

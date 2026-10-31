@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     common::{Author, Payload, Round},
@@ -72,7 +71,7 @@ pub enum BlockType {
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq, CryptoHasher)]
 /// Block has the core data of a consensus block that should be persistent when necessary.
-/// Each block must know the id of its parent and keep the QuorurmCertificate to that parent.
+/// Each block must know the id of its parent and keep the QuorumCertificate to that parent.
 pub struct BlockData {
     /// Epoch number corresponds to the set of validators that are active for this block.
     epoch: u64,
@@ -280,7 +279,7 @@ impl BlockData {
     pub fn dummy_with_validator_txns(txns: Vec<ValidatorTransaction>) -> Self {
         Self::new_proposal_ext(
             txns,
-            Payload::empty(false, true),
+            Payload::empty(false),
             Author::ONE,
             vec![],
             1,
@@ -451,7 +450,7 @@ fn test_reconfiguration_suffix() {
         ),
     );
     let reconfig_suffix_block = BlockData::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         AccountAddress::random(),
         Vec::new(),
         2,

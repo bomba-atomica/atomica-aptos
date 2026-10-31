@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     assert_success, assert_vm_status,
@@ -169,10 +169,9 @@ fn test_resource_groups(resource_group_charge_as_sum_enabled: bool) {
             vec![],
         );
     } else {
-        h.enable_features(
-            vec![],
-            vec![FeatureFlag::RESOURCE_GROUPS_SPLIT_IN_VM_CHANGE_SET],
-        );
+        h.enable_features(vec![], vec![
+            FeatureFlag::RESOURCE_GROUPS_SPLIT_IN_VM_CHANGE_SET,
+        ]);
     }
 
     let primary_addr = AccountAddress::from_hex_literal("0xcafe").unwrap();

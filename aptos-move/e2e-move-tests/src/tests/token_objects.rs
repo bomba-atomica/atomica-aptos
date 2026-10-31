@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{assert_success, tests::common, MoveHarness};
 use aptos_language_e2e_tests::account::Account;
@@ -117,18 +117,13 @@ pub fn create_mint_hero_payload(addr: &AccountAddress, description: &str) -> Tra
         member_id: function_id,
     } = fun;
 
-    TransactionPayload::EntryFunction(EntryFunction::new(
-        module_id,
-        function_id,
-        vec![],
-        vec![
-            bcs::to_bytes(description).unwrap(),
-            bcs::to_bytes("Male").unwrap(),
-            bcs::to_bytes("Wukong").unwrap(),
-            bcs::to_bytes("Monkey God").unwrap(),
-            bcs::to_bytes("404").unwrap(),
-        ],
-    ))
+    TransactionPayload::EntryFunction(EntryFunction::new(module_id, function_id, vec![], vec![
+        bcs::to_bytes(description).unwrap(),
+        bcs::to_bytes("Male").unwrap(),
+        bcs::to_bytes("Wukong").unwrap(),
+        bcs::to_bytes("Monkey God").unwrap(),
+        bcs::to_bytes("404").unwrap(),
+    ]))
 }
 
 pub fn create_set_hero_description_payload(
@@ -141,14 +136,9 @@ pub fn create_set_hero_description_payload(
         member_id: function_id,
     } = fun;
 
-    TransactionPayload::EntryFunction(EntryFunction::new(
-        module_id,
-        function_id,
-        vec![],
-        vec![
-            bcs::to_bytes("Hero Quest!").unwrap(),
-            bcs::to_bytes("Wukong").unwrap(),
-            bcs::to_bytes(description).unwrap(),
-        ],
-    ))
+    TransactionPayload::EntryFunction(EntryFunction::new(module_id, function_id, vec![], vec![
+        bcs::to_bytes("Hero Quest!").unwrap(),
+        bcs::to_bytes("Wukong").unwrap(),
+        bcs::to_bytes(description).unwrap(),
+    ]))
 }

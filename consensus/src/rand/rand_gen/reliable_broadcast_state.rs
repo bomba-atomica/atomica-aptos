@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     logging::{LogEvent, LogSchema},
@@ -7,7 +7,7 @@ use crate::{
         network_messages::RandMessage,
         rand_store::RandStore,
         types::{
-            AugData, AugDataSignature, CertifiedAugData, CertifiedAugDataAck, PathType, RandConfig,
+            AugData, AugDataSignature, CertifiedAugData, CertifiedAugDataAck, RandConfig,
             RandShare, RequestShare, TAugmentedData, TShare,
         },
     },
@@ -129,20 +129,19 @@ impl<S: TShare, D: TAugmentedData> BroadcastStatus<RandMessage<S, D>, RandMessag
     type Response = RandShare<S>;
 
     fn add(&self, peer: Author, share: Self::Response) -> anyhow::Result<Option<()>> {
-        ensure!(share.author() == &peer, "Author does not match");
         ensure!(
             share.metadata() == &self.rand_metadata,
             "Metadata does not match: local {:?}, received {:?}",
             self.rand_metadata,
             share.metadata()
         );
-        share.verify(&self.rand_config)?;
+        share.optimistic_verify(&self.rand_config, &peer)?;
         info!(LogSchema::new(LogEvent::ReceiveReactiveRandShare)
             .epoch(share.epoch())
             .round(share.metadata().round)
             .remote_peer(*share.author()));
         let mut store = self.rand_store.lock();
-        let aggregated = if store.add_share(share, PathType::Slow)? {
+        let aggregated = if store.add_share(share)? {
             Some(())
         } else {
             None

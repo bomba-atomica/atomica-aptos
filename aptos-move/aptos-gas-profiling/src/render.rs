@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::log::{FrameName, WriteOpType};
 use aptos_types::{
@@ -113,14 +113,12 @@ impl Display for Render<'_, StateKey> {
                 write!(f, "{}::{}", Render(&ap.address), Render(&ap.get_path()))
             },
             TableItem { handle, key } => {
-                write!(
-                    f,
-                    "table_item<{},{}>",
-                    Render(handle),
-                    TableKey { bytes: key },
-                )
+                write!(f, "table_item<{},{}>", Render(handle), TableKey {
+                    bytes: key
+                },)
             },
             Raw(..) => panic!("not supported"),
+            TradingNative(..) => panic!("not supported"),
         }
     }
 }
@@ -129,15 +127,11 @@ impl Display for Render<'_, WriteOpType> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use WriteOpType::*;
 
-        write!(
-            f,
-            "{}",
-            match self.0 {
-                Creation => "create",
-                Modification => "modify",
-                Deletion => "delete",
-            }
-        )
+        write!(f, "{}", match self.0 {
+            Creation => "create",
+            Modification => "modify",
+            Deletion => "delete",
+        })
     }
 }
 

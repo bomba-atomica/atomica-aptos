@@ -1,10 +1,10 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     algebra::{lagrange::lagrange_coefficients, polynomials::get_powers_of_tau},
     pvss,
-    pvss::{Player, WeightedConfig},
+    pvss::{Player, WeightedConfigBlstrs},
     utils::{g1_multi_exp, HasMultiExp},
     weighted_vuf::traits::WeightedVUF,
 };
@@ -106,15 +106,22 @@ impl WeightedVUF for BlsWUF {
     }
 
     fn aggregate_shares(
-        wc: &WeightedConfig,
+        wc: &WeightedConfigBlstrs,
         apks_and_proofs: &[(Player, Self::AugmentedPubKeyShare, Self::ProofShare)],
     ) -> Self::Proof {
         // Collect all the evaluation points associated with each player
         let mut sub_player_ids = Vec::with_capacity(wc.get_total_weight());
 
         for (player, _, _) in apks_and_proofs {
-            for j in 0..wc.get_player_weight(player) {
-                sub_player_ids.push(wc.get_virtual_player(player, j).id);
+            let weight = wc
+                .get_player_weight(player)
+                .expect("player id is in bounds");
+            for j in 0..weight {
+                sub_player_ids.push(
+                    wc.get_virtual_player(player, j)
+                        .expect("j < weight holds by construction")
+                        .id,
+                );
             }
         }
 
@@ -142,7 +149,7 @@ impl WeightedVUF for BlsWUF {
 
     // NOTE: This VUF has the same evaluation as its proof.
     fn derive_eval(
-        _wc: &WeightedConfig,
+        _wc: &WeightedConfigBlstrs,
         _pp: &Self::PublicParameters,
         _msg: &[u8],
         _apks: &[Option<Self::AugmentedPubKeyShare>],
@@ -159,6 +166,7 @@ impl WeightedVUF for BlsWUF {
         _apks: &[Option<Self::AugmentedPubKeyShare>],
         msg: &[u8],
         proof: &Self::Proof,
+        _thread_pool: &ThreadPool,
     ) -> anyhow::Result<()> {
         let hash = Self::hash_to_curve(msg);
 

@@ -1,7 +1,16 @@
 # IBE Implementation Summary
 
-**Status:** Phase 5.2 COMPLETE (January 22, 2026)
-**Branch:** `timelock-elgamal-pvss`
+**Status:** Updated 2026-10-31 for the chunky DKG design. Sections marked LEGACY below describe the retired dual-output DKG and are history only.
+**Design source:** [IBE on Chunky DKG Spec](../decisions/aptos-upgrade-ibe-chunky-spec.md). [ADR-001](../adr/adr-001-dual-output-dkg.md) is superseded.
+
+## Current design (summary)
+
+- The timelock secret comes from its own chunky DKG session (`timelock_dkg.move`, `TimelockDKGResult` validator transaction, tag 4). The dealt public key is the Boneh-Franklin master public key (MPK, G2).
+- There is no `scalar_elgamal` PVSS and no dual-output DKG. Randomness uses the upstream DKG only.
+- Bids use the hardened Boneh-Franklin wrapper (`ibe::ciphertext`: `encrypt_bid`, `decrypt_bid`, `verify_bid_ct`) with AES-128-GCM and a one-time Ed25519 signature. The old XOR-only `ibe_encrypt` is gone from the tree.
+- Validators submit DK shares through `TimelockShare` (tag 3). The Rust verifier checks each share with a pairing check. The rebuilt key must pass `ibe::verify_decryption_key` before a reveal counts.
+- The IBE code lives in `crates/aptos-dkg/src/ibe` on arkworks. Natives are in `aptos-move/framework/natives/src/timelock.rs`.
+- Test counts and the file table below predate this change. Treat them as stale.
 
 ---
 
@@ -25,7 +34,7 @@ See [Definitions](../definitions.md) for full taxonomy.
 | Component           | Status                 | Location                            |
 | ------------------- | ---------------------- | ----------------------------------- |
 | IBE Primitives      | ✅ Complete            | `crates/aptos-dkg/src/ibe/mod.rs`   |
-| Scalar ElGamal PVSS | ✅ Complete            | `crates/aptos-dkg/src/pvss/`        |
+| Scalar ElGamal PVSS | RETIRED (removed)      | superseded by the chunky DKG session |
 | Timelock Registry   | ✅ Complete            | `ibe_config.move`                   |
 | DK Reconstruction   | ✅ Complete            | `reconstruct_ibe_dk()`              |
 | Golden Vectors      | ✅ Complete            | `ibe_golden_vector_fixtures.move`   |
@@ -36,7 +45,7 @@ See [Definitions](../definitions.md) for full taxonomy.
 
 ## Architecture
 
-### Dual-Output DKG
+### Dual-Output DKG (LEGACY, retired)
 
 ```
 InputSecret (scalar a)

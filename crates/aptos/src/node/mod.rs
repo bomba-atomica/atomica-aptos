@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub mod analyze;
 pub mod local_testnet;
@@ -9,7 +9,8 @@ use crate::{
     common::{
         types::{
             CliCommand, CliError, CliResult, CliTypedResult, OptionalPoolAddressArgs,
-            PoolAddressArgs, ProfileOptions, RestOptions, TransactionOptions, TransactionSummary,
+            PoolAddressArgs, ProfileOptions, RestOptions, TransactionOptions,
+            TransactionOptionsExt, TransactionSummary,
         },
         utils::read_from_file,
     },
@@ -80,6 +81,9 @@ pub enum NodeTool {
     RunLocalnet(RunLocalnet),
     UpdateConsensusKey(UpdateConsensusKey),
     UpdateValidatorNetworkAddresses(UpdateValidatorNetworkAddresses),
+    ValidateDigestKey(ValidateDigestKey),
+    ValidatePublicParameters(ValidatePublicParameters),
+    ValidateTimelockPublicParameters(ValidateTimelockPublicParameters),
 }
 
 impl NodeTool {
@@ -107,10 +111,17 @@ impl NodeTool {
                 .map(|_| "".to_string()),
             UpdateConsensusKey(tool) => tool.execute_serialized().await,
             UpdateValidatorNetworkAddresses(tool) => tool.execute_serialized().await,
+            ValidateDigestKey(tool) => tool.execute_serialized().await,
+            ValidatePublicParameters(tool) => tool.execute_serialized().await,
+            ValidateTimelockPublicParameters(tool) => tool.execute_serialized().await,
         }
     }
 }
 
+/// Shared option for supplying validator settings from an operator config file
+///
+/// Values loaded from the file are used as defaults for the corresponding
+/// command line arguments, which take precedence when set explicitly.
 #[derive(Parser)]
 pub struct OperatorConfigFileArgs {
     /// Operator Configuration file
@@ -132,6 +143,10 @@ impl OperatorConfigFileArgs {
     }
 }
 
+/// Shared options for a validator's BLS12-381 consensus key
+///
+/// Both the public key and its proof of possession may instead be supplied
+/// through an operator config file.
 #[derive(Parser)]
 pub struct ValidatorConsensusKeyArgs {
     /// Hex encoded Consensus public key
@@ -182,6 +197,10 @@ impl ValidatorConsensusKeyArgs {
     }
 }
 
+/// Shared options for a validator's network addresses and network keys
+///
+/// These describe how the validator and its optional full node are reached by
+/// peers. They may instead be supplied through an operator config file.
 #[derive(Parser)]
 pub struct ValidatorNetworkAddressesArgs {
     /// Host and port pair for the validator
@@ -1486,6 +1505,187 @@ impl Time {
 
     pub fn new_seconds(seconds: u64) -> Self {
         Self::new(Duration::from_secs(seconds))
+    }
+}
+
+#[derive(Serialize)]
+pub struct BlobValidationResult {
+    pub file_size_bytes: u64,
+    pub blake3: String,
+}
+
+fn file_size_and_blake3(file: &PathBuf) -> CliTypedResult<(u64, String)> {
+    use std::time::Instant;
+
+    println!("Reading file {}...", file.display());
+    let file_size_bytes = std::fs::metadata(file)
+        .map_err(|e| CliError::IO(format!("Failed to stat {}: {}", file.display(), e), e))?
+        .len();
+
+    println!("Computing blake3...");
+    let t = Instant::now();
+    let mut hasher = blake3::Hasher::new();
+    hasher
+        .update_mmap_rayon(file)
+        .map_err(|e| CliError::IO(format!("Failed to read {}: {}", file.display(), e), e))?;
+    let blake3 = hasher.finalize().to_hex().to_string();
+    println!("blake3: {} in {:.2?}", blake3, t.elapsed());
+
+    Ok((file_size_bytes, blake3))
+}
+
+/// Validate a BCS-serialized DigestKey blob file
+///
+/// Reads the file, computes the file size and blake3 checksum, and verifies
+/// that the contents are a valid BCS-serialized DigestKey.
+#[derive(Parser)]
+pub struct ValidateDigestKey {
+    /// Path to the BCS-serialized DigestKey blob file
+    #[clap(value_parser)]
+    pub file: PathBuf,
+}
+
+#[async_trait]
+impl CliCommand<BlobValidationResult> for ValidateDigestKey {
+    fn command_name(&self) -> &'static str {
+        "ValidateDigestKey"
+    }
+
+    async fn execute(self) -> CliTypedResult<BlobValidationResult> {
+        use aptos_batch_encryption::shared::digest_key_file;
+        use aptos_types::secret_sharing::DigestKey;
+        use std::time::Instant;
+
+        let (file_size_bytes, blake3) = file_size_and_blake3(&self.file)?;
+
+        println!("Deserializing DigestKey...");
+        let t = Instant::now();
+        let _key: DigestKey = digest_key_file::read_digest_key(&self.file).map_err(|e| {
+            CliError::UnexpectedError(format!(
+                "Failed to deserialize DigestKey ({} bytes): {}",
+                file_size_bytes, e
+            ))
+        })?;
+        println!("DigestKey is valid. Deserialized in {:.2?}", t.elapsed());
+
+        Ok(BlobValidationResult {
+            file_size_bytes,
+            blake3,
+        })
+    }
+}
+
+/// Validate a BCS-serialized PublicParameters blob file
+///
+/// Reads the file, computes the file size and blake3 checksum, and verifies
+/// that the contents are a valid BCS-serialized PublicParameters.
+#[derive(Parser)]
+pub struct ValidatePublicParameters {
+    /// Path to the BCS-serialized PublicParameters blob file
+    #[clap(value_parser)]
+    pub file: PathBuf,
+}
+
+#[async_trait]
+impl CliCommand<BlobValidationResult> for ValidatePublicParameters {
+    fn command_name(&self) -> &'static str {
+        "ValidatePublicParameters"
+    }
+
+    async fn execute(self) -> CliTypedResult<BlobValidationResult> {
+        use aptos_types::dkg::chunky_dkg::ChunkyDKGPublicParameters;
+        use std::time::Instant;
+
+        let (file_size_bytes, blake3) = file_size_and_blake3(&self.file)?;
+
+        println!("Deserializing PublicParameters...");
+        let t = Instant::now();
+        let bytes = std::fs::read(&self.file).map_err(|e| {
+            CliError::IO(format!("Failed to read {}: {}", self.file.display(), e), e)
+        })?;
+        let _pp: ChunkyDKGPublicParameters = bcs::from_bytes(&bytes).map_err(|e| {
+            CliError::UnexpectedError(format!(
+                "Failed to deserialize PublicParameters ({} bytes): {}",
+                file_size_bytes, e
+            ))
+        })?;
+        println!(
+            "PublicParameters is valid. Deserialized in {:.2?}",
+            t.elapsed()
+        );
+
+        Ok(BlobValidationResult {
+            file_size_bytes,
+            blake3,
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub struct TimelockParametersValidationResult {
+    pub file_size_bytes: u64,
+    /// SHA3-256 of the blob, the value stored on chain as `public_parameters_hash`.
+    pub sha3_256: String,
+    pub hash_matches_expected: Option<bool>,
+}
+
+/// Validate a timelock PublicParameters blob file
+///
+/// Runs the real validation, not only parse and size: every point of the ElGamal bases, the commitment
+/// base and the DeKART prover key is checked (on curve, prime-order subgroup, not the identity), the `G_2`
+/// commitment base must equal the standard BLS12-381 G2 generator, and the dlog table must match the
+/// ElGamal base. With `--expected-hash` the SHA3-256 of the file must equal the given hex value, for
+/// example the `public_parameters_hash` of the `TimelockEpochConfig` on chain. The command reports the
+/// blob as valid only when all of that passes.
+#[derive(Parser)]
+pub struct ValidateTimelockPublicParameters {
+    /// Path to the BCS-serialized timelock PublicParameters blob file
+    #[clap(value_parser)]
+    pub file: PathBuf,
+
+    /// Expected SHA3-256 of the blob, as hex (with or without 0x)
+    #[clap(long)]
+    pub expected_hash: Option<String>,
+}
+
+#[async_trait]
+impl CliCommand<TimelockParametersValidationResult> for ValidateTimelockPublicParameters {
+    fn command_name(&self) -> &'static str {
+        "ValidateTimelockPublicParameters"
+    }
+
+    async fn execute(self) -> CliTypedResult<TimelockParametersValidationResult> {
+        use aptos_types::dkg::timelock_dkg::validate_timelock_public_parameters_blob;
+        use std::time::Instant;
+
+        let bytes = std::fs::read(&self.file).map_err(|e| {
+            CliError::IO(format!("Failed to read {}: {}", self.file.display(), e), e)
+        })?;
+        let expected = match &self.expected_hash {
+            Some(h) => Some(
+                hex::decode(h.trim_start_matches("0x"))
+                    .map_err(|e| CliError::CommandArgumentError(format!("--expected-hash: {e}")))?,
+            ),
+            None => None,
+        };
+        println!(
+            "Validating timelock PublicParameters ({} bytes)...",
+            bytes.len()
+        );
+        let t = Instant::now();
+        let report = validate_timelock_public_parameters_blob(&bytes, expected.as_deref())
+            .map_err(|e| {
+                CliError::UnexpectedError(format!("Timelock PublicParameters are NOT valid: {e:#}"))
+            })?;
+        println!(
+            "Timelock PublicParameters are valid (all points validated, standard G2 base). Took {:.2?}",
+            t.elapsed()
+        );
+        Ok(TimelockParametersValidationResult {
+            file_size_bytes: report.blob_bytes as u64,
+            sha3_256: report.sha3_256,
+            hash_matches_expected: report.hash_matches_expected,
+        })
     }
 }
 

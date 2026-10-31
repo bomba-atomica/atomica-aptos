@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{bootstrap_genesis, gen_block_id, gen_ledger_info_with_sigs};
 use anyhow::{ensure, Result};
@@ -404,11 +403,13 @@ pub fn create_db_and_executor<P: AsRef<std::path::Path>>(
     BlockExecutor<AptosVMBlockExecutor>,
     Waypoint,
 ) {
-    let (db, dbrw) = DbReaderWriter::wrap(if force_sharding {
-        AptosDB::new_for_test_with_sharding(&path, DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD)
-    } else {
-        AptosDB::new_for_test(&path)
-    });
+    let (db, dbrw) = DbReaderWriter::wrap(
+        if force_sharding {
+            AptosDB::new_for_test_with_sharding(&path, DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD)
+        } else {
+            AptosDB::new_for_test(&path)
+        },
+    );
     let waypoint = bootstrap_genesis::<AptosVMBlockExecutor>(&dbrw, genesis).unwrap();
     let executor = BlockExecutor::new(dbrw.clone());
 

@@ -1,11 +1,11 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
 use aptos_framework::{ReleaseOptions, ReleaseTarget};
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[clap(name = "aptos-framework", author, version, propagate_version = true)]
@@ -14,6 +14,8 @@ enum Commands {
     Release(StandardRelease),
     /// Allows to create a custom release package,
     Custom(CustomRelease),
+    /// Rebuilds cached packages (head.mrb and SDK builder files).
+    UpdateCachedPackages(UpdateCachedPackages),
 }
 
 fn main() {
@@ -21,6 +23,7 @@ fn main() {
     let result = match cmd {
         Commands::Release(release) => release.execute(),
         Commands::Custom(custom) => custom.execute(),
+        Commands::UpdateCachedPackages(cmd) => cmd.execute(),
     };
     if let Err(e) = result {
         eprintln!("error: {:#}", e);
@@ -61,7 +64,32 @@ struct StandardRelease {
 
 impl StandardRelease {
     fn execute(self) -> anyhow::Result<()> {
-        self.target.create_release(!self.without_source_code, None)
+        self.target
+            .create_release(!self.without_source_code, None, false)
+    }
+}
+
+// ========================
+// Update Cached Packages
+
+#[derive(Debug, Parser)]
+struct UpdateCachedPackages {
+    /// When set, compiles the framework with #[test_only] code included.
+    /// Use this to regenerate head.mrb for use with the move-harness-with-test-only feature in e2e-move-tests/.
+    #[clap(long, default_value_t = false)]
+    with_test_mode: bool,
+}
+
+impl UpdateCachedPackages {
+    fn execute(self) -> anyhow::Result<()> {
+        let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let filename = if self.with_test_mode {
+            "cached-packages/src/head-test-only.mrb"
+        } else {
+            "cached-packages/src/head.mrb"
+        };
+        let output = crate_dir.join(filename);
+        ReleaseTarget::Head.create_release(true, Some(output), self.with_test_mode)
     }
 }
 

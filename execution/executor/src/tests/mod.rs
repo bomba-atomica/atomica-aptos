@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block_executor::BlockExecutor,
@@ -526,6 +525,7 @@ fn apply_transaction_by_writeset(
         aux_info,
         &ledger_summary.state,
         state_view,
+        TEST_BLOCK_EXECUTOR_ONCHAIN_CONFIG,
     )
     .unwrap();
 
@@ -566,10 +566,10 @@ fn test_deleted_key_from_state_store() {
     .freeze()
     .unwrap();
 
-    apply_transaction_by_writeset(
-        db,
-        vec![(transaction1, write_set1), (transaction2, write_set2)],
-    );
+    apply_transaction_by_writeset(db, vec![
+        (transaction1, write_set1),
+        (transaction2, write_set2),
+    ]);
 
     let state_value1_from_db = db
         .reader

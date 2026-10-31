@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use codespan_reporting::diagnostic::Severity;
 use move_model::model::{GlobalEnv, VerificationScope};
@@ -31,54 +32,72 @@ impl AutoTraceLevel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProverOptions {
     /// Whether to only generate backend code.
+    #[arg(short = 'g', long)]
     pub generate_only: bool,
-    /// Whether to generate stubs for native functions.
-    pub native_stubs: bool,
-    /// Whether to minimize execution traces in errors.
-    pub minimize_execution_trace: bool,
-    /// Whether to omit debug information in generated model.
-    pub omit_model_debug: bool,
     /// Whether output for e.g. diagnosis shall be stable/redacted so it can be used in test
     /// output.
+    #[arg(skip)]
     pub stable_test_output: bool,
     /// Scope of what functions to verify.
+    #[arg(skip = VerificationScope::All)]
     pub verify_scope: VerificationScope,
-    /// *deprecated* Whether to emit global axiom that resources are well-formed.
-    pub resource_wellformed_axiom: bool,
-    /// Whether to assume wellformedness when elements are read from memory, instead of on
-    /// function entry.
-    pub assume_wellformed_on_access: bool,
-    /// Whether to use the polymorphic boogie backend.
-    pub boogie_poly: bool,
-    /// Whether pack/unpack should recurse over the structure.
-    pub deep_pack_unpack: bool,
     /// Auto trace level.
+    #[arg(skip = AutoTraceLevel::Off)]
     pub auto_trace_level: AutoTraceLevel,
     /// Minimal severity level for diagnostics to be reported.
+    #[arg(skip = Severity::Warning)]
     pub report_severity: Severity,
     /// Whether to dump the transformed stackless bytecode to a file
+    #[arg(long)]
     pub dump_bytecode: bool,
     /// Whether to dump the control-flow graphs (in dot format) to files, one per each function
+    #[arg(long, requires = "dump_bytecode")]
     pub dump_cfg: bool,
     /// Number of Boogie instances to be run concurrently.
+    #[arg(skip = 1usize)]
     pub num_instances: usize,
     /// Whether to run Boogie instances sequentially.
+    #[arg(long = "sequential")]
     pub sequential_task: bool,
     /// Whether to check the inconsistency
+    #[arg(long)]
     pub check_inconsistency: bool,
     /// Whether to consider a function that abort unconditionally as an inconsistency violation
+    #[arg(long)]
     pub unconditional_abort_as_inconsistency: bool,
     /// Whether to run the transformation passes for concrete interpretation (instead of proving)
+    #[arg(skip)]
     pub for_interpretation: bool,
     /// Whether to skip loop analysis.
+    #[arg(skip)]
     pub skip_loop_analysis: bool,
+    /// Whether to run spec inference instead of verification.
+    #[arg(skip)]
+    pub inference: bool,
+    /// Disable auto-inference of specs for lambda-lifted functions with empty user
+    /// specs in verify mode. Inference is on by default; without it, behavioral
+    /// predicates over such lambdas degrade to trivial values at call sites.
+    #[arg(long)]
+    pub no_infer_lambda_specs: bool,
+    /// Do not add `pragma opaque` to inferred specs.
+    #[arg(long)]
+    pub no_inference_opaque: bool,
     /// Optional names of native methods (qualified with module name, e.g., m::foo) implementing
     /// mutable borrow semantics
+    #[arg(skip)]
     pub borrow_natives: Vec<String>,
+    /// Targets to exclude from verification. Each entry must be
+    /// `VerificationScope::Only(name)` or `VerificationScope::OnlyModule(name)`.
+    #[arg(skip)]
+    pub verify_exclude: Vec<VerificationScope>,
+    /// Inline spec let bindings by substituting the expression directly into conditions,
+    /// instead of creating Identical temps.
+    #[arg(long, default_value_t = false)]
+    pub inline_spec_lets: bool,
 }
 
 // add custom struct for mutation options
@@ -87,15 +106,8 @@ impl Default for ProverOptions {
     fn default() -> Self {
         Self {
             generate_only: false,
-            native_stubs: false,
-            minimize_execution_trace: true,
-            omit_model_debug: false,
             stable_test_output: false,
             verify_scope: VerificationScope::All,
-            resource_wellformed_axiom: false,
-            assume_wellformed_on_access: false,
-            boogie_poly: false,
-            deep_pack_unpack: false,
             auto_trace_level: AutoTraceLevel::Off,
             report_severity: Severity::Warning,
             dump_bytecode: false,
@@ -106,7 +118,12 @@ impl Default for ProverOptions {
             unconditional_abort_as_inconsistency: false,
             for_interpretation: false,
             skip_loop_analysis: false,
+            inference: false,
+            no_infer_lambda_specs: false,
+            no_inference_opaque: false,
             borrow_natives: vec![],
+            verify_exclude: vec![],
+            inline_spec_lets: false,
         }
     }
 }

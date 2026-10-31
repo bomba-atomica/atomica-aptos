@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Instrument `assert false;` in strategic locations in the program such that if proved, signals
 //! an inconsistency among the specifications.
@@ -50,7 +51,7 @@ impl FunctionTargetProcessor for InconsistencyCheckInstrumenter {
         data: FunctionData,
         _scc_opt: Option<&[FunctionEnv]>,
     ) -> FunctionData {
-        if fun_env.is_native() || fun_env.is_intrinsic() {
+        if fun_env.no_verified_bytecode() {
             // Nothing to do.
             return data;
         }
@@ -75,10 +76,7 @@ impl FunctionTargetProcessor for InconsistencyCheckInstrumenter {
         let mut builder = FunctionDataBuilder::new(fun_env, new_data);
         let old_code = std::mem::take(&mut builder.data.code);
         for bc in old_code {
-            if matches!(bc, Bytecode::Ret(..))
-                || (matches!(bc, Bytecode::Abort(..))
-                    && !options.unconditional_abort_as_inconsistency)
-            {
+            if bc.is_return() || (bc.is_abort() && !options.unconditional_abort_as_inconsistency) {
                 let loc = builder.fun_env.get_spec_loc();
                 builder.set_loc_and_vc_info(loc, EXPECTED_TO_FAIL);
                 let exp = builder.mk_bool_const(false);

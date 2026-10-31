@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     context::SafeNativeContext,
@@ -10,7 +10,8 @@ use aptos_gas_schedule::{MiscGasParameters, NativeGasParameters};
 use aptos_types::on_chain_config::{Features, TimedFeatures};
 use move_vm_runtime::native_functions::{NativeContext, NativeFunction};
 use move_vm_types::{
-    loaded_data::runtime_types::Type, natives::function::NativeResult, values::Value,
+    limits::check_abort_message_limit, loaded_data::runtime_types::Type,
+    natives::function::NativeResult, values::Value,
 };
 use smallvec::SmallVec;
 use std::{collections::VecDeque, sync::Arc};
@@ -81,9 +82,9 @@ impl SafeNativeBuilder {
     /// allowing the client to use [`SafeNativeContext`] instead of Move VM's [`NativeContext`].
     pub fn make_native<F>(&self, native: F) -> NativeFunction
     where
-        F: Fn(
+        F: for<'a> Fn(
                 &mut SafeNativeContext,
-                Vec<Type>,
+                &'a [Type],
                 VecDeque<Value>,
             ) -> SafeNativeResult<SmallVec<[Value; 1]>>
             + Send
@@ -95,7 +96,7 @@ impl SafeNativeBuilder {
 
         let enable_incremental_gas_charging = self.enable_incremental_gas_charging;
 
-        let closure = move |context: &mut NativeContext, ty_args, args| {
+        let closure = move |context: &mut NativeContext, ty_args: &[Type], args| {
             use SafeNativeError::*;
 
             let mut context = SafeNativeContext {
@@ -131,8 +132,18 @@ impl SafeNativeBuilder {
             match res {
                 Ok(ret_vals) => Ok(NativeResult::ok(context.legacy_gas_used, ret_vals)),
                 Err(err) => match err {
-                    Abort { abort_code } => {
-                        Ok(NativeResult::err(context.legacy_gas_used, abort_code))
+                    Abort {
+                        abort_code,
+                        abort_message,
+                    } => {
+                        if let Some(abort_message) = abort_message.as_ref() {
+                            check_abort_message_limit(abort_message.len())?;
+                        }
+                        Ok(NativeResult::Abort {
+                            cost: context.legacy_gas_used,
+                            abort_code,
+                            abort_message,
+                        })
                     },
                     LimitExceeded(err) => match err {
                         LimitExceededError::LegacyOutOfGas => {
@@ -175,9 +186,9 @@ impl SafeNativeBuilder {
     ) -> impl Iterator<Item = (String, NativeFunction)> + 'a
     where
         'b: 'a,
-        F: Fn(
+        F: for<'c> Fn(
                 &mut SafeNativeContext,
-                Vec<Type>,
+                &'c [Type],
                 VecDeque<Value>,
             ) -> SafeNativeResult<SmallVec<[Value; 1]>>
             + Send

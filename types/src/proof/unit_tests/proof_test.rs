@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     account_address::AccountAddress,
@@ -225,10 +224,10 @@ fn test_verify_three_element_sparse_merkle() {
 
     {
         // Construct a proof of key1.
-        let proof = SparseMerkleProof::new(
-            Some(leaf1),
-            vec![*SPARSE_MERKLE_PLACEHOLDER_HASH, internal_b_hash],
-        );
+        let proof = SparseMerkleProof::new(Some(leaf1), vec![
+            *SPARSE_MERKLE_PLACEHOLDER_HASH,
+            internal_b_hash,
+        ]);
 
         // The exact key value exists.
         assert!(proof.verify(root_hash, key1, Some(&blob1)).is_ok());
@@ -281,15 +280,14 @@ fn test_verify_transaction() {
     let txn1_hash = HashValue::random();
     let state_root1_hash = b"a".test_only_hash();
     let event_root1_hash = b"b".test_only_hash();
-    let txn_info1 = TransactionInfo::new(
-        txn1_hash,
-        HashValue::zero(),
-        event_root1_hash,
-        Some(state_root1_hash),
-        /* gas_used = */ 0,
-        /* major_status = */ ExecutionStatus::Success,
-        None,
-    );
+    let txn_info1 = TransactionInfo::builder_v0()
+        .transaction_hash(txn1_hash)
+        .state_change_hash(HashValue::zero())
+        .event_root_hash(event_root1_hash)
+        .state_checkpoint_hash(state_root1_hash)
+        .gas_used(0)
+        .status(ExecutionStatus::Success)
+        .build();
     let txn_info1_hash = txn_info1.hash();
 
     let internal_a_hash =
@@ -315,15 +313,14 @@ fn test_verify_transaction() {
     // Trying to show that txn1 is at version 2.
     assert!(proof.verify(&ledger_info, 2).is_err());
     // Replacing txn1 with some other txn should cause the verification to fail.
-    let fake_txn_info = TransactionInfo::new(
-        HashValue::random(),
-        HashValue::zero(),
-        event_root1_hash,
-        Some(state_root1_hash),
-        /* gas_used = */ 0,
-        /* major_status = */ ExecutionStatus::Success,
-        None,
-    );
+    let fake_txn_info = TransactionInfo::builder_v0()
+        .transaction_hash(HashValue::random())
+        .state_change_hash(HashValue::zero())
+        .event_root_hash(event_root1_hash)
+        .state_checkpoint_hash(state_root1_hash)
+        .gas_used(0)
+        .status(ExecutionStatus::Success)
+        .build();
     let proof = TransactionInfoWithProof::new(ledger_info_to_transaction_info_proof, fake_txn_info);
     assert!(proof.verify(&ledger_info, 1).is_err());
 }
@@ -352,11 +349,10 @@ fn test_accumulator_extension_proof() {
     assert_eq!(derived_tree.version(), 0);
 
     // Test multiple values
-    let two_tree = AccumulatorExtensionProof::<TestOnlyHasher>::new(
-        vec![HashValue::zero()],
-        1,
-        vec![HashValue::zero()],
-    );
+    let two_tree =
+        AccumulatorExtensionProof::<TestOnlyHasher>::new(vec![HashValue::zero()], 1, vec![
+            HashValue::zero(),
+        ]);
 
     let derived_tree = two_tree.verify(HashValue::zero()).unwrap();
     let two_hash = TestAccumulatorInternalNode::new(HashValue::zero(), HashValue::zero()).hash();
@@ -429,8 +425,12 @@ fn test_transaction_list_with_proof() {
         .unwrap_err();
 
     // Verify transaction hashes match but info root hash verification fails (ledger info expected zero root hash)
-    let transaction_list_proof =
-        create_single_transaction_info_proof(Some(transactions[0].hash()), None, None, None);
+    let transaction_list_proof = create_single_transaction_info_proof(
+        Some(transactions[0].committed_hash()),
+        None,
+        None,
+        None,
+    );
     let transaction_list_with_proof = TransactionListWithProof::new(
         transactions.clone(),
         Some(vec![vec![event.clone()]]),
@@ -451,7 +451,7 @@ fn test_transaction_list_with_proof() {
 
     // Construct a new transaction list with proof where the transaction info and event hashes match
     let transaction_list_proof = create_single_transaction_info_proof(
-        Some(transactions[0].hash()),
+        Some(transactions[0].committed_hash()),
         Some(event.hash()),
         None,
         None,
@@ -484,7 +484,7 @@ fn test_transaction_and_output_list_with_proof() {
         vec![],
         0,
     ));
-    let txn_hash = transaction.hash();
+    let txn_hash = transaction.committed_hash();
     let event = create_event();
     let event_root_hash = event.hash();
     let write_set = WriteSet::default();
@@ -607,18 +607,43 @@ fn create_transaction_info(
     state_change_hash: Option<HashValue>,
     auxiliary_info_hash: Option<HashValue>,
 ) -> TransactionInfo {
-    TransactionInfo::new(
-        transaction_hash.unwrap_or_else(HashValue::random),
-        state_change_hash.unwrap_or_else(HashValue::random),
-        event_root_hash.unwrap_or_else(HashValue::random),
-        Some(HashValue::random()),
-        0,
-        ExecutionStatus::MiscellaneousError(None),
-        auxiliary_info_hash,
-    )
+    TransactionInfo::builder_v0()
+        .transaction_hash(transaction_hash.unwrap_or_else(HashValue::random))
+        .state_change_hash(state_change_hash.unwrap_or_else(HashValue::random))
+        .event_root_hash(event_root_hash.unwrap_or_else(HashValue::random))
+        .state_checkpoint_hash(HashValue::random())
+        .gas_used(0)
+        .status(ExecutionStatus::MiscellaneousError(None))
+        .maybe_auxiliary_info_hash(auxiliary_info_hash)
+        .build()
 }
 
 fn create_event() -> ContractEvent {
     let event_key = EventKey::new(0, AccountAddress::random());
     ContractEvent::new_v1(event_key, 0, TypeTag::Bool, bcs::to_bytes(&0).unwrap()).unwrap()
+}
+
+mod hash_two_children_tests {
+    use super::super::super::SparseMerkleLeafNodeHasher;
+    use aptos_crypto::{hash::CryptoHasher, HashValue};
+    use proptest::prelude::*;
+
+    fn hash_two_children_reference<H: CryptoHasher>(h1: &HashValue, h2: &HashValue) -> HashValue {
+        let mut state = H::default();
+        state.update(h1.as_ref());
+        state.update(h2.as_ref());
+        state.finish()
+    }
+
+    proptest! {
+        #[test]
+        fn matches_reference_sparse_merkle_leaf_node(
+            h1 in any::<HashValue>(),
+            h2 in any::<HashValue>(),
+        ) {
+            let optimized = SparseMerkleLeafNodeHasher::hash_two_children(&h1, &h2);
+            let reference = hash_two_children_reference::<SparseMerkleLeafNodeHasher>(&h1, &h2);
+            prop_assert_eq!(optimized, reference);
+        }
+    }
 }

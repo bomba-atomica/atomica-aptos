@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_types::vm_status::StatusCode;
 use poem_openapi::{Enum, Object};
@@ -103,6 +102,8 @@ pub enum AptosErrorCode {
     HealthCheckFailed = 500,
     /// The mempool is full, no new transactions can be submitted.
     MempoolIsFull = 501,
+    /// The transaction was dropped because the inbound transaction rate limit was exceeded.
+    RateLimited = 502,
 
     /// Internal server error
     InternalError = 600,

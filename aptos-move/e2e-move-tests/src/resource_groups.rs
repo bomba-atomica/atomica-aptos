@@ -1,11 +1,11 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use crate::{assert_success, harness::MoveHarness, BlockSplit};
 use aptos_language_e2e_tests::{
     account::Account,
     executor::{assert_outputs_equal, ExecutorMode, FakeExecutor},
 };
+use aptos_move_e2e_test_harness::{assert_success, BlockSplit, MoveHarness};
 use aptos_types::{
     account_address::AccountAddress, on_chain_config::FeatureFlag, transaction::SignedTransaction,
 };
@@ -69,13 +69,12 @@ fn initialize_harness(
             vec![],
         );
     } else {
-        harness.enable_features(
-            vec![],
-            vec![FeatureFlag::RESOURCE_GROUPS_SPLIT_IN_VM_CHANGE_SET],
-        );
+        harness.enable_features(vec![], vec![
+            FeatureFlag::RESOURCE_GROUPS_SPLIT_IN_VM_CHANGE_SET,
+        ]);
     }
     let account = harness.new_account_at(AccountAddress::ONE);
-    assert_success!(harness.publish_package_cache_building(&account, &path));
+    assert_success!(harness.publish_package(&account, &path));
     (harness, account)
 }
 

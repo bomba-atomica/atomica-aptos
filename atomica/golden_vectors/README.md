@@ -1,112 +1,39 @@
-# Timelock Encryption Golden Test Vectors
+# Timelock Golden Test Vectors (V2)
 
-This directory contains golden test vectors for Atomica's timelock encryption system. These vectors ensure consistency across all implementations:
-
-- **Rust implementation** (`crates/aptos-dkg`)
-- **Move contracts** (`aptos-move/framework/aptos-framework/sources/ibe_config.move`)
-- **Move VM native functions** (if/when implemented)
+Golden vectors for the hardened Boneh-Franklin timelock. Design source: `atomica/docs/decisions/aptos-upgrade-ibe-chunky-spec.md` sections 4 to 6.
 
 ## Files
 
-- `timelock_golden_vectors.json` - Machine-readable test vectors in JSON format
-- `timelock_golden_vectors.txt` - Human-readable reference documentation
+- `ibe_v2_golden_vectors.json` is the source of truth. It is generated, not hand written.
+- `legacy-v1/` holds the old vectors (identity `SHA3-256(timelock_id || deadline_us)`, blstrs shares). They are history only. No test reads them.
+- `aptos-move/framework/aptos-framework/sources/ibe_golden_vector_fixtures.move` is generated from the JSON.
 
-## Test Vectors
+## What the vectors cover
 
-Each test vector contains:
+- Identity and H1 (v2): chain, epoch, timelock id and deadline bound into `SHA3-256`, then `H1` as RFC 9380 `BLS12381G1_XMD:SHA-256_SSWU_RO_` with DST `ATOMICA_TIMELOCK_IBE_V2_H1`.
+- A seeded real chunky DKG dealing (three dealers, weights `[2, 1, 2]`, threshold weight 3). The master public key, verification keys and shares come from `get_dealt_public_key`, `get_public_key_share` and `decrypt_own_share` on the aggregated subtranscript. The JSON records the length and SHA3-256 of that subtranscript.
+- `dk_share` derivation, per validator share checks (valid and invalid: swapped, other identity, non-subgroup, off-curve, identity element, truncated, count mismatch, bad verification key).
+- Weighted reconstruction from several validator sets, the below-threshold error, a poisoned set, and the final key check (right and wrong).
+- CCA bid ciphertexts: one valid bid and each tampered field, other associated data, non-subgroup `U` with a valid signature, a body re-signed under a new one time key, and malformed wires.
+- Cross-library vectors: scalars, `H1`, `U`, `dk` and `mpk` that the blstrs code and the arkworks port must both reproduce byte for byte.
 
-- **timelock_id** - The unique timelock identifier (u64)
-- **deadline_us** - The deadline timestamp in microseconds (u64)
-- **timelock_id_bcs_hex** - BCS-encoded timelock_id (little-endian, 8 bytes)
-- **deadline_us_bcs_hex** - BCS-encoded deadline_us (little-endian, 8 bytes)
-- **identity_hash_hex** - SHA3-256 hash of `BCS(timelock_id) || BCS(deadline_us)` (32 bytes)
+No vector depends on `aptos-batch-encryption`, FPTX digests, eval proofs or the `DigestKey` format. Encodings are ZCash compressed (G1 48 bytes, G2 96 bytes).
 
-## Identity Computation
-
-The identity hash is computed as:
-
-```
-identity = SHA3-256(BCS(timelock_id) || BCS(deadline_us))
-```
-
-This matches the Move contract implementation in `ibe_config.move`:
-
-```move
-let identity_input = vector::empty<u8>();
-vector::append(&mut identity_input, bcs::to_bytes(&timelock_id));
-vector::append(&mut identity_input, bcs::to_bytes(&deadline_us));
-let identity = sha3_256(identity_input);
-```
-
-## Regenerating Vectors
-
-To regenerate the golden test vectors (e.g., after modifying the identity computation logic):
+## Regenerating
 
 ```bash
-cd /path/to/atomica-aptos
-cargo test --package aptos-dkg generate_golden_vectors -- --ignored --nocapture
+cargo test -p aptos-dkg --lib ibe::golden_vectors::write_golden_vectors -- --ignored --nocapture
 ```
 
-The generator is located at `crates/aptos-dkg/src/ibe/golden_vectors.rs`.
+The run is deterministic (seeded dealing, seeded bids). It rewrites the JSON and the Move fixtures. If Move sources change, regenerate `aptos-move/framework/cached-packages/src/head.mrb` too (`cargo run -p aptos-framework -- update-cached-packages`).
 
-**Important:** Only regenerate vectors when intentionally changing the identity computation algorithm. These vectors serve as a stable reference for cross-implementation testing.
+Regenerate only when the scheme changes on purpose. A review must explain every changed byte.
 
-## Using These Vectors
+## Checks
 
-### In Move Unit Tests
+- Rust, `cargo test -p aptos-dkg --lib ibe::golden_vectors`: decodes the checked-in JSON and verifies it with the production code (`checked_in_vectors_verify`), checks the cross-library claim against blstrs (`checked_in_cross_library_vectors_match_both_libraries`), and checks that a fresh generation equals the checked-in bytes (`regeneration_reproduces_checked_in_bytes`).
+- Move, `ibe_golden_vector_tests.move`: identity and H1 through `crypto_algebra`, pairing checks for every share case, the reconstruction and key check natives, and the bid submission native.
 
-```move
-#[test]
-fun test_identity_matches_golden_vector() {
-    // Test vector #1: timelock_id=0, deadline_us=1000000000000
-    let timelock_id = 0u64;
-    let deadline_us = 1000000000000u64;
+## Consumers
 
-    let expected_identity = x"dadcc1614575180d09b4d638b16eb2ee581dae80bbd3ac9c95b06605e51718f3";
-
-    let identity_input = vector::empty<u8>();
-    vector::append(&mut identity_input, bcs::to_bytes(&timelock_id));
-    vector::append(&mut identity_input, bcs::to_bytes(&deadline_us));
-    let actual_identity = sha3_256(identity_input);
-
-    assert!(actual_identity == expected_identity, 0);
-}
-```
-
-### In Rust Tests
-
-```rust
-#[test]
-fn test_identity_matches_golden_vector() {
-    use sha3::{Digest, Sha3_256};
-
-    // Test vector #1
-    let timelock_id = 0u64;
-    let deadline_us = 1_000_000_000_000u64;
-
-    let expected = hex::decode(
-        "dadcc1614575180d09b4d638b16eb2ee581dae80bbd3ac9c95b06605e51718f3"
-    ).unwrap();
-
-    let mut hasher = Sha3_256::new();
-    hasher.update(&bcs::to_bytes(&timelock_id).unwrap());
-    hasher.update(&bcs::to_bytes(&deadline_us).unwrap());
-    let actual: Vec<u8> = hasher.finalize().to_vec();
-
-    assert_eq!(actual, expected);
-}
-```
-
-## Test Coverage
-
-The vectors cover:
-
-1. **Basic case** - Minimal values to verify correct implementation
-2. **ID uniqueness** - Different IDs with same deadline produce different identities
-3. **Deadline uniqueness** - Same ID with different deadlines produce different identities
-4. **Large values** - Realistic large values for stress testing
-5. **Edge cases** - Maximum u64 values to test boundary conditions
-
-## Version History
-
-- **v1.0.0** (2026-01-20) - Initial golden vectors for identity computation
+`atomica/source/golden-vectors` (the repo `atomica`) holds only SIWE abstract account vectors. It does not read these files.

@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{contract_event::ContractEvent, event::EventKey};
 use bcs::test_helpers::assert_canonical_encode_decode;
@@ -18,12 +17,9 @@ proptest! {
 #[test]
 fn test_event_v1_json_serialize() {
     let event_key = EventKey::random();
-    let contract_event = assert_ok!(ContractEvent::new_v1(
-        event_key,
-        0,
-        TypeTag::Address,
-        vec![0u8],
-    ));
+    let contract_event = assert_ok!(ContractEvent::new_v1(event_key, 0, TypeTag::Address, vec![
+        0u8
+    ],));
     let contract_json =
         serde_json::to_string(&contract_event).expect("event serialize to json should succeed.");
     let contract_event2: ContractEvent = serde_json::from_str(contract_json.as_str()).unwrap();

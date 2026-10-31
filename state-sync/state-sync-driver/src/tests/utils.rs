@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::driver::DriverConfiguration;
 use aptos_config::config::{ConsensusObserverConfig, RoleType, StateSyncDriverConfig};
@@ -235,23 +234,22 @@ pub fn create_transaction() -> Transaction {
 
 /// Creates a test transaction info
 pub fn create_transaction_info() -> TransactionInfo {
-    TransactionInfo::new(
-        HashValue::random(),
-        HashValue::random(),
-        HashValue::random(),
-        Some(HashValue::random()),
-        0,
-        ExecutionStatus::Success,
-        Some(HashValue::random()),
-    )
+    TransactionInfo::builder_v0()
+        .transaction_hash(HashValue::random())
+        .state_change_hash(HashValue::random())
+        .event_root_hash(HashValue::random())
+        .state_checkpoint_hash(HashValue::random())
+        .gas_used(0)
+        .status(ExecutionStatus::Success)
+        .auxiliary_info_hash(HashValue::random())
+        .build()
 }
 
 /// Creates a test transaction info list with proof
 pub fn create_transaction_info_list_with_proof() -> TransactionInfoListWithProof {
-    TransactionInfoListWithProof::new(
-        TransactionAccumulatorRangeProof::new_empty(),
-        vec![create_transaction_info()],
-    )
+    TransactionInfoListWithProof::new(TransactionAccumulatorRangeProof::new_empty(), vec![
+        create_transaction_info(),
+    ])
 }
 
 /// Creates a test transaction list with proof

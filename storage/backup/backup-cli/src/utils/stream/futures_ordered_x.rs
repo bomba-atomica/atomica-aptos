@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 /// This is a copy of `futures::stream::futures_ordered` from `futures 0.3.6`, except that it uses
 /// `FuturesUnorderedX` which provides concurrency control. So we can manage more futures without
@@ -98,7 +97,7 @@ impl<Fut: Future> FuturesOrderedX<Fut> {
     }
 
     /// Returns `true` if the queue contains no futures
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.in_progress_queue.is_empty() && self.queued_outputs.is_empty()
     }

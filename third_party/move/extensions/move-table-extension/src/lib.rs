@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! A crate which extends Move by tables.
 //!
@@ -19,7 +20,7 @@ use move_core_types::{
     vm_status::StatusCode,
 };
 use move_vm_runtime::{
-    native_extensions::UnreachableSessionListener,
+    native_extensions::{NativeRuntimeRefCheckModelsCompleted, UnreachableSessionListener},
     native_functions,
     native_functions::{LoaderContext, NativeContext, NativeFunction, NativeFunctionTable},
 };
@@ -151,6 +152,11 @@ const HANDLE_FIELD_INDEX: usize = 0;
 // Implementation of Native Table Context
 
 impl<'a> UnreachableSessionListener for NativeTableContext<'a> {}
+
+impl<'a> NativeRuntimeRefCheckModelsCompleted for NativeTableContext<'a> {
+    // We have added runtime ref check models for native table functions that
+    // return references.
+}
 
 impl<'a> NativeTableContext<'a> {
     /// Create a new instance of a native table context. This must be passed in via an
@@ -355,7 +361,7 @@ pub struct NewTableHandleGasParameters {
 fn native_new_table_handle(
     gas_params: &NewTableHandleGasParameters,
     context: &mut NativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     args: VecDeque<Value>,
 ) -> PartialVMResult<NativeResult> {
     assert_eq!(ty_args.len(), 2);
@@ -381,10 +387,9 @@ fn native_new_table_handle(
         .insert(TableHandle(handle), TableInfo::new(key_type, value_type))
         .is_none());
 
-    Ok(NativeResult::ok(
-        gas_params.base,
-        smallvec![Value::address(handle)],
-    ))
+    Ok(NativeResult::ok(gas_params.base, smallvec![
+        Value::address(handle)
+    ]))
 }
 
 pub fn make_native_new_table_handle(gas_params: NewTableHandleGasParameters) -> NativeFunction {
@@ -405,7 +410,7 @@ fn native_add_box(
     common_gas_params: &CommonGasParameters,
     gas_params: &AddBoxGasParameters,
     context: &mut NativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> PartialVMResult<NativeResult> {
     assert_eq!(ty_args.len(), 3);
@@ -459,7 +464,7 @@ fn native_borrow_box(
     common_gas_params: &CommonGasParameters,
     gas_params: &BorrowBoxGasParameters,
     context: &mut NativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> PartialVMResult<NativeResult> {
     assert_eq!(ty_args.len(), 3);
@@ -512,7 +517,7 @@ fn native_contains_box(
     common_gas_params: &CommonGasParameters,
     gas_params: &ContainsBoxGasParameters,
     context: &mut NativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> PartialVMResult<NativeResult> {
     assert_eq!(ty_args.len(), 3);
@@ -564,7 +569,7 @@ fn native_remove_box(
     common_gas_params: &CommonGasParameters,
     gas_params: &RemoveGasParameters,
     context: &mut NativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> PartialVMResult<NativeResult> {
     assert_eq!(ty_args.len(), 3);
@@ -615,7 +620,7 @@ pub struct DestroyEmptyBoxGasParameters {
 fn native_destroy_empty_box(
     gas_params: &DestroyEmptyBoxGasParameters,
     context: &mut NativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     mut args: VecDeque<Value>,
 ) -> PartialVMResult<NativeResult> {
     assert_eq!(ty_args.len(), 3);
@@ -650,7 +655,7 @@ pub struct DropUncheckedBoxGasParameters {
 fn native_drop_unchecked_box(
     gas_params: &DropUncheckedBoxGasParameters,
     _context: &mut NativeContext,
-    ty_args: Vec<Type>,
+    ty_args: &[Type],
     args: VecDeque<Value>,
 ) -> PartialVMResult<NativeResult> {
     assert_eq!(ty_args.len(), 3);

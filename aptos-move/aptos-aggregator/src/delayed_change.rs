@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     delta_change_set::{DeltaOp, DeltaWithMax},
@@ -189,7 +189,7 @@ impl<I: Copy + Clone> DelayedChange<I> {
 // TODO[agg_v2](cleanup): See if we need these separate/duplicate classes or not
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DelayedApplyEntry<I: Clone> {
+pub enum DelayedApplyEntry<I> {
     AggregatorDelta {
         delta: DeltaOp,
     },

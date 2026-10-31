@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -476,6 +475,7 @@ where
                         }
                     }
                 },
+                Node::Null => (), // Possible in hot state since we start from a non-zero version.
                 _ => {
                     unreachable!("Assume the db doesn't have exactly 1 state.")
                 },
@@ -1057,11 +1057,13 @@ trait NibbleExt {
 impl NibbleExt for HashValue {
     /// Returns the `index`-th nibble.
     fn get_nibble(&self, index: usize) -> Nibble {
-        Nibble::from(if index % 2 == 0 {
-            self[index / 2] >> 4
-        } else {
-            self[index / 2] & 0x0F
-        })
+        Nibble::from(
+            if index.is_multiple_of(2) {
+                self[index / 2] >> 4
+            } else {
+                self[index / 2] & 0x0F
+            },
+        )
     }
 
     /// Returns the length of common prefix of `self` and `other` in nibbles.

@@ -1,10 +1,10 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     dkg::{
-        real_dkg::rounding::DKGRounding, DKGSessionMetadata, DKGTrait, MayHaveRoundingSummary,
-        RoundingSummary,
+        randomness_dkg::{DKGSessionMetadata, DKGTrait, MayHaveRoundingSummary, RoundingSummary},
+        real_dkg::rounding::DKGRounding,
     },
     on_chain_config::OnChainRandomnessConfig,
     validator_verifier::{ValidatorConsensusInfo, ValidatorVerifier},
@@ -12,12 +12,14 @@ use crate::{
 use anyhow::{anyhow, bail, ensure, Context};
 #[cfg(any(test, feature = "testing"))]
 use aptos_crypto::Uniform;
-use aptos_crypto::{bls12381, bls12381::PrivateKey};
+use aptos_crypto::{arkworks::shamir::Reconstructable, bls12381, bls12381::PrivateKey};
 use aptos_dkg::{
     pvss,
     pvss::{
-        scalar_elgamal,
-        traits::{Convert, Reconstructable, Transcript},
+        traits::{
+            transcript::{Aggregatable, AggregatableTranscript, Aggregated, TranscriptCore},
+            Convert, Transcript,
+        },
         Player,
     },
 };
@@ -35,26 +37,16 @@ use std::{
 pub mod rounding;
 
 pub type WTrx = pvss::das::WeightedTranscript;
-pub type DkgPP = <WTrx as Transcript>::PublicParameters;
-pub type SSConfig = <WTrx as Transcript>::SecretSharingConfig;
-pub type EncPK = <WTrx as Transcript>::EncryptPubKey;
-
-/// Weighted transcript type for Scalar ElGamal PVSS (produces scalar shares for IBE).
-///
-/// This is the scalar-output counterpart to `WTrx` (DAS). Both are dealt in parallel
-/// from the same `InputSecret`, producing:
-/// - `WTrx` → G1 shares for WVUF (randomness)
-/// - `ScalarTrx` → Scalar shares for IBE (timelock)
-///
-/// See: `crates/aptos-dkg/src/pvss/scalar_elgamal/` for implementation.
-pub type ScalarTrx = scalar_elgamal::WeightedTranscript;
+pub type DkgPP = <WTrx as TranscriptCore>::PublicParameters;
+pub type SSConfig = <WTrx as TranscriptCore>::SecretSharingConfig;
+pub type EncPK = <WTrx as TranscriptCore>::EncryptPubKey;
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct DKGPvssConfig {
     pub epoch: u64,
     // weighted config for randomness generation
     pub wconfig: SSConfig,
-    // weighted config for randomness generation in fast path
+    // Kept for BCS backward compatibility (was used for fast path randomness).
     pub fast_wconfig: Option<SSConfig>,
     // DKG public parameters
     pub pp: DkgPP,
@@ -172,64 +164,32 @@ impl MayHaveRoundingSummary for RealDKGPublicParams {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct Transcripts {
-    // transcript for main path (DAS PVSS → G1 shares for randomness)
+    // transcript for main path
     pub main: WTrx,
-    // transcript for fast path (DAS PVSS → G1 shares for randomness fast path)
+    // transcript for fast path (kept for BCS serialization compatibility)
     pub fast: Option<WTrx>,
-    // transcript for scalar shares (Scalar ElGamal PVSS → scalar shares for IBE)
-    //
-    // This is the dual-output DKG extension (ADR-001). When present, this transcript
-    // shares the same underlying secret as `main`, but produces scalar shares instead
-    // of G1 shares. This enables IBE (timelock encryption) without a separate DKG.
-    //
-    // Both transcripts produce the same MPK (g2^secret), but:
-    // - `main` produces G1 shares for WVUF (randomness)
-    // - `scalar` produces scalar shares for IBE (timelock)
-    //
-    // TODO(Phase 2): Implement ScalarTrx dealing in generate_transcript()
-    pub scalar: Option<ScalarTrx>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct DealtPubKeyShares {
     // dealt public key share for main path
-    pub main: <WTrx as Transcript>::DealtPubKeyShare,
-    // dealt public key share for fast path
-    pub fast: Option<<WTrx as Transcript>::DealtPubKeyShare>,
-    // dealt public key share for scalar/IBE path
-    //
-    // These are the public key shares corresponding to the scalar secret shares.
-    // They can be used to verify that a validator's scalar share is correct
-    // via pairing checks.
-    //
-    // TODO(Phase 2): Populate this field in decrypt_secret_share_from_transcript()
-    pub scalar: Option<<ScalarTrx as Transcript>::DealtPubKeyShare>,
+    pub main: <WTrx as TranscriptCore>::DealtPubKeyShare,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct DealtSecretKeyShares {
     // dealt secret key share for main path
-    pub main: <WTrx as Transcript>::DealtSecretKeyShare,
-    // dealt secret key share for fast path
-    pub fast: Option<<WTrx as Transcript>::DealtSecretKeyShare>,
-    // dealt secret key share for scalar/IBE path
-    //
-    // When present, this is a vector of scalar shares that can be used
-    // for IBE decryption key derivation. The scalar shares can be
-    // reconstructed using Lagrange interpolation to obtain the secret
-    // scalar `s`, which is then used to compute `H(identity)^s`.
-    //
-    // TODO(Phase 2): Populate this field in decrypt_secret_share_from_transcript()
-    pub scalar: Option<<ScalarTrx as Transcript>::DealtSecretKeyShare>,
+    pub main: <WTrx as TranscriptCore>::DealtSecretKeyShare,
 }
 
 impl DKGTrait for RealDKG {
     type DealerPrivateKey = <WTrx as Transcript>::SigningSecretKey;
+    type DealerPublicKey = <WTrx as Transcript>::SigningPubKey;
     type DealtPubKeyShare = DealtPubKeyShares;
-    type DealtSecret = <WTrx as Transcript>::DealtSecretKey;
+    type DealtSecret = <WTrx as TranscriptCore>::DealtSecretKey;
     type DealtSecretShare = DealtSecretKeyShares;
     type InputSecret = <WTrx as Transcript>::InputSecret;
-    type NewValidatorDecryptKey = <WTrx as Transcript>::DecryptPrivKey;
+    type NewValidatorDecryptKey = <WTrx as TranscriptCore>::DecryptPrivKey;
     type PublicParams = RealDKGPublicParams;
     type Transcript = Transcripts;
 
@@ -281,6 +241,7 @@ impl DKGTrait for RealDKG {
         input_secret: &Self::InputSecret,
         my_index: u64,
         sk: &Self::DealerPrivateKey,
+        pk: &Self::DealerPublicKey,
     ) -> Self::Transcript {
         let my_index = my_index as usize;
         let my_addr = pub_params.session_metadata.dealer_validator_set[my_index].addr;
@@ -290,50 +251,16 @@ impl DKGTrait for RealDKG {
             &pub_params.pvss_config.wconfig,
             &pub_params.pvss_config.pp,
             sk,
+            pk,
             &pub_params.pvss_config.eks,
             input_secret,
             &aux,
             &Player { id: my_index },
             rng,
         );
-        // transcript for fast path
-        let fast_wtrx = pub_params
-            .pvss_config
-            .fast_wconfig
-            .as_ref()
-            .map(|fast_wconfig| {
-                WTrx::deal(
-                    fast_wconfig,
-                    &pub_params.pvss_config.pp,
-                    sk,
-                    &pub_params.pvss_config.eks,
-                    input_secret,
-                    &aux,
-                    &Player { id: my_index },
-                    rng,
-                )
-            });
-
-        // Generate scalar transcript for IBE
-        //
-        // This deals the same input_secret using ScalarTrx::deal().
-        // The scalar transcript shares the same underlying secret as the main
-        // transcript, but produces scalar shares instead of G1 shares.
-        let scalar_trx = ScalarTrx::deal(
-            &pub_params.pvss_config.wconfig,
-            &pub_params.pvss_config.pp,
-            sk,
-            &pub_params.pvss_config.eks,
-            input_secret,
-            &aux,
-            &Player { id: my_index },
-            rng,
-        );
-
         Transcripts {
             main: wtrx,
-            fast: fast_wtrx,
-            scalar: Some(scalar_trx),
+            fast: None,
         }
     }
 
@@ -371,23 +298,6 @@ impl DKGTrait for RealDKG {
             verifier
                 .check_voting_power(dealer_set.iter(), true)
                 .context("not enough power")?;
-        }
-
-        if let Some(fast_trx) = &trx.fast {
-            ensure!(fast_trx.get_dealers() == main_trx_dealers);
-            ensure!(trx.main.get_dealt_public_key() == fast_trx.get_dealt_public_key());
-        }
-
-        // Verify scalar transcript if present
-        if let Some(scalar_trx) = &trx.scalar {
-            ensure!(
-                scalar_trx.get_dealers() == main_trx_dealers,
-                "real_dkg::verify_transcript_extra failed: scalar transcript dealers don't match main"
-            );
-            ensure!(
-                trx.main.get_dealt_public_key() == scalar_trx.get_dealt_public_key(),
-                "real_dkg::verify_transcript_extra failed: scalar transcript MPK doesn't match main"
-            );
         }
 
         Ok(())
@@ -438,59 +348,6 @@ impl DKGTrait for RealDKG {
             &aux,
         )?;
 
-        // Verify fast path is present if and only if fast_wconfig is present.
-        ensure!(
-            trx.fast.is_some() == params.pvss_config.fast_wconfig.is_some(),
-            "real_dkg::verify_transcript failed with mismatched fast path flag in trx and params."
-        );
-
-        if let Some(fast_trx) = trx.fast.as_ref() {
-            let fast_dealers = fast_trx
-                .get_dealers()
-                .iter()
-                .map(|player| player.id)
-                .collect::<Vec<usize>>();
-            ensure!(
-                dealers == fast_dealers,
-                "real_dkg::verify_transcript failed with inconsistent dealer index."
-            );
-        }
-
-        if let (Some(fast_trx), Some(fast_wconfig)) =
-            (trx.fast.as_ref(), params.pvss_config.fast_wconfig.as_ref())
-        {
-            fast_trx.verify(fast_wconfig, &params.pvss_config.pp, &spks, &all_eks, &aux)?;
-        }
-
-        // Verify scalar transcript if present
-        if let Some(scalar_trx) = trx.scalar.as_ref() {
-            // Verify dealers match main transcript
-            let scalar_dealers = scalar_trx
-                .get_dealers()
-                .iter()
-                .map(|player| player.id)
-                .collect::<Vec<usize>>();
-            ensure!(
-                dealers == scalar_dealers,
-                "real_dkg::verify_transcript failed with inconsistent dealer index in scalar transcript."
-            );
-
-            // Verify the scalar transcript (SoK + LDT checks)
-            scalar_trx.verify(
-                &params.pvss_config.wconfig,
-                &params.pvss_config.pp,
-                &spks,
-                &all_eks,
-                &aux,
-            )?;
-
-            // Verify MPK matches main transcript (same underlying secret)
-            ensure!(
-                trx.main.get_dealt_public_key() == scalar_trx.get_dealt_public_key(),
-                "real_dkg::verify_transcript failed with mismatched MPK between main and scalar transcripts."
-            );
-        }
-
         Ok(())
     }
 
@@ -499,21 +356,11 @@ impl DKGTrait for RealDKG {
         accumulator: &mut Self::Transcript,
         element: Self::Transcript,
     ) {
-        accumulator
-            .main
-            .aggregate_with(&params.pvss_config.wconfig, &element.main);
-        if let (Some(acc), Some(ele), Some(config)) = (
-            accumulator.fast.as_mut(),
-            element.fast.as_ref(),
-            params.pvss_config.fast_wconfig.as_ref(),
-        ) {
-            acc.aggregate_with(config, ele);
-        }
-
-        // Aggregate scalar transcripts
-        if let (Some(acc), Some(ele)) = (accumulator.scalar.as_mut(), element.scalar.as_ref()) {
-            acc.aggregate_with(&params.pvss_config.wconfig, ele);
-        }
+        let mut agg = accumulator.main.to_aggregated();
+        agg.aggregate_with(&params.pvss_config.wconfig, &element.main)
+            .expect("Transcript aggregation failed");
+        accumulator.main = agg.normalize(); // TODO: this should be updated
+        accumulator.fast = None;
     }
 
     fn decrypt_secret_share_from_transcript(
@@ -529,60 +376,10 @@ impl DKGTrait for RealDKG {
             },
             dk,
             &pub_params.pvss_config.pp,
-        )?;
-        assert_eq!(
-            trx.fast.is_some(),
-            pub_params.pvss_config.fast_wconfig.is_some()
         );
-        let (fast_sk, fast_pk) = match (
-            trx.fast.as_ref(),
-            pub_params.pvss_config.fast_wconfig.as_ref(),
-        ) {
-            (Some(fast_trx), Some(fast_wconfig)) => {
-                let (fast_sk, fast_pk) = fast_trx.decrypt_own_share(
-                    fast_wconfig,
-                    &Player {
-                        id: player_idx as usize,
-                    },
-                    dk,
-                    &pub_params.pvss_config.pp,
-                )?;
-                (Some(fast_sk), Some(fast_pk))
-            },
-            _ => (None, None),
-        };
-
-        // Decrypt scalar shares for IBE
-        //
-        // The scalar transcript produces h1^share which can be combined in the exponent
-        // to reconstruct h1^s. For IBE, this is used as: H(id)^s = (H(id)^h1)^s
-        let (scalar_sk, scalar_pk) = match trx.scalar.as_ref() {
-            Some(scalar_trx) => {
-                let (scalar_sk, scalar_pk) = scalar_trx.decrypt_own_share(
-                    &pub_params.pvss_config.wconfig,
-                    &Player {
-                        id: player_idx as usize,
-                    },
-                    dk,
-                    &pub_params.pvss_config.pp,
-                )?;
-                (Some(scalar_sk), Some(scalar_pk))
-            },
-            None => (None, None),
-        };
-
-        Ok((
-            DealtSecretKeyShares {
-                main: sk,
-                fast: fast_sk,
-                scalar: scalar_sk,
-            },
-            DealtPubKeyShares {
-                main: pk,
-                fast: fast_pk,
-                scalar: scalar_pk,
-            },
-        ))
+        Ok((DealtSecretKeyShares { main: sk }, DealtPubKeyShares {
+            main: pk,
+        }))
     }
 
     // Test-only function
@@ -590,34 +387,15 @@ impl DKGTrait for RealDKG {
         pub_params: &Self::PublicParams,
         input_player_share_pairs: Vec<(u64, Self::DealtSecretShare)>,
     ) -> anyhow::Result<Self::DealtSecret> {
-        let player_share_pairs = input_player_share_pairs
-            .clone()
+        let player_share_pairs: Vec<_> = input_player_share_pairs
             .into_iter()
             .map(|(x, y)| (Player { id: x as usize }, y.main))
             .collect();
-        let reconstructed_secret = <WTrx as Transcript>::DealtSecretKey::reconstruct(
+        let reconstructed_secret = <WTrx as TranscriptCore>::DealtSecretKey::reconstruct(
             &pub_params.pvss_config.wconfig,
             &player_share_pairs,
-        );
-        if input_player_share_pairs
-            .clone()
-            .into_iter()
-            .all(|(_, y)| y.fast.is_some())
-            && pub_params.pvss_config.fast_wconfig.is_some()
-        {
-            let fast_player_share_pairs = input_player_share_pairs
-                .into_iter()
-                .map(|(x, y)| (Player { id: x as usize }, y.fast.unwrap()))
-                .collect();
-            let fast_reconstructed_secret = <WTrx as Transcript>::DealtSecretKey::reconstruct(
-                pub_params.pvss_config.fast_wconfig.as_ref().unwrap(),
-                &fast_player_share_pairs,
-            );
-            ensure!(
-                reconstructed_secret == fast_reconstructed_secret,
-                "real_dkg::reconstruct_secret_from_shares failed with inconsistent dealt secrets."
-            );
-        }
+        )
+        .unwrap();
         Ok(reconstructed_secret)
     }
 
@@ -630,52 +408,26 @@ impl DKGTrait for RealDKG {
             .collect()
     }
 
-    /// Get the IBE Master Public Key (MPK) from the transcript.
-    ///
-    /// For RealDKG, this extracts the dealt public key from the main transcript
-    /// and serializes it as compressed G2 bytes (96 bytes).
-    ///
-    /// The MPK is `g2^s` where `s` is the aggregate secret from all dealers.
-    /// This is used for IBE encryption: encrypt(mpk, identity, message).
-    ///
-    /// # Returns
-    ///
-    /// A 96-byte compressed G2 point representing the IBE master public key.
-    fn get_ibe_master_public_key(transcript: &Self::Transcript) -> Vec<u8> {
-        // Extract the dealt public key (G2) from the main transcript
-        // This is g2^s where s is the aggregate secret
-        let dpk = transcript.main.get_dealt_public_key();
-
-        // Serialize as compressed G2 (96 bytes)
-        dpk.to_bytes().to_vec()
-    }
-
-    /// Get the scalar secret share from a dealt secret share.
-    ///
-    /// For RealDKG, this extracts the scalar shares from the `DealtSecretKeyShares`
-    /// struct and serializes them as bytes.
-    ///
-    /// Each validator has multiple scalar shares (weighted by stake). These are
-    /// the shares of the master secret `s` that can be reconstructed via Lagrange
-    /// interpolation to derive IBE decryption keys.
-    ///
-    /// # Returns
-    ///
-    /// - `Some(bytes)` - Serialized scalar shares (32 bytes per share)
-    /// - `None` - No scalar transcript was dealt (legacy DKG without IBE)
-    fn get_scalar_secret_share(dealt_share: &Self::DealtSecretShare) -> Option<Vec<u8>> {
-        // Check if scalar shares are present
-        let scalar_shares = dealt_share.scalar.as_ref()?;
-
-        // Serialize each scalar share to 32 bytes (little-endian)
-        // For weighted threshold, this is a Vec<DealtSecretKeyShare>
-        // Each DealtSecretKeyShare wraps a Scalar (32 bytes)
-        let bytes: Vec<u8> = scalar_shares
-            .iter()
-            .flat_map(|share| share.to_bytes().to_vec())
-            .collect();
-
-        Some(bytes)
+    /// BCS wire-size upper bound for a single-dealer `Transcripts` (main + optional fast).
+    /// A single WTrx at total weight `W` contains:
+    ///   soks: 1 × SoK (Player + G1 + BLS sig + (G1, Scalar)) ≈ 232 B
+    ///   R, V, C: G1 vectors of length W (and W+1 for V) → 3 × W × 48 B (+48)
+    ///   R_hat, V_hat: G2 vectors of length W (and W+1 for V_hat) → 2 × W × 96 B (+96)
+    /// Plus length prefixes and Option/struct overhead in the Transcripts wrapper.
+    fn expected_max_transcript_size(params: &Self::PublicParams) -> usize {
+        const G1: usize = 48;
+        const G2: usize = 96;
+        const SOK: usize = 8 /* Player */ + G1 + 96 /* BLS sig */ + G1 + 32 /* Scalar */;
+        let wtrx_bound = |w: usize| SOK + w * (3 * G1 + 2 * G2) + (G1 + G2);
+        let main = wtrx_bound(params.pvss_config.wconfig.get_total_weight());
+        let fast = params
+            .pvss_config
+            .fast_wconfig
+            .as_ref()
+            .map(|wc| wtrx_bound(wc.get_total_weight()))
+            .unwrap_or(0);
+        // 4 KiB slack: BCS uleb128 length prefixes, Option tag, struct overhead.
+        main + fast + 4096
     }
 }
 
@@ -686,9 +438,10 @@ impl RealDKG {
         pub_params: &<RealDKG as DKGTrait>::PublicParams,
         my_index: u64,
         sk: &<RealDKG as DKGTrait>::DealerPrivateKey,
+        pk: &<RealDKG as DKGTrait>::DealerPublicKey,
     ) -> <RealDKG as DKGTrait>::Transcript {
         let secret = <RealDKG as DKGTrait>::InputSecret::generate(rng);
-        Self::generate_transcript(rng, pub_params, &secret, my_index, sk)
+        Self::generate_transcript(rng, pub_params, &secret, my_index, sk, pk)
     }
 
     /// The same dealer deals twice and aggregates the transcripts.
@@ -698,81 +451,22 @@ impl RealDKG {
         pub_params: &<RealDKG as DKGTrait>::PublicParams,
         my_index: u64,
         sk: &<RealDKG as DKGTrait>::DealerPrivateKey,
+        pk: &<RealDKG as DKGTrait>::DealerPublicKey,
     ) -> <RealDKG as DKGTrait>::Transcript {
         let secret_0 = <RealDKG as DKGTrait>::InputSecret::generate(rng);
-        let mut trx_0 = Self::generate_transcript(rng, pub_params, &secret_0, my_index, sk);
+        let mut trx_0 = Self::generate_transcript(rng, pub_params, &secret_0, my_index, sk, pk);
         let secret_1 = <RealDKG as DKGTrait>::InputSecret::generate(rng);
-        let trx_1 = Self::generate_transcript(rng, pub_params, &secret_1, my_index, sk);
+        let trx_1 = Self::generate_transcript(rng, pub_params, &secret_1, my_index, sk, pk);
         Self::aggregate_transcripts(pub_params, &mut trx_0, trx_1);
         assert_eq!(2, trx_0.main.get_dealers().len());
         trx_0
     }
-
-    #[cfg(any(test, feature = "testing"))]
-    pub fn generate_transcript_for_inconsistent_secrets<R: CryptoRng + RngCore>(
-        rng: &mut R,
-        pub_params: &<RealDKG as DKGTrait>::PublicParams,
-        my_index: u64,
-        sk: &<RealDKG as DKGTrait>::DealerPrivateKey,
-    ) -> <RealDKG as DKGTrait>::Transcript {
-        let secret_0 = <RealDKG as DKGTrait>::InputSecret::generate(rng);
-        let secret_1 = <RealDKG as DKGTrait>::InputSecret::generate(rng);
-        let my_index = my_index as usize;
-        let my_addr = pub_params.session_metadata.dealer_validator_set[my_index].addr;
-        let aux = (pub_params.session_metadata.dealer_epoch, my_addr);
-
-        let wtrx = WTrx::deal(
-            &pub_params.pvss_config.wconfig,
-            &pub_params.pvss_config.pp,
-            sk,
-            &pub_params.pvss_config.eks,
-            &secret_0,
-            &aux,
-            &Player { id: my_index },
-            rng,
-        );
-        // transcript for fast path
-        let fast_wtrx = pub_params
-            .pvss_config
-            .fast_wconfig
-            .as_ref()
-            .map(|fast_wconfig| {
-                WTrx::deal(
-                    fast_wconfig,
-                    &pub_params.pvss_config.pp,
-                    sk,
-                    &pub_params.pvss_config.eks,
-                    &secret_1,
-                    &aux,
-                    &Player { id: my_index },
-                    rng,
-                )
-            });
-        // Use a third secret for the scalar transcript to make it inconsistent
-        let secret_2 = <RealDKG as DKGTrait>::InputSecret::generate(rng);
-        let scalar_trx = ScalarTrx::deal(
-            &pub_params.pvss_config.wconfig,
-            &pub_params.pvss_config.pp,
-            sk,
-            &pub_params.pvss_config.eks,
-            &secret_2,
-            &aux,
-            &Player { id: my_index },
-            rng,
-        );
-
-        Transcripts {
-            main: wtrx,
-            fast: fast_wtrx,
-            scalar: Some(scalar_trx),
-        }
-    }
 }
 pub fn maybe_dk_from_bls_sk(
     sk: &PrivateKey,
-) -> anyhow::Result<<WTrx as Transcript>::DecryptPrivKey> {
+) -> anyhow::Result<<WTrx as TranscriptCore>::DecryptPrivKey> {
     let mut bytes = sk.to_bytes(); // in big-endian
     bytes.reverse();
-    <WTrx as Transcript>::DecryptPrivKey::try_from(bytes.as_slice())
+    <WTrx as TranscriptCore>::DecryptPrivKey::try_from(bytes.as_slice())
         .map_err(|e| anyhow!("dk_from_bls_sk failed with dk deserialization error: {e}"))
 }

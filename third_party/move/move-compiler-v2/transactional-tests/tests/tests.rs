@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub const TEST_DIR: &str = "tests";
 
@@ -40,6 +41,9 @@ const COMMON_EXCLUSIONS: &[&str] = &[
     "/no-access-check/",
     "/no-recursive-type-check/",
     "/testing-constant/",
+    "/structs_visibility/",
+    "/public_const/",
+    "/for_loop_lang_2_4/",
 ];
 
 /// Note that any config which has different output for a test directory
@@ -57,7 +61,7 @@ const TEST_CONFIGS: &[TestConfig] = &[
         exclude: COMMON_EXCLUSIONS,
         cross_compile: true,
     },
-    // Test optimize/no-optimize/etc., except for `/access_control/`
+    // Test optimize/no-optimize/etc.
     TestConfig {
         name: "optimize",
         runner: |p| run(p, get_config_by_name("optimize")),
@@ -94,23 +98,13 @@ const TEST_CONFIGS: &[TestConfig] = &[
         exclude: COMMON_EXCLUSIONS,
         cross_compile: false,
     },
-    // Test `/operator_eval/` with language version 1 and 2
-    TestConfig {
-        name: "operator-eval-lang-1",
-        runner: |p| run(p, get_config_by_name("operator-eval-lang-1")),
-        experiments: &[(Experiment::OPTIMIZE, true)],
-        language_version: LanguageVersion::V1,
-        include: &["/operator_eval/"],
-        exclude: &[],
-        cross_compile: false,
-    },
     TestConfig {
         name: "operator-eval-lang-2",
         runner: |p| run(p, get_config_by_name("operator-eval-lang-2")),
         experiments: &[(Experiment::OPTIMIZE, true)],
         language_version: LanguageVersion::latest(),
         include: &["/operator_eval/"],
-        exclude: &[],
+        exclude: &["/structs_visibility/"],
         cross_compile: true,
     },
     TestConfig {
@@ -119,7 +113,7 @@ const TEST_CONFIGS: &[TestConfig] = &[
         experiments: &[(Experiment::RECURSIVE_TYPE_CHECK, false)],
         language_version: LanguageVersion::latest(),
         include: &["/no-recursive-check/"],
-        exclude: &[],
+        exclude: &["/structs_visibility/"],
         cross_compile: false,
     },
     TestConfig {
@@ -128,7 +122,7 @@ const TEST_CONFIGS: &[TestConfig] = &[
         experiments: &[(Experiment::ACCESS_CHECK, false)],
         language_version: LanguageVersion::latest(),
         include: &["/no-access-check/"],
-        exclude: &[],
+        exclude: &["/structs_visibility/"],
         cross_compile: false,
     },
     TestConfig {
@@ -137,6 +131,24 @@ const TEST_CONFIGS: &[TestConfig] = &[
         experiments: &[(Experiment::RECURSIVE_TYPE_CHECK, false)],
         language_version: LanguageVersion::latest(),
         include: &["/no-recursive-type-check/"],
+        exclude: &["/structs_visibility/"],
+        cross_compile: false,
+    },
+    TestConfig {
+        name: "public-struct",
+        runner: |p| run(p, get_config_by_name("public-struct")),
+        experiments: &[],
+        language_version: LanguageVersion::latest(),
+        include: &["/structs_visibility/"],
+        exclude: &[],
+        cross_compile: false,
+    },
+    TestConfig {
+        name: "public-const",
+        runner: |p| run(p, get_config_by_name("public-const")),
+        experiments: &[],
+        language_version: LanguageVersion::latest(),
+        include: &["/public_const/"],
         exclude: &[],
         cross_compile: false,
     },
@@ -146,7 +158,7 @@ const TEST_CONFIGS: &[TestConfig] = &[
         experiments: &[(Experiment::COMPILE_FOR_TESTING, true)],
         language_version: LanguageVersion::latest(),
         include: &["/testing-constant/"],
-        exclude: &[],
+        exclude: &["/structs_visibility/"],
         cross_compile: false,
     },
     TestConfig {
@@ -155,6 +167,17 @@ const TEST_CONFIGS: &[TestConfig] = &[
         experiments: &[(Experiment::COMPILE_FOR_TESTING, false)],
         language_version: LanguageVersion::latest(),
         include: &["/testing-constant/"],
+        exclude: &["/structs_visibility/"],
+        cross_compile: false,
+    },
+    // Exercises `for` loop semantics under language version 2.4, where the upper
+    // bound is evaluated inside the iterator's scope (the pre-2.5 behavior).
+    TestConfig {
+        name: "for-loop-lang-2.4",
+        runner: |p| run(p, get_config_by_name("for-loop-lang-2.4")),
+        experiments: &[],
+        language_version: LanguageVersion::V2_4,
+        include: &["/for_loop_lang_2_4/"],
         exclude: &[],
         cross_compile: false,
     },
@@ -168,6 +191,10 @@ const TEST_CONFIGS: &[TestConfig] = &[
 // `test.move`.  If there is such an entry, then each config "foo" will have a
 /// separate baseline output file `test.foo.exp`.
 const SEPARATE_BASELINE: &[&str] = &[
+    // Offsets are different depending on optimizations
+    "control_flow/abort_complex.move",
+    "control_flow/abort_invalid.move",
+    "control_flow/abort_vector.move",
     // Runs into too-many-locals or stack overflow if not optimized
     "constants/large_vectors.move",
     // Printing bytecode is different depending on optimizations
@@ -181,6 +208,7 @@ const SEPARATE_BASELINE: &[&str] = &[
     "no-v1-comparison/assert_one.move",
     "no-v1-comparison/closures/reentrancy",
     "no-v1-comparison/closures/reentrancy",
+    "no-v1-comparison/structs_visibility/migrated_tests/public_enum_field_select.move",
     "control_flow/for_loop_non_terminating.move",
     "control_flow/for_loop_nested_break.move",
     "evaluation_order/lazy_assert.move",
@@ -193,8 +221,6 @@ const SEPARATE_BASELINE: &[&str] = &[
     "no-v1-comparison/enum/enum_scoping.move",
     // Different error messages depending on optimizations or not
     "no-v1-comparison/fv_as_keys.move",
-    // needed until bug #17615 is fixed
-    "misc/bug_14817_extended.move",
     // run in verbose mode to unveil the exact error messages
     "/signed-int/",
     // different expected result
@@ -248,7 +274,7 @@ fn main() {
         .flatten()
         .filter_map(|e| {
             let p = e.path().display().to_string();
-            if p.ends_with(".move") || p.ends_with(".mvir") {
+            if p.ends_with(".move") {
                 Some(p)
             } else {
                 None

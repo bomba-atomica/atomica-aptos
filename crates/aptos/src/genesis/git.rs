@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     common::{
@@ -83,6 +83,10 @@ impl FromStr for GithubRepo {
     }
 }
 
+/// Shared options for locating the genesis configuration repository
+///
+/// Genesis inputs can be read either from a GitHub repository or from a local
+/// directory. Exactly one of the two sources must be provided.
 #[derive(Clone, Default, Parser)]
 pub struct GitOptions {
     /// Github repository e.g. 'aptos-labs/aptos-core'
@@ -108,22 +112,16 @@ pub struct GitOptions {
 
 impl GitOptions {
     pub fn get_client(self) -> CliTypedResult<Client> {
-        if self.github_repository.is_none()
-            && self.github_token_file.is_none()
-            && self.local_repository_dir.is_some()
-        {
-            Ok(Client::local(self.local_repository_dir.unwrap()))
-        } else if self.github_repository.is_some()
-            && self.github_token_file.is_some()
-            && self.local_repository_dir.is_none()
-        {
-            Client::github(
-                self.github_repository.unwrap(),
-                self.github_branch,
-                self.github_token_file.unwrap(),
-            )
-        } else {
-            Err(CliError::CommandArgumentError("Must provide either only --local-repository-dir or both --github-repository and --github-token-path".to_string()))
+        match (
+            self.local_repository_dir,
+            self.github_repository,
+            self.github_token_file,
+        ) {
+            (Some(local_dir), None, None) => Ok(Client::local(local_dir)),
+            (None, Some(repo), Some(token_file)) => {
+                Client::github(repo, self.github_branch, token_file)
+            },
+            _ => Err(CliError::CommandArgumentError("Must provide either only --local-repository-dir or both --github-repository and --github-token-path".to_string())),
         }
     }
 }

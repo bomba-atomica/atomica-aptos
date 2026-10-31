@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     protocols::{
@@ -66,7 +65,7 @@ prop_compose! {
     ),
   ) -> HandshakeMsg {
     HandshakeMsg {
-      supported_protocols,
+      supported_protocols: std::sync::Arc::new(supported_protocols),
       chain_id: ChainId::new(1), // doesn't matter for handshake protocol
       network_id: NetworkId::Validator, // doesn't matter for handshake protocol
     }

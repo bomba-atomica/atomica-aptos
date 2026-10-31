@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     consensus_observer::{
@@ -16,8 +16,7 @@ use crate::{
             },
         },
         observer::{
-            block_data,
-            block_data::ObserverBlockData,
+            block_data::{self, ObserverBlockData},
             epoch_state::ObserverEpochState,
             execution_pool::ObservedOrderedBlock,
             fallback_manager::ObserverFallbackManager,
@@ -28,7 +27,7 @@ use crate::{
         publisher::consensus_publisher::ConsensusPublisher,
     },
     dag::DagCommitSigner,
-    network::{IncomingCommitRequest, IncomingRandGenRequest},
+    network::{IncomingCommitRequest, IncomingRandGenRequest, IncomingSecretShareRequest},
     network_interface::CommitMessage,
     pipeline::{execution_client::TExecutionClient, pipeline_builder::PipelineBuilder},
 };
@@ -65,10 +64,13 @@ use tokio::{sync::mpsc::UnboundedSender, time::interval};
 use tokio_stream::wrappers::IntervalStream;
 
 // Whether to log messages at the info level (useful for debugging)
-const LOG_MESSAGES_AT_INFO_LEVEL: bool = true;
+const LOG_MESSAGES_AT_INFO_LEVEL: bool = false;
 
 /// The consensus observer receives consensus updates and propagates them to the execution pipeline
 pub struct ConsensusObserver {
+    // The consensus observer config
+    consensus_observer_config: ConsensusObserverConfig,
+
     // The execution client to the buffer manager
     execution_client: Arc<dyn TExecutionClient>,
 
@@ -144,6 +146,7 @@ impl ConsensusObserver {
 
         // Create the consensus observer
         Self {
+            consensus_observer_config,
             execution_client,
             observer_block_data,
             observer_epoch_state,
@@ -230,6 +233,11 @@ impl ConsensusObserver {
             );
         }
 
+        // Clear the pipeline builder's module cache so that the stale CachedStateView is released.
+        if let Some(ref builder) = self.pipeline_builder {
+            builder.clear_module_cache();
+        }
+
         // Increment the cleared block state counter
         metrics::increment_counter_without_labels(&metrics::OBSERVER_CLEARED_BLOCK_STATE);
     }
@@ -248,11 +256,17 @@ impl ConsensusObserver {
 
     /// Finalizes the ordered block by sending it to the execution pipeline
     async fn finalize_ordered_block(&mut self, ordered_block: OrderedBlock) {
-        info!(
+        let proof_block_info = ordered_block.proof_block_info();
+        debug!(
             LogSchema::new(LogEntry::ConsensusObserver).message(&format!(
                 "Forwarding ordered blocks to the execution pipeline: {}",
-                ordered_block.proof_block_info()
+                proof_block_info
             ))
+        );
+        metrics::set_gauge_with_label(
+            &metrics::OBSERVER_FORWARDED_BLOCK_ROUND,
+            metrics::ORDERED_BLOCK_LABEL,
+            proof_block_info.round(),
         );
 
         let block = ordered_block.first_block();
@@ -384,7 +398,9 @@ impl ConsensusObserver {
         update_metrics_for_block_payload_message(peer_network_id, &block_payload);
 
         // Verify the block payload digests
-        if let Err(error) = block_payload.verify_payload_digests() {
+        if let Err(error) = block_payload
+            .verify_payload_digests(self.consensus_observer_config.max_num_payload_proofs)
+        {
             // Log the error and update the invalid message counter
             error!(
                 LogSchema::new(LogEntry::ConsensusObserver).message(&format!(
@@ -513,6 +529,7 @@ impl ConsensusObserver {
                         commit_decision.proof_block_info()
                     ))
                 );
+                increment_ignored_message_counter(&peer_network_id, metrics::COMMIT_DECISION_LABEL);
                 return;
             }
 
@@ -554,11 +571,17 @@ impl ConsensusObserver {
 
                 // If state sync is not syncing to a commit, forward the commit decision to the execution pipeline
                 if !self.state_sync_manager.is_syncing_to_commit() {
-                    info!(
+                    let proof_block_info = commit_decision.proof_block_info();
+                    debug!(
                         LogSchema::new(LogEntry::ConsensusObserver).message(&format!(
                             "Forwarding commit decision to the execution pipeline: {}",
-                            commit_decision.proof_block_info()
+                            proof_block_info
                         ))
+                    );
+                    metrics::set_gauge_with_label(
+                        &metrics::OBSERVER_FORWARDED_BLOCK_ROUND,
+                        metrics::COMMIT_DECISION_LABEL,
+                        proof_block_info.round(),
                     );
                     self.forward_commit_decision(commit_decision.clone());
                 }
@@ -627,6 +650,14 @@ impl ConsensusObserver {
                     peer_network_id,
                     message_received_time,
                     ordered_block_with_window,
+                )
+                .await;
+            },
+            ConsensusObserverDirectSend::OrderedBlockV2(ordered_block_v2) => {
+                self.process_ordered_block_message(
+                    peer_network_id,
+                    message_received_time,
+                    ordered_block_v2.into_ordered_block(),
                 )
                 .await;
             },
@@ -749,6 +780,7 @@ impl ConsensusObserver {
                     ordered_block.proof_block_info()
                 ))
             );
+            increment_ignored_message_counter(&peer_network_id, metrics::ORDERED_BLOCK_LABEL);
             return;
         };
 
@@ -798,6 +830,7 @@ impl ConsensusObserver {
                     ordered_block.proof_block_info()
                 ))
             );
+            increment_ignored_message_counter(&peer_network_id, metrics::ORDERED_BLOCK_LABEL);
         }
     }
 
@@ -1066,7 +1099,14 @@ impl ConsensusObserver {
     async fn wait_for_epoch_start(&mut self) {
         // Wait for the epoch state to update
         let block_payloads = self.observer_block_data.lock().get_block_payloads();
-        let (payload_manager, consensus_config, execution_config, randomness_config) = self
+        let (
+            payload_manager,
+            consensus_config,
+            execution_config,
+            randomness_config,
+            chunky_dkg_config,
+            features,
+        ) = self
             .observer_epoch_state
             .wait_for_epoch_start(block_payloads)
             .await;
@@ -1080,6 +1120,10 @@ impl ConsensusObserver {
         let dummy_signer = Arc::new(DagCommitSigner::new(signer.clone()));
         let (_, rand_msg_rx) =
             aptos_channel::new::<AccountAddress, IncomingRandGenRequest>(QueueStyle::FIFO, 1, None);
+        let (_, secret_share_msg_rx) = aptos_channel::new::<
+            AccountAddress,
+            IncomingSecretShareRequest,
+        >(QueueStyle::FIFO, 1, None);
         self.execution_client
             .start_epoch(
                 sk,
@@ -1089,9 +1133,12 @@ impl ConsensusObserver {
                 &consensus_config,
                 &execution_config,
                 &randomness_config,
+                &chunky_dkg_config,
+                &features,
                 None,
                 None,
                 rand_msg_rx,
+                secret_share_msg_rx,
                 0,
             )
             .await;
@@ -1336,6 +1383,15 @@ fn update_metrics_for_ordered_block_with_window_message(
         &metrics::OBSERVER_RECEIVED_MESSAGE_ROUNDS,
         metrics::ORDERED_BLOCK_WITH_WINDOW_LABEL,
         ordered_block.proof_block_info().round(),
+    );
+}
+
+/// Increments the ignored message counter for the given peer and message
+fn increment_ignored_message_counter(peer_network_id: &PeerNetworkId, message_label: &str) {
+    metrics::increment_counter(
+        &metrics::OBSERVER_IGNORED_MESSAGES,
+        message_label,
+        peer_network_id,
     );
 }
 

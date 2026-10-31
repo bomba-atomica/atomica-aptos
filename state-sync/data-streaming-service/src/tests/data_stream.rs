@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     data_notification::{
@@ -40,6 +39,7 @@ use aptos_data_client::{
 };
 use aptos_id_generator::U64IdGenerator;
 use aptos_infallible::Mutex;
+use aptos_storage_interface::StateKind;
 use aptos_storage_service_types::responses::CompleteDataRange;
 use aptos_time_service::{TimeService, TimeServiceTrait};
 use aptos_types::{
@@ -359,7 +359,7 @@ async fn test_state_stream_out_of_order_responses() {
         let data_notification = get_data_notification(&mut stream_listener).await.unwrap();
         assert_matches!(
             data_notification.data_payload,
-            DataPayload::StateValuesWithProof(_)
+            DataPayload::StateValuesWithProof(_, _)
         );
     }
     assert_none!(stream_listener.select_next_some().now_or_never());
@@ -371,7 +371,7 @@ async fn test_state_stream_out_of_order_responses() {
     let data_notification = get_data_notification(&mut stream_listener).await.unwrap();
     assert_matches!(
         data_notification.data_payload,
-        DataPayload::StateValuesWithProof(_)
+        DataPayload::StateValuesWithProof(_, _)
     );
     assert_none!(stream_listener.select_next_some().now_or_never());
 
@@ -383,7 +383,7 @@ async fn test_state_stream_out_of_order_responses() {
         let data_notification = get_data_notification(&mut stream_listener).await.unwrap();
         assert_matches!(
             data_notification.data_payload,
-            DataPayload::StateValuesWithProof(_)
+            DataPayload::StateValuesWithProof(_, _)
         );
     }
     assert_none!(stream_listener.select_next_some().now_or_never());
@@ -447,7 +447,7 @@ async fn test_state_stream_out_of_order_responses_dynamic() {
         let data_notification = get_data_notification(&mut stream_listener).await.unwrap();
         assert_matches!(
             data_notification.data_payload,
-            DataPayload::StateValuesWithProof(_)
+            DataPayload::StateValuesWithProof(_, _)
         );
     }
     assert_none!(stream_listener.select_next_some().now_or_never());
@@ -465,7 +465,7 @@ async fn test_state_stream_out_of_order_responses_dynamic() {
     let data_notification = get_data_notification(&mut stream_listener).await.unwrap();
     assert_matches!(
         data_notification.data_payload,
-        DataPayload::StateValuesWithProof(_)
+        DataPayload::StateValuesWithProof(_, _)
     );
     assert_none!(stream_listener.select_next_some().now_or_never());
 
@@ -483,7 +483,7 @@ async fn test_state_stream_out_of_order_responses_dynamic() {
         let data_notification = get_data_notification(&mut stream_listener).await.unwrap();
         assert_matches!(
             data_notification.data_payload,
-            DataPayload::StateValuesWithProof(_)
+            DataPayload::StateValuesWithProof(_, _)
         );
     }
     assert_none!(stream_listener.select_next_some().now_or_never());
@@ -3320,6 +3320,7 @@ fn create_state_value_stream(
     let stream_request = StreamRequest::GetAllStates(GetAllStatesRequest {
         version,
         start_index: 0,
+        state_kind: StateKind::MainState,
     });
     let (data_stream, data_stream_listener, _) =
         create_data_stream(data_client_config, streaming_service_config, stream_request);
@@ -3637,7 +3638,7 @@ fn set_epoch_ending_response_for_indices(
         let random_number = create_random_u64(100);
         if indices.contains(&index) {
             set_epoch_ending_response_in_queue(data_stream, index as usize, 0); // Set a valid response
-        } else if random_number % 3 == 0 {
+        } else if random_number.is_multiple_of(3) {
             set_timeout_response_in_queue(data_stream, index as usize); // Set a timeout response
         } else if random_number % 3 == 1 {
             set_failure_response_in_queue(data_stream, index as usize); // Set a failure response

@@ -8,23 +8,23 @@ warning: Unused value of parameter `x`. Consider removing the parameter, or pref
 
 
 ============ disassembled file-format ==================
-// Bytecode version v9
+// Bytecode version v10
 module 0x42::globals
 struct R has store + key
   f: u64
 
 // Function definition at index 0
-fun check(l0: address): bool
-    move_loc l0
-    exists R
-    ret
-
-// Function definition at index 1
 fun publish(l0: &signer)
     move_loc l0
     ld_u64 1
     pack R
     move_to R
+    ret
+
+// Function definition at index 1
+fun check(l0: address): bool
+    move_loc l0
+    exists R
     ret
 
 // Function definition at index 2

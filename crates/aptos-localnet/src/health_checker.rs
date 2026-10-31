@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::indexer_api::confirm_metadata_applied;
 use anyhow::{anyhow, Context, Result};
@@ -130,20 +130,17 @@ impl HealthChecker {
         waiting_service: Option<&str>,
     ) -> Result<()> {
         let prefix = self.to_string();
-        wait_for_startup(
-            || self.check(),
-            match waiting_service {
-                Some(waiting_service) => {
-                    format!(
-                        "{} at {} did not start up before {}",
-                        prefix,
-                        self.address_str(),
-                        waiting_service,
-                    )
-                },
-                None => format!("{} at {} did not start up", prefix, self.address_str()),
+        wait_for_startup(|| self.check(), match waiting_service {
+            Some(waiting_service) => {
+                format!(
+                    "{} at {} did not start up before {}",
+                    prefix,
+                    self.address_str(),
+                    waiting_service,
+                )
             },
-        )
+            None => format!("{} at {} did not start up", prefix, self.address_str()),
+        })
         .await
     }
 

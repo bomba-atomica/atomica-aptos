@@ -1,11 +1,12 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{memory_instrumentation::Instrumenter, options::ProverOptions};
 use move_binary_format::file_format::CodeOffset;
 use move_model::{
-    ast::{self},
+    ast::{self, QuantKind},
     exp_generator::ExpGenerator,
     model::FunctionEnv,
     ty::{PrimitiveType, Type},
@@ -33,15 +34,15 @@ impl LoopAnalysisProcessor {
 impl FunctionTargetProcessor for LoopAnalysisProcessor {
     fn process(
         &self,
-        _targets: &mut FunctionTargetsHolder,
+        targets: &mut FunctionTargetsHolder,
         func_env: &FunctionEnv,
         data: FunctionData,
         _scc_opt: Option<&[FunctionEnv]>,
     ) -> FunctionData {
-        if func_env.is_native() {
+        if !func_env.is_compiled() {
             return data;
         }
-        match fat_loop::build_loop_info_for_spec(&FunctionTarget::new(func_env, &data)) {
+        match fat_loop::build_loop_info_for_spec(&FunctionTarget::new(func_env, &data), targets) {
             Ok((loops_with_invariants, loops_for_unrolling)) => {
                 let mut data = Self::transform(func_env, data, &loops_with_invariants);
                 for (header_label, unrolling_instruction) in loops_for_unrolling.fat_loops {
@@ -92,13 +93,10 @@ impl LoopAnalysisProcessor {
 
         let back_edge_locs = loop_annotation.back_edges_locations();
         let invariant_locs = loop_annotation.invariants_locations();
-        let mut builder = FunctionDataBuilder::new_with_options(
-            func_env,
-            data,
-            FunctionDataBuilderOptions {
+        let mut builder =
+            FunctionDataBuilder::new_with_options(func_env, data, FunctionDataBuilderOptions {
                 no_fallthrough_jump_removal: true,
-            },
-        );
+            });
         let mut goto_fixes = vec![];
         let code = std::mem::take(&mut builder.data.code);
         for (offset, bytecode) in code.into_iter().enumerate() {
@@ -175,6 +173,44 @@ impl LoopAnalysisProcessor {
                                 vec![builder.mk_temporary(*idx)],
                             );
                             builder.emit_with(move |id| Bytecode::Prop(id, PropKind::Assume, exp));
+                        }
+
+                        // havoc all memory the loop body may modify, so the
+                        // loop-exit path does not retain pre-loop memory; the
+                        // frame is re-established by user loop invariants
+                        if !options.for_interpretation {
+                            for mem in &loop_info.spec_info().mem_targets {
+                                let mem = mem.clone();
+                                builder.emit_with(|attr_id| {
+                                    Bytecode::Call(
+                                        attr_id,
+                                        vec![],
+                                        Operation::HavocGlobal(
+                                            mem.module_id,
+                                            mem.id,
+                                            mem.inst.clone(),
+                                        ),
+                                        vec![],
+                                        None,
+                                    )
+                                });
+                                // re-assume well-formedness of the memory contents
+                                if let Some(exp) = builder.mk_inst_mem_quant_opt(
+                                    QuantKind::Forall,
+                                    &mem,
+                                    &mut |val| {
+                                        Some(builder.mk_call(
+                                            &Type::Primitive(PrimitiveType::Bool),
+                                            ast::Operation::WellFormed,
+                                            vec![val],
+                                        ))
+                                    },
+                                ) {
+                                    builder.emit_with(move |id| {
+                                        Bytecode::Prop(id, PropKind::Assume, exp)
+                                    });
+                                }
+                            }
                         }
 
                         // trace implicitly reassigned variables after havocking
@@ -360,13 +396,10 @@ impl LoopAnalysisProcessor {
         unrolling_mark: &LoopUnrollingMark,
     ) -> FunctionData {
         let options = ProverOptions::get(func_env.module_env.env);
-        let mut builder = FunctionDataBuilder::new_with_options(
-            func_env,
-            data,
-            FunctionDataBuilderOptions {
+        let mut builder =
+            FunctionDataBuilder::new_with_options(func_env, data, FunctionDataBuilderOptions {
                 no_fallthrough_jump_removal: true,
-            },
-        );
+            });
 
         // collect labels that belongs to this loop
         let in_loop_labels: BTreeSet<_> = unrolling_mark

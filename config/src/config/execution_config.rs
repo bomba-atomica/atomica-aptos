@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::WaypointConfig;
 use crate::config::{
@@ -18,7 +17,13 @@ use std::{
 };
 
 // Default execution concurrency level
-pub const DEFAULT_EXECUTION_CONCURRENCY_LEVEL: u16 = 32;
+pub const DEFAULT_EXECUTION_CONCURRENCY_LEVEL: u16 = 16;
+
+// Default number of native rayon threads per `par_exec` execution thread.
+// Each calling thread that runs a rayon-using native lazily builds its own
+// private pool of this size, so the total native thread count is bounded by
+// `par_exec_concurrency * DEFAULT_NATIVE_RAYON_THREAD_PER_EXEC_THREAD`.
+pub const DEFAULT_NATIVE_RAYON_THREAD_PER_EXEC_THREAD: u16 = 1;
 
 // Genesis constants
 const GENESIS_BLOB_FILENAME: &str = "genesis.blob";
@@ -39,6 +44,13 @@ pub struct ExecutionConfig {
     /// Number of threads to run execution.
     /// If 0, we use min of (num of cores/2, DEFAULT_CONCURRENCY_LEVEL) as default concurrency level
     pub concurrency_level: u16,
+    /// Number of native rayon threads per `par_exec` execution thread.
+    /// Each calling thread that runs a rayon-using Move native (e.g.
+    /// multi-scalar-mul, pairings) lazily builds its own private pool of
+    /// this size, isolating native rayon work from the block-executor's
+    /// `par_exec` pool to prevent nested-rayon reentrancy deadlocks.
+    /// If 0, defaults to `DEFAULT_NATIVE_RAYON_THREAD_PER_EXEC_THREAD`.
+    pub native_rayon_thread_per_exec_thread: u16,
     /// Number of threads to read proofs
     pub num_proof_reading_threads: u16,
     /// Enables paranoid mode for types, which adds extra runtime VM checks
@@ -58,6 +70,8 @@ pub struct ExecutionConfig {
     /// If enabled, runtime checks like paranoid type checks may be performed in parallel in post
     /// commit hook in Block-STM.
     pub async_runtime_checks: bool,
+    /// Enables pre-write optimization for parallel execution.
+    pub enable_pre_write: bool,
 }
 
 impl std::fmt::Debug for ExecutionConfig {
@@ -83,16 +97,17 @@ impl Default for ExecutionConfig {
             genesis_file_location: PathBuf::new(),
             // use min of (num of cores/2, DEFAULT_CONCURRENCY_LEVEL) as default concurrency level
             concurrency_level: 0,
+            native_rayon_thread_per_exec_thread: 0,
             num_proof_reading_threads: 32,
             paranoid_type_verification: true,
             paranoid_hot_potato_verification: true,
             discard_failed_blocks: false,
             processed_transactions_detailed_counters: false,
             genesis_waypoint: None,
-            blockstm_v2_enabled: false,
-            // TODO: consider setting to be true by default.
-            layout_caches_enabled: false,
+            blockstm_v2_enabled: true,
+            layout_caches_enabled: true,
             async_runtime_checks: false,
+            enable_pre_write: true,
         }
     }
 }

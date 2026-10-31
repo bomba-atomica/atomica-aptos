@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     move_vm_ext::{AptosMoveResolver, SessionId},
@@ -32,6 +32,20 @@ impl AptosVM {
                 session_id,
                 jwk_update,
             ),
+            ValidatorTransaction::ChunkyDKGResult(dkg_output) => self.process_chunky_dkg_result(
+                resolver,
+                module_storage,
+                log_context,
+                session_id,
+                dkg_output,
+            ),
+            ValidatorTransaction::TimelockDKGResult(output) => self.process_timelock_dkg_result(
+                resolver,
+                module_storage,
+                log_context,
+                session_id,
+                output,
+            ),
             ValidatorTransaction::TimelockShare(timelock_share) => self.process_timelock_share(
                 resolver,
                 module_storage,
@@ -43,6 +57,13 @@ impl AptosVM {
     }
 }
 
+mod chunky_dkg;
 mod dkg;
 mod jwk;
 mod timelock;
+mod timelock_dkg;
+
+pub use timelock::{
+    install_boneh_franklin_share_verifier, set_timelock_share_verifier, BonehFranklinShareVerifier,
+    ShareCheckError, ShareCheckRequest, TimelockShareVerifier,
+};

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_language_e2e_tests::{
     account::Account,
@@ -17,7 +17,7 @@ use aptos_vm_environment::prod_configs::set_layout_caches;
 use clap::Parser;
 use rand::{rngs::StdRng, SeedableRng};
 use serde_json::json;
-use std::{collections::HashMap, fs, process::exit};
+use std::{collections::HashMap, process::exit};
 
 // bump after a bigger test or perf change, so you can easily distinguish runs
 // that are on top of this commit
@@ -95,23 +95,18 @@ struct CalibrationInfo {
 }
 
 fn get_parsed_calibration_values() -> HashMap<String, CalibrationInfo> {
-    let calibration_values =
-        fs::read_to_string("aptos-move/e2e-benchmark/data/calibration_values.tsv")
-            .expect("Unable to read file");
+    let calibration_values = include_str!("../data/calibration_values.tsv");
     calibration_values
         .trim()
         .split('\n')
         .map(|line| {
             let parts = line.split('\t').collect::<Vec<_>>();
-            (
-                parts[0].to_string(),
-                CalibrationInfo {
-                    // count: parts[1].parse().unwrap(),
-                    expected_time_micros: parts[parts.len() - 1].parse().expect(line),
-                    min_ratio: parts[2].parse().expect(line),
-                    max_ratio: parts[3].parse().expect(line),
-                },
-            )
+            (parts[0].to_string(), CalibrationInfo {
+                // count: parts[1].parse().unwrap(),
+                expected_time_micros: parts[parts.len() - 1].parse().expect(line),
+                min_ratio: parts[2].parse().expect(line),
+                max_ratio: parts[3].parse().expect(line),
+            })
         })
         .collect()
 }
@@ -142,74 +137,52 @@ fn main() {
         //     data_length: Some(32),
         // }),
         // (, EntryPoints::IncGlobal),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::Loop {
-                loop_count: Some(100000),
-                loop_type: LoopType::NoOp,
-            },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::Loop {
-                loop_count: Some(10000),
-                loop_type: LoopType::Arithmetic,
-            },
-        ),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::Loop {
+            loop_count: Some(100000),
+            loop_type: LoopType::NoOp,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::Loop {
+            loop_count: Some(10000),
+            loop_type: LoopType::Arithmetic,
+        }),
         // This is a cheap bcs (serializing vec<u8>), so not representative of what BCS native call should cost.
         // (, EntryPoints::Loop { loop_count: Some(1000), loop_type: LoopType::BcsToBytes { len: 1024 }}),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::CreateObjects {
-                num_objects: 10,
-                object_payload_size: 0,
-            },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::CreateObjects {
-                num_objects: 10,
-                object_payload_size: 10 * 1024,
-            },
-        ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::CreateObjects {
-                num_objects: 100,
-                object_payload_size: 0,
-            },
-        ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::CreateObjects {
-                num_objects: 100,
-                object_payload_size: 10 * 1024,
-            },
-        ),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::CreateObjects {
+            num_objects: 10,
+            object_payload_size: 0,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::CreateObjects {
+            num_objects: 10,
+            object_payload_size: 10 * 1024,
+        }),
+        (ONLY_CONTINUOUS, EntryPoints::CreateObjects {
+            num_objects: 100,
+            object_payload_size: 0,
+        }),
+        (ONLY_CONTINUOUS, EntryPoints::CreateObjects {
+            num_objects: 100,
+            object_payload_size: 10 * 1024,
+        }),
         (
             LANDBLOCKING_AND_CONTINUOUS,
             EntryPoints::InitializeVectorPicture { length: 128 },
         ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::VectorPicture { length: 128 },
-        ),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::VectorPicture {
+            length: 128,
+        }),
         (
             LANDBLOCKING_AND_CONTINUOUS,
             EntryPoints::VectorPictureRead { length: 128 },
         ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::InitializeVectorPicture { length: 30 * 1024 },
-        ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::VectorPicture { length: 30 * 1024 },
-        ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::VectorPictureRead { length: 30 * 1024 },
-        ),
+        (ONLY_CONTINUOUS, EntryPoints::InitializeVectorPicture {
+            length: 30 * 1024,
+        }),
+        (ONLY_CONTINUOUS, EntryPoints::VectorPicture {
+            length: 30 * 1024,
+        }),
+        (ONLY_CONTINUOUS, EntryPoints::VectorPictureRead {
+            length: 30 * 1024,
+        }),
         (
             LANDBLOCKING_AND_CONTINUOUS,
             EntryPoints::SmartTablePicture {
@@ -217,13 +190,10 @@ fn main() {
                 num_points_per_txn: 200,
             },
         ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::SmartTablePicture {
-                length: 1024 * 1024,
-                num_points_per_txn: 300,
-            },
-        ),
+        (ONLY_CONTINUOUS, EntryPoints::SmartTablePicture {
+            length: 1024 * 1024,
+            num_points_per_txn: 300,
+        }),
         (
             LANDBLOCKING_AND_CONTINUOUS,
             EntryPoints::ResourceGroupsSenderWriteTag {
@@ -248,10 +218,9 @@ fn main() {
             LANDBLOCKING_AND_CONTINUOUS,
             EntryPoints::TokenV2AmbassadorMint { numbered: true },
         ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::LiquidityPoolSwap { is_stable: true },
-        ),
+        (ONLY_CONTINUOUS, EntryPoints::LiquidityPoolSwap {
+            is_stable: true,
+        }),
         (
             LANDBLOCKING_AND_CONTINUOUS,
             EntryPoints::LiquidityPoolSwap { is_stable: false },
@@ -262,51 +231,32 @@ fn main() {
             LANDBLOCKING_AND_CONTINUOUS,
             EntryPoints::IncGlobalMilestoneAggV2 { milestone_every: 1 },
         ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::IncGlobalMilestoneAggV2 { milestone_every: 2 },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::EmitEvents { count: 1000 },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::APTTransferWithPermissionedSigner,
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::APTTransferWithMasterSigner,
-        ),
+        (ONLY_CONTINUOUS, EntryPoints::IncGlobalMilestoneAggV2 {
+            milestone_every: 2,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::EmitEvents {
+            count: 1000,
+        }),
         // long vectors with small elements
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::VectorTrimAppend {
-                // baseline, only vector creation
-                vec_len: 3000,
-                element_len: 1,
-                index: 0,
-                repeats: 0,
-            },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::VectorTrimAppend {
-                vec_len: 3000,
-                element_len: 1,
-                index: 100,
-                repeats: 1000,
-            },
-        ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::VectorTrimAppend {
-                vec_len: 3000,
-                element_len: 1,
-                index: 2990,
-                repeats: 1000,
-            },
-        ),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::VectorTrimAppend {
+            // baseline, only vector creation
+            vec_len: 3000,
+            element_len: 1,
+            index: 0,
+            repeats: 0,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::VectorTrimAppend {
+            vec_len: 3000,
+            element_len: 1,
+            index: 100,
+            repeats: 1000,
+        }),
+        (ONLY_CONTINUOUS, EntryPoints::VectorTrimAppend {
+            vec_len: 3000,
+            element_len: 1,
+            index: 2990,
+            repeats: 1000,
+        }),
         (
             LANDBLOCKING_AND_CONTINUOUS,
             EntryPoints::VectorRemoveInsert {
@@ -316,101 +266,71 @@ fn main() {
                 repeats: 1000,
             },
         ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::VectorRemoveInsert {
-                vec_len: 3000,
-                element_len: 1,
-                index: 2998,
-                repeats: 1000,
-            },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::VectorRangeMove {
-                vec_len: 3000,
-                element_len: 1,
-                index: 1000,
-                move_len: 500,
-                repeats: 1000,
-            },
-        ),
+        (ONLY_CONTINUOUS, EntryPoints::VectorRemoveInsert {
+            vec_len: 3000,
+            element_len: 1,
+            index: 2998,
+            repeats: 1000,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::VectorRangeMove {
+            vec_len: 3000,
+            element_len: 1,
+            index: 1000,
+            move_len: 500,
+            repeats: 1000,
+        }),
         // vectors with large elements
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::VectorTrimAppend {
-                // baseline, only vector creation
-                vec_len: 100,
-                element_len: 100,
-                index: 0,
-                repeats: 0,
+        (ONLY_CONTINUOUS, EntryPoints::VectorTrimAppend {
+            // baseline, only vector creation
+            vec_len: 100,
+            element_len: 100,
+            index: 0,
+            repeats: 0,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::VectorTrimAppend {
+            vec_len: 100,
+            element_len: 100,
+            index: 10,
+            repeats: 1000,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::VectorRangeMove {
+            vec_len: 100,
+            element_len: 100,
+            index: 50,
+            move_len: 10,
+            repeats: 1000,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::MapInsertRemove {
+            len: 100,
+            repeats: 100,
+            map_type: MapType::OrderedMap,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::MapInsertRemove {
+            len: 100,
+            repeats: 100,
+            map_type: MapType::SimpleMap,
+        }),
+        (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::MapInsertRemove {
+            len: 100,
+            repeats: 100,
+            map_type: MapType::BigOrderedMap {
+                inner_max_degree: 4,
+                leaf_max_degree: 4,
             },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::VectorTrimAppend {
-                vec_len: 100,
-                element_len: 100,
-                index: 10,
-                repeats: 1000,
+        }),
+        (ONLY_CONTINUOUS, EntryPoints::MapInsertRemove {
+            len: 100,
+            repeats: 100,
+            map_type: MapType::BigOrderedMap {
+                inner_max_degree: 1024,
+                leaf_max_degree: 1024,
             },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::VectorRangeMove {
-                vec_len: 100,
-                element_len: 100,
-                index: 50,
-                move_len: 10,
-                repeats: 1000,
-            },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::MapInsertRemove {
-                len: 100,
-                repeats: 100,
-                map_type: MapType::OrderedMap,
-            },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::MapInsertRemove {
-                len: 100,
-                repeats: 100,
-                map_type: MapType::SimpleMap,
-            },
-        ),
-        (
-            LANDBLOCKING_AND_CONTINUOUS,
-            EntryPoints::MapInsertRemove {
-                len: 100,
-                repeats: 100,
-                map_type: MapType::BigOrderedMap {
-                    inner_max_degree: 4,
-                    leaf_max_degree: 4,
-                },
-            },
-        ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::MapInsertRemove {
-                len: 100,
-                repeats: 100,
-                map_type: MapType::BigOrderedMap {
-                    inner_max_degree: 1024,
-                    leaf_max_degree: 1024,
-                },
-            },
-        ),
-        (
-            ONLY_CONTINUOUS,
-            EntryPoints::MapInsertRemove {
-                len: 1000,
-                repeats: 100,
-                map_type: MapType::OrderedMap,
-            },
-        ),
+        }),
+        (ONLY_CONTINUOUS, EntryPoints::MapInsertRemove {
+            len: 1000,
+            repeats: 100,
+            map_type: MapType::OrderedMap,
+        }),
         // TODO need to support transaction context to enable
         // (LANDBLOCKING_AND_CONTINUOUS, EntryPoints::OrderBook {
         //     state: OrderBookState::new(),
@@ -467,12 +387,10 @@ fn main() {
             &package,
             publisher.address(),
             &mut executor,
-            if expected_time_micros > 10000.0 {
-                6
-            } else if expected_time_micros > 1000.0 {
-                10
-            } else {
+            if expected_time_micros > 1000.0 {
                 100
+            } else {
+                500
             },
         );
         assert!(

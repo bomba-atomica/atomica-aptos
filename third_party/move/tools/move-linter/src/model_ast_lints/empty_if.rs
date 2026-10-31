@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module implements an expression linter that checks for empty `else` branches
 //!   public fun empty_if(x: u64): u64 {
@@ -37,7 +37,7 @@ impl ExpChecker for EmptyIf {
             return;
         }
 
-        if let ExpData::Call(_, Operation::Abort, _) = else_branch.as_ref() {
+        if let ExpData::Call(_, Operation::Abort(_), _) = else_branch.as_ref() {
             return;
         }
 

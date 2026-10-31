@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_types::transaction::use_case::{UseCaseAwareTransaction, UseCaseKey};
 use move_core_types::account_address::AccountAddress;
@@ -20,15 +20,11 @@ impl Debug for Contract {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use Contract::*;
 
-        write!(
-            f,
-            "c{}",
-            match self {
-                Platform => "PP".to_string(),
-                Others => "OO".to_string(),
-                User(addr) => hex::encode_upper(addr.to_be_bytes()),
-            }
-        )
+        write!(f, "c{}", match self {
+            Platform => "PP".to_string(),
+            Others => "OO".to_string(),
+            User(addr) => hex::encode_upper(addr.to_be_bytes()),
+        })
     }
 }
 

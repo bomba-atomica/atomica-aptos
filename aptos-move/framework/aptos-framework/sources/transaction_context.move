@@ -11,14 +11,12 @@ module aptos_framework::transaction_context {
     /// The transaction context extension feature is not enabled.
     const ETRANSACTION_CONTEXT_EXTENSION_NOT_ENABLED: u64 = 2;
 
-    /// The monotonically increasing counter is not enabled.
-    const EMONOTONICALLY_INCREASING_COUNTER_NOT_ENABLED: u64 = 3;
-
     /// The monotonically increasing counter has overflowed (too many calls in a single session).
     const EMONOTONICALLY_INCREASING_COUNTER_OVERFLOW: u64 = 4;
 
     /// Transaction index is not avaulable in this execution context.
     const ETRANSACTION_INDEX_NOT_AVAILABLE: u64 = 5;
+
 
     /// A wrapper denoting aptos unique identifer (AUID)
     /// for storing an address
@@ -192,6 +190,55 @@ module aptos_framework::transaction_context {
         payload.entry_function_payload
     }
 
+    /// Returns whether the current transaction is an encrypted transaction.
+    /// This function aborts if called outside of the transaction prologue, execution, or epilogue phases.
+    public fun is_encrypted_txn(): bool {
+        is_encrypted_txn_internal()
+    }
+    native fun is_encrypted_txn_internal(): bool;
+
+    /// Returns whether the current transaction is an orderless transaction, i.e. it uses a
+    /// replay-protection nonce instead of a sequence number. Use this to guard logic that
+    /// relies on the sender's sequence number (e.g. sequence-number-based proofs), which is
+    /// only meaningful for non-orderless transactions.
+    /// This function aborts if called outside of the transaction prologue, execution, or epilogue phases.
+    /// When compiled for testing, this function returns false instead of aborting when no
+    /// transaction context is available, so unit tests can exercise callers of this function.
+    public fun is_orderless_txn(): bool {
+        if (__COMPILE_FOR_TESTING__) {
+            is_orderless_txn_internal_for_test_only()
+        } else {
+            is_orderless_txn_internal()
+        }
+    }
+    native fun is_orderless_txn_internal(): bool;
+
+    /// Test-only version of `is_orderless_txn` that returns false when no user transaction
+    /// context is available instead of aborting, so unit tests can call functions guarded by
+    /// `is_orderless_txn` (e.g. sequence-number-based proof checks).
+    native fun is_orderless_txn_internal_for_test_only(): bool;
+
+    /// Returns whether the transaction is a multisig transaction (or, equivalently, whether the
+    /// current execution is running the inner payload of a multisig transaction). In this case
+    /// the executing account's sequence number does not advance, so sequence-number-based proof
+    /// challenges are replayable.
+    /// This function aborts if called outside of the transaction prologue, execution, or epilogue phases.
+    /// When compiled for testing, this function returns false instead of aborting when no
+    /// transaction context is available, so unit tests can exercise callers of this function.
+    public fun is_multisig_payload_txn(): bool {
+        if (__COMPILE_FOR_TESTING__) {
+            is_multisig_payload_txn_internal_for_test_only()
+        } else {
+            is_multisig_payload_txn_internal()
+        }
+    }
+    native fun is_multisig_payload_txn_internal(): bool;
+
+    /// Test-only version of `is_multisig_payload_txn` that returns false when no user transaction
+    /// context is available instead of aborting, so unit tests can call functions guarded by
+    /// `is_multisig_payload_txn`.
+    native fun is_multisig_payload_txn_internal_for_test_only(): bool;
+
     /// Returns a monotonically increasing counter value that combines timestamp, transaction index,
     /// session counter, and local counter into a 128-bit value.
     /// Format: `<reserved_byte (8 bits)> || timestamp_us (64 bits) || transaction_index (32 bits) || session_counter (8 bits) || local_counter (16 bits)`
@@ -201,7 +248,6 @@ module aptos_framework::transaction_context {
         if (__COMPILE_FOR_TESTING__) {
             monotonically_increasing_counter_internal_for_test_only()
         } else {
-            assert!(features::is_monotonically_increasing_counter_enabled(), error::invalid_state(EMONOTONICALLY_INCREASING_COUNTER_NOT_ENABLED));
             monotonically_increasing_counter_internal(timestamp::now_microseconds())
         }
     }
@@ -231,23 +277,21 @@ module aptos_framework::transaction_context {
 
     #[test()]
     fun test_auid_uniquess() {
-        use std::vector;
-
         let auids: vector<address> = vector<address>[];
         let i: u64 = 0;
         let count: u64 = 50;
         while (i < count) {
-            i = i + 1;
-            vector::push_back(&mut auids, generate_auid_address());
+            i += 1;
+            auids.push_back(generate_auid_address());
         };
         i = 0;
         while (i < count - 1) {
             let j: u64 = i + 1;
             while (j < count) {
-                assert!(*vector::borrow(&auids, i) != *vector::borrow(&auids, j), 0);
-                j = j + 1;
+                assert!(auids[i] != auids[j], 0);
+                j += 1;
             };
-            i = i + 1;
+            i += 1;
         };
     }
 
@@ -305,6 +349,13 @@ module aptos_framework::transaction_context {
     fun test_call_multisig_payload() {
         // expected to fail with the error code of `invalid_state(E_TRANSACTION_CONTEXT_NOT_AVAILABLE)`
         let _multisig = multisig_payload();
+    }
+
+    #[test]
+    fun test_call_is_orderless_txn() {
+        // In unit tests there is no user transaction context, so the test-only native
+        // reports the transaction as not orderless instead of aborting.
+        assert!(!is_orderless_txn(), 0);
     }
 
     #[test]

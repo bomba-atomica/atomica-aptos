@@ -55,9 +55,9 @@ module 0x815::m {
         acquires MyMap
     {
         let my_map = borrow_global_mut<MyMap>(@0x815);
-        if (!contains<address,ValueWrap>(&my_map.table, key)) {
+        if (!contains<address, ValueWrap>(&my_map.table, key)) {
             let wrap = ValueWrap{val: val};
-            add<address,ValueWrap>(&mut my_map.table, key, wrap);
+            add<address, ValueWrap>(&mut my_map.table, key, wrap);
         }
     }
 }
@@ -186,7 +186,7 @@ public fun m::add_when_missing($t0: address, $t1: u64) {
 
 
 ============ disassembled file-format ==================
-// Bytecode version v9
+// Bytecode version v10
 module 0x815::m
 struct MyMap has key
   table: Table<address, ValueWrap>
@@ -234,10 +234,10 @@ fun add<T0: drop, T1: drop>(l0: &mut Table<T0, T1>, l1: T0, l2: T1)
     move_loc l3
     // @15
     call add<address, ValueWrap>
-l1: ret
+    ret
 l0: move_loc l2
     pop
-    branch l1
+    ret
 
 
 ============ bytecode verification succeeded ========

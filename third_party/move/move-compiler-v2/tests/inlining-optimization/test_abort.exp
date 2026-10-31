@@ -45,6 +45,7 @@ module 0xc0ffee::m {
 
 // -- Sourcified model before first bytecode pipeline
 module 0xc0ffee::n {
+    const ERROR_CODE_2: u64 = 42;
     public fun not_inlined(x: &mut u64) {
         if (*x > 5) {
             if (*x > 5) () else abort 42;
@@ -55,6 +56,8 @@ module 0xc0ffee::n {
     }
 }
 module 0xc0ffee::m {
+    const ERROR_CODE: u64 = 42;
+    const N_ERROR_CODE_2: u64 = 43;
     public fun compute(): u64 {
         let x = 3;
         0xc0ffee::n::not_inlined(&mut x);
@@ -135,7 +138,7 @@ module 0xc0ffee::m {
 
 
 ============ disassembled file-format ==================
-// Bytecode version v9
+// Bytecode version v10
 module 0xc0ffee::n
 // Function definition at index 0
 #[persistent] public fun not_inlined(l0: &mut u64)
@@ -154,7 +157,7 @@ module 0xc0ffee::n
     ld_u64 42
     move_loc l0
     write_ref
-l2: ret
+    ret
 l1: move_loc l0
     // @15
     pop
@@ -167,9 +170,9 @@ l0: copy_loc l0
     add
     move_loc l0
     write_ref
-    branch l2
+    ret
 
-// Bytecode version v9
+// Bytecode version v10
 module 0xc0ffee::m
 use 0xc0ffee::n
 // Function definition at index 0
@@ -234,7 +237,7 @@ fun one(l0: &mut u64)
     ld_u64 42
     move_loc l0
     write_ref
-l2: ret
+    ret
 l1: move_loc l0
     // @15
     pop
@@ -247,7 +250,7 @@ l0: copy_loc l0
     add
     move_loc l0
     write_ref
-    branch l2
+    ret
 
 // Function definition at index 2
 #[persistent] public fun two(): u64

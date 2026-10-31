@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use bytes::Bytes;
 use claims::{assert_err, assert_none, assert_ok, assert_some};
@@ -28,7 +30,7 @@ fn in_memory_storage(enable_lazy_loading: bool) -> InMemoryStorage {
         vec![],
         VMConfig {
             enable_lazy_loading,
-            ..VMConfig::default()
+            ..VMConfig::default_for_test()
         },
     ))
 }
@@ -206,10 +208,9 @@ fn test_dependency_dag_traversal(enable_lazy_loading: bool) {
         assert_ok!(
             module_storage.unmetered_get_eagerly_verified_module(a_id.address(), a_id.name())
         );
-        module_storage.assert_cached_state(
-            vec![],
-            vec![&a_id, &b_id, &c_id, &d_id, &e_id, &f_id, &g_id],
-        );
+        module_storage.assert_cached_state(vec![], vec![
+            &a_id, &b_id, &c_id, &d_id, &e_id, &f_id, &g_id,
+        ]);
     }
 }
 

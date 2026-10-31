@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::{
     realistic_environment::realistic_env_sweep_wrap, ungrouped::background_traffic_for_sweep,
@@ -114,14 +113,10 @@ fn indexer_test() -> ForgeConfig {
         })
         .collect::<Vec<_>>();
 
-    realistic_env_sweep_wrap(
-        4,
-        4,
-        LoadVsPerfBenchmark {
-            test: Box::new(PerformanceBenchmark),
-            workloads,
-            criteria,
-            background_traffic: background_traffic_for_sweep(num_sweep),
-        },
-    )
+    realistic_env_sweep_wrap(4, 4, LoadVsPerfBenchmark {
+        test: Box::new(PerformanceBenchmark),
+        workloads,
+        criteria,
+        background_traffic: background_traffic_for_sweep(num_sweep),
+    })
 }

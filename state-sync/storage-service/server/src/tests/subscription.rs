@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     error::Error,
@@ -132,10 +132,10 @@ async fn test_peers_with_ready_subscriptions() {
         )
         .await
         .unwrap();
-        assert_eq!(
-            peers_with_ready_subscriptions,
-            vec![(peer_network_ids[0], highest_synced_ledger_info)]
-        );
+        assert_eq!(peers_with_ready_subscriptions, vec![(
+            peer_network_ids[0],
+            highest_synced_ledger_info
+        )]);
 
         // Manually remove subscription 1 from the map
         subscriptions.remove(&peer_network_ids[0]);
@@ -158,10 +158,10 @@ async fn test_peers_with_ready_subscriptions() {
         )
         .await
         .unwrap();
-        assert_eq!(
-            peers_with_ready_subscriptions,
-            vec![(peer_network_ids[1], highest_synced_ledger_info)]
-        );
+        assert_eq!(peers_with_ready_subscriptions, vec![(
+            peer_network_ids[1],
+            highest_synced_ledger_info
+        )]);
 
         // Manually remove subscription 2 from the map
         subscriptions.remove(&peer_network_ids[1]);

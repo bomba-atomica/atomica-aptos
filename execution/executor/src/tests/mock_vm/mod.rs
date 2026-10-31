@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #[cfg(test)]
 mod mock_vm_test;
@@ -23,9 +22,9 @@ use aptos_types::{
     state_store::{state_key::StateKey, StateView},
     transaction::{
         signature_verified_transaction::SignatureVerifiedTransaction, AuxiliaryInfo, BlockEndInfo,
-        BlockOutput, ChangeSet, ExecutionStatus, RawTransaction, Script, SignedTransaction,
-        Transaction, TransactionArgument, TransactionAuxiliaryData, TransactionExecutableRef,
-        TransactionOutput, TransactionStatus, WriteSetPayload,
+        BlockError, BlockOutput, ChangeSet, ExecutionStatus, RawTransaction, Script,
+        SignedTransaction, Transaction, TransactionArgument, TransactionAuxiliaryData,
+        TransactionExecutableRef, TransactionOutput, TransactionStatus, WriteSetPayload,
     },
     vm_status::{StatusCode, VMStatus},
     write_set::{WriteOp, WriteSet, WriteSetMut},
@@ -72,7 +71,7 @@ impl VMBlockExecutor for MockVM {
         state_view: &impl StateView,
         _onchain_config: BlockExecutorConfigFromOnchain,
         transaction_slice_metadata: TransactionSliceMetadata,
-    ) -> Result<BlockOutput<SignatureVerifiedTransaction, TransactionOutput>, VMStatus> {
+    ) -> Result<BlockOutput<SignatureVerifiedTransaction, TransactionOutput>, BlockError> {
         // output_cache is used to store the output of transactions so they are visible to later
         // transactions.
         let mut output_cache = HashMap::new();
@@ -431,8 +430,8 @@ fn decode_transaction(txn: &SignedTransaction) -> MockVMTransaction {
         Ok(TransactionExecutableRef::EntryFunction(_)) => {
             unimplemented!("MockVM does not support multisig transaction payload.")
         },
-        Ok(TransactionExecutableRef::Empty) => {
-            unimplemented!("MockVM does not support empty transaction payload.")
+        Ok(TransactionExecutableRef::Empty) | Ok(TransactionExecutableRef::Encrypted) => {
+            unimplemented!("MockVM does not support empty/encrypted transaction payload.")
         },
         Err(_) => unimplemented!("MockVM does not support given transaction payload."),
     }

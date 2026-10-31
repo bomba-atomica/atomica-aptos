@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 #![deny(deprecated)]
@@ -11,6 +12,8 @@ pub mod data_cache;
 pub mod execution_tracing;
 mod interpreter;
 mod interpreter_caches;
+#[cfg(any(test, feature = "testing"))]
+pub use interpreter_caches::InstructionCacheBudgetOverride;
 mod loader;
 pub mod logging;
 pub mod move_vm;
@@ -19,16 +22,14 @@ pub mod native_functions;
 #[macro_use]
 pub mod tracing;
 pub mod config;
-pub mod instr;
 pub mod module_traversal;
 
-// Only include debugging functionality in debug builds
-#[cfg(any(debug_assertions, feature = "debugging"))]
 mod debug;
+pub mod source_locator;
 
-mod access_control;
 mod frame;
 mod frame_type_cache;
+mod native_models_for_runtime_ref_checks;
 mod reentrancy_checker;
 mod runtime_ref_checks;
 mod runtime_type_checks;
@@ -47,7 +48,9 @@ pub use storage::{
         unsync_code_storage::{AsUnsyncCodeStorage, UnsyncCodeStorage},
         unsync_module_storage::{AsUnsyncModuleStorage, BorrowedOrOwned, UnsyncModuleStorage},
     },
-    layout_cache::{LayoutCache, LayoutCacheEntry, NoOpLayoutCache, StructKey},
+    layout_cache::{
+        ambassador_impl_LayoutCache, LayoutCache, LayoutCacheEntry, LayoutCacheKey, NoOpLayoutCache,
+    },
     loader::{
         eager::EagerLoader,
         lazy::LazyLoader,
@@ -61,7 +64,7 @@ pub use storage::{
         ModuleStorage,
     },
     publishing::{StagingModuleStorage, VerifiedModuleBundle},
-    ty_layout_converter::LayoutWithDelayedFields,
+    ty_layout_converter::{constant_serialized_size, LayoutWithDelayedFields},
 };
 
 // TODO(lazy-loading): revisit this macro in favour of a callback or an enum.

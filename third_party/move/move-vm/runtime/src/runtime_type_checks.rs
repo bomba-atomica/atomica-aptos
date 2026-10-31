@@ -1,8 +1,8 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
-    frame::Frame, frame_type_cache::FrameTypeCache, instr::Instruction, interpreter::Stack,
+    frame::Frame, frame_type_cache::FrameTypeCache, interpreter::Stack,
     reentrancy_checker::CallType, Function, LoadedFunction,
 };
 use move_binary_format::errors::*;
@@ -11,7 +11,10 @@ use move_core_types::{
     function::ClosureMask,
     vm_status::{sub_status::unknown_invariant_violation::EPARANOID_FAILURE, StatusCode},
 };
-use move_vm_types::loaded_data::runtime_types::{Type, TypeBuilder};
+use move_vm_types::{
+    instr::Instruction,
+    loaded_data::runtime_types::{Type, TypeBuilder},
+};
 
 pub(crate) trait RuntimeTypeCheck {
     /// Paranoid type checks to perform before instruction execution.
@@ -30,18 +33,8 @@ pub(crate) trait RuntimeTypeCheck {
         ty_cache: &mut FrameTypeCache,
     ) -> PartialVMResult<()>;
 
-    /// Paranoid check that operand and type stacks have the same size
-    fn check_operand_stack_balance(
-        for_fun: &Function,
-        operand_stack: &Stack,
-    ) -> PartialVMResult<()>;
-
     /// For any other checks are performed externally
     fn should_perform_checks(for_fun: &Function) -> bool;
-
-    /// Whether this is a partial checker, in which some parts of the code are checked and
-    /// others not. This is needed for certain info only valid in full checking.
-    fn is_partial_checker() -> bool;
 
     /// Performs a runtime check of the caller is allowed to call the callee for any type of call,
     /// including native dynamic dispatch or calling a closure.
@@ -146,6 +139,53 @@ fn verify_pack<'a>(
     operand_stack.push_ty(output_ty)
 }
 
+pub(crate) fn check_function_type_count_and_depth(
+    ty_builder: &TypeBuilder,
+    func: &LoadedFunction,
+    mask: ClosureMask,
+) -> PartialVMResult<()> {
+    // Creates function type which implicitly performs count and depth checks via the TypeBuilder,
+    // and then throws away the created type. The TypeBuilder enforces size and depth limits during
+    // type construction, so any violations will be caught and returned as errors.
+    // Abilities are not important for the depth / size checks.
+    create_function_type(ty_builder, func, mask, AbilitySet::PUBLIC_FUNCTIONS)?;
+    Ok(())
+}
+
+pub(crate) fn create_function_type(
+    ty_builder: &TypeBuilder,
+    func: &LoadedFunction,
+    mask: ClosureMask,
+    abilities: AbilitySet,
+) -> PartialVMResult<Type> {
+    if ty_builder.count_function_type_node {
+        return ty_builder.create_function_ty(
+            func.param_tys(),
+            mask,
+            func.return_tys(),
+            abilities,
+            func.ty_args(),
+        );
+    }
+
+    // Legacy behavior.
+    let args = mask
+        .extract(func.param_tys(), false)
+        .into_iter()
+        .map(|curried| with_owned_instantiation(ty_builder, func, curried, Ok))
+        .collect::<PartialVMResult<Vec<_>>>()?;
+    let results = func
+        .return_tys()
+        .iter()
+        .map(|ret| with_owned_instantiation(ty_builder, func, ret, Ok))
+        .collect::<PartialVMResult<Vec<_>>>()?;
+    Ok(Type::Function {
+        args,
+        results,
+        abilities,
+    })
+}
+
 pub fn verify_pack_closure(
     ty_builder: &TypeBuilder,
     operand_stack: &mut Stack,
@@ -175,21 +215,7 @@ pub fn verify_pack_closure(
         })?
     }
     // Push result type onto stack
-    let args = mask
-        .extract(func.param_tys(), false)
-        .into_iter()
-        .map(|curried| with_owned_instantiation(ty_builder, func, curried, Ok))
-        .collect::<PartialVMResult<Vec<_>>>()?;
-    let results = func
-        .return_tys()
-        .iter()
-        .map(|ret| with_owned_instantiation(ty_builder, func, ret, Ok))
-        .collect::<PartialVMResult<Vec<_>>>()?;
-    operand_stack.push_ty(Type::Function {
-        args,
-        results,
-        abilities,
-    })?;
+    operand_stack.push_ty(create_function_type(ty_builder, func, mask, abilities)?)?;
 
     Ok(())
 }
@@ -246,20 +272,7 @@ impl RuntimeTypeCheck for NoRuntimeTypeCheck {
     }
 
     #[cfg_attr(feature = "force-inline", inline(always))]
-    fn check_operand_stack_balance(
-        _for_fun: &Function,
-        _operand_stack: &Stack,
-    ) -> PartialVMResult<()> {
-        Ok(())
-    }
-
-    #[cfg_attr(feature = "force-inline", inline(always))]
     fn should_perform_checks(_for_fun: &Function) -> bool {
-        false
-    }
-
-    #[cfg_attr(feature = "force-inline", inline(always))]
-    fn is_partial_checker() -> bool {
         false
     }
 
@@ -294,7 +307,7 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
                 // top of the stack. The argument types are checked when the frame
                 // is constructed in the interpreter, using the same code as for regular
                 // calls.
-                let (expected_ty, _) = ty_cache.get_signature_index_type(*sig_idx, frame)?;
+                let (expected_ty, _, _) = ty_cache.get_signature_index_type(*sig_idx, frame)?;
                 let given_ty = operand_stack.pop_ty()?;
                 given_ty.paranoid_check_assignable(expected_ty)?;
             },
@@ -303,7 +316,14 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
                 frame.check_local_tys_have_drop_ability()?;
             },
             Instruction::Abort => {
-                operand_stack.pop_ty()?;
+                let ty = operand_stack.pop_ty()?;
+                ty.paranoid_check_is_u64_ty()?;
+            },
+            Instruction::AbortMsg => {
+                let ty1 = operand_stack.pop_ty()?;
+                ty1.paranoid_check_is_vec_ty(&Type::U8)?;
+                let ty2 = operand_stack.pop_ty()?;
+                ty2.paranoid_check_is_u64_ty()?;
             },
             // StLoc needs to check before execution as we need to check the drop ability of values.
             Instruction::StLoc(idx) => {
@@ -437,7 +457,8 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
             | Instruction::Call(_)
             | Instruction::CallGeneric(_)
             | Instruction::CallClosure(_)
-            | Instruction::Abort => {
+            | Instruction::Abort
+            | Instruction::AbortMsg => {
                 // Invariants hold because all of the instructions
                 // above will force VM to break from the interpreter
                 // loop and thus not hit this code path.
@@ -836,6 +857,12 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
             },
             Instruction::Exists(_) | Instruction::ExistsGeneric(_) => {
                 operand_stack.pop_ty()?.paranoid_check_is_address_ty()?;
+                // Note:
+                //   We **explicitly** do not check for key ability here because
+                //   checking if resource exists is not exploitable. Even if the
+                //   struct we check does not have key ability, nothing bad happens,
+                //   unlike with operations that **do** something with this struct,
+                //   like move_to, move_from or global borrows.
 
                 let bool_ty = ty_builder.create_bool_ty();
                 operand_stack.push_ty(bool_ty)?;
@@ -877,8 +904,8 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
                 // operand_stack.push_ty(bool_ty)?;
             },
             Instruction::VecPack(si, num) => {
-                let (ty, _) = ty_cache.get_signature_index_type(*si, frame)?;
-                let elem_tys = operand_stack.popn_tys(*num as u16)?;
+                let (ty, _, _) = ty_cache.get_signature_index_type(*si, frame)?;
+                let elem_tys = operand_stack.popn_tys(*num)?;
                 for elem_ty in elem_tys.iter() {
                     // For vector element types, use assignability
                     elem_ty.paranoid_check_assignable(ty)?;
@@ -888,7 +915,7 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
                 operand_stack.push_ty(vec_ty)?;
             },
             Instruction::VecLen(si) => {
-                let (ty, _) = ty_cache.get_signature_index_type(*si, frame)?;
+                let (ty, _, _) = ty_cache.get_signature_index_type(*si, frame)?;
                 operand_stack
                     .pop_ty()?
                     .paranoid_check_is_vec_ref_ty::<false>(ty)?;
@@ -897,7 +924,7 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
                 operand_stack.push_ty(u64_ty)?;
             },
             Instruction::VecImmBorrow(si) => {
-                let (ty, _) = ty_cache.get_signature_index_type(*si, frame)?;
+                let (ty, _, _) = ty_cache.get_signature_index_type(*si, frame)?;
                 operand_stack.pop_ty()?.paranoid_check_is_u64_ty()?;
                 let elem_ref_ty = operand_stack
                     .pop_ty()?
@@ -906,7 +933,7 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
                 operand_stack.push_ty(elem_ref_ty)?;
             },
             Instruction::VecMutBorrow(si) => {
-                let (ty, _) = ty_cache.get_signature_index_type(*si, frame)?;
+                let (ty, _, _) = ty_cache.get_signature_index_type(*si, frame)?;
                 operand_stack.pop_ty()?.paranoid_check_is_u64_ty()?;
                 let elem_ref_ty = operand_stack
                     .pop_ty()?
@@ -914,7 +941,7 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
                 operand_stack.push_ty(elem_ref_ty)?;
             },
             Instruction::VecPushBack(si) => {
-                let (ty, _) = ty_cache.get_signature_index_type(*si, frame)?;
+                let (ty, _, _) = ty_cache.get_signature_index_type(*si, frame)?;
                 // For pushing an element to a vector, use assignability
                 operand_stack.pop_ty()?.paranoid_check_assignable(ty)?;
                 operand_stack
@@ -922,14 +949,14 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
                     .paranoid_check_is_vec_ref_ty::<true>(ty)?;
             },
             Instruction::VecPopBack(si) => {
-                let (ty, _) = ty_cache.get_signature_index_type(*si, frame)?;
+                let (ty, _, _) = ty_cache.get_signature_index_type(*si, frame)?;
                 let elem_ty = operand_stack
                     .pop_ty()?
                     .paranoid_check_and_get_vec_elem_ty::<true>(ty)?;
                 operand_stack.push_ty(elem_ty)?;
             },
             Instruction::VecUnpack(si, num) => {
-                let (expected_elem_ty, _) = ty_cache.get_signature_index_type(*si, frame)?;
+                let (expected_elem_ty, _, _) = ty_cache.get_signature_index_type(*si, frame)?;
                 let vec_ty = operand_stack.pop_ty()?;
                 vec_ty.paranoid_check_is_vec_ty(expected_elem_ty)?;
                 for _ in 0..*num {
@@ -937,7 +964,7 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
                 }
             },
             Instruction::VecSwap(si) => {
-                let (ty, _) = ty_cache.get_signature_index_type(*si, frame)?;
+                let (ty, _, _) = ty_cache.get_signature_index_type(*si, frame)?;
                 operand_stack.pop_ty()?.paranoid_check_is_u64_ty()?;
                 operand_stack.pop_ty()?.paranoid_check_is_u64_ty()?;
                 operand_stack
@@ -949,21 +976,8 @@ impl RuntimeTypeCheck for FullRuntimeTypeCheck {
     }
 
     #[cfg_attr(feature = "force-inline", inline(always))]
-    fn check_operand_stack_balance(
-        _for_fun: &Function,
-        operand_stack: &Stack,
-    ) -> PartialVMResult<()> {
-        operand_stack.check_balance()
-    }
-
-    #[cfg_attr(feature = "force-inline", inline(always))]
     fn should_perform_checks(_for_fun: &Function) -> bool {
         true
-    }
-
-    #[cfg_attr(feature = "force-inline", inline(always))]
-    fn is_partial_checker() -> bool {
-        false
     }
 
     #[cfg_attr(feature = "force-inline", inline(always))]
@@ -1045,23 +1059,8 @@ impl RuntimeTypeCheck for UntrustedOnlyRuntimeTypeCheck {
         }
     }
 
-    #[cfg_attr(feature = "force-inline", inline(always))]
-    fn check_operand_stack_balance(
-        _for_fun: &Function,
-        _operand_stack: &Stack,
-    ) -> PartialVMResult<()> {
-        // We cannot have a global stack balancing without traversing the frame stack,
-        // so skip in this mode.
-        Ok(())
-    }
-
     fn should_perform_checks(for_fun: &Function) -> bool {
         !for_fun.is_trusted
-    }
-
-    #[cfg_attr(feature = "force-inline", inline(always))]
-    fn is_partial_checker() -> bool {
-        true
     }
 
     #[cfg_attr(feature = "force-inline", inline(always))]

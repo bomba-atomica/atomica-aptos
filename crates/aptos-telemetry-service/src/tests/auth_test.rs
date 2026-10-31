@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     context::JsonWebTokenService,
@@ -142,18 +142,15 @@ async fn test_auth_validator_backwards_compat_uuid() {
         resp,
     );
 
-    assert_eq!(
-        decoded.claims,
-        Claims {
-            chain_id,
-            peer_id,
-            node_type: NodeType::Validator,
-            epoch: 1,
-            exp: decoded.claims.exp,
-            iat: decoded.claims.iat,
-            run_uuid: Uuid::default(),
-        },
-    )
+    assert_eq!(decoded.claims, Claims {
+        chain_id,
+        peer_id,
+        node_type: NodeType::Validator,
+        epoch: 1,
+        exp: decoded.claims.exp,
+        iat: decoded.claims.iat,
+        run_uuid: Uuid::default(),
+    },)
 }
 
 #[tokio::test]
@@ -190,18 +187,15 @@ async fn test_auth_validator() {
         resp,
     );
 
-    assert_eq!(
-        decoded.claims,
-        Claims {
-            chain_id,
-            peer_id,
-            node_type: NodeType::Validator,
-            epoch: 1,
-            exp: decoded.claims.exp,
-            iat: decoded.claims.iat,
-            run_uuid,
-        },
-    )
+    assert_eq!(decoded.claims, Claims {
+        chain_id,
+        peer_id,
+        node_type: NodeType::Validator,
+        epoch: 1,
+        exp: decoded.claims.exp,
+        iat: decoded.claims.iat,
+        run_uuid,
+    },)
 }
 
 #[tokio::test]
@@ -239,18 +233,15 @@ async fn test_auth_validatorfullnode() {
         resp,
     );
 
-    assert_eq!(
-        decoded.claims,
-        Claims {
-            chain_id,
-            peer_id,
-            node_type: NodeType::ValidatorFullNode,
-            epoch: 1,
-            exp: decoded.claims.exp,
-            iat: decoded.claims.iat,
-            run_uuid
-        },
-    )
+    assert_eq!(decoded.claims, Claims {
+        chain_id,
+        peer_id,
+        node_type: NodeType::ValidatorFullNode,
+        epoch: 1,
+        exp: decoded.claims.exp,
+        iat: decoded.claims.iat,
+        run_uuid
+    },)
 }
 
 #[tokio::test]

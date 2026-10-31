@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Key-Value definitions for macros
 //!
@@ -36,9 +35,9 @@ impl Key {
 /// The value part of a logging key value pair e.g. `info!(key = value)`
 #[derive(Clone, Copy)]
 pub enum Value<'v> {
-    Debug(&'v (dyn fmt::Debug)),
-    Display(&'v (dyn fmt::Display)),
-    Serde(&'v (dyn erased_serde::Serialize)),
+    Debug(&'v dyn fmt::Debug),
+    Display(&'v dyn fmt::Display),
+    Serde(&'v dyn erased_serde::Serialize),
 }
 
 impl fmt::Debug for Value<'_> {

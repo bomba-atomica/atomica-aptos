@@ -4,7 +4,7 @@ module std::option {
     use std::mem;
 
     /// Abstraction of a value that may or may not be present.
-    enum Option<Element> has copy, drop, store {
+    public enum Option<Element> has copy, drop, store {
         None,
         Some {
             e: Element,
@@ -90,9 +90,10 @@ module std::option {
     /// Return true if the value in `self` is equal to `e_ref`
     /// Always returns `false` if `self` does not hold a value
     public fun contains<Element>(self: &Option<Element>, e_ref: &Element): bool {
-        match (self) {
-            Option::None => false,
-            Option::Some { e } => e == e_ref,
+        if (self is Option::None<Element>) {
+            false
+        } else {
+            &self.e == e_ref
         }
     }
     spec contains {
@@ -101,17 +102,16 @@ module std::option {
         ensures result == spec_contains(self, e_ref);
     }
     spec fun spec_contains<Element>(self: Option<Element>, e: Element): bool {
-        (self is Option::Some<Element>) && spec_borrow(self) == e
+        (self is Option::Some<Element>) && self.borrow() == e
     }
 
     /// Return an immutable reference to the value inside `self`
     /// Aborts if `self` does not hold a value
     public fun borrow<Element>(self: &Option<Element>): &Element {
-        match (self) {
-            Option::None => {
-                abort EOPTION_NOT_SET
-            },
-            Option::Some { e } => e,
+        if (self is Option::None<Element>) {
+            abort EOPTION_NOT_SET
+        } else {
+            &self.e
         }
     }
     spec borrow {
@@ -140,7 +140,7 @@ module std::option {
     spec borrow_with_default {
         pragma opaque;
         aborts_if false;
-        ensures result == (if (is_some(self)) spec_borrow(self) else default_ref);
+        ensures result == (if (self.is_some()) self.borrow() else default_ref);
     }
 
     /// Return the value inside `self` if it holds one
@@ -157,7 +157,7 @@ module std::option {
     spec get_with_default {
         pragma opaque;
         aborts_if false;
-        ensures result == (if (is_some(self)) spec_borrow(self) else default);
+        ensures result == (if (self.is_some()) self.borrow() else default);
     }
 
     /// Convert the none option `self` to a some option by adding `e`.
@@ -173,9 +173,9 @@ module std::option {
     }
     spec fill {
         pragma opaque;
-        aborts_if is_some(self) with EOPTION_IS_SET;
-        ensures is_some(self);
-        ensures spec_borrow(self) == e;
+        aborts_if self.is_some() with EOPTION_IS_SET;
+        ensures self.is_some();
+        ensures self.borrow() == e;
     }
 
     /// Convert a `some` option to a `none` by removing and returning the value stored inside `self`
@@ -192,8 +192,8 @@ module std::option {
     spec extract {
         pragma opaque;
         include AbortsIfNone<Element>;
-        ensures result == spec_borrow(old(self));
-        ensures is_none(self);
+        ensures result == old(self).borrow();
+        ensures self.is_none();
     }
 
     /// Return a mutable reference to the value inside `self`
@@ -208,7 +208,7 @@ module std::option {
     }
     spec borrow_mut {
         include AbortsIfNone<Element>;
-        ensures result == spec_borrow(self);
+        ensures result == self.borrow();
         ensures self == old(self);
     }
 
@@ -227,9 +227,9 @@ module std::option {
     spec swap {
         pragma opaque;
         include AbortsIfNone<Element>;
-        ensures result == spec_borrow(old(self));
-        ensures is_some(self);
-        ensures spec_borrow(self) == el;
+        ensures result == old(self).borrow();
+        ensures self.is_some();
+        ensures self.borrow() == el;
     }
 
     /// Swap the old value inside `self` with `e` and return the old value;
@@ -242,7 +242,7 @@ module std::option {
         pragma opaque;
         aborts_if false;
         ensures result == old(self);
-        ensures spec_borrow(self) == e;
+        ensures self.borrow() == e;
     }
 
     /// Destroys `self.` If `self` holds a value, return it. Returns `default` otherwise
@@ -255,7 +255,7 @@ module std::option {
     spec destroy_with_default {
         pragma opaque;
         aborts_if false;
-        ensures result == (if (is_some(self)) spec_borrow(self) else default);
+        ensures result == (if (self.is_some()) self.borrow() else default);
     }
 
     /// Unpack `self` and return its contents
@@ -271,7 +271,7 @@ module std::option {
     spec destroy_some {
         pragma opaque;
         include AbortsIfNone<Element>;
-        ensures result == spec_borrow(self);
+        ensures result == self.borrow();
     }
 
     /// Unpack `self`
@@ -286,7 +286,7 @@ module std::option {
     }
     spec destroy_none {
         pragma opaque;
-        aborts_if is_some(self) with EOPTION_IS_SET;
+        aborts_if self.is_some() with EOPTION_IS_SET;
     }
 
     /// Convert `self` into a vector of length 1 if it is `Some`,
@@ -300,7 +300,7 @@ module std::option {
     spec to_vec {
         pragma opaque;
         aborts_if false;
-        ensures result == (if (is_some(self)) vector[spec_borrow(self)] else vector::empty());
+        ensures result == (if (self.is_some()) vector[self.borrow()] else vector::empty());
     }
 
     /// Apply the function to the optional element, consuming it. Does nothing if no value present.
@@ -390,6 +390,6 @@ module std::option {
 
     spec schema AbortsIfNone<Element> {
         self: Option<Element>;
-        aborts_if is_none(self) with EOPTION_NOT_SET;
+        aborts_if self.is_none() with EOPTION_NOT_SET;
     }
 }

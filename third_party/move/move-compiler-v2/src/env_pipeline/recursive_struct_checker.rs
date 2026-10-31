@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Implements an AST pass that checks any struct `S` defined in the current module
 //! cannot contain descendant of type `S`.
@@ -130,11 +130,12 @@ impl<'a> RecursiveStructChecker<'a> {
             struct_name,
             struct_name,
         );
-        self.mod_env.env.error_with_labels(
-            &struct_env.get_loc(),
-            "cyclic data",
-            vec![(field_env.get_loc().clone(), note)],
-        );
+        self.mod_env
+            .env
+            .error_with_labels(&struct_env.get_loc(), "cyclic data", vec![(
+                field_env.get_loc().clone(),
+                note,
+            )]);
     }
 
     /// Report cyclic dependency of structs

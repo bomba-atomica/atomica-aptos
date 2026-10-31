@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::tests::{execute_function_with_single_storage_for_test, execute_script_for_test};
 use move_binary_format::{
@@ -353,27 +354,23 @@ fn deprecated_bad_signatures() -> Vec<Signature> {
 fn good_signatures_and_arguments() -> Vec<(Signature, Vec<MoveValue>)> {
     vec![
         // U128 arg
-        (
-            Signature(vec![SignatureToken::U128]),
-            vec![MoveValue::U128(0)],
-        ),
+        (Signature(vec![SignatureToken::U128]), vec![
+            MoveValue::U128(0),
+        ]),
         // U8 arg
         (Signature(vec![SignatureToken::U8]), vec![MoveValue::U8(0)]),
         // U16 arg
-        (
-            Signature(vec![SignatureToken::U16]),
-            vec![MoveValue::U16(0)],
-        ),
+        (Signature(vec![SignatureToken::U16]), vec![MoveValue::U16(
+            0,
+        )]),
         // U32 arg
-        (
-            Signature(vec![SignatureToken::U32]),
-            vec![MoveValue::U32(0)],
-        ),
+        (Signature(vec![SignatureToken::U32]), vec![MoveValue::U32(
+            0,
+        )]),
         // U256 arg
-        (
-            Signature(vec![SignatureToken::U256]),
-            vec![MoveValue::U256(int256::U256::ZERO)],
-        ),
+        (Signature(vec![SignatureToken::U256]), vec![
+            MoveValue::U256(int256::U256::ZERO),
+        ]),
         // All constants
         (
             Signature(vec![SignatureToken::Vector(Box::new(SignatureToken::Bool))]),

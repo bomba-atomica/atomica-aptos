@@ -1,9 +1,9 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_native_interface::SafeNativeBuilder;
-use move_core_types::language_storage::CORE_CODE_ADDRESS;
-use move_vm_runtime::native_functions::NativeFunctionTable;
+use move_core_types::language_storage::{CORE_CODE_ADDRESS, EXPERIMENTAL_CODE_ADDRESS};
+use move_vm_runtime::native_functions::{make_table_from_iter, NativeFunctionTable};
 use std::collections::HashSet;
 
 /// Builds and returns all Aptos native functions.
@@ -33,7 +33,7 @@ pub fn aptos_natives_with_builder(
                 true
             }
         )
-        .chain(aptos_framework::natives::all_natives(
+        .chain(aptos_framework_natives::all_natives(
             CORE_CODE_ADDRESS,
             builder,
             inject_create_signer_for_gov_sim,
@@ -41,6 +41,14 @@ pub fn aptos_natives_with_builder(
         .chain(aptos_table_natives::table_natives(
             CORE_CODE_ADDRESS,
             builder,
+        ))
+        .chain(make_table_from_iter(
+            EXPERIMENTAL_CODE_ADDRESS,
+            aptos_position_natives::all_natives(builder)
+                .into_iter()
+                .map(|(func_name, func)| {
+                    ("native_position".to_string(), func_name, func)
+                }),
         ))
         .collect()
 }

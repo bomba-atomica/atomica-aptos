@@ -1,6 +1,7 @@
 #[test_only]
 module aptos_framework::account_abstraction_tests {
     use std::signer;
+    use aptos_framework::account_abstraction;
     use aptos_framework::auth_data::AbstractionAuthData;
     use aptos_framework::object;
 
@@ -10,8 +11,14 @@ module aptos_framework::account_abstraction_tests {
     ): signer {
         let addr = signer::address_of(&account);
         let cref = object::create_object(addr);
-        object::generate_signer(&cref)
+        cref.generate_signer()
     }
 
     public fun test_auth(account: signer, _data: AbstractionAuthData): signer { account }
+
+    /// Re-enters `account_abstraction` while its module lock is active; dispatch aborts.
+    public fun reentrant_auth(account: signer, _data: AbstractionAuthData): signer {
+        let _ = account_abstraction::using_dispatchable_authenticator(signer::address_of(&account));
+        account
+    }
 }

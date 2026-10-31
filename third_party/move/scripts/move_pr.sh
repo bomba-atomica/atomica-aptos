@@ -24,7 +24,7 @@ echo "*************** [move-pr] Assuming move root at $MOVE_BASE"
 # Run only tests which would also be run on CI
 export ENV_TEST_ON_CI=1
 
-while getopts "htcgdi2a" opt; do
+while getopts "htcCpgdi2a" opt; do
   case $opt in
     h)
       cat <<EOF
@@ -36,6 +36,8 @@ Flags:
     -t   Run tests
     -i   In addition to -t, run integration tests (Aptos framework and e2e tests)
     -c   Run xclippy and fmt +nightly
+    -C   Like -c, but also rebuild cached framework packages
+    -p   Rebuild cached framework packages only
     -g   Run the git checks script (whitespace check). This works
          only for committed clients.
     -d   Run artifact generation for move-stdlib and other Move libraries.
@@ -58,6 +60,13 @@ EOF
     c)
       CHECK=1
       ;;
+    C)
+      CHECK=1
+      BUILD_CACHED_PACKAGES=1
+      ;;
+    p)
+      BUILD_CACHED_PACKAGES=1
+      ;;
     d)
       GEN_ARTIFACTS=1
       ;;
@@ -68,6 +77,7 @@ EOF
       INTEGRATION_TEST=1
       GEN_ARTIFACTS=1
       GIT_CHECKS=1
+      BUILD_CACHED_PACKAGES=1
   esac
 done
 
@@ -90,7 +100,7 @@ MOVE_CRATES="\
   -p move-binary-format\
   -p move-compiler-v2\
   -p move-compiler-v2-transactional-tests\
-  -p move-ir-compiler-transactional-tests\
+  -p move-decompiler\
   -p move-linter\
   -p move-prover-boogie-backend\
   -p move-prover\
@@ -98,22 +108,22 @@ MOVE_CRATES="\
   -p move-vm-runtime\
   -p move-vm-types\
   -p move-ast-generator-tests\
+  -p move-model \
   -p move-asm\
+  -p move-docgen\
+  -p move-prover-bytecode-pipeline \
+  -p move-vm-transactional-tests \
+  -p bytecode-verifier-transactional-tests \
+  -p bytecode-verifier-tests \
+  -p move-package-manifest \
 "
 
 # This is a list of crates for integration testing.
 MOVE_CRATES_INTEGRATION_TEST="\
   -p aptos-transactional-test-harness \
-  -p bytecode-verifier-tests \
-  -p bytecode-verifier-transactional-tests \
-  -p move-cli \
-  -p move-model \
   -p move-package \
-  -p move-prover-bytecode-pipeline \
-  -p move-stackless-bytecode \
   -p move-transactional-test-runner \
   -p move-unit-test \
-  -p move-vm-transactional-tests \
   -p aptos-move-stdlib\
   -p move-abigen\
   -p move-docgen\
@@ -124,6 +134,7 @@ MOVE_CRATES_INTEGRATION_TEST="\
   -p e2e-move-tests\
   -p aptos-framework\
   -p aptos-api\
+  -p aptos-move-flow\
 "
 
 if [ ! -z "$CHECK" ]; then
@@ -135,6 +146,11 @@ if [ ! -z "$CHECK" ]; then
     cargo sort --grouped --workspace
     cargo machete
   )
+fi
+
+if [ ! -z "$BUILD_CACHED_PACKAGES" ]; then
+  echo "*************** [move-pr] Building cached framework packages"
+  $BASE/scripts/cargo_build_aptos_cached_packages.sh
 fi
 
 CARGO_OP_PARAMS="--profile $MOVE_PR_PROFILE"

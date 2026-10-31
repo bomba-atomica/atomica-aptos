@@ -1,16 +1,11 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::fetch_metadata::ValidatorInfo;
-use anyhow::Result;
 use aptos_bitvec::BitVec;
 use aptos_logger::error;
 use aptos_rest_client::VersionedNewBlockEvent;
-use aptos_storage_interface::{DbReader, Order};
-use aptos_types::{
-    account_address::AccountAddress,
-    account_config::{new_block_event_key, NewBlockEvent},
-};
+use aptos_types::account_address::AccountAddress;
 use itertools::Itertools;
 use std::{
     cmp::Ordering,
@@ -307,56 +302,6 @@ pub struct MaxGapInfo {
 pub struct AnalyzeValidators {}
 
 impl AnalyzeValidators {
-    /// Fetch all events from a single epoch from DB.
-    pub fn fetch_epoch(epoch: u64, aptos_db: &dyn DbReader) -> Result<Vec<VersionedNewBlockEvent>> {
-        let batch = 100;
-
-        let mut cursor = u64::MAX;
-        let mut result: Vec<VersionedNewBlockEvent> = vec![];
-        let ledger_version = aptos_db.get_latest_ledger_info()?.ledger_info().version();
-
-        loop {
-            let raw_events = aptos_db.get_events(
-                &new_block_event_key(),
-                cursor,
-                Order::Descending,
-                batch as u64,
-                ledger_version,
-            )?;
-            let end = raw_events.len() < batch;
-            for raw_event in raw_events {
-                if cursor <= raw_event.event.v1()?.sequence_number() {
-                    println!(
-                        "Duplicate event found for {} : {:?}",
-                        cursor,
-                        raw_event.event.v1()?.sequence_number()
-                    );
-                } else {
-                    cursor = raw_event.event.v1()?.sequence_number();
-                    let event = bcs::from_bytes::<NewBlockEvent>(raw_event.event.event_data())?;
-
-                    match epoch.cmp(&event.epoch()) {
-                        Ordering::Equal => {
-                            result.push(VersionedNewBlockEvent {
-                                event,
-                                version: raw_event.transaction_version,
-                                sequence_number: raw_event.event.v1()?.sequence_number(),
-                            });
-                        },
-                        Ordering::Greater => {
-                            return Ok(result);
-                        },
-                        Ordering::Less => {},
-                    };
-                }
-            }
-
-            if end {
-                return Ok(result);
-            }
-        }
-    }
-
     /// Analyze single epoch
     pub fn analyze(blocks: &[VersionedNewBlockEvent], validators: &[ValidatorInfo]) -> EpochStats {
         assert!(
@@ -402,17 +347,13 @@ impl AnalyzeValidators {
         ]
         .into_iter()
         .map(|v| {
-            (
-                v,
-                VecDeque::new(),
-                MaxTpsStats {
-                    tps: 0.0,
-                    end_version: 0,
-                    txns: 0,
-                    blocks: 0,
-                    duration: 0.0,
-                },
-            )
+            (v, VecDeque::new(), MaxTpsStats {
+                tps: 0.0,
+                end_version: 0,
+                txns: 0,
+                blocks: 0,
+                duration: 0.0,
+            })
         })
         .collect::<Vec<_>>();
         let mut trimmed_rounds = 0;
@@ -534,16 +475,13 @@ impl AnalyzeValidators {
             validator_stats: validators
                 .iter()
                 .map(|validator| {
-                    (
-                        validator.address,
-                        ValidatorStats {
-                            proposal_successes: *successes.get(&validator.address).unwrap_or(&0),
-                            proposal_failures: *failures.get(&validator.address).unwrap_or(&0),
-                            votes: *votes.get(&validator.address).unwrap_or(&0),
-                            transactions: *transactions.get(&validator.address).unwrap_or(&0),
-                            voting_power: validator.voting_power,
-                        },
-                    )
+                    (validator.address, ValidatorStats {
+                        proposal_successes: *successes.get(&validator.address).unwrap_or(&0),
+                        proposal_failures: *failures.get(&validator.address).unwrap_or(&0),
+                        votes: *votes.get(&validator.address).unwrap_or(&0),
+                        transactions: *transactions.get(&validator.address).unwrap_or(&0),
+                        voting_power: validator.voting_power,
+                    })
                 })
                 .collect(),
             total_rounds,

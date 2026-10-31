@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // Final phase of cleanup and optimization.
 
@@ -16,7 +17,7 @@ use move_stackless_bytecode::{
     dataflow_domains::{AbstractDomain, JoinResult},
     function_target::{FunctionData, FunctionTarget},
     function_target_pipeline::{FunctionTargetProcessor, FunctionTargetsHolder},
-    stackless_bytecode::{BorrowNode, Bytecode, Operation},
+    stackless_bytecode::{BorrowNode, Bytecode, Operation, PropKind},
     stackless_control_flow_graph::StacklessControlFlowGraph,
 };
 use std::collections::BTreeSet;
@@ -37,8 +38,11 @@ impl FunctionTargetProcessor for CleanAndOptimizeProcessor {
         mut data: FunctionData,
         _scc_opt: Option<&[FunctionEnv]>,
     ) -> FunctionData {
-        if func_env.is_native() {
-            // Nothing to do
+        if !func_env.is_compiled() {
+            // Skip non-compiled functions (native, inline, lemma).
+            // Use `is_compiled` (not `no_verified_bytecode`) because this is an
+            // early bytecode pass: intrinsic functions still have real bytecode
+            // that needs optimization even though verification skips them later.
             return data;
         }
 
@@ -95,6 +99,36 @@ impl TransferFunctions for Optimizer<'_> {
         use BorrowNode::*;
         use Bytecode::*;
         use Operation::*;
+        // A ghost-field update currently appears as `Prop(Assume, Eq(Select(base, g), rhs))`
+        // in the update_map. spec_instrumentation later lowers it into a real
+        // `WriteRef`, but that lowering runs AFTER this optimizer. Treat the
+        // marker as a write to `base` so the borrow's write-back chain
+        // survives clean_and_optimize.
+        if let Prop(_, PropKind::Assume, exp) = instr {
+            let spec = self.target.get_spec();
+            if spec.update_map.contains_key(&exp.node_id()) {
+                if let move_model::ast::ExpData::Call(_, move_model::ast::Operation::Eq, args) =
+                    exp.as_ref()
+                {
+                    if args.len() == 2 {
+                        if let move_model::ast::ExpData::Call(
+                            _,
+                            move_model::ast::Operation::Select(..),
+                            sel_args,
+                        ) = args[0].as_ref()
+                        {
+                            if let Some(base) = sel_args.first() {
+                                if let move_model::ast::ExpData::Temporary(_, idx) = base.as_ref() {
+                                    if self.target.get_local_type(*idx).is_mutable_reference() {
+                                        state.unwritten.insert(Reference(*idx));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Call(_, _, oper, srcs, _) = instr {
             match oper {
                 WriteRef => {
