@@ -9,7 +9,7 @@ use crate::{
         },
     },
     counters,
-    types::DKGMessage,
+    types::{DKGMessage, TimelockTranscriptRequest},
 };
 use anyhow::{anyhow, ensure, Context};
 use aptos_bitvec::BitVec;
@@ -26,6 +26,7 @@ use aptos_types::{
             AggregatedSubtranscript, ChunkyDKGSession, ChunkyDKGTranscript, ChunkySubtranscript,
             DealerPublicKey,
         },
+        timelock_dkg::ChunkyDKGSessionKind,
         DKGTranscriptMetadata,
     },
     epoch_state::EpochState,
@@ -56,6 +57,7 @@ pub fn start_subtranscript_aggregation(
 ) -> AbortHandle {
     let epoch = dkg_config.session_metadata.dealer_epoch;
     let req = ChunkyDKGTranscriptRequest::new(epoch);
+    let kind = dkg_config.kind;
 
     let agg_state = Arc::new(ChunkyTranscriptAggregationState::new(
         epoch_state,
@@ -67,10 +69,16 @@ pub fn start_subtranscript_aggregation(
         received_transcripts,
     ));
     let task = async move {
-        reliable_broadcast
-            .broadcast(req, agg_state)
-            .await
-            .expect("broadcast cannot fail");
+        match kind {
+            ChunkyDKGSessionKind::Mempool => reliable_broadcast
+                .broadcast(req, agg_state)
+                .await
+                .expect("broadcast cannot fail"),
+            ChunkyDKGSessionKind::Timelock => reliable_broadcast
+                .broadcast(TimelockTranscriptRequest(req), AsTimelock(agg_state))
+                .await
+                .expect("broadcast cannot fail"),
+        }
         info!(
             epoch = epoch,
             my_addr = my_addr,
@@ -172,6 +180,24 @@ impl ChunkyTranscriptAggregationState {
         )?;
 
         Ok((transcript, peer_power))
+    }
+}
+
+/// Adapter that runs the same aggregation state for the timelock session. Only the request type differs.
+#[derive(Clone)]
+pub struct AsTimelock<S>(pub S);
+
+impl BroadcastStatus<DKGMessage> for AsTimelock<Arc<ChunkyTranscriptAggregationState>> {
+    type Aggregated = ();
+    type Message = TimelockTranscriptRequest;
+    type Response = ChunkyDKGTranscript;
+
+    fn add(
+        &self,
+        sender: Author,
+        response: ChunkyDKGTranscript,
+    ) -> anyhow::Result<Option<Self::Aggregated>> {
+        BroadcastStatus::<DKGMessage>::add(&self.0, sender, response)
     }
 }
 

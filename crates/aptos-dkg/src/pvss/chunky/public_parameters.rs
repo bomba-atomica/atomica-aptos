@@ -23,7 +23,7 @@ use aptos_crypto::{
     },
     utils, CryptoMaterialError, ValidCryptoMaterial,
 };
-use ark_ec::{pairing::Pairing, scalar_mul::BatchMulPreprocessing, CurveGroup};
+use ark_ec::{pairing::Pairing, scalar_mul::BatchMulPreprocessing, AffineRepr, CurveGroup};
 use ark_serialize::{SerializationError, Valid};
 use ark_std::log2;
 use rand::{thread_rng, CryptoRng, RngCore};
@@ -192,6 +192,104 @@ impl<E: Pairing> PublicParameters<E> {
 
     pub(crate) fn get_dlog_range_bound(&self) -> u64 {
         1u64 << (self.ell as u64 + log2(self.max_aggregation) as u64)
+    }
+}
+
+/// Why [`PublicParameters::validate`] refused a parameter set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicParametersError {
+    /// A point is not on the curve, not in the prime-order subgroup, or is the identity.
+    InvalidPoint(&'static str),
+    /// The DeKART prover key failed validated deserialization.
+    InvalidRangeProofKey,
+    /// The commitment base `G_2` is not the standard generator of G2.
+    NonStandardG2Base,
+    /// The dlog table is not the table of `j * G` for the ElGamal base `G`.
+    InconsistentDlogTable,
+}
+
+impl std::fmt::Display for PublicParametersError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for PublicParametersError {}
+
+fn check_point<A: ark_ec::AffineRepr>(
+    p: &A,
+    what: &'static str,
+) -> Result<(), PublicParametersError> {
+    use ark_serialize::{Compress, Validate};
+    if p.is_zero() {
+        return Err(PublicParametersError::InvalidPoint(what));
+    }
+    // Round trip through the validating decoder: on curve and in the prime-order subgroup.
+    let mut bytes = Vec::new();
+    p.serialize_compressed(&mut bytes)
+        .map_err(|_| PublicParametersError::InvalidPoint(what))?;
+    A::deserialize_with_mode(&bytes[..], Compress::Yes, Validate::Yes)
+        .map_err(|_| PublicParametersError::InvalidPoint(what))?;
+    Ok(())
+}
+
+impl<E: Pairing> PublicParameters<E> {
+    /// Full validation of parameters that arrived as a blob.
+    ///
+    /// The blob decoder (`ark_de`) uses `Validate::No`, so a deserialized value is only well formed,
+    /// not safe. This check does what the decoder skips:
+    ///
+    /// - every point of the ElGamal bases, `G_2` and the DeKART prover key is on the curve, in the
+    ///   prime-order subgroup and not the identity (the prover key is re-decoded with `Validate::Yes`),
+    /// - the dlog table has `table_size` entries, its base is the ElGamal `G`, its giant step is
+    ///   `-table_size * G`, and sampled entries map `j * G` to `j`.
+    ///
+    /// With `require_standard_g2_base` the commitment base `G_2` must equal the standard generator
+    /// of G2. Boneh-Franklin uses `g2` as the base of `U = g2^r` and of every pairing check, and
+    /// `get_public_key_share` returns `g2^{s}` only for that base.
+    pub fn validate(&self, require_standard_g2_base: bool) -> Result<(), PublicParametersError> {
+        use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+
+        check_point(&self.pp_elgamal.G, "pp_elgamal.G")?;
+        check_point(&self.pp_elgamal.H, "pp_elgamal.H")?;
+        check_point(&self.G_2, "G_2")?;
+        if require_standard_g2_base && self.G_2 != E::G2Affine::generator() {
+            return Err(PublicParametersError::NonStandardG2Base);
+        }
+
+        let mut bytes = Vec::new();
+        self.pk_range_proof
+            .serialize_compressed(&mut bytes)
+            .map_err(|_| PublicParametersError::InvalidRangeProofKey)?;
+        dekart_univariate_v2::ProverKey::<E>::deserialize_with_mode(
+            &bytes[..],
+            Compress::Yes,
+            Validate::Yes,
+        )
+        .map_err(|_| PublicParametersError::InvalidRangeProofKey)?;
+
+        let table = &self.dlog_table;
+        if table.G != self.pp_elgamal.G
+            || table.table_size == 0
+            || table.num_entries() != table.table_size
+        {
+            return Err(PublicParametersError::InconsistentDlogTable);
+        }
+        let m = E::ScalarField::from(table.table_size as u64);
+        if table.G_neg_table_size != (table.G * -m).into_affine() {
+            return Err(PublicParametersError::InconsistentDlogTable);
+        }
+        let last = table.table_size as u64 - 1;
+        for j in [1u64, 2, last / 2, last]
+            .into_iter()
+            .filter(|j| *j < table.table_size as u64)
+        {
+            let point = (table.G * E::ScalarField::from(j)).into_affine();
+            if table.get(&point) != Some(j as u32) {
+                return Err(PublicParametersError::InconsistentDlogTable);
+            }
+        }
+        Ok(())
     }
 }
 

@@ -47,6 +47,7 @@ module aptos_framework::ibe_config {
     use aptos_framework::timestamp;
 
     friend aptos_framework::reconfiguration_with_dkg;
+    friend aptos_framework::timelock_dkg;
     friend aptos_framework::block;
 
     // ================================
@@ -287,6 +288,34 @@ module aptos_framework::ibe_config {
             subtranscript_hash,
             verification_keys
         );
+    }
+
+    /// True when the ibe_config state exists, so that `set_epoch_config` cannot abort for a missing resource.
+    public fun is_initialized(): bool {
+        exists<IBEPublicParams>(@aptos_framework)
+    }
+
+    /// True when `set_epoch_config` accepts these values. Lets the epoch change skip a bad config
+    /// instead of aborting.
+    public fun is_valid_epoch_config(
+        mpk: &vector<u8>,
+        reconstruct_threshold_weight: u64,
+        weights: &vector<u64>,
+        epoch_interval_us: u64,
+        verification_keys: &vector<vector<u8>>
+    ): bool {
+        if (mpk.length() != G2_COMPRESSED_LENGTH || epoch_interval_us == 0) { return false };
+        let total_weight = 0u64;
+        weights.for_each_ref(|w| { total_weight += *w; });
+        if (reconstruct_threshold_weight == 0 || reconstruct_threshold_weight > total_weight) {
+            return false
+        };
+        if (verification_keys.length() != total_weight) { return false };
+        let ok = true;
+        verification_keys.for_each_ref(|vk| {
+            if (vk.length() != G2_COMPRESSED_LENGTH) { ok = false; }
+        });
+        ok
     }
 
     fun set_epoch_config_internal(

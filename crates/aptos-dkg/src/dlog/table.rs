@@ -62,6 +62,11 @@ impl<A: AffineRepr> BabyStepTable<A> {
         self.table.get(&key).copied()
     }
 
+    /// Number of stored entries. A well formed table has `table_size` entries.
+    pub fn num_entries(&self) -> usize {
+        self.table.len()
+    }
+
     /// Approximate memory size of the table in gigabytes (compressed key + value bytes; HashMap overhead not included).
     pub fn size_gb(&self) -> f64 {
         let key_size = self.G.compressed_size();

@@ -73,6 +73,16 @@ Out of scope: the auction clearing proof, and any change to the encrypted mempoo
 6. If the timelock session fails or times out, the epoch change still happens. That epoch has no timelock key. `ibe_config::is_ready()` is false and `register_timelock` aborts with `E_IBE_NOT_READY`. Chain liveness does not depend on the timelock DKG.
 7. Stop rule. The first implementation task proves that two sessions in one reconfiguration complete with distinct session ids and give unrelated `mpk` values. If this needs a large change to consensus or the DKG manager, work stops and goes to a cryptographer. It does not fall back to the mempool secret.
 
+### Implementation notes (node-dkg-chunky-wiring)
+
+Status of the implementation, 2026-10-31. **The two-manager wiring and the reconfiguration flow have had no swarm run and need a cryptographer and a consensus review before anything is pushed.** See the review packet, section 10.
+
+- The stop-rule prototype passed at the library level (two sessions, distinct ids, unrelated `mpk`), and the manager level runs two managers with a dummy network (`dkg/src/chunky/timelock_session_tests.rs`). The library needed no change. The manager needed a session kind.
+- Replay defence: the certificate of the timelock session is a signature over `TimelockSubtranscriptSigningMessage`, a separate hash domain, so a certified mempool aggregate never verifies as a `TimelockDKGResult`.
+- The validator transaction is `TimelockDKGResult` at tag 4. Its pool topic is `Topic::TimelockDKG`. The new `DKGMessage::TimelockRequest` variant is appended, so mempool messages keep their encoding.
+- `timelock_dkg.move` holds `TimelockDKGState` (with an `enabled` switch, off by default). `finish_with_timelock_dkg_result` stores the derived config. `timelock_dkg::on_new_epoch` writes `TimelockEpochConfig` after the epoch change.
+- The handler (`check_timelock_dkg_result`) rederives `mpk` and the verification keys, checks `V0` against interpolated keys, compares the claimed `mpk`, and compares the blob hash when the node has the blob.
+
 ### From the DKG output to Boneh-Franklin keys
 
 All of this uses the trait methods of `TranscriptCore` on the chunky `Subtranscript` (`crates/aptos-dkg/src/pvss/chunky/subtranscript.rs` lines 80 to 153).

@@ -140,6 +140,25 @@ pub static CHUNKY_DKG_CONFIG_MODE: Lazy<IntGauge> = Lazy::new(|| {
     .unwrap()
 });
 
+/// 1 when this node serves the timelock in the current epoch (its shares match the verification keys),
+/// 0 when it refuses. Raise an alert on 0 in an epoch that has a timelock key.
+pub static TIMELOCK_SERVICE_READY: Lazy<IntGauge> = Lazy::new(|| {
+    register_int_gauge!(
+        "aptos_timelock_service_ready",
+        "1 if the node serves the timelock in the current epoch, 0 if it refuses"
+    )
+    .unwrap()
+});
+
+/// 1 when this node loaded and validated its timelock PublicParameters, 0 when it has none or refused the blob.
+pub static TIMELOCK_PARAMETERS_VALID: Lazy<IntGauge> = Lazy::new(|| {
+    register_int_gauge!(
+        "aptos_timelock_parameters_valid",
+        "1 if the timelock PublicParameters blob loaded with full validation, else 0"
+    )
+    .unwrap()
+});
+
 pub static CHUNKY_DKG_OBJECT_SIZE_BYTES: Lazy<HistogramVec> = Lazy::new(|| {
     register_histogram_vec!(
         "aptos_chunky_dkg_object_size_bytes",
