@@ -8,6 +8,7 @@ mod dkg_manager;
 pub mod epoch_manager;
 pub mod network;
 pub mod network_interface;
+pub mod timelock_share_service;
 pub mod transcript_aggregation;
 pub mod types;
 
@@ -21,6 +22,7 @@ use aptos_event_notifications::{
 use aptos_logger::{info, warn};
 use aptos_metrics_core::{IntGauge, IntGaugeVec};
 use aptos_network::application::interface::{NetworkClient, NetworkServiceEvents};
+use aptos_storage_interface::DbReader;
 use aptos_types::{
     chain_id::ChainId,
     dkg::chunky_dkg::{
@@ -34,6 +36,7 @@ use move_core_types::account_address::AccountAddress;
 use std::{
     io,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 use tokio::runtime::Runtime;
@@ -47,6 +50,7 @@ pub fn start_dkg_runtime(
     reconfig_events: ReconfigNotificationListener<DbBackedOnChainConfig>,
     dkg_start_events: EventNotificationListener,
     vtxn_pool: VTxnPoolState,
+    db_reader: Arc<dyn DbReader>,
     rb_config: ReliableBroadcastConfig,
     randomness_override_seq_num: u64,
     chunky_dkg_override_seq_num: u64,
@@ -63,6 +67,7 @@ pub fn start_dkg_runtime(
         self_sender,
         dkg_network_client,
         vtxn_pool,
+        db_reader,
         rb_config,
         randomness_override_seq_num,
         chunky_dkg_override_seq_num,

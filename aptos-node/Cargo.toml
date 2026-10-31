@@ -27,6 +27,7 @@ default = []
 failpoints = [
     "fail/failpoints",
     "aptos-consensus/failpoints",
+    "aptos-dkg-runtime/failpoints",
     "aptos-executor/failpoints",
     "aptos-mempool/failpoints",
     "aptos-api/failpoints",
