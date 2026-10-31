@@ -23,6 +23,8 @@ pub mod ciphertext;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod golden_vectors;
 
 pub use ciphertext::{BidCiphertext, MAX_CIPHERTEXT_BYTES};
 
