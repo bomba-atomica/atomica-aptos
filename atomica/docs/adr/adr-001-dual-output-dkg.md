@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted**
+**Superseded** by [IBE on Chunky DKG Spec](../decisions/aptos-upgrade-ibe-chunky-spec.md) (2026-10-30). The timelock secret now comes from its own chunky DKG session. The scalar ElGamal PVSS (`scalar_elgamal`) and the dual-output DKG wiring were removed from the tree by the Aptos 1.49.6 base adoption. This ADR is kept as history only.
 
 ## Executive Summary
 
