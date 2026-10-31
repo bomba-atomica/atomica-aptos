@@ -35,6 +35,8 @@ failpoints = [
 ]
 tokio-console = ["aptos-logger/tokio-console", "aptos-config/tokio-console"]
 smoke-test = ["aptos-jwk-consensus/smoke-test", "aptos-dkg-runtime/smoke-test"]
+# Atomica: builds the node with Move test natives for local networks and docker tests.
+testing = ["aptos-vm/testing", "aptos-framework/testing", "aptos-dkg-runtime/smoke-test"]
 
 [dependencies]
 anyhow = { workspace = true }

@@ -86,7 +86,7 @@ jobs:
 
       - name: Build aptos-node
         run: |
-          cargo build -p aptos-node --features=failpoints,indexer,smoke-test
+          cargo build -p aptos-node --features=failpoints,smoke-test
         timeout-minutes: 60
 
       # `if: always()` lets every smoke test report, and each is guarded so a
