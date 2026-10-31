@@ -33,12 +33,17 @@ env:
   CARGO_BUILD_JOBS: 2
   CARGO_INCREMENTAL: 0
   RUST_MIN_STACK: 104857600
+  # The swarm tests run on the release profile. A debug-profile swarm is too slow for the
+  # fixed epoch timeouts (randomness_correctness fails even on pristine upstream 1.49.6).
+  # LTO is off and codegen units are raised to keep the CI build time and memory down.
+  CARGO_PROFILE_RELEASE_LTO: "off"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
 
 jobs:
   debug-tests:
     name: Debug Smoke Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 240
 
     steps:
       - name: Checkout repository
@@ -86,24 +91,24 @@ jobs:
 
       - name: Build aptos-node
         run: |
-          cargo build -p aptos-node --features=failpoints,smoke-test
-        timeout-minutes: 60
+          cargo build --release -p aptos-node --features=failpoints,smoke-test
+        timeout-minutes: 120
 
       # `if: always()` lets every smoke test report, and each is guarded so a
       # filter that matches nothing fails instead of passing with zero tests.
       - name: Run test_basic_client
         if: always()
-        run: .github/scripts/run-tests-guarded.sh test_basic_client 1 -- cargo test -p smoke-test --lib rest_api::test_basic_client -- --nocapture --test-threads=1
-        timeout-minutes: 60
+        run: .github/scripts/run-tests-guarded.sh test_basic_client 1 -- cargo test --release -p smoke-test --lib rest_api::test_basic_client -- --nocapture --test-threads=1
+        timeout-minutes: 120
 
       - name: Run randomness_correctness
         if: always()
-        run: .github/scripts/run-tests-guarded.sh randomness_correctness 1 -- cargo test -p smoke-test --lib randomness_correctness -- --nocapture --test-threads=1
+        run: .github/scripts/run-tests-guarded.sh randomness_correctness 1 -- cargo test --release -p smoke-test --lib randomness_correctness -- --nocapture --test-threads=1
         timeout-minutes: 60
 
       - name: Run test_validator_execution_sync_epoch_changes
         if: always()
-        run: .github/scripts/run-tests-guarded.sh state_sync_epoch_changes 1 -- cargo test -p smoke-test --lib state_sync::test_validator_execution_sync_epoch_changes -- --nocapture --test-threads=1
+        run: .github/scripts/run-tests-guarded.sh state_sync_epoch_changes 1 -- cargo test --release -p smoke-test --lib state_sync::test_validator_execution_sync_epoch_changes -- --nocapture --test-threads=1
         timeout-minutes: 60
 
       # Swarm logs are kept when a test panics. Print the DKG and error lines
