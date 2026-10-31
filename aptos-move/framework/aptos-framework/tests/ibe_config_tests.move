@@ -225,6 +225,26 @@ module aptos_framework::ibe_config_tests {
         assert!(ibe_config::get_expiry_reason(id) == 0, 6);
     }
 
+    /// Defect found by the e2e run: with fewer submitters than validators the inputs of the Rust
+    /// reconstruction listed only the weights of the submitters, so the weight sum differed from the total
+    /// weight and every reveal failed with `key-check-failed`. The weights must be those of all validators.
+    #[test(user = @0xA)]
+    fun reconstruction_inputs_carry_the_weights_of_all_validators(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        // Validators 0 (weight 2) and 2 (weight 2) submit, validator 1 does not. Threshold is 3.
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 2, @0xB2, 0);
+        let (indices, dk_shares, weights, threshold, total_weight, _identity) =
+            ibe_config::get_reconstruction_inputs(id);
+        assert!(indices == vector[0, 2], 1);
+        assert!(dk_shares.length() == 2, 2);
+        assert!(weights == vector[2, 1, 2], 3);
+        assert!(threshold == 3, 4);
+        assert!(total_weight == 5, 5);
+    }
+
     #[test(user = @0xA)]
     #[expected_failure(abort_code = 11, location = aptos_framework::ibe_config)]
     fun second_reveal_aborts(user: &signer) {

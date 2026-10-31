@@ -187,6 +187,14 @@ pub fn decode_g2(bytes: &[u8]) -> Result<G2Affine, IbeError> {
     Ok(p)
 }
 
+/// Returns the compressed encoding of `2 * share`: a valid, different curve point. A test hook for a
+/// validator that submits a corrupted share. A node never calls it on its own.
+pub fn double_g1_share(share: &[u8]) -> Result<[u8; G1_COMPRESSED_LEN], IbeError> {
+    let p = decode_g1(share)?;
+    let doubled: G1Affine = (p + p).into_affine();
+    Ok(encode_g1(&doubled))
+}
+
 /// Compressed encoding of a G1 point.
 pub fn encode_g1(p: &G1Affine) -> [u8; G1_COMPRESSED_LEN] {
     let mut out = [0u8; G1_COMPRESSED_LEN];

@@ -582,7 +582,8 @@ module aptos_framework::ibe_config {
     }
 
     /// Everything the handler needs to reconstruct the key:
-    /// `(validator_indices, dk_shares, weights, threshold, total_weight, identity)`.
+    /// `(validator_indices, dk_shares, weights, threshold, total_weight, identity)`. `weights` are the weights of all
+    /// validators of the epoch in validator order.
     /// Aborts unless the timelock is `Pending` in the current epoch and verified weight reached the threshold.
     public fun get_reconstruction_inputs(timelock_id: u64): (vector<u64>, vector<vector<vector<u8>>>, vector<u64>, u64, u64, vector<u8>)
     acquires TimelockRegistry, TimelockEpochConfig {
@@ -592,11 +593,15 @@ module aptos_framework::ibe_config {
         let info = registry.timelocks.borrow(timelock_id);
         assert!(effective_status(info) is TimelockStatus::Pending, E_NOT_PENDING);
         assert!(info.share_count >= info.reveal_threshold, E_BELOW_THRESHOLD);
-        let total_weight = TimelockEpochConfig[@aptos_framework].total_weight;
+        let config = &TimelockEpochConfig[@aptos_framework];
+        let total_weight = config.total_weight;
+        // The third value is the weight of EVERY validator of the epoch, indexed by validator index (the
+        // Rust reconstruction derives each share's player id from the weights of all validators before it).
+        // It is not `info.validator_weights`, which only lists the validators that submitted.
         (
             info.validator_indices,
             info.submitted_shares,
-            info.validator_weights,
+            config.weights,
             info.reveal_threshold,
             total_weight,
             info.identity

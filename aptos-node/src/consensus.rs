@@ -29,7 +29,7 @@ use aptos_event_notifications::{
 use aptos_jwk_consensus::{start_jwk_consensus_runtime, types::JWKConsensusMsg};
 use aptos_mempool::QuorumStoreRequest;
 use aptos_network::application::interface::{NetworkClient, NetworkServiceEvents};
-use aptos_storage_interface::DbReaderWriter;
+use aptos_storage_interface::{DbReader, DbReaderWriter};
 use aptos_validator_transaction_pool::VTxnPoolState;
 use futures::channel::mpsc::Sender;
 use std::sync::Arc;
@@ -72,6 +72,7 @@ pub fn create_dkg_runtime(
         EventNotificationListener,
     )>,
     dkg_network_interfaces: Option<ApplicationNetworkInterfaces<DKGMessage>>,
+    db_reader: Arc<dyn DbReader>,
 ) -> (VTxnPoolState, Option<Runtime>) {
     let vtxn_pool = VTxnPoolState::default();
     let dkg_runtime = match dkg_network_interfaces {
@@ -92,6 +93,7 @@ pub fn create_dkg_runtime(
                 reconfig_events,
                 dkg_start_events,
                 vtxn_pool.clone(),
+                db_reader,
                 rb_config,
                 node_config.randomness_override_seq_num,
                 node_config.chunky_dkg_override_seq_num,
