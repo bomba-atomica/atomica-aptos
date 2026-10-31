@@ -430,12 +430,9 @@ fn mismatched_v0_is_rejected_even_when_certified() {
     let mut bad = f.timelock_agg.clone();
     let foreign = master_public_key(&MasterScalar::from(123456789u64));
     bad.subtranscript.V0 = foreign;
-    let cert = sign(
-        &f.timelock,
-        ChunkyDKGSessionKind::Timelock,
-        &bad,
-        &[0, 1, 2],
-    );
+    let cert = sign(&f.timelock, ChunkyDKGSessionKind::Timelock, &bad, &[
+        0, 1, 2,
+    ]);
     // Even with the claimed mpk equal to the (wrong) V0, the interpolation check refuses it.
     let output = output_for(&bad, cert, encode_g2(&foreign).to_vec(), local_hash());
     match check(f, &output, EPOCH, Some(local_hash())) {
@@ -447,12 +444,9 @@ fn mismatched_v0_is_rejected_even_when_certified() {
     // A single corrupted verification key is caught too.
     let mut bad_vk = f.timelock_agg.clone();
     bad_vk.subtranscript.Vs[0][0] = foreign;
-    let cert = sign(
-        &f.timelock,
-        ChunkyDKGSessionKind::Timelock,
-        &bad_vk,
-        &[0, 1, 2],
-    );
+    let cert = sign(&f.timelock, ChunkyDKGSessionKind::Timelock, &bad_vk, &[
+        0, 1, 2,
+    ]);
     let output = output_for(&bad_vk, cert, derived_mpk(f), local_hash());
     assert!(matches!(
         check(f, &output, EPOCH, Some(local_hash())),

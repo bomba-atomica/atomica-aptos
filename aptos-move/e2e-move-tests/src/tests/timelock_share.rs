@@ -105,11 +105,8 @@ impl Env {
             .epoch();
         let chain_id = h.executor.get_chain_id().id();
 
-        h.executor.exec(
-            "ibe_config",
-            "set_epoch_config",
-            vec![],
-            vec![
+        h.executor
+            .exec("ibe_config", "set_epoch_config", vec![], vec![
                 MoveValue::Signer(CORE_CODE_ADDRESS)
                     .simple_serialize()
                     .unwrap(),
@@ -121,8 +118,7 @@ impl Env {
                 bcs::to_bytes(&vec![1u8; 32]).unwrap(),
                 bcs::to_bytes(&vec![2u8; 32]).unwrap(),
                 bcs::to_bytes(&dealing.vks()).unwrap(),
-            ],
-        );
+            ]);
         let user = h.new_account_at(AccountAddress::from_hex_literal("0xa11ce").unwrap());
         let status = h.run_entry_function(
             &user,
@@ -349,7 +345,7 @@ fn non_subgroup_and_malformed_points_are_discarded_before_any_state_change() {
         }
     };
     let mut identity_point = vec![0u8; 48];
-    identity_point[0] = 0xc0;
+    identity_point[0] = 0xC0;
     for bad in [non_subgroup, identity_point, vec![0u8; 47]] {
         let mut shares = good.clone();
         shares[1] = bad;
@@ -400,11 +396,8 @@ fn rebuilt_key_that_fails_the_mpk_check_expires_and_is_not_stored() {
     let other = Dealing::new(&[3], 2, 14);
     let mut e = Env::new(&d, 2);
     // Replace the config: verification keys of `d` (so the shares verify), mpk of another secret.
-    e.h.executor.exec(
-        "ibe_config",
-        "set_epoch_config",
-        vec![],
-        vec![
+    e.h.executor
+        .exec("ibe_config", "set_epoch_config", vec![], vec![
             MoveValue::Signer(CORE_CODE_ADDRESS)
                 .simple_serialize()
                 .unwrap(),
@@ -416,8 +409,7 @@ fn rebuilt_key_that_fails_the_mpk_check_expires_and_is_not_stored() {
             bcs::to_bytes(&vec![1u8; 32]).unwrap(),
             bcs::to_bytes(&vec![2u8; 32]).unwrap(),
             bcs::to_bytes(&d.vks()).unwrap(),
-        ],
-    );
+        ]);
     e.advance_to(DEADLINE);
     let out = e.submit(e.epoch, d.shares_for(0, &e.identity()));
     assert!(kept_ok(&out), "{:?}", out.status());

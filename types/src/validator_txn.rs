@@ -214,27 +214,18 @@ mod tests {
             epoch: 1,
             timelock_id: 1,
         };
-        assert_eq!(
-            a,
-            Topic::TimelockShare {
-                epoch: 1,
-                timelock_id: 1
-            }
-        );
-        assert_ne!(
-            a,
-            Topic::TimelockShare {
-                epoch: 2,
-                timelock_id: 1
-            }
-        );
-        assert_ne!(
-            a,
-            Topic::TimelockShare {
-                epoch: 1,
-                timelock_id: 2
-            }
-        );
+        assert_eq!(a, Topic::TimelockShare {
+            epoch: 1,
+            timelock_id: 1
+        });
+        assert_ne!(a, Topic::TimelockShare {
+            epoch: 2,
+            timelock_id: 1
+        });
+        assert_ne!(a, Topic::TimelockShare {
+            epoch: 1,
+            timelock_id: 2
+        });
         assert_ne!(a, Topic::ChunkyDKG);
         assert_ne!(Topic::TimelockDKG, Topic::ChunkyDKG);
     }

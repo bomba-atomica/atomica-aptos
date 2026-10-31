@@ -52,17 +52,14 @@ impl Env {
 
     fn reconstruct(&mut self, weights: Vec<u64>, counts: Vec<u64>, shares: Vec<&str>) -> u64 {
         let flat: Vec<Vec<u8>> = shares.iter().map(|s| hex(s)).collect();
-        self.gas(
-            "reconstruct",
-            vec![
-                bcs::to_bytes(&flat).unwrap(),
-                bcs::to_bytes(&counts).unwrap(),
-                bcs::to_bytes(&weights).unwrap(),
-                bcs::to_bytes(&5u64).unwrap(),
-                bcs::to_bytes(&7u64).unwrap(),
-                bcs::to_bytes(&hex(IDENTITY)).unwrap(),
-            ],
-        )
+        self.gas("reconstruct", vec![
+            bcs::to_bytes(&flat).unwrap(),
+            bcs::to_bytes(&counts).unwrap(),
+            bcs::to_bytes(&weights).unwrap(),
+            bcs::to_bytes(&5u64).unwrap(),
+            bcs::to_bytes(&7u64).unwrap(),
+            bcs::to_bytes(&hex(IDENTITY)).unwrap(),
+        ])
     }
 }
 

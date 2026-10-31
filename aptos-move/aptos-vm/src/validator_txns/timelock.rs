@@ -630,7 +630,7 @@ mod tests {
         // All zero bytes is not a valid compressed point. The compressed identity (0xc0 then zeros)
         // is a valid encoding of the identity and must be refused.
         let mut identity = vec![0u8; 48];
-        identity[0] = 0xc0;
+        identity[0] = 0xC0;
         assert_eq!(validate_share_encoding(&[good, identity]), Err(1));
     }
 
@@ -723,7 +723,7 @@ mod tests {
         assert!(check(&id(), &[], &[]).is_err());
         // an invalid point
         let mut identity_point = vec![0u8; 48];
-        identity_point[0] = 0xc0;
+        identity_point[0] = 0xC0;
         let mut bad_point = good.clone();
         bad_point[1] = identity_point;
         assert!(check(&id(), &bad_point, &vks).is_err());

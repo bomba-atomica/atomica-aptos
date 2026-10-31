@@ -33,8 +33,8 @@ use rand::Rng;
 pub use utils::random::DST_RAND_CORE_HELL;
 
 pub mod dlog;
-pub mod ibe;
 pub(crate) mod fiat_shamir;
+pub mod ibe;
 pub mod pcs;
 pub mod pvss;
 pub mod range_proofs;

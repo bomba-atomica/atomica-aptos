@@ -218,13 +218,10 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
                     if let Some(tx) = self.timelock_dkg_start_event_tx.as_ref() {
                         match TimelockDKGStartEvent::try_from(&event) {
                             Ok(start_event) => {
-                                let _ = tx.push(
-                                    (),
-                                    ChunkyDKGStartEvent {
-                                        session_metadata: start_event.session_metadata,
-                                        start_time_us: start_event.start_time_us,
-                                    },
-                                );
+                                let _ = tx.push((), ChunkyDKGStartEvent {
+                                    session_metadata: start_event.session_metadata,
+                                    start_time_us: start_event.start_time_us,
+                                });
                             },
                             Err(e) => {
                                 error!("[DKG] Failed conversion to TimelockDKGStartEvent: {}", e);
