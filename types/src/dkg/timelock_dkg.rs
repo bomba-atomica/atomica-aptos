@@ -645,10 +645,10 @@ pub fn check_timelock_dkg_result(
         .map_err(|e| ResultRejection::KeyDerivationFailed(e.to_string()))?;
     check_claimed_mpk(&derived, &output.mpk).map_err(|_| ResultRejection::ClaimedMpkMismatch)?;
 
-    if let Some(local) = local_params_hash {
-        if local != output.public_parameters_hash {
-            return Err(ResultRejection::ParametersHashMismatch);
-        }
+    if let Some(local) = local_params_hash
+        && local != output.public_parameters_hash
+    {
+        return Err(ResultRejection::ParametersHashMismatch);
     }
 
     let subtranscript_hash = aggregated.hash();
