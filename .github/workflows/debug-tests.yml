@@ -33,11 +33,15 @@ env:
   CARGO_BUILD_JOBS: 2
   CARGO_INCREMENTAL: 0
   RUST_MIN_STACK: 104857600
-  # The swarm tests run on the release profile. A debug-profile swarm is too slow for the
-  # fixed epoch timeouts (randomness_correctness fails even on pristine upstream 1.49.6).
-  # LTO is off and codegen units are raised to keep the CI build time and memory down.
+  # The swarm tests run on a release-profile aptos-node (LTO off, more codegen units to keep
+  # CI build time and memory down). Without the two variables below the swarm compiles its own
+  # DEBUG aptos-node into target/debug and ignores the release build, and a debug node is too
+  # slow for the fixed epoch timeouts (randomness_correctness fails, even on pristine upstream
+  # 1.49.6). With them the swarm uses the prebuilt target/release/aptos-node.
   CARGO_PROFILE_RELEASE_LTO: "off"
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  SMOKE_TEST_PREBUILD_BINARIES: "1"
+  SMOKE_TEST_BIN_DIR: ${{ github.workspace }}/target/release
 
 jobs:
   debug-tests:
