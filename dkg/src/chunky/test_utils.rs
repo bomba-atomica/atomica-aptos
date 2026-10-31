@@ -7,17 +7,17 @@ use aptos_crypto::{
     bls12381::{PrivateKey, PublicKey},
     HashValue, Uniform,
 };
-use aptos_dkg::pvss::{
-    traits::{transcript::HasAggregatableSubtranscript, Transcript},
-    Player,
-};
+use aptos_dkg::pvss::{traits::transcript::HasAggregatableSubtranscript, Player};
 use aptos_reliable_broadcast::RBNetworkSender;
 use aptos_types::{
     chain_id::ChainId,
-    dkg::chunky_dkg::{
-        initialize_digest_key, initialize_public_parameters, AggregatedSubtranscript,
-        ChunkyDKGSession, ChunkyDKGSessionMetadata, ChunkyDKGTranscript, ChunkyInputSecret,
-        ChunkyTranscript, DealerPublicKey,
+    dkg::{
+        chunky_dkg::{
+            initialize_digest_key, initialize_public_parameters, AggregatedSubtranscript,
+            ChunkyDKGSession, ChunkyDKGSessionMetadata, ChunkyDKGTranscript, ChunkyInputSecret,
+            ChunkyTranscript, DealerPublicKey,
+        },
+        timelock_dkg::{initialize_timelock_public_parameters, ChunkyDKGSessionKind},
     },
     epoch_state::EpochState,
     on_chain_config::OnChainChunkyDKGConfig,
@@ -89,6 +89,26 @@ impl ChunkyTestSetup {
         }
     }
 
+    /// The timelock session of the same epoch: same dealers, same keys, same validator set and the same
+    /// session metadata as `self`, but the timelock session id, parameters and signing domain.
+    pub fn timelock_twin(&self) -> Self {
+        let _ = initialize_timelock_public_parameters(ChainId::test());
+        let dkg_config = ChunkyDKGSession::new_timelock(&self.session_metadata, ChainId::test())
+            .expect("test timelock parameters");
+        Self {
+            private_keys: self.private_keys.clone(),
+            public_keys: self.public_keys.clone(),
+            addrs: self.addrs.clone(),
+            epoch_state: self.epoch_state.clone(),
+            session_metadata: self.session_metadata.clone(),
+            dkg_config,
+        }
+    }
+
+    pub fn kind(&self) -> ChunkyDKGSessionKind {
+        self.dkg_config.kind
+    }
+
     pub fn new_uniform(n: usize) -> Self {
         Self::new(n, vec![1; n])
     }
@@ -104,14 +124,10 @@ impl ChunkyTestSetup {
             id: validator_index,
         };
 
-        let trx = ChunkyTranscript::deal(
-            &self.dkg_config.threshold_config,
-            &self.dkg_config.public_parameters,
+        let trx = self.dkg_config.deal(
             &self.private_keys[validator_index],
             &self.public_keys[validator_index],
-            &self.dkg_config.eks,
             &input_secret,
-            &self.session_metadata,
             &dealer,
             &mut rng,
         );

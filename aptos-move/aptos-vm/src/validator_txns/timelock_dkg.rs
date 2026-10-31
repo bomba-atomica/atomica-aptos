@@ -26,19 +26,13 @@ use crate::{
     },
     AptosVM,
 };
-use aptos_crypto::HashValue;
 use aptos_logger::{info, warn};
 use aptos_types::{
     account_config::ChainIdResource,
-    dkg::{
-        chunky_dkg::{AggregatedSubtranscript, ChunkyDKGSessionMetadata, chunky_threshold_config},
-        timelock_dkg::{
-            check_claimed_mpk, derive_timelock_config, ChunkyDKGSessionKind,
-            CertifiedTimelockDKGOutput, TimelockDKGState, TimelockDerivedConfig,
-            TIMELOCK_PUBLIC_PARAMETERS,
-        },
+    dkg::timelock_dkg::{
+        check_timelock_dkg_result, CertifiedTimelockDKGOutput, ResultRejection, TimelockDKGState,
+        TIMELOCK_PUBLIC_PARAMETERS,
     },
-    chain_id::ChainId,
     move_utils::as_move_value::AsMoveValue,
     on_chain_config::{ConfigurationResource, OnChainConfig, ValidatorSet},
     transaction::TransactionStatus,
@@ -55,20 +49,6 @@ use move_core_types::{
 };
 use move_vm_runtime::module_traversal::{TraversalContext, TraversalStorage};
 use move_vm_types::gas::UnmeteredGasMeter;
-
-/// Why a certified timelock DKG result is refused. The transaction is discarded and nothing changes.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ResultRejection {
-    EpochNotCurrent,
-    NotEnoughVotingPower,
-    TranscriptDeserializationFailed,
-    MultiSigVerificationFailed,
-    /// The shape or a point of the subtranscript is invalid, or `V0` is not the interpolation of the
-    /// verification keys.
-    KeyDerivationFailed(String),
-    ClaimedMpkMismatch,
-    ParametersHashMismatch,
-}
 
 #[derive(Debug)]
 enum ExpectedFailure {
@@ -110,72 +90,6 @@ impl From<ResultRejection> for ExpectedFailure {
 enum ExecutionFailure {
     Expected(ExpectedFailure),
     Unexpected(VMStatus),
-}
-
-/// A result that passed every check, with the values the Move side stores.
-#[derive(Debug)]
-pub struct CheckedTimelockResult {
-    pub aggregated: AggregatedSubtranscript,
-    pub derived: TimelockDerivedConfig,
-    pub subtranscript_hash: HashValue,
-}
-
-/// All checks of a certified timelock DKG result against chain state. No VM, no I/O.
-///
-/// `local_params_hash` is the hash of this node's validated timelock parameters blob, `None` on a node
-/// without it (a fullnode). Like the mempool handler, such a node trusts consensus for that one check.
-pub fn check_timelock_dkg_result(
-    output: &CertifiedTimelockDKGOutput,
-    current_epoch: u64,
-    session_metadata: &ChunkyDKGSessionMetadata,
-    chain_id: ChainId,
-    verifier: &ValidatorVerifier,
-    local_params_hash: Option<HashValue>,
-) -> Result<CheckedTimelockResult, ResultRejection> {
-    let certified = &output.certified_transcript;
-    if certified.metadata.epoch != current_epoch
-        || session_metadata.dealer_epoch != current_epoch
-    {
-        return Err(ResultRejection::EpochNotCurrent);
-    }
-
-    let authors = certified
-        .signature
-        .get_signers_addresses(&verifier.get_ordered_account_addresses());
-    verifier
-        .check_voting_power(authors.iter(), true)
-        .map_err(|_| ResultRejection::NotEnoughVotingPower)?;
-
-    let aggregated: AggregatedSubtranscript = bcs::from_bytes(&certified.transcript_bytes)
-        .map_err(|_| ResultRejection::TranscriptDeserializationFailed)?;
-    if aggregated.dealer_epoch != certified.metadata.epoch {
-        return Err(ResultRejection::EpochNotCurrent);
-    }
-
-    // The timelock hash domain. A mempool certificate fails here.
-    ChunkyDKGSessionKind::Timelock
-        .verify_multi_signatures(chain_id, verifier, &aggregated, &certified.signature)
-        .map_err(|_| ResultRejection::MultiSigVerificationFailed)?;
-
-    // Rederive mpk and the verification keys from the subtranscript, check V0 against the
-    // interpolated keys, then compare with the claimed mpk.
-    let threshold_config = chunky_threshold_config(session_metadata);
-    let derived = derive_timelock_config(&aggregated.subtranscript, &threshold_config)
-        .map_err(|e| ResultRejection::KeyDerivationFailed(e.to_string()))?;
-    check_claimed_mpk(&derived, &output.mpk).map_err(|_| ResultRejection::ClaimedMpkMismatch)?;
-
-    if let Some(local) = local_params_hash {
-        if local != output.public_parameters_hash {
-            return Err(ResultRejection::ParametersHashMismatch);
-        }
-    }
-
-    let subtranscript_hash = aptos_crypto::hash::CryptoHash::hash(&aggregated);
-    Ok(CheckedTimelockResult {
-        aggregated,
-        derived,
-        subtranscript_hash,
-    })
 }
 
 impl AptosVM {
@@ -240,9 +154,12 @@ impl AptosVM {
         if !state.enabled {
             return Err(ExecutionFailure::Expected(ExpectedFailure::NotEnabled));
         }
-        let in_progress = state.in_progress.as_ref().ok_or(ExecutionFailure::Expected(
-            ExpectedFailure::MissingResourceInprogressTimelockDKGSession,
-        ))?;
+        let in_progress = state
+            .in_progress
+            .as_ref()
+            .ok_or(ExecutionFailure::Expected(
+                ExpectedFailure::MissingResourceInprogressTimelockDKGSession,
+            ))?;
         let chain_id = ChainIdResource::fetch_config(resolver)
             .ok()
             .flatten()

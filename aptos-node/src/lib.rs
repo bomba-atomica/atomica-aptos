@@ -764,6 +764,13 @@ pub fn setup_environment_and_start_node(
         node_config.consensus.public_parameters_blob_path.as_ref(),
         chain_id,
     );
+    aptos_dkg_runtime::initialize_timelock_public_parameters_with_counters(
+        node_config
+            .consensus
+            .timelock_public_parameters_blob_path
+            .as_ref(),
+        chain_id,
+    );
 
     // Start the telemetry service (as early as possible and before any blocking calls)
     let telemetry_runtime = services::start_telemetry_service(

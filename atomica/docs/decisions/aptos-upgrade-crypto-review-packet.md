@@ -358,3 +358,42 @@ For the human cryptographer. Each refers to the [new spec](aptos-upgrade-ibe-chu
 - D1. Is the no-straddle rule enough: reveal only while `current_epoch == info.epoch`, expiry at epoch change, shares of two epochs never combined?
 - D2. Are the reveal window (10 minutes after the deadline) and the 15 minute registration guard acceptable?
 - D3. Round exhaustion is gone. Is the registration flood risk (no fee, no cap) an acceptable economic risk, or does it affect the confidentiality claim?
+
+## 10. Implementation status: node-dkg-chunky-wiring (second chunky session)
+
+Date: 2026-10-31. Prepared by an AI agent. This section is not a review and not a sign-off.
+
+### 10a. Plain statement of what was and was not run
+
+- **No swarm run.** The two-manager wiring and the reconfiguration flow (two start events, two managers, two vtxns, the grace wait, the epoch config written after the epoch change) have had NO run on a network of validators. `aptos-node` cannot link in the build environment (no libdw), so no swarm or smoke test could run. What did run: unit tests, manager level tests with a dummy network, pure checks of the handler, Move unit tests, VM level tests, and `cargo check -p aptos-node`.
+- **A cryptographer and a consensus reviewer must review this before anything is pushed.** The consensus part is the second manager in `dkg/src/epoch_manager.rs`, the new vtxn at tag 4 with its own pool topic, the routing of a new wire variant, and the new wait in `reconfiguration_with_dkg::try_finalize_reconfig`.
+- No external cryptographer reviewed or signed anything.
+
+### 10b. Design decisions taken by the engineering loop (answers to the stop report)
+
+1. **Replay defence (required, done).** The mempool session signs the `AggregatedSubtranscript`. The timelock session signs `TimelockSubtranscriptSigningMessage { tag, chain_id, dealer_epoch, subtranscript_hash }`, a different `CryptoHasher` domain. A certified mempool aggregate does not verify as a `TimelockDKGResult`, and a timelock certificate does not verify as a mempool certificate. Tests: `certificates_do_not_verify_in_the_other_domain` and `certified_mempool_aggregate_never_becomes_a_timelock_result` in `dkg/src/chunky/timelock_session_tests.rs`, at the signature level, the aggregate level, and at `check_timelock_dkg_result` (the pure check of the handler).
+2. **Wire compatibility.** Mempool messages are byte-identical. The timelock requests are one appended `DKGMessage` variant (`TimelockRequest`, variant 8). A test pins the mempool encoding. Responses are shared with the mempool session. A manager refuses the other session's requests (`a_manager_serves_only_its_own_session`).
+3. **Session id.** Mempool: the bare `ChunkyDKGSessionMetadata`, as upstream. Timelock: `TimelockDKGSessionId { tag: "atomica/timelock-chunky-dkg/v1", chain_id, metadata }`. `aptos-dkg` needed no change for this.
+4. **Consensus key reuse (accepted for now, OPEN for the cryptographer).** Both sessions encrypt shares to the validator's consensus key as the ElGamal key. No new key infrastructure was built. This is question A2 in section 9 and stays open. Reuse across two sessions with the same `H` and `G` bases could matter for chunked ElGamal. The timelock session uses its own `G` and `H` (its own parameters blob), which may limit the exposure. This is a claim, not a proof.
+5. **`V0` against the verification keys (done, scope stated).** `check_mpk_matches_verification_keys` interpolates three threshold sets in G2: the first `t` virtual players, the last `t`, and a spread set. All three must give `V0`. This catches a `V0` of another dealing and any single corrupted verification key that sits in one of those sets. It does not prove that all `Vs` lie on one polynomial of degree below `t`. Question C2 (does upstream verification already imply it) stays open. A stronger check is possible: evaluate the polynomial through the first `t` points at every other point.
+6. **Points are validated.** The subtranscript decoder (`ark_de`) uses `Validate::No`. `derive_timelock_config` re-decodes `mpk` and every verification key with `decode_g2` (on curve, prime-order subgroup, not the identity) before they reach chain state.
+7. **Parameters blob (B-1, B-3, B-4 analogues).** `PublicParameters::validate` checks every point, the standard G2 base, the DeKART prover key (re-decoded with `Validate::Yes`) and the dlog table (base, giant step, entry count, sampled entries). The table check is sampled, not exhaustive: a table with a few wrong interior entries would pass. The blob hash is SHA3-256 of the file. `aptos node validate-timelock-public-parameters` runs the real validation and the hash comparison. The old `ValidatePublicParameters` command (mempool blob) is unchanged and still parse-only.
+8. **Timelock DKG failure never blocks the epoch change, but a missing result delays it.** While a timelock session is in progress, `try_finalize_reconfig` waits at most `grace_period_secs` (default 120) after the session start. A node set that cannot run the session at all (for example no blob) therefore pays that delay at every epoch while the feature is enabled. The feature is off until governance calls `timelock_dkg::enable`. A reviewer should decide whether the default grace and the always-wait behavior are right.
+9. **Epoch interval.** The epoch length stored in `TimelockEpochConfig` is read when the result is accepted, not when the epoch starts. A governance change of the interval in between skews the epoch end seen by `ibe_config`. Small, stated for completeness.
+10. **Share derivation.** Shares are derived at every epoch start from chain state and the consensus key (`derive_timelock_service_state`), never persisted. A mismatch with the verification keys, a blob hash mismatch, or a missing blob makes the node refuse the timelock for the epoch. The state is held in a handle on the DKG epoch manager. No share-submitting service reads it yet.
+
+### 10c. Items for the consensus reviewer
+
+- `Topic::TimelockDKG` is separate from `Topic::ChunkyDKG`. A test shows both results sit in one pool.
+- `block_has_epoch_end_vtxn` now counts `TimelockDKGResult`, because accepting it can end the epoch.
+- `is_vtxn_expected` accepts the new vtxn while chunky DKG is enabled.
+- The timelock manager starts whenever vtxn and chunky DKG are enabled, even while `timelock_dkg` is off on chain, so the first epoch after enabling has a manager. It reacts only to its own start event.
+- The new event (`0x1::timelock_dkg::TimelockDKGStartEvent`) is forwarded by `should_forward_to_subscription_service` and subscribed in `aptos-node/src/state_sync.rs`.
+- The Move side never aborts the epoch change: `timelock_dkg::on_new_epoch` skips a config that `ibe_config` would refuse.
+
+### 10d. Not done
+
+- No swarm or smoke test (see 10a).
+- No governance script to enable the feature.
+- No indexer support for the new vtxn, like `TimelockShare`.
+- The retired dual-output DKG and `scalar_elgamal` are not wired in and not deleted (feature `retire-legacy-timelock-crypto`).

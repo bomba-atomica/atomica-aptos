@@ -404,7 +404,7 @@ impl ChunkyDKGSession {
             dkg_session_metadata,
             public_parameters,
             ChunkyDKGSessionKind::Mempool,
-            ChainId::new(0),
+            ChainId::test(),
         )
     }
 

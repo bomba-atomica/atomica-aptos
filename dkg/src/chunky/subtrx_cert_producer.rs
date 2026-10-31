@@ -146,7 +146,7 @@ impl ChunkySubtranscriptCertificationState {
             epoch_state,
             aggregated_subtranscript,
             ChunkyDKGSessionKind::Mempool,
-            ChainId::new(0),
+            ChainId::test(),
         )
     }
 

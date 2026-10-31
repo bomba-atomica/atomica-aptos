@@ -7,9 +7,9 @@ pub use crate::chunky::types::{
     ValidatedAggregatedTranscript,
 };
 use aptos_crypto_derive::CryptoHasher;
-use aptos_types::dkg::timelock_dkg::ChunkyDKGSessionKind;
 use aptos_enum_conversion_derive::EnumConversion;
 use aptos_reliable_broadcast::RBMessage;
+use aptos_types::dkg::timelock_dkg::ChunkyDKGSessionKind;
 pub use aptos_types::dkg::{chunky_dkg::ChunkyDKGTranscript, DKGTranscript, DKGTranscriptMetadata};
 use serde::{Deserialize, Serialize};
 
@@ -105,7 +105,11 @@ macro_rules! timelock_request_newtype {
     };
 }
 
-timelock_request_newtype!(TimelockTranscriptRequest, ChunkyDKGTranscriptRequest, Transcript);
+timelock_request_newtype!(
+    TimelockTranscriptRequest,
+    ChunkyDKGTranscriptRequest,
+    Transcript
+);
 timelock_request_newtype!(
     TimelockSignatureRequest,
     ChunkyDKGSubtranscriptSignatureRequest,
