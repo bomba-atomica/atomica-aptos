@@ -151,11 +151,11 @@ Modify `generate-genesis.sh` to enable DKG features:
 
 **Symptoms:**
 - Logs show "DKG transcript invalid" or "verification failed"
-- May see "scalar_elgamal" or "chunked elgamal" errors
+- May see "chunked elgamal" or chunky DKG errors
 
 **Solution:**
 This indicates a bug in the DKG implementation. Check:
-- `crates/aptos-dkg/src/pvss/scalar_elgamal/`
+- `crates/aptos-dkg/src/pvss/chunky/`
 - Verification logic for aggregated transcripts
 
 ### Issue 3: Binary Version Mismatch
