@@ -12,12 +12,16 @@ publish = { workspace = true }
 repository = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+default = []
+fuzzing = []
+
 [dependencies]
 anyhow = { workspace = true }
 aptos-abstract-gas-usage = { workspace = true }
 aptos-bitvec = { workspace = true }
 aptos-block-executor = { workspace = true }
-aptos-cached-packages ={ workspace = true }
+aptos-cached-packages = { workspace = true }
 aptos-crypto = { workspace = true, features = ["fuzzing"] }
 aptos-framework = { workspace = true }
 aptos-gas-algebra = { workspace = true }
@@ -39,10 +43,12 @@ aptos-vm-types = { workspace = true }
 bcs = { workspace = true }
 bytes = { workspace = true }
 goldenfile = { workspace = true }
+indoc = { workspace = true }
+move-asm = { workspace = true }
 move-binary-format = { workspace = true }
 move-command-line-common = { workspace = true }
 move-core-types = { workspace = true, features = ["fuzzing"] }
-move-ir-compiler = { workspace = true }
+move-coverage = { workspace = true }
 move-model = { workspace = true }
 move-vm-runtime = { workspace = true }
 move-vm-types = { workspace = true }
@@ -52,12 +58,7 @@ petgraph = "0.5.1"
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
 rand = { workspace = true }
-rayon = { workspace = true }
 serde = { workspace = true }
-
-[features]
-default = []
-fuzzing = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

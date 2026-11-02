@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This file defines event store APIs that are related to the event accumulator and events
 //! themselves.
@@ -14,7 +13,7 @@ use aptos_crypto::{hash::CryptoHash, HashValue};
 use aptos_db_indexer_schemas::schema::{
     event_by_key::EventByKeySchema, event_by_version::EventByVersionSchema,
 };
-use aptos_schemadb::{batch::SchemaBatch, schema::ValueCodec, DB};
+use aptos_schemadb::{batch::SchemaBatch, schema::ValueCodec, ReadOptions, DB};
 use aptos_storage_interface::{db_ensure as ensure, db_other_bail, AptosDbError, Result};
 use aptos_types::{
     account_address::AccountAddress,
@@ -129,12 +128,19 @@ impl EventStore {
                 break;
             }
             if seq != cur_seq {
-                let msg = if cur_seq == start_seq_num {
-                    "First requested event is probably pruned."
-                } else {
-                    "DB corruption: Sequence number not continuous."
-                };
-                db_other_bail!("{} expected: {}, actual: {}", msg, cur_seq, seq);
+                // Sequence numbers are contiguous per key, so a gap at the first
+                // requested entry means the range was pruned.
+                if cur_seq == start_seq_num {
+                    return Err(AptosDbError::EventPruned {
+                        requested_seq_num: start_seq_num,
+                        min_available_seq_num: seq,
+                    });
+                }
+                db_other_bail!(
+                    "DB corruption: Sequence number not continuous. expected: {}, actual: {}",
+                    cur_seq,
+                    seq
+                );
             }
             result.push((seq, ver, idx));
             cur_seq += 1;
@@ -324,7 +330,11 @@ impl EventStore {
         end: Version,
         db_batch: &mut SchemaBatch,
     ) -> anyhow::Result<()> {
-        let mut iter = self.event_db.iter::<EventAccumulatorSchema>()?;
+        let mut read_opts = ReadOptions::default();
+        read_opts.fill_cache(false);
+        let mut iter = self
+            .event_db
+            .iter_with_opts::<EventAccumulatorSchema>(read_opts)?;
         iter.seek(&(begin, Position::from_inorder_index(0)))?;
         while let Some(((version, position), _)) = iter.next().transpose()? {
             if version >= end {

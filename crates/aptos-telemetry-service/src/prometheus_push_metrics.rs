@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     auth::with_auth,
@@ -23,16 +23,13 @@ pub fn metrics_ingest(context: Context) -> BoxedFilter<(impl Reply,)> {
     warp::path!("ingest" / "metrics")
         .and(warp::post())
         .and(context.clone().filter())
-        .and(with_auth(
-            context,
-            vec![
-                NodeType::Validator,
-                NodeType::ValidatorFullNode,
-                NodeType::PublicFullNode,
-                NodeType::UnknownValidator,
-                NodeType::UnknownFullNode,
-            ],
-        ))
+        .and(with_auth(context, vec![
+            NodeType::Validator,
+            NodeType::ValidatorFullNode,
+            NodeType::PublicFullNode,
+            NodeType::UnknownValidator,
+            NodeType::UnknownFullNode,
+        ]))
         .and(warp::header::optional(CONTENT_ENCODING.as_str()))
         .and(warp::body::content_length_limit(MAX_CONTENT_LENGTH))
         .and(warp::body::bytes())
@@ -47,6 +44,26 @@ pub async fn handle_metrics_ingest(
     metrics_body: Bytes,
 ) -> anyhow::Result<impl Reply, Rejection> {
     debug!("handling prometheus metrics ingest");
+
+    // Apply rate limiting for unknown/untrusted nodes
+    let is_unknown = matches!(
+        claims.node_type,
+        NodeType::Unknown | NodeType::UnknownValidator | NodeType::UnknownFullNode
+    );
+    if is_unknown
+        && !context
+            .unknown_metrics_rate_limiter()
+            .check_rate_limit()
+            .await
+    {
+        debug!(
+            "rate limit exceeded for unknown node metrics: peer_id={}",
+            claims.peer_id
+        );
+        return Err(reject::custom(ServiceError::too_many_requests(
+            MetricsIngestError::RateLimitExceeded.into(),
+        )));
+    }
 
     let enable_location_labels = env::var("FEATURE_LOCATION_LABELS_ENABLED")
         .map(|val| val.parse::<bool>().unwrap_or(false))
@@ -80,11 +97,20 @@ pub async fn handle_metrics_ingest(
         extra_labels.clone()
     };
 
+    // Standard metrics ingestion requires metrics_endpoints_config to be configured
+    let metrics_clients = context.metrics_client().ok_or_else(|| {
+        error!("Standard metrics ingestion not configured - rejecting request");
+        reject::custom(ServiceError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            MetricsIngestError::IngestionError.into(),
+        ))
+    })?;
+
     let client = match claims.node_type {
         NodeType::UnknownValidator | NodeType::UnknownFullNode => {
-            &context.metrics_client().untrusted_ingest_metrics_clients
+            &metrics_clients.untrusted_ingest_metrics_clients
         },
-        _ => &context.metrics_client().ingest_metrics_client,
+        _ => &metrics_clients.ingest_metrics_client,
     };
 
     let start_timer = Instant::now();
@@ -211,7 +237,10 @@ fn peer_location_labels(context: &Context, peer_id: &PeerId) -> Vec<String> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{peer_location::PeerLocation, tests::test_context, MetricsClient};
+    use crate::{
+        clients::victoria_metrics::VictoriaMetricsClient, context::MetricsIngestClient,
+        peer_location::PeerLocation, tests::test_context,
+    };
     use aptos_types::{chain_id::ChainId, PeerId};
     use httpmock::MockServer;
     use reqwest::Url;
@@ -232,17 +261,14 @@ mod test {
             },
             Some(&String::from("test_name")),
         );
-        assert_eq!(
-            claims,
-            vec![
-                "role=validator",
-                "metrics_source=telemetry-service",
-                "chain_name=25",
-                "namespace=telemetry-service",
-                "kubernetes_pod_name=peer_id:test_name//0x1",
-                &format!("run_uuid={}", Uuid::default()),
-            ]
-        );
+        assert_eq!(claims, vec![
+            "role=validator",
+            "metrics_source=telemetry-service",
+            "chain_name=25",
+            "namespace=telemetry-service",
+            "kubernetes_pod_name=peer_id:test_name//0x1",
+            &format!("run_uuid={}", Uuid::default()),
+        ]);
 
         let test_uuid = Uuid::new_v4();
 
@@ -258,17 +284,14 @@ mod test {
             },
             None,
         );
-        assert_eq!(
-            claims,
-            vec![
-                "role=validator",
-                "metrics_source=telemetry-service",
-                "chain_name=25",
-                "namespace=telemetry-service",
-                "kubernetes_pod_name=peer_id:0x1",
-                &format!("run_uuid={}", test_uuid),
-            ]
-        );
+        assert_eq!(claims, vec![
+            "role=validator",
+            "metrics_source=telemetry-service",
+            "chain_name=25",
+            "namespace=telemetry-service",
+            "kubernetes_pod_name=peer_id:0x1",
+            &format!("run_uuid={}", test_uuid),
+        ]);
     }
 
     #[tokio::test]
@@ -289,14 +312,20 @@ mod test {
             then.status(200);
         });
 
-        let clients = test_context.inner.metrics_client_mut();
+        let clients = test_context.inner.metrics_client_mut().unwrap();
         clients.ingest_metrics_client.insert(
             "default1".into(),
-            MetricsClient::new(Url::parse(&server1.base_url()).unwrap(), "token1".into()),
+            MetricsIngestClient::VictoriaMetrics(VictoriaMetricsClient::new(
+                Url::parse(&format!("{}/api/v1/import/prometheus", server1.base_url())).unwrap(),
+                "token1".into(),
+            )),
         );
         clients.ingest_metrics_client.insert(
             "default2".into(),
-            MetricsClient::new(Url::parse(&server2.base_url()).unwrap(), "token2".into()),
+            MetricsIngestClient::VictoriaMetrics(VictoriaMetricsClient::new(
+                Url::parse(&format!("{}/api/v1/import/prometheus", server2.base_url())).unwrap(),
+                "token2".into(),
+            )),
         );
 
         let result =
@@ -325,14 +354,20 @@ mod test {
             then.status(500);
         });
 
-        let clients = test_context.inner.metrics_client_mut();
+        let clients = test_context.inner.metrics_client_mut().unwrap();
         clients.ingest_metrics_client.insert(
             "default1".into(),
-            MetricsClient::new(Url::parse(&server1.base_url()).unwrap(), "token1".into()),
+            MetricsIngestClient::VictoriaMetrics(VictoriaMetricsClient::new(
+                Url::parse(&format!("{}/api/v1/import/prometheus", server1.base_url())).unwrap(),
+                "token1".into(),
+            )),
         );
         clients.ingest_metrics_client.insert(
             "default2".into(),
-            MetricsClient::new(Url::parse(&server2.base_url()).unwrap(), "token2".into()),
+            MetricsIngestClient::VictoriaMetrics(VictoriaMetricsClient::new(
+                Url::parse(&format!("{}/api/v1/import/prometheus", server2.base_url())).unwrap(),
+                "token2".into(),
+            )),
         );
 
         let result =
@@ -361,14 +396,20 @@ mod test {
             then.status(401);
         });
 
-        let clients = test_context.inner.metrics_client_mut();
+        let clients = test_context.inner.metrics_client_mut().unwrap();
         clients.ingest_metrics_client.insert(
             "default1".into(),
-            MetricsClient::new(Url::parse(&server1.base_url()).unwrap(), "token1".into()),
+            MetricsIngestClient::VictoriaMetrics(VictoriaMetricsClient::new(
+                Url::parse(&format!("{}/api/v1/import/prometheus", server1.base_url())).unwrap(),
+                "token1".into(),
+            )),
         );
         clients.ingest_metrics_client.insert(
             "default2".into(),
-            MetricsClient::new(Url::parse(&server2.base_url()).unwrap(), "token2".into()),
+            MetricsIngestClient::VictoriaMetrics(VictoriaMetricsClient::new(
+                Url::parse(&format!("{}/api/v1/import/prometheus", server2.base_url())).unwrap(),
+                "token2".into(),
+            )),
         );
 
         let result =
@@ -385,20 +426,17 @@ mod test {
         let peer_id = PeerId::from_str("0x1").unwrap();
         {
             let mut peer_locations = test_context.inner.peer_locations().write();
-            peer_locations.insert(
+            peer_locations.insert(peer_id, PeerLocation {
+                geo_updated_at: Some("1985-04-12T23:20:50.52Z".to_string()),
+                country: Some("United Kingdom".to_string()),
+                region: Some("Western_Europe".to_string()),
                 peer_id,
-                PeerLocation {
-                    geo_updated_at: Some("1985-04-12T23:20:50.52Z".to_string()),
-                    country: Some("United Kingdom".to_string()),
-                    region: Some("Western_Europe".to_string()),
-                    peer_id,
-                },
-            );
+            });
         }
         let labels = peer_location_labels(&test_context.inner, &peer_id);
-        assert_eq!(
-            labels,
-            vec!["country=united_kingdom", "region=western_europe"]
-        );
+        assert_eq!(labels, vec![
+            "country=united_kingdom",
+            "region=western_europe"
+        ]);
     }
 }

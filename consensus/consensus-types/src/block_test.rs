@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block::{
@@ -72,7 +71,7 @@ fn test_nil_block() {
         nil_block_qc.certified_block().id()
     );
     let nil_block_child = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         2,
         aptos_infallible::duration_since_epoch().as_micros() as u64,
         nil_block_qc,
@@ -91,7 +90,7 @@ fn test_block_relation() {
     // Test genesis and the next block
     let genesis_block = Block::make_genesis_block();
     let quorum_cert = certificate_for_genesis();
-    let payload = Payload::empty(false, true);
+    let payload = Payload::empty(false);
     let next_block = Block::new_proposal(
         payload.clone(),
         1,
@@ -118,7 +117,7 @@ fn test_same_qc_different_authors() {
     let signer = signers.first().unwrap();
     let genesis_qc = certificate_for_genesis();
     let round = 1;
-    let payload = Payload::empty(false, true);
+    let payload = Payload::empty(false);
     let current_timestamp = aptos_infallible::duration_since_epoch().as_micros() as u64;
     let block_round_1 = Block::new_proposal(
         payload.clone(),
@@ -180,7 +179,7 @@ fn test_block_metadata_bitvec() {
         &ledger_info,
         Block::make_genesis_block_from_ledger_info(&ledger_info).id(),
     );
-    let payload = Payload::empty(false, true);
+    let payload = Payload::empty(false);
     let start_round = 1;
     let start_timestamp = aptos_infallible::duration_since_epoch().as_micros() as u64;
 
@@ -254,7 +253,7 @@ fn test_failed_authors_well_formed() {
     let other = Author::random();
     // Test genesis and the next block
     let quorum_cert = certificate_for_genesis();
-    let payload = Payload::empty(false, true);
+    let payload = Payload::empty(false);
 
     let create_block = |round: Round, failed_authors: Vec<(Round, Author)>| {
         Block::new_proposal(
@@ -313,4 +312,12 @@ fn test_failed_authors_well_formed() {
     assert!(create_block(3, vec![(2, other), (1, other)])
         .verify_well_formed()
         .is_err());
+}
+
+#[test]
+fn test_nil_block_overflow_returns_error() {
+    let nil_block = Block::new_nil(u64::MAX, certificate_for_genesis(), vec![]);
+
+    let err = nil_block.verify_well_formed().unwrap_err();
+    assert!(err.to_string().contains("Block round overflow"));
 }

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::dag_test::MockStorage;
 use crate::dag::{
@@ -41,14 +41,10 @@ async fn test_dag_fetcher_receiver() {
     }
 
     // Round 2 - node 0
-    let target_node = new_certified_node(
-        2,
-        signers[0].author(),
-        vec![
-            first_round_nodes[0].certificate(),
-            first_round_nodes[1].certificate(),
-        ],
-    );
+    let target_node = new_certified_node(2, signers[0].author(), vec![
+        first_round_nodes[0].certificate(),
+        first_round_nodes[1].certificate(),
+    ]);
 
     let request = RemoteFetchRequest::new(
         target_node.epoch(),

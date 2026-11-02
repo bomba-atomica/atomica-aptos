@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Allows to view detailed on-chain information from modules and resources.
 //! The library is not supposed to be used for runtime (e.g., in the VM), but
@@ -20,7 +19,7 @@ use move_core_types::{
 };
 use move_resource_viewer::MoveValueAnnotator;
 pub use move_resource_viewer::{
-    AnnotatedMoveClosure, AnnotatedMoveStruct, AnnotatedMoveValue, MoveTableInfo, RawMoveStruct,
+    AnnotatedMoveClosure, AnnotatedMoveStruct, AnnotatedMoveValue, MoveTableInfo,
 };
 use std::sync::Arc;
 

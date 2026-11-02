@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     ability::AbilitySet,
@@ -34,11 +35,45 @@ pub const OPTION_NONE_TAG: u16 = 0;
 pub const OPTION_SOME_TAG: u16 = 1;
 // field "vec" of the old representation of option
 pub const LEGACY_OPTION_VEC: &str = "vec";
+pub const OPTION_MODULE_NAME_STR: &str = "option";
+pub const OPTION_STRUCT_NAME_STR: &str = "Option";
 
-pub static OPTION_MODULE_ID: Lazy<ModuleId> =
-    Lazy::new(|| ModuleId::new(AccountAddress::ONE, Identifier::from(ident_str!("option"))));
+// Module path separator used in fully-qualified type names (e.g. "0x1::string::String")
+pub const MODULE_SEPARATOR: &str = "::";
+
+// Name components used to construct synthetic wrapper function names for public struct/enum APIs
+// and public const accessors. The generated name format is: "<prefix>$<StructOrConstName>".
+// These constants must only be used for that purpose to avoid collisions with user-defined names.
+
+/// Delimiter between the wrapper prefix and the struct/const name (e.g., `pack$MyStruct`).
+pub const DOLLAR_SIGN_DELIMITER: &str = "$";
+/// Prefix for struct pack wrapper functions (e.g., `pack$MyStruct`).
+pub const PACK: &str = "pack";
+/// Prefix for struct unpack wrapper functions (e.g., `unpack$MyStruct`).
+pub const UNPACK: &str = "unpack";
+/// Prefix for enum variant pack wrapper functions (e.g., `pack_variant$MyVariant`).
+pub const PACK_VARIANT: &str = "pack_variant";
+/// Prefix for enum variant unpack wrapper functions (e.g., `unpack_variant$MyVariant`).
+pub const UNPACK_VARIANT: &str = "unpack_variant";
+/// Prefix for enum variant test (is-variant) wrapper functions (e.g., `test_variant$MyVariant`).
+pub const TEST_VARIANT: &str = "test_variant";
+/// Parameter name used in all struct API wrapper functions.
+pub const PARAM_NAME_FOR_STRUCT_API: &str = "_s";
+/// Prefix for struct field immutable borrow wrapper functions (e.g., `borrow$field`).
+pub const BORROW: &str = "borrow";
+/// Prefix for struct field mutable borrow wrapper functions (e.g., `borrow_mut$field`).
+pub const BORROW_MUT: &str = "borrow_mut";
+/// Prefix for public const accessor functions (e.g., `const$MY_CONST`).
+pub const CONST: &str = "const";
+
+pub static OPTION_MODULE_ID: Lazy<ModuleId> = Lazy::new(|| {
+    ModuleId::new(
+        AccountAddress::ONE,
+        Identifier::from(ident_str!(OPTION_MODULE_NAME_STR)),
+    )
+});
 pub static OPTION_STRUCT_NAME: Lazy<Identifier> =
-    Lazy::new(|| Identifier::from(ident_str!("Option")));
+    Lazy::new(|| Identifier::from(ident_str!(OPTION_STRUCT_NAME_STR)));
 pub static MEM_MODULE_ID: Lazy<ModuleId> =
     Lazy::new(|| ModuleId::new(AccountAddress::ONE, Identifier::from(ident_str!("mem"))));
 pub static TABLE_MODULE_ID: Lazy<ModuleId> =
@@ -143,6 +178,32 @@ impl TypeTag {
         }
     }
 
+    /// Returns a short string for the top-level type without any type parameters.
+    /// Useful for error messages where the full canonical string would be unbounded in size.
+    pub fn to_short_string(&self) -> &'static str {
+        use TypeTag::*;
+        match self {
+            Bool => "bool",
+            U8 => "u8",
+            U16 => "u16",
+            U32 => "u32",
+            U64 => "u64",
+            U128 => "u128",
+            U256 => "u256",
+            I8 => "i8",
+            I16 => "i16",
+            I32 => "i32",
+            I64 => "i64",
+            I128 => "i128",
+            I256 => "i256",
+            Address => "address",
+            Signer => "signer",
+            Vector(_) => "vector",
+            Struct(_) => "struct",
+            Function(_) => "function",
+        }
+    }
+
     pub fn struct_tag(&self) -> Option<&StructTag> {
         use TypeTag::*;
         match self {
@@ -243,8 +304,8 @@ impl StructTag {
     /// standard library at address `move_std_addr`.
     pub fn is_std_option(&self, move_std_addr: &AccountAddress) -> bool {
         self.address == *move_std_addr
-            && self.module.as_str().eq("option")
-            && self.name.as_str().eq("Option")
+            && self.module.as_str().eq(OPTION_MODULE_NAME_STR)
+            && self.name.as_str().eq(OPTION_STRUCT_NAME_STR)
     }
 
     pub fn module_id(&self) -> ModuleId {
@@ -465,6 +526,18 @@ impl<'a> hashbrown::Equivalent<ModuleId> for (&'a AccountAddress, &'a IdentStr) 
     }
 }
 
+impl From<&ModuleId> for ModuleId {
+    fn from(id: &ModuleId) -> Self {
+        id.clone()
+    }
+}
+
+impl<'a> From<&(&'a AccountAddress, &'a IdentStr)> for ModuleId {
+    fn from(key: &(&'a AccountAddress, &'a IdentStr)) -> Self {
+        ModuleId::new(*key.0, key.1.to_owned())
+    }
+}
+
 impl Display for ModuleId {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         // Can't change, because it can be part of TransactionExecutionFailedEvent
@@ -551,25 +624,15 @@ mod tests {
                 "0x1::a::A",
             ),
             (
-                make_struct_tag(
-                    AccountAddress::ONE,
-                    "a",
-                    "A",
-                    vec![
-                        make_struct_tag(
-                            AccountAddress::from_str("0x123").unwrap(),
-                            "b",
-                            "B",
-                            vec![Bool, Vector(Box::new(U8))],
-                        ),
-                        make_struct_tag(
-                            AccountAddress::from_str("0xFF").unwrap(),
-                            "c",
-                            "C",
-                            vec![U8],
-                        ),
-                    ],
-                ),
+                make_struct_tag(AccountAddress::ONE, "a", "A", vec![
+                    make_struct_tag(AccountAddress::from_str("0x123").unwrap(), "b", "B", vec![
+                        Bool,
+                        Vector(Box::new(U8)),
+                    ]),
+                    make_struct_tag(AccountAddress::from_str("0xFF").unwrap(), "c", "C", vec![
+                        U8,
+                    ]),
+                ]),
                 "0x1::a::A<0x123::b::B<bool, vector<u8>>, 0xff::c::C<u8>>",
             ),
             (make_function_tag(vec![], vec![], AbilitySet::EMPTY), "||()"),
@@ -586,28 +649,23 @@ mod tests {
                 "|&u8, u64|()",
             ),
             (
-                make_struct_tag(
-                    AccountAddress::ONE,
-                    "a",
-                    "A",
-                    vec![make_function_tag(
+                make_struct_tag(AccountAddress::ONE, "a", "A", vec![make_function_tag(
+                    vec![Value(make_function_tag(
                         vec![Value(make_function_tag(
-                            vec![Value(make_function_tag(
-                                vec![],
-                                vec![],
-                                AbilitySet::singleton(Ability::Copy),
-                            ))],
                             vec![],
-                            AbilitySet::EMPTY,
+                            vec![],
+                            AbilitySet::singleton(Ability::Copy),
                         ))],
-                        vec![FunctionParamOrReturnTag::Value(make_function_tag(
-                            vec![],
-                            vec![],
-                            AbilitySet::ALL,
-                        ))],
+                        vec![],
                         AbilitySet::EMPTY,
-                    )],
-                ),
+                    ))],
+                    vec![FunctionParamOrReturnTag::Value(make_function_tag(
+                        vec![],
+                        vec![],
+                        AbilitySet::ALL,
+                    ))],
+                    AbilitySet::EMPTY,
+                )]),
                 "0x1::a::A<||||() has copy|()|(||() has copy + drop + store + key)>",
             ),
         ];

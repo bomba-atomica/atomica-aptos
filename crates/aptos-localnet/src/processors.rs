@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::{bail, Result};
 use processor::{
@@ -23,7 +23,6 @@ pub fn get_processor_config(processor_name: &ProcessorName) -> Result<ProcessorC
             bail!("ANS processor is not supported in the localnet")
         },
         ProcessorName::DefaultProcessor => ProcessorConfig::DefaultProcessor(Default::default()),
-        ProcessorName::EventsProcessor => ProcessorConfig::EventsProcessor(Default::default()),
         ProcessorName::FungibleAssetProcessor => {
             ProcessorConfig::FungibleAssetProcessor(Default::default())
         },

@@ -1,8 +1,7 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub mod generic_weighting;
-mod weighted_config;
 
+pub use aptos_crypto::weighted_config::WeightedConfigBlstrs;
 pub use generic_weighting::GenericWeighting;
-pub use weighted_config::WeightedConfig;

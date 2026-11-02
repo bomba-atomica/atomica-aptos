@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::config::{CacheConfig, IndexerGrpcManagerConfig, ServiceConfig};
 use aptos_config::utils::get_available_port;
@@ -41,6 +41,9 @@ async fn test_run() {
         fullnode_addresses: vec![],
         is_master: true,
         allow_fn_fallback: false,
+        http2_ping_interval_secs: 60,
+        http2_ping_timeout_secs: 10,
+        service_staleness_threshold_secs: 20,
     };
 
     let task = tokio::spawn(async move {

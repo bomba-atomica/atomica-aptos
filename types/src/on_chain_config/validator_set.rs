@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{on_chain_config::OnChainConfig, validator_info::ValidatorInfo};
 use move_core_types::account_address::AccountAddress;
@@ -72,7 +71,6 @@ impl ValidatorSet {
     pub fn active_validators(&self) -> Vec<AccountAddress> {
         self.active_validators
             .iter()
-            .cloned()
             .map(|v| v.account_address)
             .collect()
     }
@@ -80,7 +78,6 @@ impl ValidatorSet {
     pub fn pending_active_validators(&self) -> Vec<AccountAddress> {
         self.pending_active
             .iter()
-            .cloned()
             .map(|v| v.account_address)
             .collect()
     }
@@ -88,7 +85,6 @@ impl ValidatorSet {
     pub fn pending_inactive_validators(&self) -> Vec<AccountAddress> {
         self.pending_inactive
             .iter()
-            .cloned()
             .map(|v| v.account_address)
             .collect()
     }

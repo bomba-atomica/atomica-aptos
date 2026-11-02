@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use serde::{Deserialize, Serialize};
 
@@ -16,10 +15,10 @@ impl Policy {
     }
 
     pub fn public() -> Self {
-        Self::new(vec![Permission::new(
-            Identity::Anyone,
-            vec![Capability::Read, Capability::Write],
-        )])
+        Self::new(vec![Permission::new(Identity::Anyone, vec![
+            Capability::Read,
+            Capability::Write,
+        ])])
     }
 }
 

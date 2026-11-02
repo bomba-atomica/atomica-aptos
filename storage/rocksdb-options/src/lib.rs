@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_config::config::{RocksDBStatsLevel, RocksdbConfig};
 use rocksdb::{statistics::StatsLevel, Env, Options};
@@ -26,6 +26,7 @@ pub fn gen_rocksdb_options(config: &RocksdbConfig, env: Option<&Env>, readonly: 
     }
     db_opts.set_max_open_files(config.max_open_files);
     db_opts.set_max_total_wal_size(config.max_total_wal_size);
+    db_opts.set_max_background_jobs(config.max_background_jobs);
 
     if let Some(level) = config.stats_level {
         db_opts.enable_statistics();

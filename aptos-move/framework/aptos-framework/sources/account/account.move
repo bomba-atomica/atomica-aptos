@@ -10,8 +10,8 @@ module aptos_framework::account {
     use aptos_framework::create_signer::create_signer;
     use aptos_framework::event::{Self, EventHandle};
     use aptos_framework::guid;
-    use aptos_framework::permissioned_signer;
     use aptos_framework::system_addresses;
+    use aptos_framework::transaction_context;
     use aptos_std::ed25519;
     use aptos_std::from_bcs;
     use aptos_std::multi_ed25519;
@@ -23,6 +23,7 @@ module aptos_framework::account {
     friend aptos_framework::aptos_account;
     friend aptos_framework::coin;
     friend aptos_framework::genesis;
+    friend aptos_framework::keyless_account;
     friend aptos_framework::multisig_account;
     friend aptos_framework::resource_account;
     friend aptos_framework::transaction_validation;
@@ -102,6 +103,16 @@ module aptos_framework::account {
     /// This struct solves this problem by mapping the new authentication key `b` to the original address `a` and thus helping the wallet software during recovery find the correct address.
     struct OriginatingAddress has key {
         address_map: Table<address, address>,
+    }
+
+    /// Per-account encrypted backup of a confidential-asset decryption key (DK). The ciphertext is opaque to the
+    /// chain — clients (e.g. Petra) own encryption/decryption. Writers go through `upsert_encrypted_dk` (friend-only)
+    /// so the calling module owns the policy (e.g. atomicity with a key rotation); readers can use the
+    /// `get_encrypted_dk` view. Versioned via the `V1` variant so the schema can evolve.
+    enum EncryptedDK has key, store, copy, drop {
+        V1 {
+            ciphertext: vector<u8>,
+        }
     }
 
     /// This structs stores the challenge message that should be signed during key rotation. First, this struct is
@@ -210,8 +221,6 @@ module aptos_framework::account {
     const ENEW_AUTH_KEY_ALREADY_MAPPED: u64 = 21;
     /// The current authentication key and the new authentication key are the same
     const ENEW_AUTH_KEY_SAME_AS_CURRENT: u64 = 22;
-    /// Current permissioned signer cannot perform the privilaged operations.
-    const ENO_ACCOUNT_PERMISSION: u64 = 23;
     /// Specified scheme is not recognized. Should be ED25519_SCHEME(0), MULTI_ED25519_SCHEME(1), SINGLE_KEY_SCHEME(2), or MULTI_KEY_SCHEME(3).
     const EUNRECOGNIZED_SCHEME: u64 = 24;
     /// The provided public key is not a single Keyless public key
@@ -220,14 +229,28 @@ module aptos_framework::account {
     const ENOT_THE_ORIGINAL_PUBLIC_KEY: u64 = 26;
     /// The set_originating_address is disabled due to potential poisoning from account abstraction
     const ESET_ORIGINATING_ADDRESS_DISABLED: u64 = 27;
+    /// The ciphertext being written into `EncryptedDK` exceeds `MAX_ENCRYPTED_DK_BYTES`.
+    const EENCRYPTED_DK_TOO_LONG: u64 = 28;
+    /// No `EncryptedDK` resource exists for the queried address.
+    const EENCRYPTED_DK_NOT_FOUND: u64 = 29;
+    /// The permissioned signer feature has been removed.
+    const EPERMISSIONED_SIGNER_REMOVED: u64 = 30;
+    /// Sequence-number-based proof challenges cannot be used when the proof-bearing account's
+    /// sequence number will not advance, since the signed proof would remain replayable.
+    const ESEQ_NUM_PROOF_REPLAYABLE_CONTEXT: u64 = 31;
 
     /// Explicitly separate the GUID space between Object and Account to prevent accidental overlap.
     const MAX_GUID_CREATION_NUM: u64 = 0x4000000000000;
+
+    /// Maximum size of the payload stored in `EncryptedDK`. 128 bytes is generous for the initial use case
+    /// (an encrypted 32-byte confidential-asset DK with nonce + auth tag), while keeping per-account state small.
+    const MAX_ENCRYPTED_DK_BYTES: u64 = 128;
 
     #[test_only]
     /// Create signer for testing, independently of an Aptos-style `Account`.
     public fun create_signer_for_test(addr: address): signer { create_signer(addr) }
 
+    #[deprecated]
     enum AccountPermission has copy, drop, store {
         /// Permission to rotate a key.
         KeyRotation,
@@ -235,34 +258,27 @@ module aptos_framework::account {
         Offering,
     }
 
-    /// Permissions
-    ///
-    inline fun check_rotation_permission(s: &signer) {
+    #[deprecated]
+    public fun grant_key_rotation_permission(_master: &signer, _permissioned_signer: &signer) {
+        abort error::unavailable(EPERMISSIONED_SIGNER_REMOVED)
+    }
+
+    /// Proof challenges that embed an account's sequence number rely on the sequence number
+    /// advancing with the submitting transaction to prevent the signed proof from being accepted
+    /// twice. Orderless transactions do not increment the sender's sequence number, and multisig
+    /// payload execution increments only the outer submitter's sequence number. Functions verifying
+    /// a sequence-number-based proof must call this first.
+    inline fun assert_seq_num_proof_replay_protected() {
         assert!(
-            permissioned_signer::check_permission_exists(s, AccountPermission::KeyRotation {}),
-            error::permission_denied(ENO_ACCOUNT_PERMISSION),
+            !transaction_context::is_orderless_txn()
+                && !transaction_context::is_multisig_payload_txn(),
+            error::invalid_state(ESEQ_NUM_PROOF_REPLAYABLE_CONTEXT),
         );
     }
 
-    inline fun check_offering_permission(s: &signer) {
-        assert!(
-            permissioned_signer::check_permission_exists(s, AccountPermission::Offering {}),
-            error::permission_denied(ENO_ACCOUNT_PERMISSION),
-        );
-    }
-
-    /// Grant permission to perform key rotations on behalf of the master signer.
-    ///
-    /// This is **extremely dangerous** and should be granted only when it's absolutely needed.
-    public fun grant_key_rotation_permission(master: &signer, permissioned_signer: &signer) {
-        permissioned_signer::authorize_unlimited(master, permissioned_signer, AccountPermission::KeyRotation {})
-    }
-
-    /// Grant permission to use offered address's signer on behalf of the master signer.
-    ///
-    /// This is **extremely dangerous** and should be granted only when it's absolutely needed.
-    public fun grant_key_offering_permission(master: &signer, permissioned_signer: &signer) {
-        permissioned_signer::authorize_unlimited(master, permissioned_signer, AccountPermission::Offering {})
+    #[deprecated]
+    public fun grant_key_offering_permission(_master: &signer, _permissioned_signer: &signer) {
+        abort error::unavailable(EPERMISSIONED_SIGNER_REMOVED)
     }
 
     /// Only called during genesis to initialize system resources for this module.
@@ -418,7 +434,7 @@ module aptos_framework::account {
             error::out_of_range(ESEQUENCE_NUMBER_TOO_BIG)
         );
 
-        *sequence_number = *sequence_number + 1;
+        *sequence_number += 1;
     }
 
     #[view]
@@ -444,7 +460,6 @@ module aptos_framework::account {
             new_auth_key.length() == 32,
             error::invalid_argument(EMALFORMED_AUTHENTICATION_KEY)
         );
-        check_rotation_permission(account);
         let account_resource = &mut Account[addr];
         account_resource.authentication_key = new_auth_key;
     }
@@ -495,9 +510,9 @@ module aptos_framework::account {
         });
     }
 
-    /// Upserts an ED25519 backup key to an account that has a keyless public key as its original public key by converting the account's authentication key
+    /// Upserts an Ed25519 backup key to an account that has a keyless public key as its original public key by converting the account's authentication key
     /// to a multi-key of the original keyless public key and the new backup key that requires 1 signature from either key to authenticate.
-    /// This function takes a the account's original keyless public key and a ED25519 backup public key and rotates the account's authentication key to a multi-key of
+    /// This function takes the account's original keyless public key and a Ed25519 backup public key and rotates the account's authentication key to a multi-key of
     /// the original keyless public key and the new backup key that requires 1 signature from either key to authenticate.
     ///
     /// Note: This function emits a `KeyRotationToMultiPublicKey` event marking both keys as verified since the keyless public key
@@ -506,7 +521,7 @@ module aptos_framework::account {
     /// # Arguments
     /// * `account` - The signer representing the keyless account
     /// * `keyless_public_key` - The original keyless public key of the account (wrapped in an AnyPublicKey)
-    /// * `backup_public_key` - The ED25519 public key to add as a backup
+    /// * `backup_public_key` - The Ed25519 public key to add as a backup
     /// * `backup_key_proof` - A signature from the backup key proving ownership
     ///
     /// # Aborts
@@ -518,6 +533,8 @@ module aptos_framework::account {
     /// # Events
     /// * Emits a `KeyRotationToMultiPublicKey` event with the new multi-key configuration
     entry fun upsert_ed25519_backup_key_on_keyless_account(account: &signer, keyless_public_key: vector<u8>, backup_public_key: vector<u8>, backup_key_proof: vector<u8>) acquires Account {
+        // The backup key proof is replay-protected by the account's sequence number.
+        assert_seq_num_proof_replay_protected();
         // Check that the provided public key is a keyless public key
         let keyless_single_key = single_key::new_public_key_from_bytes(keyless_public_key);
         assert!(single_key::is_keyless_or_federated_keyless_public_key(&keyless_single_key), error::invalid_argument(ENOT_A_KEYLESS_PUBLIC_KEY));
@@ -573,6 +590,58 @@ module aptos_framework::account {
         });
     }
 
+    /// Atomically performs an `upsert_ed25519_backup_key_on_keyless_account` and stores `dk_ciphertext` in the
+    /// account's `EncryptedDK` resource. Currently used for backing up confidential-asset decryption keys on-chain
+    /// in Petra for keyless accounts. The ciphertext is opaque to the chain — see `EncryptedDK`.
+    ///
+    /// SECURITY: This function does not verify that `dk_ciphertext` is a well-formed encryption of the DK corresponding
+    /// to the registered EK on-chain. (It could, in theory, but we've judged the implementation complexity too high.)
+    /// Wallets using this function must be careful to only call this using a `dk_ciphertext` produced from its own
+    /// keyless Ed25519 backup key flow under the user-controlled `backup_public_key`.
+    entry fun upsert_ed25519_backup_key_and_encrypt_dk(
+        account: &signer,
+        keyless_public_key: vector<u8>,
+        backup_public_key: vector<u8>,
+        backup_key_proof: vector<u8>,
+        dk_ciphertext: vector<u8>
+    ) acquires Account, EncryptedDK {
+        upsert_ed25519_backup_key_on_keyless_account(account, keyless_public_key, backup_public_key, backup_key_proof);
+        upsert_encrypted_dk(account, dk_ciphertext);
+    }
+
+    /// Upserts the opaque per-account `EncryptedDK` for `account`. Friend-only so that the policy of who can
+    /// write a ciphertext (and the atomicity guarantees that come with it, e.g. coupling with a key rotation) lives
+    /// in the calling module rather than at this layer.
+    public(friend) fun upsert_encrypted_dk(account: &signer, ciphertext: vector<u8>) acquires EncryptedDK {
+        assert!(
+            ciphertext.length() <= MAX_ENCRYPTED_DK_BYTES,
+            error::invalid_argument(EENCRYPTED_DK_TOO_LONG)
+        );
+        let addr = signer::address_of(account);
+        if (!exists<EncryptedDK>(addr)) {
+            move_to(account, EncryptedDK::V1 { ciphertext: ciphertext });
+        } else {
+            EncryptedDK[addr].ciphertext = ciphertext;
+        };
+    }
+
+    #[view]
+    /// Returns the `EncryptedDK` stored for `addr`. Aborts with `EENCRYPTED_DK_NOT_FOUND` if none exists,
+    /// so callers must check `encrypted_dk_exists(addr)` first if absence is a valid case.
+    public fun get_encrypted_dk(addr: address): EncryptedDK acquires EncryptedDK {
+        assert!(
+            exists<EncryptedDK>(addr),
+            error::not_found(EENCRYPTED_DK_NOT_FOUND)
+        );
+        EncryptedDK[addr]
+    }
+
+    #[view]
+    /// Returns whether an `EncryptedDK` is stored for `addr`.
+    public fun encrypted_dk_exists(addr: address): bool {
+        exists<EncryptedDK>(addr)
+    }
+
     /// Generic authentication key rotation function that allows the user to rotate their authentication key from any scheme to any scheme.
     /// To authorize the rotation, we need two signatures:
     /// - the first signature `cap_rotate_key` refers to the signature by the account owner's current key on a valid `RotationProofChallenge`,
@@ -610,9 +679,10 @@ module aptos_framework::account {
         cap_rotate_key: vector<u8>,
         cap_update_table: vector<u8>,
     ) acquires Account, OriginatingAddress {
+        // The rotation proofs are replay-protected by the account's sequence number.
+        assert_seq_num_proof_replay_protected();
         let addr = signer::address_of(account);
         ensure_resource_exists(addr);
-        check_rotation_permission(account);
         let account_resource = &mut Account[addr];
         let old_auth_key = account_resource.authentication_key;
         // Verify the given `from_public_key_bytes` matches this account's current authentication key.
@@ -666,8 +736,8 @@ module aptos_framework::account {
             verified_public_key_bit_map = vector[0x80, 0x00, 0x00, 0x00];
         } else {
             // The new key is a multi-ed25519 key, so set the verified_public_key_bit_map to the signature bitmap.
-            let len = vector::length(&cap_update_table);
-            verified_public_key_bit_map = vector::slice(&cap_update_table, len - 4, len);
+            let len = cap_update_table.length();
+            verified_public_key_bit_map = cap_update_table.slice(len - 4, len);
         };
 
         event::emit(KeyRotationToPublicKey {
@@ -687,7 +757,8 @@ module aptos_framework::account {
         new_public_key_bytes: vector<u8>,
         cap_update_table: vector<u8>
     ) acquires Account, OriginatingAddress {
-        check_rotation_permission(delegate_signer);
+        // The rotation proof is replay-protected by the delegate's sequence number.
+        assert_seq_num_proof_replay_protected();
         assert!(resource_exists_at(rotation_cap_offerer_address), error::not_found(EOFFERER_ADDRESS_DOES_NOT_EXIST));
 
         // Check that there exists a rotation capability offer at the offerer's account resource for the delegate.
@@ -729,8 +800,8 @@ module aptos_framework::account {
             verified_public_key_bit_map = vector[0x80, 0x00, 0x00, 0x00];
         } else {
             // The new key is a multi-ed25519 key, so set the verified_public_key_bit_map to the signature bitmap.
-            let len = vector::length(&cap_update_table);
-            verified_public_key_bit_map = vector::slice(&cap_update_table, len - 4, len);
+            let len = cap_update_table.length();
+            verified_public_key_bit_map = cap_update_table.slice(len - 4, len);
         };
 
         event::emit(KeyRotationToPublicKey {
@@ -767,7 +838,8 @@ module aptos_framework::account {
         account_public_key_bytes: vector<u8>,
         recipient_address: address,
     ) acquires Account {
-        check_rotation_permission(account);
+        // The capability offer proof is replay-protected by the account's sequence number.
+        assert_seq_num_proof_replay_protected();
         let addr = signer::address_of(account);
         ensure_resource_exists(addr);
         assert!(exists_at(recipient_address), error::not_found(EACCOUNT_DOES_NOT_EXIST));
@@ -877,7 +949,6 @@ module aptos_framework::account {
     /// Revoke the rotation capability offer given to `to_be_revoked_recipient_address` from `account`
     public entry fun revoke_rotation_capability(account: &signer, to_be_revoked_address: address) acquires Account {
         assert!(exists_at(to_be_revoked_address), error::not_found(EACCOUNT_DOES_NOT_EXIST));
-        check_rotation_permission(account);
         let addr = signer::address_of(account);
         assert_account_resource_with_error(addr, ENO_SUCH_ROTATION_CAPABILITY_OFFER);
         let account_resource = &Account[addr];
@@ -890,7 +961,6 @@ module aptos_framework::account {
 
     /// Revoke any rotation capability offer in the specified account.
     public entry fun revoke_any_rotation_capability(account: &signer) acquires Account {
-        check_rotation_permission(account);
         let offerer_addr = signer::address_of(account);
         assert_account_resource_with_error(offerer_addr, ENO_SUCH_ROTATION_CAPABILITY_OFFER);
         let account_resource = &mut Account[signer::address_of(account)];
@@ -913,7 +983,8 @@ module aptos_framework::account {
         account_public_key_bytes: vector<u8>,
         recipient_address: address
     ) acquires Account {
-        check_offering_permission(account);
+        // The capability offer proof is replay-protected by the account's sequence number.
+        assert_seq_num_proof_replay_protected();
         let source_address = signer::address_of(account);
         ensure_resource_exists(source_address);
         assert!(exists_at(recipient_address), error::not_found(EACCOUNT_DOES_NOT_EXIST));
@@ -961,7 +1032,6 @@ module aptos_framework::account {
     /// Revoke the account owner's signer capability offer for `to_be_revoked_address` (i.e., the address that
     /// has a signer capability offer from `account` but will be revoked in this function).
     public entry fun revoke_signer_capability(account: &signer, to_be_revoked_address: address) acquires Account {
-        check_offering_permission(account);
         assert!(exists_at(to_be_revoked_address), error::not_found(EACCOUNT_DOES_NOT_EXIST));
         let addr = signer::address_of(account);
         assert_account_resource_with_error(addr, ENO_SUCH_SIGNER_CAPABILITY);
@@ -975,7 +1045,6 @@ module aptos_framework::account {
 
     /// Revoke any signer capability offer in the specified account.
     public entry fun revoke_any_signer_capability(account: &signer) acquires Account {
-        check_offering_permission(account);
         let offerer_addr = signer::address_of(account);
         assert_account_resource_with_error(offerer_addr, ENO_SUCH_SIGNER_CAPABILITY);
         let account_resource = &mut Account[signer::address_of(account)];
@@ -985,7 +1054,6 @@ module aptos_framework::account {
     /// Return an authorized signer of the offerer, if there's an existing signer capability offer for `account`
     /// at the offerer's address.
     public fun create_authorized_signer(account: &signer, offerer_address: address): signer acquires Account {
-        check_offering_permission(account);
         assert_account_resource_with_error(offerer_address, ENO_SUCH_SIGNER_CAPABILITY);
         // Check if there's an existing signer capability offer from the offerer.
         let account_resource = &Account[offerer_address];
@@ -1080,21 +1148,11 @@ module aptos_framework::account {
         );
         address_map.add(new_auth_key, originating_addr);
 
-        if (std::features::module_event_migration_enabled()) {
-            event::emit(KeyRotation {
-                account: originating_addr,
-                old_authentication_key: account_resource.authentication_key,
-                new_authentication_key: new_auth_key_vector,
-            });
-        } else {
-            event::emit_event<KeyRotationEvent>(
-                &mut account_resource.key_rotation_events,
-                KeyRotationEvent {
-                    old_authentication_key: account_resource.authentication_key,
-                    new_authentication_key: new_auth_key_vector,
-                }
-            );
-        };
+        event::emit(KeyRotation {
+            account: originating_addr,
+            old_authentication_key: account_resource.authentication_key,
+            new_authentication_key: new_auth_key_vector,
+        });
 
         // Update the account resource's authentication key.
         account_resource.authentication_key = new_auth_key_vector;
@@ -1210,24 +1268,13 @@ module aptos_framework::account {
     /// Coin management methods.
     ///////////////////////////////////////////////////////////////////////////
 
-    public(friend) fun register_coin<CoinType>(account_addr: address) acquires Account {
-        if (std::features::module_event_migration_enabled()) {
-            event::emit(
-                CoinRegister {
-                    account: account_addr,
-                    type_info: type_info::type_of<CoinType>(),
-                },
-            );
-        } else {
-            ensure_resource_exists(account_addr);
-            let account = &mut Account[account_addr];
-            event::emit_event<CoinRegisterEvent>(
-                &mut account.coin_register_events,
-                CoinRegisterEvent {
-                    type_info: type_info::type_of<CoinType>(),
-                },
-            );
-        }
+    public(friend) fun register_coin<CoinType>(account_addr: address) {
+        event::emit(
+            CoinRegister {
+                account: account_addr,
+                type_info: type_info::type_of<CoinType>(),
+            },
+        );
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -1416,7 +1463,7 @@ module aptos_framework::account {
         addr: address,
     ) acquires Account {
         let acct = &mut Account[addr];
-        acct.sequence_number = acct.sequence_number + 1;
+        acct.sequence_number += 1;
     }
 
     #[test_only]
@@ -1520,7 +1567,7 @@ module aptos_framework::account {
         // Maul the signature and make sure the call would fail
         let invalid_signature = ed25519::signature_to_bytes(&sig);
         let first_sig_byte = &mut invalid_signature[0];
-        *first_sig_byte = *first_sig_byte ^ 1;
+        *first_sig_byte ^= 1;
 
         offer_signer_capability(&alice, invalid_signature, 0, alice_pk_bytes, bob_addr);
     }
@@ -1557,122 +1604,6 @@ module aptos_framework::account {
         assert!(signer::address_of(&signer) == signer::address_of(&alice), 0);
     }
 
-    #[test(bob = @0x345)]
-    public entry fun test_valid_check_signer_capability_and_create_authorized_signer_with_permission(bob: signer) acquires Account {
-        let (alice_sk, alice_pk) = ed25519::generate_keys();
-        let alice_pk_bytes = ed25519::validated_public_key_to_bytes(&alice_pk);
-        let alice = create_account_from_ed25519_public_key(alice_pk_bytes);
-        let alice_addr = signer::address_of(&alice);
-
-        let bob_addr = signer::address_of(&bob);
-        create_account(bob_addr);
-
-        let challenge = SignerCapabilityOfferProofChallengeV2 {
-            sequence_number: Account[alice_addr].sequence_number,
-            source_address: alice_addr,
-            recipient_address: bob_addr,
-        };
-
-        let alice_signer_capability_offer_sig = ed25519::sign_struct(&alice_sk, challenge);
-
-        let alice_permission_handle = permissioned_signer::create_permissioned_handle(&alice);
-        let alice_permission_signer = permissioned_signer::signer_from_permissioned_handle(&alice_permission_handle);
-
-        grant_key_offering_permission(&alice, &alice_permission_signer);
-
-        offer_signer_capability(
-            &alice_permission_signer,
-            ed25519::signature_to_bytes(&alice_signer_capability_offer_sig),
-            0,
-            alice_pk_bytes,
-            bob_addr
-        );
-
-        assert!(Account[alice_addr].signer_capability_offer.for.contains(&bob_addr), 0);
-
-        let signer = create_authorized_signer(&bob, alice_addr);
-        assert!(signer::address_of(&signer) == signer::address_of(&alice), 0);
-
-        permissioned_signer::destroy_permissioned_handle(alice_permission_handle);
-    }
-
-    #[test(bob = @0x345)]
-    #[expected_failure(abort_code = 0x50017, location = Self)]
-    public entry fun test_valid_check_signer_capability_and_create_authorized_signer_with_no_permission(bob: signer) acquires Account {
-        let (alice_sk, alice_pk) = ed25519::generate_keys();
-        let alice_pk_bytes = ed25519::validated_public_key_to_bytes(&alice_pk);
-        let alice = create_account_from_ed25519_public_key(alice_pk_bytes);
-        let alice_addr = signer::address_of(&alice);
-
-        let bob_addr = signer::address_of(&bob);
-        create_account(bob_addr);
-
-        let challenge = SignerCapabilityOfferProofChallengeV2 {
-            sequence_number: Account[alice_addr].sequence_number,
-            source_address: alice_addr,
-            recipient_address: bob_addr,
-        };
-
-        let alice_signer_capability_offer_sig = ed25519::sign_struct(&alice_sk, challenge);
-
-        let alice_permission_handle = permissioned_signer::create_permissioned_handle(&alice);
-        let alice_permission_signer = permissioned_signer::signer_from_permissioned_handle(&alice_permission_handle);
-
-        offer_signer_capability(
-            &alice_permission_signer,
-            ed25519::signature_to_bytes(&alice_signer_capability_offer_sig),
-            0,
-            alice_pk_bytes,
-            bob_addr
-        );
-
-        assert!(Account[alice_addr].signer_capability_offer.for.contains(&bob_addr), 0);
-
-        let signer = create_authorized_signer(&bob, alice_addr);
-        assert!(signer::address_of(&signer) == signer::address_of(&alice), 0);
-
-        permissioned_signer::destroy_permissioned_handle(alice_permission_handle);
-    }
-
-    #[test(bob = @0x345)]
-    #[expected_failure(abort_code = 0x50017, location = Self)]
-    public entry fun test_valid_check_signer_capability_and_create_authorized_signer_with_wrong_permission(bob: signer) acquires Account {
-        let (alice_sk, alice_pk) = ed25519::generate_keys();
-        let alice_pk_bytes = ed25519::validated_public_key_to_bytes(&alice_pk);
-        let alice = create_account_from_ed25519_public_key(alice_pk_bytes);
-        let alice_addr = signer::address_of(&alice);
-
-        let bob_addr = signer::address_of(&bob);
-        create_account(bob_addr);
-
-        let challenge = SignerCapabilityOfferProofChallengeV2 {
-            sequence_number: Account[alice_addr].sequence_number,
-            source_address: alice_addr,
-            recipient_address: bob_addr,
-        };
-
-        let alice_signer_capability_offer_sig = ed25519::sign_struct(&alice_sk, challenge);
-
-        let alice_permission_handle = permissioned_signer::create_permissioned_handle(&alice);
-        let alice_permission_signer = permissioned_signer::signer_from_permissioned_handle(&alice_permission_handle);
-
-        grant_key_rotation_permission(&alice, &alice_permission_signer);
-
-        offer_signer_capability(
-            &alice_permission_signer,
-            ed25519::signature_to_bytes(&alice_signer_capability_offer_sig),
-            0,
-            alice_pk_bytes,
-            bob_addr
-        );
-
-        assert!(Account[alice_addr].signer_capability_offer.for.contains(&bob_addr), 0);
-
-        let signer = create_authorized_signer(&bob, alice_addr);
-        assert!(signer::address_of(&signer) == signer::address_of(&alice), 0);
-
-        permissioned_signer::destroy_permissioned_handle(alice_permission_handle);
-    }
 
     #[test(bob = @0x345)]
     public entry fun test_get_signer_cap_and_is_signer_cap(bob: signer) acquires Account {
@@ -2091,7 +2022,7 @@ module aptos_framework::account {
     struct SadFakeCoin {}
 
     #[test(account = @0x1234)]
-    fun test_events(account: &signer) acquires Account {
+    fun test_events(account: &signer) {
         let addr = signer::address_of(account);
         create_account_unchecked(addr);
         register_coin<FakeCoin>(addr);

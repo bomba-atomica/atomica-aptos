@@ -1,8 +1,9 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     block_preparation::BlockPreparationStage,
+    indexer_grpc_waiter::IndexerGrpcWaiter,
     ledger_update_stage::{CommitProcessing, LedgerUpdateStage},
     measurements::{EventMeasurements, OverallMeasuring},
     metrics::NUM_TXNS,
@@ -12,9 +13,11 @@ use aptos_block_partitioner::v2::config::PartitionerV2Config;
 use aptos_crypto::HashValue;
 use aptos_executor::block_executor::BlockExecutor;
 use aptos_executor_types::{state_compute_result::StateComputeResult, BlockExecutorTrait};
+use aptos_indexer_grpc_table_info::table_info_service::TableInfoService;
 use aptos_infallible::Mutex;
 use aptos_logger::info;
 use aptos_metrics_core::IntCounterVecHelper;
+use aptos_transaction_generator_lib::TransactionFeedback;
 use aptos_types::{
     block_executor::partitioner::ExecutableBlock,
     transaction::{Transaction, TransactionPayload, Version},
@@ -26,6 +29,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     marker::PhantomData,
     sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
         Arc,
     },
@@ -51,6 +55,7 @@ pub struct PipelineConfig {
     pub num_sig_verify_threads: usize,
 
     pub print_transactions: bool,
+    pub wait_for_indexer_grpc: bool,
 }
 
 pub struct Pipeline<V> {
@@ -71,6 +76,8 @@ where
         config: &PipelineConfig,
         // Need to specify num blocks, to size queues correctly, when delay_execution_start, split_stages or skip_commit are used
         num_blocks: Option<usize>,
+        indexer_wrapper: Option<(Arc<TableInfoService>, Arc<AtomicU64>, Arc<AtomicBool>)>,
+        transaction_feedback: Option<Arc<dyn TransactionFeedback>>,
     ) -> (Self, SyncSender<Vec<Transaction>>) {
         let parent_block_id = executor.committed_block_id();
         let executor_1 = Arc::new(executor);
@@ -86,11 +93,13 @@ where
         );
 
         let (executable_block_sender, executable_block_receiver) =
-            mpsc::sync_channel::<ExecuteBlockMessage>(if config.split_stages {
-                (num_blocks.unwrap() + 1).max(50)
-            } else {
-                10
-            } /* bound */);
+            mpsc::sync_channel::<ExecuteBlockMessage>(
+                if config.split_stages {
+                    (num_blocks.unwrap() + 1).max(50)
+                } else {
+                    10
+                }, /* bound */
+            );
 
         let (ledger_update_sender, ledger_update_receiver) =
             mpsc::sync_channel::<LedgerUpdateMessage>(
@@ -101,12 +110,13 @@ where
                 }, /* bound */
             );
 
-        let (commit_sender, commit_receiver) =
-            mpsc::sync_channel::<CommitBlockMessage>(if config.split_stages {
+        let (commit_sender, commit_receiver) = mpsc::sync_channel::<CommitBlockMessage>(
+            if config.split_stages {
                 (num_blocks.unwrap() + 1).max(3)
             } else {
                 3
-            } /* bound */);
+            }, /* bound */
+        );
 
         let (start_pipeline_tx, start_pipeline_rx) =
             create_start_tx_rx(config.generate_then_execute);
@@ -114,6 +124,8 @@ where
         let (start_ledger_update_tx, start_ledger_update_rx) =
             create_start_tx_rx(config.split_stages);
         let (start_commit_tx, start_commit_rx) = create_start_tx_rx(config.split_stages);
+        let (start_indexer_grpc_wait_tx, start_indexer_grpc_wait_rx) =
+            create_start_tx_rx(config.wait_for_indexer_grpc);
 
         let mut join_handles = vec![];
 
@@ -143,6 +155,7 @@ where
             config.allow_discards,
             config.allow_retries,
             staged_events_clone,
+            transaction_feedback,
         );
 
         let print_transactions = config.print_transactions;
@@ -280,6 +293,9 @@ where
             .expect("Failed to spawn ledger update thread.");
         join_handles.push(ledger_update_thread);
 
+        let target_version = Arc::new(Mutex::new(None));
+        let target_version_clone = target_version.clone();
+
         if !config.skip_commit {
             let commit_thread = std::thread::Builder::new()
                 .name("txn_committer".to_string())
@@ -288,12 +304,51 @@ where
                     info!("Starting commit thread");
                     let mut committer =
                         TransactionCommitter::new(executor_3, start_version, commit_receiver);
-                    committer.run();
+                    let final_version = committer.run();
+
+                    // Store the final version for indexer_grpc waiter
+                    *target_version_clone.lock() = Some(final_version);
+                    start_indexer_grpc_wait_tx.map(|tx| tx.send(()));
 
                     0
                 })
                 .expect("Failed to spawn transaction committer thread.");
             join_handles.push(commit_thread);
+        }
+
+        // Add indexer_grpc waiter stage
+        if config.wait_for_indexer_grpc && !config.skip_commit {
+            if let Some(indexer_wrapper) = indexer_wrapper {
+                let waiter = IndexerGrpcWaiter::new(indexer_wrapper.0, indexer_wrapper.1);
+                let target_version_for_waiter = target_version.clone();
+                let waiter_thread = std::thread::Builder::new()
+                    .name("indexer_grpc_waiter".to_string())
+                    .spawn(move || {
+                        start_indexer_grpc_wait_rx.map(|rx| rx.recv());
+                        info!("Starting indexer_grpc waiter thread");
+
+                        // Wait for target version to be set by commit thread
+                        let target_ver = loop {
+                            if let Some(ver) = *target_version_for_waiter.lock() {
+                                break ver;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        };
+
+                        // Create a tokio runtime for async wait
+                        let runtime = tokio::runtime::Runtime::new().unwrap();
+                        runtime.block_on(
+                            waiter.wait_for_version(target_ver - 1, /*abort_on_finish=*/ true),
+                        );
+                        indexer_wrapper.2.store(true, Ordering::SeqCst);
+                        info!("Indexer_grpc waiter finished");
+                        // This is a HACK. Just sleep here to wait the DB lock to drop.
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        0
+                    })
+                    .expect("Failed to spawn indexer_grpc waiter thread.");
+                join_handles.push(waiter_thread);
+            }
         }
 
         (

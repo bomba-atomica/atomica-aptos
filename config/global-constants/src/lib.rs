@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! The purpose of this crate is to offer a single source of truth for the definitions of shared
 //! constants within the codebase. This is useful because many different components within
@@ -27,9 +26,9 @@ pub const GAS_UNIT_PRICE: u64 = 0;
 pub const GAS_UNIT_PRICE: u64 = 100;
 
 #[cfg(any(test, feature = "testing"))]
-pub const MAX_GAS_AMOUNT: u64 = 100_000_000;
+pub const MAX_GAS_AMOUNT: u64 = 1_000_000_000;
 #[cfg(not(any(test, feature = "testing")))]
-pub const MAX_GAS_AMOUNT: u64 = 2_000_000;
+pub const MAX_GAS_AMOUNT: u64 = 20_000_000;
 
 pub const GAS_HEADROOM_NUMERATOR: u64 = 3;
 pub const GAS_HEADROOM_DENOMINATOR: u64 = 2;

@@ -1,12 +1,14 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::state_store::{
+    sharded_jmt_state::PositionStateWithSummary,
     state::LedgerState,
     state_summary::LedgerStateSummary,
     state_update_refs::StateUpdateRefs,
     state_view::cached_state_view::ShardedStateCache,
-    state_with_summary::{LedgerStateWithSummary, StateWithSummary},
+    state_with_summary::{LedgerStateWithSummary, LedgerWithSummary, StateWithSummary},
+    HotStateUpdates,
 };
 use aptos_types::transaction::{
     PersistedAuxiliaryInfo, Transaction, TransactionInfo, TransactionOutput, Version,
@@ -23,6 +25,11 @@ pub struct ChunkToCommit<'a> {
     pub state_summary: &'a LedgerStateSummary,
     pub state_update_refs: &'a StateUpdateRefs<'a>,
     pub state_reads: &'a ShardedStateCache,
+    pub hot_state_updates: &'a HotStateUpdates,
+    /// Position summary computed at execution time (checkpoint stage), to
+    /// be persisted/merklized at commit without recomputation. `None` when
+    /// native position is disabled.
+    pub position_state_summary: Option<&'a LedgerWithSummary<PositionStateWithSummary>>,
     pub is_reconfig: bool,
 }
 

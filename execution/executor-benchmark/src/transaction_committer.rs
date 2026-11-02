@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{metrics::NUM_TXNS, pipeline::CommitBlockMessage};
 use aptos_crypto::hash::HashValue;
@@ -70,8 +69,9 @@ where
         }
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&mut self) -> Version {
         info!("Start with version: {}", self.start_version);
+        let mut last_version = self.start_version;
 
         while let Ok(msg) = self.block_receiver.recv() {
             let CommitBlockMessage {
@@ -90,6 +90,7 @@ where
             NUM_TXNS.inc_with_by(&["commit"], num_input_txns as u64);
 
             let version = output.expect_last_version();
+            last_version = version;
             let commit_start = Instant::now();
             let ledger_info_with_sigs = gen_li_with_sigs(block_id, root_hash, version);
             self.executor.pre_commit_block(block_id).unwrap();
@@ -106,6 +107,7 @@ where
                 num_input_txns,
             );
         }
+        last_version
     }
 }
 

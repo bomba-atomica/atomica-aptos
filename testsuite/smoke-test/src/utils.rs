@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::aptos_cli::validator::generate_blob;
 use aptos::test::CliTestFramework;
@@ -16,6 +15,7 @@ use aptos_sdk::{
     types::{transaction::SignedTransaction, LocalAccount},
 };
 use aptos_types::{
+    keyless::KeylessOnchainConfig,
     network_address::{NetworkAddress, Protocol},
     on_chain_config::{OnChainConfig, OnChainConsensusConfig, OnChainExecutionConfig},
 };
@@ -88,6 +88,11 @@ pub async fn create_test_accounts(swarm: &mut LocalSwarm) -> (LocalAccount, Loca
     (account_0, account_1)
 }
 
+/// Returns a REST client for the swarm's first validator.
+pub fn first_validator_client(swarm: &LocalSwarm) -> RestClient {
+    swarm.validators().next().unwrap().rest_client()
+}
+
 /// Executes transactions using the given transaction factory, client and
 /// accounts. If `execute_epoch_changes` is true, also execute transactions to
 /// force reconfigurations.
@@ -119,14 +124,12 @@ pub async fn execute_transactions(
     }
 
     // Always ensure that at least one reconfiguration transaction is executed
-    if !execute_epoch_changes {
-        aptos_forge::reconfig(
-            client,
-            &transaction_factory,
-            swarm.chain_info().root_account,
-        )
-        .await;
-    }
+    aptos_forge::reconfig(
+        client,
+        &transaction_factory,
+        swarm.chain_info().root_account,
+    )
+    .await;
 }
 
 /// Executes transactions and waits for all nodes to catch up
@@ -181,7 +184,7 @@ pub async fn transfer_and_maybe_reconfig(
 ) {
     for _ in 0..num_transfers {
         // Reconfigurations have a 20% chance of being executed
-        if random::<u16>() % 5 == 0 {
+        if random::<u16>().is_multiple_of(5) {
             reconfig(client, transaction_factory, root_account.clone()).await;
         }
 
@@ -275,6 +278,17 @@ pub async fn get_current_version(rest_client: &RestClient) -> u64 {
         .unwrap()
         .inner()
         .version
+}
+
+pub async fn get_keyless_on_chain_resource<T: KeylessOnchainConfig>(rest_client: &Client) -> T {
+    let maybe_response = rest_client
+        .get_account_resource_bcs::<T>(
+            CORE_CODE_ADDRESS,
+            T::struct_tag().to_canonical_string().as_str(),
+        )
+        .await;
+    let response = maybe_response.unwrap();
+    response.into_inner()
 }
 
 pub async fn get_on_chain_resource<T: OnChainConfig>(rest_client: &Client) -> T {

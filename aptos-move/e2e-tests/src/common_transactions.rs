@@ -1,27 +1,30 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Support for encoding transactions for common situations.
 
 use crate::account::Account;
 use aptos_cached_packages::aptos_stdlib;
 use aptos_types::transaction::{Script, SignedTransaction};
-use move_ir_compiler::Compiler;
+use indoc::indoc;
+use move_asm::assembler;
 use once_cell::sync::Lazy;
 
 pub static EMPTY_SCRIPT: Lazy<Vec<u8>> = Lazy::new(|| {
-    let code = "
-    main(account: signer) {
-    label b0:
-      return;
-    }
-";
+    let code = indoc! {"
+        script
+        entry public fun main(l0: signer)
+            ret
+    "};
     let modules = aptos_cached_packages::head_release_bundle().compiled_modules();
-    let compiler = Compiler {
-        deps: modules.iter().collect(),
-    };
-    compiler.into_script_blob(code).expect("Failed to compile")
+    let options = assembler::Options::default();
+    let script = assembler::assemble(&options, code, modules.iter())
+        .expect("Failed to assemble")
+        .right()
+        .expect("Expected script, got module");
+    let mut bytes = vec![];
+    script.serialize(&mut bytes).expect("Failed to serialize");
+    bytes
 });
 
 pub fn empty_txn(

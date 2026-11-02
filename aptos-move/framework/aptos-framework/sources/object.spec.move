@@ -46,22 +46,15 @@ spec aptos_framework::object {
     /// </high-level-req>
     ///
     spec module {
-        pragma verify = false;
-        pragma aborts_if_is_partial;
-    }
-
-    spec grant_permission {
-        pragma aborts_if_is_partial;
-        aborts_if !permissioned_signer::spec_is_permissioned_signer(permissioned_signer);
-        aborts_if permissioned_signer::spec_is_permissioned_signer(master);
-        aborts_if signer::address_of(master) != signer::address_of(permissioned_signer);
+        pragma verify = true;
     }
 
     spec fun spec_exists_at<T: key>(object: address): bool;
 
     spec exists_at<T: key>(object: address): bool {
         pragma opaque;
-        ensures [abstract] result == spec_exists_at<T>(object);
+        aborts_if false;
+        ensures result == spec_exists_at<T>(object);
     }
 
 
@@ -121,7 +114,6 @@ spec aptos_framework::object {
 
     spec create_object_address(source: &address, seed: vector<u8>): address {
         pragma opaque;
-        pragma aborts_if_is_strict = false;
         aborts_if [abstract] false;
         ensures [abstract] result == spec_create_object_address(source, seed);
     }
@@ -130,32 +122,31 @@ spec aptos_framework::object {
 
     spec create_user_derived_object_address_impl(source: address, derive_from: address): address {
         pragma opaque;
+        aborts_if [abstract] false;
         ensures [abstract] result == spec_create_user_derived_object_address_impl(source, derive_from);
     }
 
     spec create_user_derived_object_address(source: address, derive_from: address): address {
         pragma opaque;
-        pragma aborts_if_is_strict = false;
         aborts_if [abstract] false;
         ensures [abstract] result == spec_create_user_derived_object_address(source, derive_from);
     }
 
     spec create_guid_object_address(source: address, creation_num: u64): address {
         pragma opaque;
-        pragma aborts_if_is_strict = false;
         aborts_if [abstract] false;
         ensures [abstract] result == spec_create_guid_object_address(source, creation_num);
     }
 
-    spec object_address<T: key>(object: &Object<T>): address {
+    spec object_address<T: key>(self: &Object<T>): address {
         aborts_if false;
-        ensures result == object.inner;
+        ensures result == self.inner;
     }
 
-    spec convert<X: key, Y: key>(object: Object<X>): Object<Y> {
-        aborts_if !exists<ObjectCore>(object.inner);
-        aborts_if !spec_exists_at<Y>(object.inner);
-        ensures result == Object<Y> { inner: object.inner };
+    spec convert<X: key, Y: key>(self: Object<X>): Object<Y> {
+        aborts_if !exists<ObjectCore>(self.inner);
+        aborts_if !spec_exists_at<Y>(self.inner);
+        ensures result == Object<Y> { inner: self.inner };
     }
 
     spec create_named_object(creator: &signer, seed: vector<u8>): ConstructorRef {
@@ -204,13 +195,24 @@ spec aptos_framework::object {
     }
 
     spec create_object_from_account(creator: &signer): ConstructorRef {
-        aborts_if !exists<account::Account>(signer::address_of(creator));
-        //Guid properties
-        let object_data = global<account::Account>(signer::address_of(creator));
-        aborts_if object_data.guid_creation_num + 1 > MAX_U64;
-        aborts_if object_data.guid_creation_num + 1 >= account::MAX_GUID_CREATION_NUM;
-        let creation_num = object_data.guid_creation_num;
+        use std::features;
+        use std::features::DEFAULT_ACCOUNT_RESOURCE;
         let addr = signer::address_of(creator);
+        let account_exists_pre = exists<account::Account>(addr);
+        let feature_on = features::spec_is_enabled(DEFAULT_ACCOUNT_RESOURCE);
+
+        aborts_if !account_exists_pre && !feature_on;
+        aborts_if !account_exists_pre && feature_on
+            && (addr == @vm_reserved || addr == @aptos_framework || addr == @aptos_token);
+        aborts_if !account_exists_pre && feature_on
+            && len(bcs::to_bytes(addr)) != 32;
+
+        let creation_num = if (account_exists_pre) {
+            global<account::Account>(addr).guid_creation_num
+        } else {
+            2
+        };
+        aborts_if creation_num + 1 >= account::MAX_GUID_CREATION_NUM;
 
         let guid = guid::GUID {
             id: guid::ID {
@@ -218,7 +220,6 @@ spec aptos_framework::object {
                 addr,
             }
         };
-
         let bytes_spec = bcs::to_bytes(guid);
         let bytes = concat(bytes_spec, vec<u8>(OBJECT_FROM_GUID_ADDRESS_SCHEME));
         let hash_bytes = hash::sha3_256(bytes);
@@ -226,9 +227,8 @@ spec aptos_framework::object {
         aborts_if exists<ObjectCore>(obj_addr);
         aborts_if !from_bcs::deserializable<address>(hash_bytes);
 
-        ensures global<account::Account>(addr).guid_creation_num == old(
-            global<account::Account>(addr)
-        ).guid_creation_num + 1;
+        ensures exists<account::Account>(addr);
+        ensures global<account::Account>(addr).guid_creation_num == creation_num + 1;
         ensures exists<ObjectCore>(obj_addr);
         ensures global<ObjectCore>(obj_addr) == ObjectCore {
             guid_creation_num: INIT_GUID_CREATION_NUM + 1,
@@ -315,8 +315,11 @@ spec aptos_framework::object {
     }
 
     spec create_sticky_object_at_address(owner_address: address, object_address: address): ConstructorRef {
-        // TODO(fa_migration)
-        pragma verify = false;
+        /// [high-level-req-1]
+        aborts_if exists<ObjectCore>(object_address);
+        ensures exists<ObjectCore>(object_address);
+        ensures global<ObjectCore>(object_address).guid_creation_num == INIT_GUID_CREATION_NUM + 1;
+        ensures result == ConstructorRef { self: object_address, can_delete: false };
     }
 
     spec create_object_internal(
@@ -333,20 +336,20 @@ spec aptos_framework::object {
         ensures result == ConstructorRef { self: object, can_delete };
     }
 
-    spec generate_delete_ref(ref: &ConstructorRef): DeleteRef {
-        aborts_if !ref.can_delete;
-        ensures result == DeleteRef { self: ref.self };
+    spec generate_delete_ref(self: &ConstructorRef): DeleteRef {
+        aborts_if !self.can_delete;
+        ensures result == DeleteRef { self: self.self };
     }
 
-    spec disable_ungated_transfer(ref: &TransferRef) {
-        aborts_if !exists<ObjectCore>(ref.self);
-        ensures global<ObjectCore>(ref.self).allow_ungated_transfer == false;
+    spec disable_ungated_transfer(self: &TransferRef) {
+        aborts_if !exists<ObjectCore>(self.self);
+        ensures global<ObjectCore>(self.self).allow_ungated_transfer == false;
     }
 
-    spec object_from_constructor_ref<T: key>(ref: &ConstructorRef): Object<T> {
-        aborts_if !exists<ObjectCore>(ref.self);
-        aborts_if !spec_exists_at<T>(ref.self);
-        ensures result == Object<T> { inner: ref.self };
+    spec object_from_constructor_ref<T: key>(self: &ConstructorRef): Object<T> {
+        aborts_if !exists<ObjectCore>(self.self);
+        aborts_if !spec_exists_at<T>(self.self);
+        ensures result == Object<T> { inner: self.self };
     }
 
     spec create_guid(object: &signer): guid::GUID {
@@ -383,59 +386,59 @@ spec aptos_framework::object {
         };
     }
 
-    spec object_from_delete_ref<T: key>(ref: &DeleteRef): Object<T> {
-        aborts_if !exists<ObjectCore>(ref.self);
-        aborts_if !spec_exists_at<T>(ref.self);
-        ensures result == Object<T> { inner: ref.self };
+    spec object_from_delete_ref<T: key>(self: &DeleteRef): Object<T> {
+        aborts_if !exists<ObjectCore>(self.self);
+        aborts_if !spec_exists_at<T>(self.self);
+        ensures result == Object<T> { inner: self.self };
     }
 
-    spec delete(ref: DeleteRef) {
-        aborts_if !exists<ObjectCore>(ref.self);
-        ensures !exists<ObjectCore>(ref.self);
+    spec delete(self: DeleteRef) {
+        aborts_if !exists<ObjectCore>(self.self);
+        ensures !exists<ObjectCore>(self.self);
     }
 
     spec generate_signer_for_extending {
         pragma opaque;
-        ensures result == spec_generate_signer_for_extending(ref);
+        ensures result == spec_generate_signer_for_extending(self);
     }
 
-    spec set_untransferable(ref: &ConstructorRef) {
-        aborts_if !exists<ObjectCore>(ref.self);
-        aborts_if exists<Untransferable>(ref.self);
-        ensures exists<Untransferable>(ref.self);
-        ensures global<ObjectCore>(ref.self).allow_ungated_transfer == false;
+    spec set_untransferable(self: &ConstructorRef) {
+        aborts_if !exists<ObjectCore>(self.self);
+        aborts_if exists<Untransferable>(self.self);
+        ensures exists<Untransferable>(self.self);
+        ensures global<ObjectCore>(self.self).allow_ungated_transfer == false;
     }
 
-    spec enable_ungated_transfer(ref: &TransferRef) {
-        aborts_if exists<Untransferable>(ref.self);
-        aborts_if !exists<ObjectCore>(ref.self);
-        ensures global<ObjectCore>(ref.self).allow_ungated_transfer == true;
+    spec enable_ungated_transfer(self: &TransferRef) {
+        aborts_if exists<Untransferable>(self.self);
+        aborts_if !exists<ObjectCore>(self.self);
+        ensures global<ObjectCore>(self.self).allow_ungated_transfer == true;
     }
 
-    spec generate_transfer_ref(ref: &ConstructorRef): TransferRef {
-        aborts_if exists<Untransferable>(ref.self);
+    spec generate_transfer_ref(self: &ConstructorRef): TransferRef {
+        aborts_if exists<Untransferable>(self.self);
         ensures result == TransferRef {
-            self: ref.self,
+            self: self.self,
         };
     }
 
-    spec generate_linear_transfer_ref(ref: &TransferRef): LinearTransferRef {
-        aborts_if exists<Untransferable>(ref.self);
-        aborts_if !exists<ObjectCore>(ref.self);
-        let owner = global<ObjectCore>(ref.self).owner;
+    spec generate_linear_transfer_ref(self: &TransferRef): LinearTransferRef {
+        aborts_if exists<Untransferable>(self.self);
+        aborts_if !exists<ObjectCore>(self.self);
+        let owner = global<ObjectCore>(self.self).owner;
         ensures result == LinearTransferRef {
-            self: ref.self,
+            self: self.self,
             owner,
         };
     }
 
-    spec transfer_with_ref(ref: LinearTransferRef, to: address) {
-        aborts_if exists<Untransferable>(ref.self);
-        let object = global<ObjectCore>(ref.self);
-        aborts_if !exists<ObjectCore>(ref.self);
+    spec transfer_with_ref(self: LinearTransferRef, to: address) {
+        aborts_if exists<Untransferable>(self.self);
+        let object = global<ObjectCore>(self.self);
+        aborts_if !exists<ObjectCore>(self.self);
         /// [high-level-req-5]
-        aborts_if object.owner != ref.owner;
-        ensures global<ObjectCore>(ref.self).owner == to;
+        aborts_if object.owner != self.owner;
+        ensures global<ObjectCore>(self.self).owner == to;
     }
 
     spec transfer_call(
@@ -540,9 +543,9 @@ spec aptos_framework::object {
     //     { global<ObjectCore>(addr).owner }
     // }
 
-    spec ungated_transfer_allowed<T: key>(object: Object<T>): bool {
-        aborts_if !exists<ObjectCore>(object.inner);
-        ensures result == global<ObjectCore>(object.inner).allow_ungated_transfer;
+    spec ungated_transfer_allowed<T: key>(self: Object<T>): bool {
+        aborts_if !exists<ObjectCore>(self.inner);
+        ensures result == global<ObjectCore>(self.inner).allow_ungated_transfer;
     }
 
     spec is_owner<T: key>(object: Object<T>, owner: address): bool {
@@ -550,9 +553,9 @@ spec aptos_framework::object {
         ensures result == (global<ObjectCore>(object.inner).owner == owner);
     }
 
-    spec owner<T: key>(object: Object<T>): address {
-        aborts_if !exists<ObjectCore>(object.inner);
-        ensures result == global<ObjectCore>(object.inner).owner;
+    spec owner<T: key>(self: Object<T>): address {
+        aborts_if !exists<ObjectCore>(self.inner);
+        ensures result == global<ObjectCore>(self.inner).owner;
     }
 
     spec owns<T: key>(object: Object<T>, owner: address): bool {
@@ -564,7 +567,7 @@ spec aptos_framework::object {
         ensures current_address_0 == owner ==> result == true;
     }
 
-    spec root_owner<T: key>(object: Object<T>): address {
+    spec root_owner<T: key>(self: Object<T>): address {
         pragma aborts_if_is_partial;
     }
 

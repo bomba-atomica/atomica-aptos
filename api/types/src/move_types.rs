@@ -1,12 +1,9 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{Address, Bytecode, IdentifierWrapper, VerifyInput, VerifyInputWithRecursion};
 use anyhow::{bail, format_err};
-use aptos_resource_viewer::{
-    AnnotatedMoveClosure, AnnotatedMoveStruct, AnnotatedMoveValue, RawMoveStruct,
-};
+use aptos_resource_viewer::{AnnotatedMoveClosure, AnnotatedMoveStruct, AnnotatedMoveValue};
 use aptos_types::{account_config::CORE_CODE_ADDRESS, event::EventKey, transaction::Module};
 use move_binary_format::{
     access::ModuleAccess,
@@ -261,10 +258,7 @@ impl TryFrom<AnnotatedMoveStruct> for MoveStructValue {
                         MoveValue::Vector(vec![MoveValue::try_from(v)?]).json()?,
                     );
                 } else {
-                    return Err(anyhow::anyhow!(
-                        "Invalid option variant: {}",
-                        name.to_string()
-                    ));
+                    return Err(anyhow::anyhow!("Invalid option variant: {}", name));
                 }
                 return Ok(Self(map));
             }
@@ -277,27 +271,6 @@ impl TryFrom<AnnotatedMoveStruct> for MoveStructValue {
         }
         for (id, val) in s.value {
             map.insert(id.into(), MoveValue::try_from(val)?.json()?);
-        }
-        Ok(Self(map))
-    }
-}
-
-impl TryFrom<RawMoveStruct> for MoveStructValue {
-    type Error = anyhow::Error;
-
-    fn try_from(s: RawMoveStruct) -> anyhow::Result<Self> {
-        let mut map = BTreeMap::new();
-        if let Some(tag) = s.variant_info {
-            map.insert(
-                IdentifierWrapper::from_str("__variant_tag__")?,
-                MoveValue::U16(tag).json()?,
-            );
-        }
-        for (pos, val) in s.field_values.into_iter().enumerate() {
-            map.insert(
-                IdentifierWrapper::from_str(format!("_{}", pos).as_str())?,
-                MoveValue::try_from(val)?.json()?,
-            );
         }
         Ok(Self(map))
     }
@@ -445,7 +418,6 @@ impl TryFrom<AnnotatedMoveValue> for MoveValue {
                     MoveValue::Struct(v.try_into()?)
                 }
             },
-            AnnotatedMoveValue::RawStruct(v) => MoveValue::Struct(v.try_into()?),
             AnnotatedMoveValue::Closure(c) => MoveValue::Struct(c.try_into()?),
         })
     }
@@ -1015,14 +987,19 @@ impl From<CompiledModule> for MoveModule {
             exposed_functions: m
                 .function_defs
                 .iter()
-                // Return all entry or public functions.
-                // Private entry functions are still callable by entry function transactions so
-                // they should be included.
+                // Return all entry, view, or public functions.
+                // Private entry functions are still callable by entry function
+                // transactions so they should be included. Similarly, private view
+                // functions can be called via the view function API endpoint.
                 .filter(|def| {
                     def.is_entry
                         || match def.visibility {
                             Visibility::Public | Visibility::Friend => true,
-                            Visibility::Private => false,
+                            Visibility::Private => {
+                                let fhandle = Bytecode::function_handle_at(&m, def.function);
+                                let name = Bytecode::identifier_at(&m, fhandle.name);
+                                m.function_is_view(name)
+                            },
                         }
                 })
                 .map(|def| m.new_move_function(def))
@@ -1107,6 +1084,10 @@ impl<'de> Deserialize<'de> for MoveModuleId {
 }
 
 /// A move struct
+//
+// Note: In a perfect world is_enum would not be necessary and instead we would use an
+// enum to represent regular struct vs enum. But for backwards compatibility we instead
+// have separate fields, `fields` for a regular struct and `variants` for an enum.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
 pub struct MoveStruct {
     pub name: IdentifierWrapper,
@@ -1121,6 +1102,16 @@ pub struct MoveStruct {
     /// Generic types associated with the struct
     pub generic_type_params: Vec<MoveStructGenericTypeParam>,
     /// Fields associated with the struct
+    pub fields: Vec<MoveStructField>,
+    /// Variants of the enum. Only populated when `is_enum` is true.
+    pub variants: Vec<MoveStructVariant>,
+}
+
+/// A single variant of a Move enum.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct MoveStructVariant {
+    pub name: IdentifierWrapper,
+    /// Fields associated with the variant, if any.
     pub fields: Vec<MoveStructField>,
 }
 
@@ -1525,40 +1516,30 @@ mod tests {
     fn test_serialize_move_resource() {
         use AnnotatedMoveValue::*;
 
-        let res = MoveResource::try_from(annotated_move_struct(
-            "Values",
-            vec![
-                (identifier("field_u8"), U8(7)),
-                (identifier("field_u64"), U64(7)),
-                (identifier("field_u128"), U128(7)),
-                (identifier("field_bool"), Bool(true)),
-                (identifier("field_address"), Address(address("0xdd"))),
-                (
-                    identifier("field_vector"),
-                    Vector(TypeTag::U128, vec![U128(128)]),
-                ),
-                (identifier("field_bytes"), Bytes(vec![9, 9])),
-                (
-                    identifier("field_struct"),
-                    Struct(annotated_move_struct(
-                        "Nested",
-                        vec![(
-                            identifier("nested_vector"),
-                            Vector(
-                                TypeTag::Struct(Box::new(type_struct("Host"))),
-                                vec![Struct(annotated_move_struct(
-                                    "String",
-                                    vec![
-                                        (identifier("address1"), Address(address("0x0"))),
-                                        (identifier("address2"), Address(address("0x123"))),
-                                    ],
-                                ))],
-                            ),
-                        )],
-                    )),
-                ),
-            ],
-        ))
+        let res = MoveResource::try_from(annotated_move_struct("Values", vec![
+            (identifier("field_u8"), U8(7)),
+            (identifier("field_u64"), U64(7)),
+            (identifier("field_u128"), U128(7)),
+            (identifier("field_bool"), Bool(true)),
+            (identifier("field_address"), Address(address("0xdd"))),
+            (
+                identifier("field_vector"),
+                Vector(TypeTag::U128, vec![U128(128)]),
+            ),
+            (identifier("field_bytes"), Bytes(vec![9, 9])),
+            (
+                identifier("field_struct"),
+                Struct(annotated_move_struct("Nested", vec![(
+                    identifier("nested_vector"),
+                    Vector(TypeTag::Struct(Box::new(type_struct("Host"))), vec![
+                        Struct(annotated_move_struct("String", vec![
+                            (identifier("address1"), Address(address("0x0"))),
+                            (identifier("address2"), Address(address("0x123"))),
+                        ])),
+                    ]),
+                )])),
+            ),
+        ]))
         .unwrap();
         let value = to_value(&res).unwrap();
         assert_json(
@@ -1583,13 +1564,10 @@ mod tests {
 
     #[test]
     fn test_serialize_move_resource_with_address_0x0() {
-        let res = MoveResource::try_from(annotated_move_struct(
-            "Values",
-            vec![(
-                identifier("address_0x0"),
-                AnnotatedMoveValue::Address(address("0x0")),
-            )],
-        ))
+        let res = MoveResource::try_from(annotated_move_struct("Values", vec![(
+            identifier("address_0x0"),
+            AnnotatedMoveValue::Address(address("0x0")),
+        )]))
         .unwrap();
         let value = to_value(&res).unwrap();
         assert_json(

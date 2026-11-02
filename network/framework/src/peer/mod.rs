@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! [`Peer`] manages a single connection to a remote peer after the initial connection
 //! establishment and handshake.
@@ -21,6 +20,7 @@ use crate::{
         DECLINED_LABEL, FAILED_LABEL, RECEIVED_LABEL, SENT_LABEL, UNKNOWN_LABEL,
     },
     logging::NetworkSchema,
+    peer::rate_limiter::InboundMessageRateLimiter,
     peer_manager::{PeerManagerError, TransportNotification},
     protocols::{
         direct_send::Message,
@@ -41,6 +41,8 @@ use aptos_logger::prelude::*;
 use aptos_short_hex_str::AsShortHexStr;
 use aptos_time_service::{TimeService, TimeServiceTrait};
 use aptos_types::PeerId;
+#[cfg(feature = "failpoints")]
+use fail::fail_point;
 use futures::{
     self,
     channel::oneshot,
@@ -62,6 +64,8 @@ mod test;
 #[cfg(any(test, feature = "fuzzing"))]
 pub mod fuzzing;
 
+pub(crate) mod rate_limiter;
+
 /// Requests [`Peer`] receives from the [`PeerManager`](crate::peer_manager::PeerManager).
 #[derive(Debug)]
 pub enum PeerRequest {
@@ -77,6 +81,7 @@ pub enum DisconnectReason {
     ConnectionClosed, // The connection was gracefully closed (e.g., by the peer)
     InputOutputError, // An I/O error occurred on the connection (e.g., when reading messages)
     NetworkHealthCheckFailure, // The connection failed the network health check (e.g., pings)
+    PeerMonitoringPingFailure, // The connection failed the peer monitoring ping check
     RequestedByPeerManager, // The peer manager requested the connection to be closed
     StaleConnection,  // The connection is stale (e.g., when a validator leaves the validator set)
 }
@@ -88,6 +93,7 @@ impl DisconnectReason {
             DisconnectReason::ConnectionClosed => "ConnectionClosed",
             DisconnectReason::InputOutputError => "InputOutputError",
             DisconnectReason::NetworkHealthCheckFailure => "NetworkHealthCheckFailure",
+            DisconnectReason::PeerMonitoringPingFailure => "PeerMonitoringPingFailure",
             DisconnectReason::RequestedByPeerManager => "RequestedByPeerManager",
             DisconnectReason::StaleConnection => "StaleConnection",
         };
@@ -138,6 +144,8 @@ pub struct Peer<TSocket> {
     max_message_size: usize,
     /// Inbound stream buffer
     inbound_stream: InboundStreamBuffer,
+    /// Optional per-peer inbound rate limiter
+    inbound_rate_limiter: Option<InboundMessageRateLimiter>,
 }
 
 impl<TSocket> Peer<TSocket>
@@ -160,6 +168,7 @@ where
         max_concurrent_outbound_rpcs: u32,
         max_frame_size: usize,
         max_message_size: usize,
+        inbound_rate_limiter: Option<InboundMessageRateLimiter>,
     ) -> Self {
         let Connection {
             metadata: connection_metadata,
@@ -167,32 +176,38 @@ where
         } = connection;
         let remote_peer_id = connection_metadata.remote_peer_id;
         let max_fragments = max_message_size / max_frame_size;
+        // Build sub-components first, then move time_service into Self.
+        // This keeps clone count the same (2 clones for InboundRpcs/OutboundRpcs)
+        // but lets Self receive the original rather than a third clone.
+        let inbound_rpcs = InboundRpcs::new(
+            network_context,
+            time_service.clone(),
+            remote_peer_id,
+            inbound_rpc_timeout,
+            max_concurrent_inbound_rpcs,
+        );
+        let outbound_rpcs = OutboundRpcs::new(
+            network_context,
+            time_service.clone(),
+            remote_peer_id,
+            max_concurrent_outbound_rpcs,
+        );
         Self {
             network_context,
             executor,
-            time_service: time_service.clone(),
+            time_service,
             connection_metadata,
             connection: Some(socket),
             connection_notifs_tx,
             peer_reqs_rx,
             upstream_handlers,
-            inbound_rpcs: InboundRpcs::new(
-                network_context,
-                time_service.clone(),
-                remote_peer_id,
-                inbound_rpc_timeout,
-                max_concurrent_inbound_rpcs,
-            ),
-            outbound_rpcs: OutboundRpcs::new(
-                network_context,
-                time_service,
-                remote_peer_id,
-                max_concurrent_outbound_rpcs,
-            ),
+            inbound_rpcs,
+            outbound_rpcs,
             state: State::Connected,
             max_frame_size,
             max_message_size,
             inbound_stream: InboundStreamBuffer::new(max_fragments),
+            inbound_rate_limiter,
         }
     }
 
@@ -232,6 +247,10 @@ where
             self.max_message_size,
         );
 
+        // TODO: split up the main event loop into multiple tasks (e.g., one for handling
+        // inbound messages, one for handling outbound requests, etc.). This would allow
+        // us to parallelize the handling of different events and avoid task blocking.
+
         // Start main Peer event loop.
         let reason = loop {
             if let State::ShuttingDown(reason) = self.state {
@@ -253,6 +272,22 @@ where
                 maybe_message = reader.next() => {
                     match maybe_message {
                         Some(message) =>  {
+                            // Apply inbound rate limiting (if required)
+                            if let Some(rate_limiter) = &mut self.inbound_rate_limiter {
+                                if let Err(err) = rate_limiter.throttle(&message).await {
+                                    warn!(
+                                        NetworkSchema::new(&self.network_context)
+                                            .connection_metadata(&self.connection_metadata),
+                                        error = %err,
+                                        "{} Error handling inbound message from peer {} during rate limiting! Dropping message!",
+                                        self.network_context,
+                                        remote_peer_id.short_str(),
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            // Handle the inbound message
                             if let Err(err) = self.handle_inbound_message(message, &mut write_reqs_tx) {
                                 warn!(
                                     NetworkSchema::new(&self.network_context)
@@ -449,6 +484,12 @@ where
         &mut self,
         message: NetworkMessage,
     ) -> Result<(), PeerManagerError> {
+        // Test-only: drop all inbound application messages to simulate a network
+        // blackhole (e.g. forge partition tests). Covers every protocol since this
+        // is the single dispatch point for received DirectSend/RPC messages.
+        #[cfg(feature = "failpoints")]
+        fail_point!("network::recv::any", |_| Ok(()));
+
         match &message {
             NetworkMessage::DirectSendMsg(direct) => {
                 let data_len = direct.raw_msg.len();
@@ -605,6 +646,12 @@ where
         request: PeerRequest,
         write_reqs_tx: &mut aptos_channel::Sender<(), NetworkMessage>,
     ) {
+        // Test-only: drop all outbound application messages to simulate a network
+        // blackhole (e.g. forge partition tests). Covers every protocol since this
+        // is the single point where outbound messages are queued to the writer.
+        #[cfg(feature = "failpoints")]
+        fail_point!("network::send::any", |_| ());
+
         trace!(
             "Peer {} PeerRequest::{:?}",
             self.remote_peer_id().short_str(),

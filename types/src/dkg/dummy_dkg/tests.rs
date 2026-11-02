@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     dkg::{
@@ -111,6 +111,7 @@ fn test_dummy_dkg_correctness() {
             &dealer_state.input_secret,
             idx as u64,
             &dealer_state.sk,
+            &dealer_state.pk,
         );
         assert!(DummyDKG::verify_transcript(&pub_params, &trx).is_ok());
         dealer_state.transcript = Some(trx);

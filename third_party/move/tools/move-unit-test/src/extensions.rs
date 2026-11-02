@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module manages native extensions supported by the unit testing framework.
 //! Such extensions are enabled by cfg features and must be compiled into the test
@@ -113,7 +114,9 @@ static DUMMY_RESOLVER: Lazy<BlankStorage> = Lazy::new(|| BlankStorage);
 mod tests {
     use crate::extensions::{new_extensions, set_extension_hook};
     use better_any::{Tid, TidAble};
-    use move_vm_runtime::native_extensions::{NativeContextExtensions, UnreachableSessionListener};
+    use move_vm_runtime::native_extensions::{
+        NativeContextExtensions, NativeRuntimeRefCheckModelsCompleted, UnreachableSessionListener,
+    };
 
     /// A test that extension hooks work as expected.
     #[test]
@@ -127,6 +130,7 @@ mod tests {
     struct TestExtension();
 
     impl UnreachableSessionListener for TestExtension {}
+    impl NativeRuntimeRefCheckModelsCompleted for TestExtension {}
 
     fn my_hook(ext: &mut NativeContextExtensions) {
         ext.add(TestExtension())

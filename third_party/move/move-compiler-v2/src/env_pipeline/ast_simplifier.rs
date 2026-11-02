@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! AST Simplifier
 //!
@@ -52,7 +52,7 @@ use itertools::Itertools;
 use log::{debug, log_enabled, trace, Level};
 use move_core_types::ability::Ability;
 use move_model::{
-    ast::{Exp, ExpData, Operation, Pattern, Value, VisitorPosition},
+    ast::{Exp, ExpData, MatchArm, Operation, Pattern, Value, VisitorPosition},
     constant_folder::ConstantFolder,
     exp_rewriter::ExpRewriterFunctions,
     model::{FunctionEnv, GlobalEnv, NodeId, Parameter},
@@ -338,11 +338,11 @@ fn find_possibly_modified_vars(
                             _ => {},
                         }
                     },
-                    Operation::Select(..) => {
-                        // Variable appearing in Select argument may be borrowed if it occurs in
-                        // a Borrow parameter, so leave modifying state alone.  Note that other
-                        // modification contexts (e.g., MoveFrom) cannot have a `Select` in their
-                        // subexpressions.
+                    Operation::Select(..) | Operation::SelectVariants(..) => {
+                        // Variable appearing in Select/SelectVariants argument may be borrowed
+                        // if it occurs in a Borrow parameter, so leave modifying state alone.
+                        // Note that other modification contexts (e.g., MoveFrom) cannot have a
+                        // `Select`/`SelectVariants` in their subexpressions.
                     },
                     _ => {
                         // Other operations don't modify argument variables, so turn off `modifying`
@@ -712,7 +712,7 @@ impl ExpRewriterFunctions for SimplifierRewriter<'_> {
                 match op {
                     Operation::Borrow(ReferenceKind::Mutable) => IsMutableBorrow,
                     // Leave in_mut_borrow alone
-                    Operation::Select(..) => TransparentToBorrow,
+                    Operation::Select(..) | Operation::SelectVariants(..) => TransparentToBorrow,
                     // Other Call operations escape from the borrow
                     _ => NotBorrowable,
                 }
@@ -783,19 +783,8 @@ impl ExpRewriterFunctions for SimplifierRewriter<'_> {
                     // If we turned it into one, then wrap it in a `Sequence` to generate a temp value
                     // to be borrowed.
                     if rexp.is_directly_borrowable() {
-                        use ExpData::*;
-                        match rexp.as_ref() {
-                            LocalVar(id, ..)
-                            | Temporary(id, ..)
-                            | Call(id, Operation::Select(..), _) => {
-                                let cloned_id = self.env().clone_node(*id);
-                                Sequence(cloned_id, vec![rexp]).into_exp()
-                            },
-                            _ => {
-                                // Nothing to do.
-                                rexp
-                            },
-                        }
+                        let cloned_id = self.env().clone_node(rexp.node_id());
+                        ExpData::Sequence(cloned_id, vec![rexp]).into_exp()
                     } else {
                         rexp
                     }
@@ -868,6 +857,41 @@ impl ExpRewriterFunctions for SimplifierRewriter<'_> {
                     None
                 }
             })
+    }
+
+    fn rewrite_match(&mut self, id: NodeId, disc: &Exp, arms: &[MatchArm]) -> Option<Exp> {
+        // match (e) { V(_) => true, _ => false } ==> e is V
+        let is_bool = |e: &Exp, test: bool| -> bool {
+            matches!(e.as_ref(), ExpData::Value(_, Value::Bool(v)) if test == *v)
+        };
+        if arms.len() == 2
+            && let MatchArm {
+                loc: _,
+                pattern: Pattern::Struct(_, qid, Some(variant), args),
+                condition: None,
+                body,
+            } = &arms[0]
+            && args.iter().all(|p| matches!(p, Pattern::Wildcard(_)))
+            && is_bool(body, true)
+            && let MatchArm {
+                loc: _,
+                pattern: Pattern::Wildcard(_),
+                condition: None,
+                body,
+            } = &arms[1]
+            && is_bool(body, false)
+        {
+            Some(
+                ExpData::Call(
+                    id,
+                    Operation::TestVariants(qid.module_id, qid.id, vec![*variant]),
+                    vec![disc.clone()],
+                )
+                .into_exp(),
+            )
+        } else {
+            None
+        }
     }
 
     fn rewrite_enter_block_scope(
@@ -1078,8 +1102,8 @@ impl ExpRewriterFunctions for SimplifierRewriter<'_> {
                 },
                 _ => None,
             } {
-                if !self.after_inlining_optimization {
-                    let loc = self.env().get_node_loc(eliminated_id);
+                let loc = self.env().get_node_loc(eliminated_id);
+                if !self.after_inlining_optimization && !loc.is_inlined() {
                     let cond_loc = self.env().get_node_loc(cond.node_id());
                     self.env().diag_with_labels(
                         Severity::Warning,
@@ -1117,8 +1141,8 @@ impl ExpRewriterFunctions for SimplifierRewriter<'_> {
             let side_effecting_elts_refs = siter
                 .filter(|exp|
                         if exp.as_ref().is_ok_to_remove_from_code() {
-                            if !self.after_inlining_optimization {
-                                let loc = self.env().get_node_loc(exp.node_id());
+                            let loc = self.env().get_node_loc(exp.node_id());
+                            if !self.after_inlining_optimization && !loc.is_inlined() {
                                 self.env().diag(
                                     Severity::Warning,
                                     &loc,

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use std::collections::HashMap;
 use tera::{Context, Tera, Value};
@@ -16,10 +16,9 @@ impl Default for TemplateContext {
         let mut context = Context::new();
         let mut tera = Tera::default();
         // Declare constants
-        context.insert(
-            "integer_types",
-            &["u8", "u16", "u32", "u64", "u128", "u256"],
-        );
+        context.insert("integer_types", &[
+            "u8", "u16", "u32", "u64", "u128", "u256",
+        ]);
         // Declare functions
         tera.register_function(
             "mangle",

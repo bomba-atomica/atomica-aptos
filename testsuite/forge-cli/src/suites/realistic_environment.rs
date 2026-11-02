@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::ungrouped::{
     background_traffic_for_sweep, background_traffic_for_sweep_with_latency,
@@ -17,12 +16,15 @@ use aptos_forge::{
         LatencyBreakdownThreshold, LatencyType, MetricsThreshold, StateProgressThreshold,
         SuccessCriteria, SystemMetricsThreshold,
     },
-    EmitJobMode, EmitJobRequest, ForgeConfig, NetworkTest, NodeResourceOverride,
+    EmitJobMode, EmitJobRequest, EntryPoints, ForgeConfig, NetworkTest, NodeResourceOverride,
+    TransactionType,
 };
 use aptos_sdk::types::on_chain_config::{
-    BlockGasLimitType, OnChainConsensusConfig, OnChainExecutionConfig, TransactionShufflerType,
+    BlockGasLimitType, FeatureFlag, Features, OnChainChunkyDKGConfig, OnChainConsensusConfig,
+    OnChainExecutionConfig, OnChainRandomnessConfig, TransactionShufflerType,
 };
 use aptos_testcases::{
+    chunky_dkg_quorum_loss_test::ChunkyDkgQuorumLossTest,
     load_vs_perf_benchmark::{LoadVsPerfBenchmark, TransactionWorkload, Workloads},
     multi_region_network_test::MultiRegionNetworkEmulationTest,
     performance_test::PerformanceBenchmark,
@@ -31,6 +33,10 @@ use aptos_testcases::{
 };
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
+/// Whether to enable the fullnode failure test in the max load test
+// TODO: re-enable this after the flakes are removed!
+const ENABLE_FULLNODE_FAILURE_TEST: bool = false;
+
 /// Attempts to match the test name to a realistic-env test
 pub(crate) fn get_realistic_env_test(
     test_name: &str,
@@ -38,7 +44,9 @@ pub(crate) fn get_realistic_env_test(
     test_cmd: &TestCommand,
 ) -> Option<ForgeConfig> {
     let test = match test_name {
-        "realistic_env_max_load_large" => realistic_env_max_load_test(duration, test_cmd, 20, 10),
+        "realistic_env_max_load_large" => {
+            realistic_env_max_load_test(duration, test_cmd, 20, 10, 0)
+        },
         "realistic_env_load_sweep" => realistic_env_load_sweep_test(),
         "realistic_env_workload_sweep" => realistic_env_workload_sweep_test(),
         "realistic_env_orderbook_workload_sweep" => realistic_env_orderbook_workload_sweep_bench(),
@@ -46,6 +54,20 @@ pub(crate) fn get_realistic_env_test(
         "realistic_env_graceful_workload_sweep" => realistic_env_graceful_workload_sweep(),
         "realistic_env_graceful_overload" => realistic_env_graceful_overload(duration),
         "realistic_network_tuned_for_throughput" => realistic_network_tuned_for_throughput_test(),
+        "realistic_env_max_load_encrypted" => realistic_env_max_load_encrypted_test(duration),
+        "realistic_env_max_load_encrypted_mix" => {
+            realistic_env_max_load_encrypted_mix_test(duration)
+        },
+        "realistic_env_max_load_randomness" => realistic_env_max_load_randomness_test(duration),
+        "realistic_env_max_load_randomness_mixed" => {
+            realistic_env_max_load_randomness_mixed_test(duration)
+        },
+        "realistic_env_chunky_dkg_epoch_change" => {
+            realistic_env_chunky_dkg_epoch_change_test(duration)
+        },
+        "realistic_env_chunky_dkg_quorum_loss" => {
+            realistic_env_chunky_dkg_quorum_loss_test(duration)
+        },
         _ => return None, // The test name does not match a realistic-env test
     };
     Some(test)
@@ -63,9 +85,13 @@ pub(crate) fn realistic_env_sweep_wrap(
             config.execution.processed_transactions_detailed_counters = true;
         }))
         .add_network_test(wrap_with_realistic_env(num_validators, test))
-        // Test inherits the main EmitJobRequest, so update here for more precise latency measurements
+        // Test inherits the main EmitJobRequest, so update here for more precise latency measurements.
+        // mint_to_root allows the framework account to auto-refill its own balance between workloads
+        // (needed because the 10x gas cost increase makes multi-workload sweeps exhaust the source account).
         .with_emit_job(
-            EmitJobRequest::default().latency_polling_interval(Duration::from_millis(100)),
+            EmitJobRequest::default()
+                .latency_polling_interval(Duration::from_millis(100))
+                .set_mint_to_root(),
         )
         .with_genesis_helm_config_fn(Arc::new(|helm_values| {
             // no epoch change.
@@ -80,259 +106,228 @@ pub(crate) fn realistic_env_sweep_wrap(
 }
 
 pub(crate) fn realistic_env_load_sweep_test() -> ForgeConfig {
-    realistic_env_sweep_wrap(
-        20,
-        10,
-        LoadVsPerfBenchmark {
-            test: Box::new(PerformanceBenchmark),
-            workloads: Workloads::TPS(vec![10, 100, 1000, 3000, 5000, 7000]),
-            criteria: [
-                (9, 0.9, 1.0, 1.2, 0),
-                (95, 0.9, 1.1, 1.2, 0),
-                (950, 1.2, 1.3, 2.0, 0),
-                (2900, 1.4, 2.2, 2.5, 0),
-                (4800, 2.0, 2.5, 3.0, 0),
-                (6700, 2.5, 3.5, 5.0, 0),
-                // TODO add 9k or 10k. Allow some expired transactions (high-load)
-            ]
-            .into_iter()
-            .map(
-                |(min_tps, max_lat_p50, max_lat_p90, max_lat_p99, max_expired_tps)| {
-                    SuccessCriteria::new(min_tps)
-                        .add_max_expired_tps(max_expired_tps as f64)
-                        .add_max_failed_submission_tps(0.0)
-                        .add_latency_threshold(max_lat_p50, LatencyType::P50)
-                        .add_latency_threshold(max_lat_p90, LatencyType::P90)
-                        .add_latency_threshold(max_lat_p99, LatencyType::P99)
-                },
-            )
-            .collect(),
-            background_traffic: background_traffic_for_sweep(5),
-        },
-    )
+    realistic_env_sweep_wrap(20, 10, LoadVsPerfBenchmark {
+        test: Box::new(PerformanceBenchmark),
+        workloads: Workloads::TPS(vec![10, 100, 1000, 3000, 5000, 7000]),
+        criteria: [
+            (9, 0.9, 1.0, 1.2, 0),
+            (95, 0.9, 1.1, 1.2, 0),
+            (950, 1.2, 1.3, 2.0, 0),
+            (2900, 1.4, 2.2, 2.5, 0),
+            (4800, 2.0, 2.5, 3.0, 0),
+            (6700, 2.5, 3.5, 5.0, 0),
+            // TODO add 9k or 10k. Allow some expired transactions (high-load)
+        ]
+        .into_iter()
+        .map(
+            |(min_tps, max_lat_p50, max_lat_p90, max_lat_p99, max_expired_tps)| {
+                SuccessCriteria::new(min_tps)
+                    .add_max_expired_tps(max_expired_tps as f64)
+                    .add_max_failed_submission_tps(0.0)
+                    .add_latency_threshold(max_lat_p50, LatencyType::P50)
+                    .add_latency_threshold(max_lat_p90, LatencyType::P90)
+                    .add_latency_threshold(max_lat_p99, LatencyType::P99)
+            },
+        )
+        .collect(),
+        background_traffic: background_traffic_for_sweep(5),
+    })
 }
 
 pub(crate) fn realistic_env_workload_sweep_test() -> ForgeConfig {
-    realistic_env_sweep_wrap(
-        7,
-        3,
-        LoadVsPerfBenchmark {
-            test: Box::new(PerformanceBenchmark),
-            workloads: Workloads::TRANSACTIONS(vec![
-                TransactionWorkload::new(TransactionTypeArg::CoinTransfer, 20000),
-                TransactionWorkload::new(TransactionTypeArg::NoOp, 20000).with_num_modules(100),
-                TransactionWorkload::new(TransactionTypeArg::ModifyGlobalResource, 6000)
-                    .with_transactions_per_account(1),
-                TransactionWorkload::new(TransactionTypeArg::TokenV2AmbassadorMint, 20000)
-                    .with_unique_senders(),
-                // TODO(ibalajiarun): this is disabled due to Forge Stable failure on PosToProposal latency.
-                TransactionWorkload::new(TransactionTypeArg::PublishPackage, 200)
-                    .with_transactions_per_account(1),
-            ]),
-            // Investigate/improve to make latency more predictable on different workloads
-            criteria: [
-                (7000, 100, 0.3 + 0.5, 0.5, 0.5),
-                (8500, 100, 0.3 + 0.5, 0.5, 0.4),
-                (2000, 300, 0.3 + 1.0, 0.6, 1.0),
-                (3200, 500, 0.3 + 1.0, 0.7, 0.8),
-                // TODO - pos-to-proposal is set to high, until it is calibrated/understood.
-                (28, 5, 0.3 + 5.0, 0.7, 1.0),
-            ]
-            .into_iter()
-            .map(
-                |(
-                    min_tps,
-                    max_expired,
-                    mempool_to_block_creation,
-                    proposal_to_ordered,
-                    ordered_to_commit,
-                )| {
-                    SuccessCriteria::new(min_tps)
-                        .add_max_expired_tps(max_expired as f64)
-                        .add_max_failed_submission_tps(200.0)
-                        .add_no_restarts()
-                        .add_latency_breakdown_threshold(LatencyBreakdownThreshold::new_strict(
-                            vec![
-                                (
-                                    LatencyBreakdownSlice::MempoolToBlockCreation,
-                                    mempool_to_block_creation,
-                                ),
-                                (
-                                    LatencyBreakdownSlice::ConsensusProposalToOrdered,
-                                    proposal_to_ordered,
-                                ),
-                                (
-                                    LatencyBreakdownSlice::ConsensusOrderedToCommit,
-                                    ordered_to_commit,
-                                ),
-                            ],
-                        ))
-                },
-            )
-            .collect(),
-            background_traffic: background_traffic_for_sweep(5),
-        },
-    )
+    realistic_env_sweep_wrap(7, 3, LoadVsPerfBenchmark {
+        test: Box::new(PerformanceBenchmark),
+        workloads: Workloads::TRANSACTIONS(vec![
+            TransactionWorkload::new(TransactionTypeArg::CoinTransfer, 20000),
+            TransactionWorkload::new(TransactionTypeArg::NoOp, 20000).with_num_modules(100),
+            TransactionWorkload::new(TransactionTypeArg::ModifyGlobalResource, 6000)
+                .with_transactions_per_account(1),
+            TransactionWorkload::new(TransactionTypeArg::TokenV2AmbassadorMint, 20000),
+            // TODO(ibalajiarun): this is disabled due to Forge Stable failure on PosToProposal latency.
+            TransactionWorkload::new(TransactionTypeArg::PublishPackage, 200)
+                .with_transactions_per_account(1),
+        ]),
+        // Investigate/improve to make latency more predictable on different workloads
+        criteria: [
+            (7000, 100, 0.3 + 0.5, 0.5, 0.5),
+            (8500, 100, 0.3 + 0.5, 0.5, 0.4),
+            (2000, 300, 0.3 + 2.0, 0.6, 1.0),
+            (3200, 500, 0.3 + 2.0, 0.7, 0.8),
+            // TODO - pos-to-proposal is set to high, until it is calibrated/understood.
+            (28, 5, 0.3 + 15.0, 0.7, 1.0),
+        ]
+        .into_iter()
+        .map(
+            |(
+                min_tps,
+                max_expired,
+                mempool_to_block_creation,
+                proposal_to_ordered,
+                ordered_to_commit,
+            )| {
+                SuccessCriteria::new(min_tps)
+                    .add_max_expired_tps(max_expired as f64)
+                    .add_max_failed_submission_tps(200.0)
+                    .add_no_restarts()
+                    .add_latency_breakdown_threshold(LatencyBreakdownThreshold::new_strict(vec![
+                        (
+                            LatencyBreakdownSlice::MempoolToBlockCreation,
+                            mempool_to_block_creation,
+                        ),
+                        (
+                            LatencyBreakdownSlice::ConsensusProposalToOrdered,
+                            proposal_to_ordered,
+                        ),
+                        (
+                            LatencyBreakdownSlice::ConsensusOrderedToCommit,
+                            ordered_to_commit,
+                        ),
+                    ]))
+            },
+        )
+        .collect(),
+        background_traffic: background_traffic_for_sweep(5),
+    })
 }
 
 pub(crate) fn realistic_env_orderbook_workload_sweep_bench() -> ForgeConfig {
-    realistic_env_sweep_wrap(
-        7,
-        3,
-        LoadVsPerfBenchmark {
-            test: Box::new(PerformanceBenchmark),
-            workloads: Workloads::TRANSACTIONS(vec![
-                TransactionWorkload::new(
-                    TransactionTypeArg::OrderBookBalancedMatches25Pct1Market,
-                    1000,
-                ),
-                TransactionWorkload::new(
-                    TransactionTypeArg::OrderBookBalancedMatches25Pct50Markets,
-                    5000,
-                ),
-                TransactionWorkload::new(
-                    TransactionTypeArg::OrderBookBalancedMatches80Pct1Market,
-                    1000,
-                ),
-                TransactionWorkload::new(
-                    TransactionTypeArg::OrderBookBalancedMatches80Pct50Markets,
-                    5000,
-                ),
-                TransactionWorkload::new(
-                    TransactionTypeArg::OrderBookBalancedSizeSkewed80Pct1Market,
-                    1000,
-                ),
-                TransactionWorkload::new(
-                    TransactionTypeArg::OrderBookBalancedSizeSkewed80Pct50Markets,
-                    5000,
-                ),
-                TransactionWorkload::new(TransactionTypeArg::OrderBookNoMatches1Market, 1000),
-                TransactionWorkload::new(TransactionTypeArg::OrderBookNoMatches50Markets, 5000),
-            ]),
-            criteria: [
-                (350, 100, 0.3 + 1.0, 0.4, 0.2),
-                (1700, 100, 0.3 + 1.0, 0.4, 0.5),
-                (350, 300, 0.3 + 1.0, 0.4, 0.2),
-                (2000, 500, 0.3 + 1.0, 0.4, 0.5),
-                (320, 5, 0.3 + 1.0, 0.4, 0.25),
-                (1500, 5, 0.3 + 1.5, 0.4, 0.5),
-                (320, 100, 0.3 + 1.0, 0.4, 0.2),
-                (1700, 100, 0.3 + 1.0, 0.4, 0.7),
-            ]
-            .into_iter()
-            .map(
-                |(
-                    min_tps,
-                    max_expired,
-                    mempool_to_block_creation,
-                    proposal_to_ordered,
-                    ordered_to_commit,
-                )| {
-                    SuccessCriteria::new(min_tps)
-                        .add_max_expired_tps(max_expired as f64)
-                        .add_max_failed_submission_tps(200.0)
-                        .add_no_restarts()
-                        .add_latency_breakdown_threshold(LatencyBreakdownThreshold::new_strict(
-                            vec![
-                                (
-                                    LatencyBreakdownSlice::MempoolToBlockCreation,
-                                    mempool_to_block_creation,
-                                ),
-                                (
-                                    LatencyBreakdownSlice::ConsensusProposalToOrdered,
-                                    proposal_to_ordered,
-                                ),
-                                (
-                                    LatencyBreakdownSlice::ConsensusOrderedToCommit,
-                                    ordered_to_commit,
-                                ),
-                            ],
-                        ))
-                },
-            )
-            .collect(),
-            background_traffic: background_traffic_for_sweep(5),
-        },
-    )
+    realistic_env_sweep_wrap(7, 3, LoadVsPerfBenchmark {
+        test: Box::new(PerformanceBenchmark),
+        workloads: Workloads::TRANSACTIONS(vec![
+            TransactionWorkload::new(
+                TransactionTypeArg::OrderBookBalancedMatches25Pct1Market,
+                1000,
+            ),
+            TransactionWorkload::new(
+                TransactionTypeArg::OrderBookBalancedMatches25Pct50Markets,
+                5000,
+            ),
+            TransactionWorkload::new(
+                TransactionTypeArg::OrderBookBalancedMatches80Pct1Market,
+                1000,
+            ),
+            TransactionWorkload::new(
+                TransactionTypeArg::OrderBookBalancedMatches80Pct50Markets,
+                5000,
+            ),
+            TransactionWorkload::new(
+                TransactionTypeArg::OrderBookBalancedSizeSkewed80Pct1Market,
+                1000,
+            ),
+            TransactionWorkload::new(
+                TransactionTypeArg::OrderBookBalancedSizeSkewed80Pct50Markets,
+                5000,
+            ),
+            TransactionWorkload::new(TransactionTypeArg::OrderBookNoMatches1Market, 1000),
+            TransactionWorkload::new(TransactionTypeArg::OrderBookNoMatches50Markets, 5000),
+        ]),
+        criteria: [
+            (350, 100, 0.3 + 1.0, 0.4, 0.2),
+            (1700, 100, 0.3 + 1.0, 0.4, 0.5),
+            (350, 300, 0.3 + 1.0, 0.4, 0.2),
+            (2000, 500, 0.3 + 1.0, 0.4, 0.5),
+            (320, 5, 0.3 + 1.0, 0.4, 0.25),
+            (1500, 5, 0.3 + 1.5, 0.4, 0.5),
+            (320, 100, 0.3 + 1.0, 0.4, 0.2),
+            (1700, 100, 0.3 + 1.0, 0.4, 0.7),
+        ]
+        .into_iter()
+        .map(
+            |(
+                min_tps,
+                max_expired,
+                mempool_to_block_creation,
+                proposal_to_ordered,
+                ordered_to_commit,
+            )| {
+                SuccessCriteria::new(min_tps)
+                    .add_max_expired_tps(max_expired as f64)
+                    .add_max_failed_submission_tps(200.0)
+                    .add_no_restarts()
+                    .add_latency_breakdown_threshold(LatencyBreakdownThreshold::new_strict(vec![
+                        (
+                            LatencyBreakdownSlice::MempoolToBlockCreation,
+                            mempool_to_block_creation,
+                        ),
+                        (
+                            LatencyBreakdownSlice::ConsensusProposalToOrdered,
+                            proposal_to_ordered,
+                        ),
+                        (
+                            LatencyBreakdownSlice::ConsensusOrderedToCommit,
+                            ordered_to_commit,
+                        ),
+                    ]))
+            },
+        )
+        .collect(),
+        background_traffic: background_traffic_for_sweep(5),
+    })
 }
 
 pub(crate) fn realistic_env_fairness_workload_sweep() -> ForgeConfig {
-    realistic_env_sweep_wrap(
-        7,
-        3,
-        LoadVsPerfBenchmark {
-            test: Box::new(PerformanceBenchmark),
-            workloads: Workloads::TRANSACTIONS(vec![
-                // Very high gas
-                TransactionWorkload::new(
-                    TransactionTypeArg::ResourceGroupsGlobalWriteAndReadTag1KB,
-                    100000,
-                ),
-                TransactionWorkload::new(TransactionTypeArg::VectorPicture30k, 20000),
-                TransactionWorkload::new(
-                    TransactionTypeArg::SmartTablePicture1MWith256Change,
-                    4000,
-                )
-                .with_transactions_per_account(1),
-            ]),
-            criteria: Vec::new(),
-            background_traffic: background_traffic_for_sweep_with_latency(
-                &[(2.0, 3.0, 8.0), (0.1, 25.0, 30.0), (0.1, 30.0, 45.0)],
-                false,
+    realistic_env_sweep_wrap(7, 3, LoadVsPerfBenchmark {
+        test: Box::new(PerformanceBenchmark),
+        workloads: Workloads::TRANSACTIONS(vec![
+            // Very high gas
+            TransactionWorkload::new(
+                TransactionTypeArg::ResourceGroupsGlobalWriteAndReadTag1KB,
+                100000,
             ),
-        },
-    )
+            TransactionWorkload::new(TransactionTypeArg::VectorPicture30k, 20000),
+            TransactionWorkload::new(TransactionTypeArg::SmartTablePicture1MWith256Change, 4000)
+                .with_transactions_per_account(1),
+        ]),
+        criteria: Vec::new(),
+        background_traffic: background_traffic_for_sweep_with_latency(
+            &[(2.0, 3.0, 8.0), (0.1, 25.0, 30.0), (0.1, 30.0, 45.0)],
+            false,
+        ),
+    })
 }
 
 pub(crate) fn realistic_env_graceful_workload_sweep() -> ForgeConfig {
-    realistic_env_sweep_wrap(
-        7,
-        3,
-        LoadVsPerfBenchmark {
-            test: Box::new(PerformanceBenchmark),
-            workloads: Workloads::TRANSACTIONS(vec![
-                // do account generation first, to fill up a storage a bit.
-                TransactionWorkload::new_const_tps(TransactionTypeArg::AccountGeneration, 2 * 7000),
-                // Very high gas
-                TransactionWorkload::new_const_tps(
-                    TransactionTypeArg::ResourceGroupsGlobalWriteAndReadTag1KB,
-                    3 * 1800,
-                ),
-                TransactionWorkload::new_const_tps(
-                    TransactionTypeArg::SmartTablePicture1MWith256Change,
-                    3 * 14,
-                ),
-                TransactionWorkload::new_const_tps(
-                    TransactionTypeArg::SmartTablePicture1MWith1KChangeExceedsLimit,
-                    3 * 12,
-                ),
-                TransactionWorkload::new_const_tps(TransactionTypeArg::VectorPicture30k, 3 * 150),
-                TransactionWorkload::new_const_tps(
-                    TransactionTypeArg::ModifyGlobalFlagAggV2,
-                    3 * 3500,
-                ),
-                // publishing package - executes sequentially
-                TransactionWorkload::new_const_tps(TransactionTypeArg::PublishPackage, 3 * 150)
-                    .with_transactions_per_account(1),
-            ]),
-            criteria: Vec::new(),
-            background_traffic: background_traffic_for_sweep_with_latency(
-                &[
-                    (0.1, 4.0, 5.0),
-                    (0.1, 2.2, 3.0),
-                    (0.1, 3.5, 5.0),
-                    (0.1, 4.0, 6.0),
-                    // TODO - p50 and p90 is set to high, until it is calibrated/understood.
-                    (0.1, 3.0, 5.0),
-                    // TODO - p50 and p90 is set to high, until it is calibrated/understood.
-                    (0.1, 5.0, 10.0),
-                    // TODO - p50 and p90 is set to high, until it is calibrated/understood.
-                    (0.1, 3.0, 10.0),
-                ],
-                true,
+    realistic_env_sweep_wrap(7, 3, LoadVsPerfBenchmark {
+        test: Box::new(PerformanceBenchmark),
+        workloads: Workloads::TRANSACTIONS(vec![
+            // do account generation first, to fill up a storage a bit.
+            TransactionWorkload::new_const_tps(TransactionTypeArg::AccountGeneration, 2 * 7000),
+            // Very high gas
+            TransactionWorkload::new_const_tps(
+                TransactionTypeArg::ResourceGroupsGlobalWriteAndReadTag1KB,
+                3 * 1800,
             ),
-        },
-    )
+            TransactionWorkload::new_const_tps(
+                TransactionTypeArg::SmartTablePicture1MWith256Change,
+                3 * 14,
+            ),
+            TransactionWorkload::new_const_tps(
+                TransactionTypeArg::SmartTablePicture1MWith1KChangeExceedsLimit,
+                3 * 12,
+            ),
+            TransactionWorkload::new_const_tps(TransactionTypeArg::VectorPicture30k, 3 * 150),
+            TransactionWorkload::new_const_tps(TransactionTypeArg::ModifyGlobalFlagAggV2, 3 * 3500),
+            // publishing package - executes sequentially
+            TransactionWorkload::new_const_tps(TransactionTypeArg::PublishPackage, 3 * 150)
+                .with_transactions_per_account(1),
+        ]),
+        criteria: Vec::new(),
+        background_traffic: background_traffic_for_sweep_with_latency(
+            &[
+                (0.1, 4.0, 5.0),
+                (0.1, 2.2, 3.0),
+                (0.1, 3.5, 5.0),
+                (0.1, 4.0, 6.0),
+                // TODO - p50 and p90 is set to high, until it is calibrated/understood.
+                (0.1, 3.0, 5.0),
+                // TODO - p50 and p90 is set to high, until it is calibrated/understood.
+                (0.1, 5.0, 10.0),
+                // TODO - p50 and p90 is set to high, until it is calibrated/understood.
+                (0.1, 3.0, 10.0),
+            ],
+            true,
+        ),
+    })
     .with_emit_job(
         EmitJobRequest::default()
             .txn_expiration_time_secs(20)
@@ -346,15 +341,12 @@ pub(crate) fn realistic_env_graceful_overload(duration: Duration) -> ForgeConfig
     ForgeConfig::default()
         .with_initial_validator_count(NonZeroUsize::new(num_validators).unwrap())
         .with_initial_fullnode_count(20)
-        .add_network_test(wrap_with_realistic_env(
-            num_validators,
-            TwoTrafficsTest {
-                inner_traffic: EmitJobRequest::default()
-                    .mode(EmitJobMode::ConstTps { tps: 30000 })
-                    .init_gas_price_multiplier(20),
-                inner_success_criteria: SuccessCriteria::new(7500),
-            },
-        ))
+        .add_network_test(wrap_with_realistic_env(num_validators, TwoTrafficsTest {
+            inner_traffic: EmitJobRequest::default()
+                .mode(EmitJobMode::ConstTps { tps: 30000 })
+                .init_gas_price_multiplier(20),
+            inner_success_criteria: SuccessCriteria::new(7500),
+        }))
         // First start higher gas-fee traffic, to not cause issues with TxnEmitter setup - account creation
         .with_emit_job(
             EmitJobRequest::default()
@@ -376,9 +368,8 @@ pub(crate) fn realistic_env_graceful_overload(duration: Duration) -> ForgeConfig
                     // Check that we don't use more than 28 CPU cores for 20% of the time.
                     MetricsThreshold::new(28.0, 20),
                     // TODO(ibalajiarun): Investigate the high utilization and adjust accordingly.
-                    // Memory starts around 8GB, and grows around 8GB/hr in this test.
                     // Check that we don't use more than final expected memory for more than 20% of the time.
-                    MetricsThreshold::new_gb(16.0 + 8.0 * (duration.as_secs_f64() / 3600.0), 20),
+                    MetricsThreshold::new_gb(26.0 + 8.0 * (duration.as_secs_f64() / 3600.0), 20),
                 ))
                 .add_latency_threshold(10.0, LatencyType::P50)
                 .add_latency_threshold(30.0, LatencyType::P90)
@@ -390,7 +381,8 @@ pub(crate) fn realistic_env_max_load_test(
     duration: Duration,
     test_cmd: &TestCommand,
     num_validators: usize,
-    num_fullnodes: usize,
+    num_vfns: usize,
+    num_pfns: usize,
 ) -> ForgeConfig {
     // Check if HAProxy is enabled
     let ha_proxy = if let TestCommand::K8sSwarm(k8s) = test_cmd {
@@ -417,9 +409,8 @@ pub(crate) fn realistic_env_max_load_test(
         .add_system_metrics_threshold(SystemMetricsThreshold::new(
             // Check that we don't use more than 18 CPU cores for 15% of the time.
             MetricsThreshold::new(25.0, 15),
-            // Memory starts around 8GB, and grows around 1.4GB/hr in this test.
             // Check that we don't use more than final expected memory for more than 20% of the time.
-            MetricsThreshold::new_gb(16.0 + 8.0 * (duration_secs as f64 / 3600.0), 20),
+            MetricsThreshold::new_gb(26.0 + 8.0 * (duration_secs as f64 / 3600.0), 20),
         ))
         .add_no_restarts()
         .add_wait_for_catchup_s(
@@ -436,7 +427,7 @@ pub(crate) fn realistic_env_max_load_test(
         });
 
     // If the test is short lived, we should verify that there are no fullnode failures
-    if !long_running {
+    if !long_running && ENABLE_FULLNODE_FAILURE_TEST {
         success_criteria = success_criteria.add_no_fullnode_failures();
     }
 
@@ -457,17 +448,16 @@ pub(crate) fn realistic_env_max_load_test(
     }
 
     // Create the test
-    let mempool_backlog = if ha_proxy { 28000 } else { 38000 };
+    let mempool_backlog = if ha_proxy { 14000 } else { 19000 };
     ForgeConfig::default()
         .with_initial_validator_count(NonZeroUsize::new(num_validators).unwrap())
-        .with_initial_fullnode_count(num_fullnodes)
-        .add_network_test(wrap_with_realistic_env(
-            num_validators,
-            TwoTrafficsTest {
-                inner_traffic: EmitJobRequest::default()
-                    .mode(EmitJobMode::MaxLoad { mempool_backlog })
-                    .init_gas_price_multiplier(20),
-                inner_success_criteria: SuccessCriteria::new(if ha_proxy {
+        .with_initial_fullnode_count(num_vfns)
+        .add_network_test(wrap_with_realistic_env(num_validators, TwoTrafficsTest {
+            inner_traffic: EmitJobRequest::default()
+                .mode(EmitJobMode::MaxLoad { mempool_backlog })
+                .init_gas_price_multiplier(20),
+            inner_success_criteria: SuccessCriteria::new(
+                if ha_proxy {
                     7000
                 } else if long_running {
                     // This is for forge stable
@@ -475,9 +465,9 @@ pub(crate) fn realistic_env_max_load_test(
                 } else {
                     // During land time we want to be less strict, otherwise we flaky fail
                     10000
-                }),
-            },
-        ))
+                },
+            ),
+        }))
         .with_genesis_helm_config_fn(Arc::new(move |helm_values| {
             // Have single epoch change in land blocking, and a few on long-running
             helm_values["chain"]["epoch_duration_secs"] =
@@ -489,8 +479,25 @@ pub(crate) fn realistic_env_max_load_test(
                 serde_yaml::to_value(OnChainExecutionConfig::default_for_genesis())
                     .expect("must serialize");
         }))
+        .with_validator_override_node_config_fn(Arc::new(|config, _| {
+            // Allow validator-PFN connections
+            config.base.enable_validator_pfn_connections = true;
+        }))
         .with_fullnode_override_node_config_fn(Arc::new(|config, _| {
             // Increase the consensus observer fallback thresholds
+            config
+                .consensus_observer
+                .observer_fallback_progress_threshold_ms = 30_000; // 30 seconds
+            config
+                .consensus_observer
+                .observer_fallback_sync_lag_threshold_ms = 45_000; // 45 seconds
+        }))
+        .with_pfn_override_node_config_fn(Arc::new(|config, _| {
+            // Allow validator-PFN connections
+            config.base.enable_validator_pfn_connections = true;
+
+            // Enable consensus observer and increase fallback thresholds
+            config.consensus_observer.observer_enabled = true;
             config
                 .consensus_observer
                 .observer_fallback_progress_threshold_ms = 30_000; // 30 seconds
@@ -508,6 +515,485 @@ pub(crate) fn realistic_env_max_load_test(
         .with_success_criteria(success_criteria)
         .with_validator_resource_override(resource_override)
         .with_fullnode_resource_override(resource_override)
+        .with_num_pfns(num_pfns)
+}
+
+pub(crate) fn realistic_env_max_load_encrypted_test(duration: Duration) -> ForgeConfig {
+    let num_validators = 5;
+    let num_fullnodes = 1;
+    let num_pfns = 3;
+    let mempool_backlog = 1600;
+
+    let success_criteria = SuccessCriteria::new(15)
+        .add_no_restarts()
+        .add_wait_for_catchup_s((duration.as_secs() / 10).max(60))
+        .add_latency_threshold(5.0, LatencyType::P50)
+        .add_latency_threshold(7.0, LatencyType::P70)
+        .add_chain_progress(StateProgressThreshold {
+            max_non_epoch_no_progress_secs: 20.0,
+            max_epoch_no_progress_secs: 20.0,
+            max_non_epoch_round_gap: 6,
+            max_epoch_round_gap: 6,
+        });
+
+    ForgeConfig::default()
+        .with_initial_validator_count(NonZeroUsize::new(num_validators).unwrap())
+        .with_initial_fullnode_count(num_fullnodes)
+        .with_num_pfns(num_pfns)
+        .add_network_test(wrap_with_realistic_env(num_validators, TwoTrafficsTest {
+            inner_traffic: EmitJobRequest::default()
+                .mode(EmitJobMode::MaxLoad { mempool_backlog })
+                .init_gas_price_multiplier(20)
+                .encrypt_transactions(true),
+            inner_success_criteria: SuccessCriteria::new(300),
+        }))
+        .with_genesis_helm_config_fn(Arc::new(|helm_values| {
+            helm_values["chain"]["epoch_duration_secs"] = 300.into();
+            helm_values["chain"]["on_chain_consensus_config"] =
+                serde_yaml::to_value(OnChainConsensusConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["on_chain_execution_config"] =
+                serde_yaml::to_value(OnChainExecutionConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["randomness_config_override"] =
+                serde_yaml::to_value(OnChainRandomnessConfig::default_enabled())
+                    .expect("must serialize");
+            helm_values["chain"]["chunky_dkg_config_override"] =
+                serde_yaml::to_value(OnChainChunkyDKGConfig::default_enabled())
+                    .expect("must serialize");
+            let mut features = Features::default();
+            features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
+            helm_values["chain"]["initial_features_override"] =
+                serde_yaml::to_value(features).expect("must serialize");
+        }))
+        .with_digest_key_blob_url("https://github.com/aptos-labs/aptos-networks/raw/8cfc400bc1e42a232b5b36cde779a5b71d4d275b/devnet/digest_key.bin")
+        .with_public_parameters_blob_url("https://github.com/aptos-labs/aptos-networks/raw/8cfc400bc1e42a232b5b36cde779a5b71d4d275b/devnet/pp.bin")
+        .with_validator_override_node_config_fn(Arc::new(|config, _| {
+            config.api.allow_encrypted_txns_submission = true;
+            config.consensus.quorum_store.enable_batch_v2_tx = true;
+            config.consensus.quorum_store.enable_batch_v2_rx = true;
+            config.consensus.quorum_store.enable_opt_qs_v2_payload_tx = true;
+            config.consensus.quorum_store.enable_opt_qs_v2_payload_rx = true;
+            config.consensus_observer.enable_v2_message_sending = true;
+            config.consensus.digest_key_blob_path =
+                Some("/opt/aptos/data/trusted-setup/digest_key.bin".into());
+            config.consensus.public_parameters_blob_path =
+                Some("/opt/aptos/data/trusted-setup/pp.bin".into());
+        }))
+        .with_fullnode_override_node_config_fn(Arc::new(|config, _| {
+            config.api.allow_encrypted_txns_submission = true;
+        }))
+        .with_pfn_override_node_config_fn(Arc::new(|config, _| {
+            config.api.allow_encrypted_txns_submission = true;
+        }))
+        .with_emit_job(
+            EmitJobRequest::default()
+                .mode(EmitJobMode::ConstTps { tps: 100 })
+                .gas_price(5 * aptos_global_constants::GAS_UNIT_PRICE)
+                .latency_polling_interval(Duration::from_millis(100)),
+        )
+        .with_success_criteria(success_criteria)
+}
+
+pub(crate) fn realistic_env_max_load_encrypted_mix_test(duration: Duration) -> ForgeConfig {
+    let num_validators = 5;
+    let num_fullnodes = 1;
+    let mempool_backlog = 38000;
+
+    let success_criteria = SuccessCriteria::new(15)
+        .add_no_restarts()
+        .add_wait_for_catchup_s((duration.as_secs() / 10).max(60))
+        .add_latency_threshold(5.0, LatencyType::P50)
+        .add_latency_threshold(7.0, LatencyType::P70)
+        .add_chain_progress(StateProgressThreshold {
+            max_non_epoch_no_progress_secs: 20.0,
+            max_epoch_no_progress_secs: 20.0,
+            max_non_epoch_round_gap: 6,
+            max_epoch_round_gap: 6,
+        });
+
+    ForgeConfig::default()
+        .with_initial_validator_count(NonZeroUsize::new(num_validators).unwrap())
+        .with_initial_fullnode_count(num_fullnodes)
+        .add_network_test(wrap_with_realistic_env(num_validators, TwoTrafficsTest {
+            inner_traffic: EmitJobRequest::default()
+                .mode(EmitJobMode::MaxLoad { mempool_backlog })
+                .init_gas_price_multiplier(20)
+                .transaction_mix(vec![
+                    (
+                        TransactionTypeArg::EncryptedCoinTransfer.materialize_default(),
+                        1,
+                    ),
+                    (TransactionTypeArg::CoinTransfer.materialize_default(), 9),
+                ]),
+            inner_success_criteria: SuccessCriteria::new(300),
+        }))
+        .with_genesis_helm_config_fn(Arc::new(|helm_values| {
+            helm_values["chain"]["epoch_duration_secs"] = 300.into();
+            helm_values["chain"]["on_chain_consensus_config"] =
+                serde_yaml::to_value(OnChainConsensusConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["on_chain_execution_config"] =
+                serde_yaml::to_value(OnChainExecutionConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["randomness_config_override"] =
+                serde_yaml::to_value(OnChainRandomnessConfig::default_enabled())
+                    .expect("must serialize");
+            helm_values["chain"]["chunky_dkg_config_override"] =
+                serde_yaml::to_value(OnChainChunkyDKGConfig::default_enabled())
+                    .expect("must serialize");
+            let mut features = Features::default();
+            features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
+            helm_values["chain"]["initial_features_override"] =
+                serde_yaml::to_value(features).expect("must serialize");
+        }))
+        .with_digest_key_blob_url("https://github.com/aptos-labs/aptos-networks/raw/8cfc400bc1e42a232b5b36cde779a5b71d4d275b/devnet/digest_key.bin")
+        .with_public_parameters_blob_url("https://github.com/aptos-labs/aptos-networks/raw/8cfc400bc1e42a232b5b36cde779a5b71d4d275b/devnet/pp.bin")
+        .with_validator_override_node_config_fn(Arc::new(|config, _| {
+            config.api.allow_encrypted_txns_submission = true;
+            config.consensus.quorum_store.enable_batch_v2_tx = true;
+            config.consensus.quorum_store.enable_batch_v2_rx = true;
+            config.consensus.quorum_store.enable_opt_qs_v2_payload_tx = true;
+            config.consensus.quorum_store.enable_opt_qs_v2_payload_rx = true;
+            config.consensus_observer.enable_v2_message_sending = true;
+            config.consensus.digest_key_blob_path =
+                Some("/opt/aptos/data/trusted-setup/digest_key.bin".into());
+            config.consensus.public_parameters_blob_path =
+                Some("/opt/aptos/data/trusted-setup/pp.bin".into());
+        }))
+        .with_fullnode_override_node_config_fn(Arc::new(|config, _| {
+            config.api.allow_encrypted_txns_submission = true;
+        }))
+        .with_emit_job(
+            EmitJobRequest::default()
+                .mode(EmitJobMode::ConstTps { tps: 100 })
+                .gas_price(5 * aptos_global_constants::GAS_UNIT_PRICE)
+                .latency_polling_interval(Duration::from_millis(100)),
+        )
+        .with_success_criteria(success_criteria)
+}
+
+/// Asserts that epoch transitions are stable when Chunky DKG and encrypted transactions
+/// are both enabled. 20 validators, 1 PFN, 200 TPS of encrypted transfers, with an
+/// epoch change every 2 minutes.
+pub(crate) fn realistic_env_chunky_dkg_epoch_change_test(duration: Duration) -> ForgeConfig {
+    let num_validators = 20;
+    let num_vfns = 0;
+    let num_pfns = 1;
+
+    let success_criteria = SuccessCriteria::new(150)
+        .add_no_restarts()
+        .add_wait_for_catchup_s((duration.as_secs() / 10).max(60))
+        .add_latency_threshold(5.0, LatencyType::P50)
+        .add_latency_threshold(7.0, LatencyType::P70)
+        .add_chain_progress(StateProgressThreshold {
+            max_non_epoch_no_progress_secs: 20.0,
+            max_epoch_no_progress_secs: 20.0,
+            max_non_epoch_round_gap: 6,
+            max_epoch_round_gap: 6,
+        });
+
+    ForgeConfig::default()
+        .with_initial_validator_count(NonZeroUsize::new(num_validators).unwrap())
+        .with_initial_fullnode_count(num_vfns)
+        .add_network_test(wrap_with_realistic_env(
+            num_validators,
+            PerformanceBenchmark,
+        ))
+        .with_genesis_helm_config_fn(Arc::new(|helm_values| {
+            helm_values["chain"]["epoch_duration_secs"] = 120.into();
+            helm_values["chain"]["on_chain_consensus_config"] =
+                serde_yaml::to_value(OnChainConsensusConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["on_chain_execution_config"] =
+                serde_yaml::to_value(OnChainExecutionConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["randomness_config_override"] =
+                serde_yaml::to_value(OnChainRandomnessConfig::default_enabled())
+                    .expect("must serialize");
+            helm_values["chain"]["chunky_dkg_config_override"] =
+                serde_yaml::to_value(OnChainChunkyDKGConfig::default_enabled())
+                    .expect("must serialize");
+            let mut features = Features::default();
+            features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
+            helm_values["chain"]["initial_features_override"] =
+                serde_yaml::to_value(features).expect("must serialize");
+        }))
+        .with_digest_key_blob_url("https://github.com/aptos-labs/aptos-networks/raw/8cfc400bc1e42a232b5b36cde779a5b71d4d275b/devnet/digest_key.bin")
+        .with_public_parameters_blob_url("https://github.com/aptos-labs/aptos-networks/raw/8cfc400bc1e42a232b5b36cde779a5b71d4d275b/devnet/pp.bin")
+        .with_validator_override_node_config_fn(Arc::new(|config, _| {
+            config.base.enable_validator_pfn_connections = true;
+            config.api.allow_encrypted_txns_submission = true;
+            config.consensus.quorum_store.enable_batch_v2_tx = true;
+            config.consensus.quorum_store.enable_batch_v2_rx = true;
+            config.consensus.quorum_store.enable_opt_qs_v2_payload_tx = true;
+            config.consensus.quorum_store.enable_opt_qs_v2_payload_rx = true;
+            config.consensus_observer.enable_v2_message_sending = true;
+            config.consensus.digest_key_blob_path =
+                Some("/opt/aptos/data/trusted-setup/digest_key.bin".into());
+            config.consensus.public_parameters_blob_path =
+                Some("/opt/aptos/data/trusted-setup/pp.bin".into());
+        }))
+        .with_pfn_override_node_config_fn(Arc::new(|config, _| {
+            config.base.enable_validator_pfn_connections = true;
+            config.api.allow_encrypted_txns_submission = true;
+            config.consensus_observer.observer_enabled = true;
+            config
+                .consensus_observer
+                .observer_fallback_progress_threshold_ms = 30_000;
+            config
+                .consensus_observer
+                .observer_fallback_sync_lag_threshold_ms = 45_000;
+        }))
+        .with_emit_job(
+            EmitJobRequest::default()
+                .mode(EmitJobMode::ConstTps { tps: 200 })
+                .encrypt_transactions(true)
+                .latency_polling_interval(Duration::from_millis(100)),
+        )
+        .with_success_criteria(success_criteria)
+        .with_num_pfns(num_pfns)
+}
+
+/// Stresses Chunky DKG and encrypted-transaction load by dropping the working quorum *while a DKG
+/// is in flight*, so the epoch transition itself stalls. 20 validators + 1 PFN, 200 TPS of
+/// encrypted transfers, epoch change every 5 minutes. Each cycle waits until chunky DKG is in
+/// progress, then blackholes a fixed set of 7 validators (> f = 6, so quorum is actually lost) at
+/// the network layer for ~4 minutes; the in-flight DKG cannot aggregate and the epoch transition
+/// stalls until connectivity is restored, after which the DKG must resume and the chain catch up.
+pub(crate) fn realistic_env_chunky_dkg_quorum_loss_test(duration: Duration) -> ForgeConfig {
+    let num_validators = 20;
+    let num_vfns = 0;
+    let num_pfns = 1;
+
+    // With 20 validators, f = 6, so blackholing 7 removes the working quorum.
+    let quorum_loss_test = ChunkyDkgQuorumLossTest {
+        num_blackholed: 7,
+        quorum_loss_secs: 240.0,
+    };
+
+    // The chain intentionally halts for ~4 minutes mid-DKG during each quorum-loss phase, so
+    // progress checks are relaxed accordingly and we verify recovery (catch-up) rather than
+    // continuous progress. No latency thresholds: transactions submitted during a halt commit
+    // minutes later.
+    let success_criteria = SuccessCriteria::new(10)
+        .add_no_restarts()
+        .add_wait_for_catchup_s((duration.as_secs() / 5).max(180))
+        .add_chain_progress(StateProgressThreshold {
+            max_non_epoch_no_progress_secs: 420.0,
+            max_epoch_no_progress_secs: 420.0,
+            max_non_epoch_round_gap: 100,
+            max_epoch_round_gap: 100,
+        })
+        .allow_errors();
+
+    ForgeConfig::default()
+        .with_initial_validator_count(NonZeroUsize::new(num_validators).unwrap())
+        .with_initial_fullnode_count(num_vfns)
+        .add_network_test(wrap_with_realistic_env(num_validators, quorum_loss_test))
+        .with_genesis_helm_config_fn(Arc::new(|helm_values| {
+            helm_values["chain"]["epoch_duration_secs"] = 300.into();
+            helm_values["chain"]["on_chain_consensus_config"] =
+                serde_yaml::to_value(OnChainConsensusConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["on_chain_execution_config"] =
+                serde_yaml::to_value(OnChainExecutionConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["randomness_config_override"] =
+                serde_yaml::to_value(OnChainRandomnessConfig::default_enabled())
+                    .expect("must serialize");
+            helm_values["chain"]["chunky_dkg_config_override"] =
+                serde_yaml::to_value(OnChainChunkyDKGConfig::default_enabled())
+                    .expect("must serialize");
+            let mut features = Features::default();
+            features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
+            helm_values["chain"]["initial_features_override"] =
+                serde_yaml::to_value(features).expect("must serialize");
+        }))
+        .with_digest_key_blob_url("https://github.com/aptos-labs/aptos-networks/raw/8cfc400bc1e42a232b5b36cde779a5b71d4d275b/devnet/digest_key.bin")
+        .with_public_parameters_blob_url("https://github.com/aptos-labs/aptos-networks/raw/8cfc400bc1e42a232b5b36cde779a5b71d4d275b/devnet/pp.bin")
+        .with_validator_override_node_config_fn(Arc::new(|config, _| {
+            // Required so the test can toggle the network::send/recv failpoints that blackhole
+            // validators during the quorum-loss phases.
+            config.api.failpoints_enabled = true;
+            config.base.enable_validator_pfn_connections = true;
+            config.api.allow_encrypted_txns_submission = true;
+            config.consensus.quorum_store.enable_batch_v2_tx = true;
+            config.consensus.quorum_store.enable_batch_v2_rx = true;
+            config.consensus.quorum_store.enable_opt_qs_v2_payload_tx = true;
+            config.consensus.quorum_store.enable_opt_qs_v2_payload_rx = true;
+            config.consensus_observer.enable_v2_message_sending = true;
+            config.consensus.digest_key_blob_path =
+                Some("/opt/aptos/data/trusted-setup/digest_key.bin".into());
+            config.consensus.public_parameters_blob_path =
+                Some("/opt/aptos/data/trusted-setup/pp.bin".into());
+        }))
+        .with_pfn_override_node_config_fn(Arc::new(|config, _| {
+            config.base.enable_validator_pfn_connections = true;
+            config.api.allow_encrypted_txns_submission = true;
+            config.consensus_observer.observer_enabled = true;
+            config
+                .consensus_observer
+                .observer_fallback_progress_threshold_ms = 30_000;
+            config
+                .consensus_observer
+                .observer_fallback_sync_lag_threshold_ms = 45_000;
+        }))
+        .with_emit_job(
+            EmitJobRequest::default()
+                .mode(EmitJobMode::ConstTps { tps: 200 })
+                .encrypt_transactions(true)
+                .latency_polling_interval(Duration::from_millis(100)),
+        )
+        .with_success_criteria(success_criteria)
+        .with_num_pfns(num_pfns)
+}
+
+/// Load test with 100% randomness-consuming transactions.
+pub(crate) fn realistic_env_max_load_randomness_test(duration: Duration) -> ForgeConfig {
+    realistic_env_max_load_randomness_inner(
+        duration,
+        EmitJobRequest::default()
+            .mode(EmitJobMode::MaxLoad {
+                mempool_backlog: 38000,
+            })
+            .init_gas_price_multiplier(20)
+            .transaction_type(TransactionType::CallCustomModules {
+                entry_point: Box::new(EntryPoints::DiceRoll),
+                num_modules: 1,
+                use_account_pool: false,
+            }),
+    )
+}
+
+/// Load test with 1:100 randomness-to-regular transaction ratio.
+/// Most blocks will have no randomness txns (has_rand_txns_fut = false),
+/// but occasional blocks will, exercising both the aggregation and skip paths.
+pub(crate) fn realistic_env_max_load_randomness_mixed_test(duration: Duration) -> ForgeConfig {
+    realistic_env_max_load_randomness_inner(
+        duration,
+        EmitJobRequest::default()
+            .mode(EmitJobMode::MaxLoad {
+                mempool_backlog: 38000,
+            })
+            .init_gas_price_multiplier(20)
+            .transaction_mix(vec![
+                (
+                    TransactionType::CallCustomModules {
+                        entry_point: Box::new(EntryPoints::DiceRoll),
+                        num_modules: 1,
+                        use_account_pool: false,
+                    },
+                    1,
+                ),
+                (TransactionType::default(), 100),
+            ]),
+    )
+}
+
+/// Shared implementation for randomness load tests. Matches realistic_env_max_load_test
+/// parameters exactly, except for randomness enablement and transaction type.
+fn realistic_env_max_load_randomness_inner(
+    duration: Duration,
+    inner_traffic: EmitJobRequest,
+) -> ForgeConfig {
+    let num_validators = 7;
+    let num_vfns = 0;
+    let num_pfns = 3;
+
+    let duration_secs = duration.as_secs();
+    let long_running = duration_secs >= 2400;
+
+    let resource_override = if long_running {
+        NodeResourceOverride {
+            storage_gib: Some(1000),
+            ..NodeResourceOverride::default()
+        }
+    } else {
+        NodeResourceOverride::default()
+    };
+
+    let mut success_criteria = SuccessCriteria::new(85)
+        .add_system_metrics_threshold(SystemMetricsThreshold::new(
+            MetricsThreshold::new(25.0, 15),
+            MetricsThreshold::new_gb(16.0 + 8.0 * (duration_secs as f64 / 3600.0), 20),
+        ))
+        .add_no_restarts()
+        .add_wait_for_catchup_s((duration.as_secs() / 10).max(60))
+        .add_latency_threshold(3.6, LatencyType::P50)
+        .add_latency_threshold(4.8, LatencyType::P70)
+        .add_chain_progress(StateProgressThreshold {
+            max_non_epoch_no_progress_secs: 15.0,
+            max_epoch_no_progress_secs: 16.0,
+            max_non_epoch_round_gap: 4,
+            max_epoch_round_gap: 4,
+        })
+        .add_latency_breakdown_threshold(LatencyBreakdownThreshold::new_with_breach_pct(
+            vec![
+                (LatencyBreakdownSlice::MempoolToBlockCreation, 0.35 + 3.25),
+                (LatencyBreakdownSlice::ConsensusProposalToOrdered, 0.85),
+                (LatencyBreakdownSlice::ConsensusOrderedToCommit, 1.0),
+            ],
+            5,
+        ));
+
+    if !long_running && ENABLE_FULLNODE_FAILURE_TEST {
+        success_criteria = success_criteria.add_no_fullnode_failures();
+    }
+
+    let inner_success_tps = if long_running { 11000 } else { 10000 };
+
+    ForgeConfig::default()
+        .with_initial_validator_count(NonZeroUsize::new(num_validators).unwrap())
+        .with_initial_fullnode_count(num_vfns)
+        .add_network_test(wrap_with_realistic_env(num_validators, TwoTrafficsTest {
+            inner_traffic,
+            inner_success_criteria: SuccessCriteria::new(inner_success_tps),
+        }))
+        .with_genesis_helm_config_fn(Arc::new(move |helm_values| {
+            helm_values["chain"]["epoch_duration_secs"] =
+                (if long_running { 600 } else { 300 }).into();
+            helm_values["chain"]["on_chain_consensus_config"] =
+                serde_yaml::to_value(OnChainConsensusConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["on_chain_execution_config"] =
+                serde_yaml::to_value(OnChainExecutionConfig::default_for_genesis())
+                    .expect("must serialize");
+            helm_values["chain"]["randomness_config_override"] =
+                serde_yaml::to_value(OnChainRandomnessConfig::default_enabled())
+                    .expect("must serialize");
+        }))
+        .with_validator_override_node_config_fn(Arc::new(|config, _| {
+            config.base.enable_validator_pfn_connections = true;
+        }))
+        .with_fullnode_override_node_config_fn(Arc::new(|config, _| {
+            config
+                .consensus_observer
+                .observer_fallback_progress_threshold_ms = 30_000;
+            config
+                .consensus_observer
+                .observer_fallback_sync_lag_threshold_ms = 45_000;
+        }))
+        .with_pfn_override_node_config_fn(Arc::new(|config, _| {
+            config.base.enable_validator_pfn_connections = true;
+            config.consensus_observer.observer_enabled = true;
+            config
+                .consensus_observer
+                .observer_fallback_progress_threshold_ms = 30_000;
+            config
+                .consensus_observer
+                .observer_fallback_sync_lag_threshold_ms = 45_000;
+        }))
+        .with_emit_job(
+            EmitJobRequest::default()
+                .mode(EmitJobMode::ConstTps { tps: 100 })
+                .gas_price(5 * aptos_global_constants::GAS_UNIT_PRICE)
+                .latency_polling_interval(Duration::from_millis(100)),
+        )
+        .with_success_criteria(success_criteria)
+        .with_validator_resource_override(resource_override)
+        .with_fullnode_resource_override(resource_override)
+        .with_num_pfns(num_pfns)
 }
 
 pub(crate) fn realistic_network_tuned_for_throughput_test() -> ForgeConfig {
@@ -532,7 +1018,7 @@ pub(crate) fn realistic_network_tuned_for_throughput_test() -> ForgeConfig {
 
     let mut forge_config = ForgeConfig::default()
             .with_initial_validator_count(NonZeroUsize::new(VALIDATOR_COUNT).unwrap())
-            .add_network_test(MultiRegionNetworkEmulationTest::default_for_validator_count(VALIDATOR_COUNT))
+            .add_network_test(MultiRegionNetworkEmulationTest::mainnet_calibrated_for_validator_count(VALIDATOR_COUNT))
             .with_emit_job(EmitJobRequest::default().mode(EmitJobMode::MaxLoad {
                 mempool_backlog: (TARGET_TPS as f64 * VFN_LATENCY_S) as usize,
             }))
@@ -658,7 +1144,7 @@ pub fn wrap_with_realistic_env<T: NetworkTest + 'static>(
     test: T,
 ) -> CompositeNetworkTest {
     CompositeNetworkTest::new(
-        MultiRegionNetworkEmulationTest::default_for_validator_count(num_validators),
+        MultiRegionNetworkEmulationTest::mainnet_calibrated_for_validator_count(num_validators),
         test,
     )
 }

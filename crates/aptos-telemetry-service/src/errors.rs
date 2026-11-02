@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_crypto::noise::NoiseError;
 use aptos_rest_client::error::RestError;
@@ -67,6 +67,8 @@ pub(crate) enum CustomEventIngestError {
     BigQueryInsertError(DebugIgnore<TableDataInsertAllResponseInsertErrors>),
     #[error("{0}")]
     Other(DebugIgnore<anyhow::Error>),
+    #[error("rate limit exceeded for unknown telemetry")]
+    RateLimitExceeded,
 }
 
 impl From<BQError> for CustomEventIngestError {
@@ -99,12 +101,16 @@ pub(crate) enum LogIngestError {
     IngestionError,
     #[error("peer id forbidden from posting logs")]
     Forbidden(PeerId),
+    #[error("rate limit exceeded for unknown telemetry")]
+    RateLimitExceeded,
 }
 
 #[derive(Debug, ThisError)]
 pub(crate) enum MetricsIngestError {
     #[error("unable to ingest metrics")]
     IngestionError,
+    #[error("rate limit exceeded for unknown telemetry")]
+    RateLimitExceeded,
 }
 
 #[derive(Debug, ThisError)]
@@ -122,6 +128,7 @@ pub(crate) enum ValidatorCacheUpdateError {
 }
 
 #[derive(Debug, ThisError)]
+#[allow(clippy::enum_variant_names)] // Variants intentionally use "Error" suffix for clarity
 pub(crate) enum ServiceErrorCode {
     #[error("authentication error: {0}")]
     AuthError(AuthError, ChainId),
@@ -133,6 +140,8 @@ pub(crate) enum ServiceErrorCode {
     LogIngestError(#[from] LogIngestError),
     #[error("metrics ingest error: {0}")]
     MetricsIngestError(#[from] MetricsIngestError),
+    #[error("custom contract authentication error: {0}")]
+    CustomContractAuthError(String, ChainId),
 }
 
 #[derive(Debug)]
@@ -163,6 +172,10 @@ impl ServiceError {
 
     pub(crate) fn internal(error_code: ServiceErrorCode) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, error_code)
+    }
+
+    pub(crate) fn too_many_requests(error_code: ServiceErrorCode) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, error_code)
     }
 
     pub(crate) fn http_status_code(&self) -> StatusCode {

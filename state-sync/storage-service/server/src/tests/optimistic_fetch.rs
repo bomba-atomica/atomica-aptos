@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     moderator::RequestModerator,
@@ -129,10 +129,10 @@ async fn test_peers_with_ready_optimistic_fetches() {
             )
             .await
             .unwrap();
-        assert_eq!(
-            peers_with_ready_optimistic_fetches,
-            vec![(peer_network_1, synced_ledger_info)]
-        );
+        assert_eq!(peers_with_ready_optimistic_fetches, vec![(
+            peer_network_1,
+            synced_ledger_info
+        )]);
 
         // Manually remove optimistic fetch 1 from the map
         optimistic_fetches.remove(&peer_network_1);
@@ -232,10 +232,10 @@ async fn test_peers_with_ready_optimistic_fetches_update() {
             )
             .await
             .unwrap();
-        assert_eq!(
-            peers_with_ready_optimistic_fetches,
-            vec![(peer_network_1, synced_ledger_info)]
-        );
+        assert_eq!(peers_with_ready_optimistic_fetches, vec![(
+            peer_network_1,
+            synced_ledger_info
+        )]);
 
         // Update optimistic fetch 1 to have a new higher known version
         let optimistic_fetch_1 = create_optimistic_fetch_request(
@@ -287,10 +287,10 @@ async fn test_peers_with_ready_optimistic_fetches_update() {
             )
             .await
             .unwrap();
-        assert_eq!(
-            peers_with_ready_optimistic_fetches,
-            vec![(peer_network_1, synced_ledger_info)]
-        );
+        assert_eq!(peers_with_ready_optimistic_fetches, vec![(
+            peer_network_1,
+            synced_ledger_info
+        )]);
     }
 }
 

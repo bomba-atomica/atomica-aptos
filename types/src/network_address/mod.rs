@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::arc_with_non_send_sync)]
 
@@ -949,30 +948,24 @@ mod test {
                     Handshake(123),
                 ],
             ),
-            (
-                "/ip6/::1/tcp/0",
-                vec![Ip6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)), Tcp(0)],
-            ),
-            (
-                "/ip6/dead:beef::c0de/tcp/8080",
-                vec![
-                    Ip6(Ipv6Addr::new(0xDEAD, 0xBEEF, 0, 0, 0, 0, 0, 0xC0DE)),
-                    Tcp(8080),
-                ],
-            ),
-            (
-                "/dns/example.com/tcp/80",
-                vec![Dns(DnsName("example.com".to_owned())), Tcp(80)],
-            ),
-            (
-                &noise_addr_str,
-                vec![
-                    Dns(DnsName("example.com".to_owned())),
-                    Tcp(1234),
-                    NoiseIK(pubkey),
-                    Handshake(5),
-                ],
-            ),
+            ("/ip6/::1/tcp/0", vec![
+                Ip6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+                Tcp(0),
+            ]),
+            ("/ip6/dead:beef::c0de/tcp/8080", vec![
+                Ip6(Ipv6Addr::new(0xDEAD, 0xBEEF, 0, 0, 0, 0, 0, 0xC0DE)),
+                Tcp(8080),
+            ]),
+            ("/dns/example.com/tcp/80", vec![
+                Dns(DnsName("example.com".to_owned())),
+                Tcp(80),
+            ]),
+            (&noise_addr_str, vec![
+                Dns(DnsName("example.com".to_owned())),
+                Tcp(1234),
+                NoiseIK(pubkey),
+                Handshake(5),
+            ]),
         ];
 
         for (addr_str, expected_address) in &test_cases {

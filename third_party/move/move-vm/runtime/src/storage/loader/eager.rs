@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     check_dependencies_and_charge_gas,
@@ -22,6 +24,7 @@ use move_binary_format::{
     CompiledModule,
 };
 use move_core_types::{
+    account_address::AccountAddress,
     identifier::IdentStr,
     language_storage::{ModuleId, TypeTag},
     vm_status::StatusCode,
@@ -156,6 +159,15 @@ where
         false
     }
 
+    fn unmetered_get_module_hash_and_size(
+        &self,
+        address: &AccountAddress,
+        module_name: &IdentStr,
+    ) -> VMResult<([u8; 32], usize)> {
+        self.module_storage
+            .unmetered_get_existing_module_hash_and_size(address, module_name)
+    }
+
     fn load_struct_definition(
         &self,
         _gas_meter: &mut impl DependencyGasMeter,
@@ -216,12 +228,10 @@ where
         let arena_id = traversal_context
             .referenced_module_ids
             .alloc(module_id.clone());
-        check_dependencies_and_charge_gas(
-            self.module_storage,
-            gas_meter,
-            traversal_context,
-            [(arena_id.address(), arena_id.name())],
-        )
+        check_dependencies_and_charge_gas(self.module_storage, gas_meter, traversal_context, [(
+            arena_id.address(),
+            arena_id.name(),
+        )])
         .map_err(|err| {
             err.to_partial().append_message_with_separator(
                 '.',

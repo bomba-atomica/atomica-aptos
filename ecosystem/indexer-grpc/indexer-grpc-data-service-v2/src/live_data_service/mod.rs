@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 mod data_client;
 mod data_manager;
@@ -12,13 +12,18 @@ use crate::{
     live_data_service::in_memory_cache::InMemoryCache,
     metrics::{COUNTER, TIMER},
 };
+use aptos_indexer_grpc_utils::{
+    constants::{get_request_metadata, IndexerGrpcRequestMetadata},
+    counters::BYTES_READY_TO_TRANSFER_FROM_SERVER_AFTER_STRIPPING,
+    filter_utils,
+};
 use aptos_protos::indexer::v1::{GetTransactionsRequest, ProcessedRange, TransactionsResponse};
 use aptos_transaction_filter::BooleanTransactionFilter;
+use prost::Message;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tonic::{Request, Status};
 use tracing::info;
-use uuid::Uuid;
 
 const MAX_BYTES_PER_BATCH: usize = 20 * (1 << 20);
 
@@ -70,13 +75,18 @@ impl<'a> LiveDataService<'a> {
                 COUNTER
                     .with_label_values(&["live_data_service_receive_request"])
                     .inc();
-                // TODO(grao): Store request metadata.
+                // Extract request metadata before consuming the request.
+                let request_metadata = Arc::new(get_request_metadata(&request));
                 let request = request.into_inner();
-                let id = Uuid::new_v4().to_string();
+                let id = request_metadata.request_connection_id.clone();
                 let known_latest_version = self.get_known_latest_version();
                 let starting_version = request.starting_version.unwrap_or(known_latest_version);
 
-                info!("Received request: {request:?}.");
+                info!(
+                    stream_id = %id,
+                    starting_version = starting_version,
+                    "Received live data service request"
+                );
                 if starting_version > known_latest_version + 10000 {
                     let err = Err(Status::failed_precondition(
                         "starting_version cannot be set to a far future version.",
@@ -90,17 +100,14 @@ impl<'a> LiveDataService<'a> {
                 }
 
                 let filter = if let Some(proto_filter) = request.transaction_filter {
-                    match BooleanTransactionFilter::new_from_proto(
+                    match filter_utils::parse_transaction_filter(
                         proto_filter,
-                        Some(self.max_transaction_filter_size_bytes),
+                        self.max_transaction_filter_size_bytes,
                     ) {
                         Ok(filter) => Some(filter),
-                        Err(e) => {
-                            let err = Err(Status::invalid_argument(format!(
-                                "Invalid transaction_filter: {e:?}."
-                            )));
+                        Err(err) => {
                             info!("Client error: {err:?}.");
-                            let _ = response_sender.blocking_send(err);
+                            let _ = response_sender.blocking_send(Err(err));
                             COUNTER
                                 .with_label_values(&["live_data_service_invalid_filter"])
                                 .inc();
@@ -119,7 +126,7 @@ impl<'a> LiveDataService<'a> {
 
                 let ending_version = request
                     .transactions_count
-                    .map(|count| starting_version + count);
+                    .map(|count| starting_version.saturating_add(count));
 
                 scope.spawn(async move {
                     self.start_streaming(
@@ -129,6 +136,7 @@ impl<'a> LiveDataService<'a> {
                         max_num_transactions_per_batch,
                         MAX_BYTES_PER_BATCH,
                         filter,
+                        request_metadata,
                         response_sender,
                     )
                     .await
@@ -153,12 +161,16 @@ impl<'a> LiveDataService<'a> {
         max_num_transactions_per_batch: usize,
         max_bytes_per_batch: usize,
         filter: Option<BooleanTransactionFilter>,
+        request_metadata: Arc<IndexerGrpcRequestMetadata>,
         response_sender: tokio::sync::mpsc::Sender<Result<TransactionsResponse, Status>>,
     ) {
         COUNTER
             .with_label_values(&["live_data_service_new_stream"])
             .inc();
-        info!(stream_id = id, "Start streaming, starting_version: {starting_version}, ending_version: {ending_version:?}.");
+        info!(
+            stream_id = %id,
+            "Start streaming, starting_version: {starting_version}, ending_version: {ending_version:?}."
+        );
         self.connection_manager
             .insert_active_stream(&id, starting_version, ending_version);
         let mut next_version = starting_version;
@@ -172,7 +184,10 @@ impl<'a> LiveDataService<'a> {
                 .update_stream_progress(&id, next_version, size_bytes);
             let known_latest_version = self.get_known_latest_version();
             if next_version > known_latest_version {
-                info!(stream_id = id, "next_version {next_version} is larger than known_latest_version {known_latest_version}");
+                info!(
+                    stream_id = %id,
+                    "next_version {next_version} is larger than known_latest_version {known_latest_version}"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -199,10 +214,18 @@ impl<'a> LiveDataService<'a> {
                         last_version: last_processed_version,
                     }),
                 };
+                let bytes_ready_to_transfer_after_stripping = response
+                    .transactions
+                    .iter()
+                    .map(|t| t.encoded_len())
+                    .sum::<usize>();
+                BYTES_READY_TO_TRANSFER_FROM_SERVER_AFTER_STRIPPING
+                    .with_label_values(&request_metadata.get_label_values())
+                    .inc_by(bytes_ready_to_transfer_after_stripping as u64);
                 next_version = last_processed_version + 1;
                 size_bytes += batch_size_bytes as u64;
                 if response_sender.send(Ok(response)).await.is_err() {
-                    info!(stream_id = id, "Client dropped.");
+                    info!(stream_id = %id, "Client dropped.");
                     COUNTER
                         .with_label_values(&["live_data_service_client_dropped"])
                         .inc();
@@ -210,7 +233,7 @@ impl<'a> LiveDataService<'a> {
                 }
             } else {
                 let err = Err(Status::not_found("Requested data is too old."));
-                info!(stream_id = id, "Client error: {err:?}.");
+                info!(stream_id = %id, "Client error: {err:?}.");
                 let _ = response_sender.send(err).await;
                 COUNTER
                     .with_label_values(&["terminate_requested_data_too_old"])

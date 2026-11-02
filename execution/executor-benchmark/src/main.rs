@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_block_partitioner::{
     pre_partition::{
@@ -25,7 +24,7 @@ use aptos_executor_benchmark::{
         },
     },
     pipeline::PipelineConfig,
-    BenchmarkWorkload,
+    BenchmarkWorkload, StorageTestConfig,
 };
 use aptos_executor_service::remote_executor_client;
 use aptos_experimental_ptx_executor::PtxBlockExecutor;
@@ -50,8 +49,7 @@ use std::{
 };
 
 #[cfg(unix)]
-#[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+aptos_jemalloc::setup_jemalloc!();
 
 /// This is needed for filters on the Grafana dashboard working as its used to populate the filter
 /// variables.
@@ -107,6 +105,25 @@ impl PrunerOpt {
                 batch_size: self.ledger_pruning_batch_size,
                 user_pruning_window_offset: 0,
             },
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Debug, Parser)]
+struct StorageOpt {
+    #[clap(flatten)]
+    pruner_opt: PrunerOpt,
+
+    #[clap(long)]
+    enable_indexer_grpc: bool,
+}
+
+impl StorageOpt {
+    fn storage_test_config(&self) -> StorageTestConfig {
+        StorageTestConfig {
+            pruner_config: self.pruner_opt.pruner_config(),
+            enable_indexer_grpc: self.enable_indexer_grpc,
         }
     }
 }
@@ -155,7 +172,7 @@ pub struct PipelineOpt {
 }
 
 impl PipelineOpt {
-    fn pipeline_config(&self) -> PipelineConfig {
+    fn pipeline_config(&self, enable_indexer_grpc: bool) -> PipelineConfig {
         PipelineConfig {
             generate_then_execute: self.generate_then_execute,
             split_stages: self.split_stages,
@@ -168,6 +185,7 @@ impl PipelineOpt {
             partitioner_config: self.sharding_opt.partitioner_config(),
             num_sig_verify_threads: self.num_sig_verify_threads,
             print_transactions: false,
+            wait_for_indexer_grpc: enable_indexer_grpc,
         }
     }
 }
@@ -302,10 +320,7 @@ struct Opt {
     execution_threads: Option<usize>,
 
     #[clap(flatten)]
-    pruner_opt: PrunerOpt,
-
-    #[clap(long)]
-    enable_storage_sharding: bool,
+    storage_opt: StorageOpt,
 
     #[clap(flatten)]
     pipeline_opt: PipelineOpt,
@@ -327,7 +342,7 @@ struct Opt {
     skip_paranoid_checks: bool,
 
     #[clap(long)]
-    use_blockstm_v2: bool,
+    use_blockstm_v1: bool,
 }
 
 impl Opt {
@@ -475,10 +490,10 @@ where
                 init_account_balance,
                 opt.block_size,
                 data_dir,
-                opt.pruner_opt.pruner_config(),
+                opt.storage_opt.storage_test_config(),
                 opt.verify_sequence_numbers,
-                opt.enable_storage_sharding,
-                opt.pipeline_opt.pipeline_config(),
+                opt.pipeline_opt
+                    .pipeline_config(opt.storage_opt.enable_indexer_grpc),
                 get_init_features(enable_feature, disable_feature),
                 opt.use_keyless_accounts,
             );
@@ -538,9 +553,9 @@ where
                 data_dir,
                 checkpoint_dir,
                 opt.verify_sequence_numbers,
-                opt.pruner_opt.pruner_config(),
-                opt.enable_storage_sharding,
-                opt.pipeline_opt.pipeline_config(),
+                opt.storage_opt.storage_test_config(),
+                opt.pipeline_opt
+                    .pipeline_config(opt.storage_opt.enable_indexer_grpc),
                 get_init_features(enable_feature, disable_feature),
                 opt.use_keyless_accounts,
             );
@@ -557,10 +572,10 @@ where
                 opt.block_size,
                 data_dir,
                 checkpoint_dir,
-                opt.pruner_opt.pruner_config(),
+                opt.storage_opt.storage_test_config(),
                 opt.verify_sequence_numbers,
-                opt.enable_storage_sharding,
-                opt.pipeline_opt.pipeline_config(),
+                opt.pipeline_opt
+                    .pipeline_config(opt.storage_opt.enable_indexer_grpc),
                 Features::default(),
                 opt.use_keyless_accounts,
             );
@@ -629,6 +644,7 @@ fn main() {
     set_layout_caches(true);
     if opt.skip_paranoid_checks {
         set_paranoid_type_checks(false);
+        set_async_runtime_checks(false);
     } else {
         // If we do paranoid checks, then they are allowed to run async in post-commit hook.
         set_paranoid_type_checks(true);
@@ -638,7 +654,7 @@ fn main() {
     AptosVM::set_concurrency_level_once(execution_threads_per_shard);
     NativeConfig::set_concurrency_level_once(execution_threads_per_shard);
     AptosVM::set_processed_transactions_detailed_counters();
-    AptosVM::set_blockstm_v2_enabled_once(opt.use_blockstm_v2);
+    AptosVM::set_blockstm_v2_enabled_once(!opt.use_blockstm_v1);
 
     let config = ProfilerConfig::new_with_defaults();
     let handler = ProfilerHandler::new(config);

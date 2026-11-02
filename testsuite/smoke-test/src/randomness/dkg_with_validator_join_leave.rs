@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     randomness::{decrypt_key_map, num_validators, verify_dkg_transcript, wait_for_dkg_finish},
@@ -7,7 +7,7 @@ use crate::{
 };
 use aptos::test::CliTestFramework;
 use aptos_forge::{Node, Swarm};
-use aptos_types::on_chain_config::OnChainRandomnessConfig;
+use aptos_types::on_chain_config::{OnChainChunkyDKGConfig, OnChainRandomnessConfig};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -26,6 +26,9 @@ async fn dkg_with_validator_join_leave() {
             // Ensure randomness is enabled.
             conf.consensus_config.enable_validator_txns();
             conf.randomness_config_override = Some(OnChainRandomnessConfig::default_enabled());
+            // This test toggles the validator set; chunky DKG reconfigs race
+            // with leave_validator_set, so keep it off.
+            conf.chunky_dkg_config_override = Some(OnChainChunkyDKGConfig::default_disabled());
         }))
         .build()
         .await;

@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::arc_with_non_send_sync)]
 
@@ -26,7 +27,12 @@ use move_core_types::{
         self, MoveStructLayout, MoveTypeLayout, MASTER_ADDRESS_FIELD_OFFSET, MASTER_SIGNER_VARIANT,
         PERMISSIONED_SIGNER_VARIANT, PERMISSION_ADDRESS_FIELD_OFFSET,
     },
-    vm_status::{sub_status::NFE_VECTOR_ERROR_BASE, StatusCode},
+    vm_status::{
+        sub_status::{
+            unknown_invariant_violation::EINDEXED_REF_TAG_MISMATCH, NFE_VECTOR_ERROR_BASE,
+        },
+        StatusCode,
+    },
 };
 use serde::{
     de::{EnumAccess, Error as DeError, Unexpected, VariantAccess},
@@ -71,15 +77,15 @@ pub enum Value {
     U32(u32),
     U64(u64),
     U128(u128),
-    U256(int256::U256),
+    U256(Box<int256::U256>),
     I8(i8),
     I16(i16),
     I32(i32),
     I64(i64),
     I128(i128),
-    I256(int256::I256),
+    I256(Box<int256::I256>),
     Bool(bool),
-    Address(AccountAddress),
+    Address(Box<AccountAddress>),
 
     Container(Container),
 
@@ -119,6 +125,163 @@ pub enum Value {
     ClosureValue(Closure),
 }
 
+/// A heap-shared, mutable, recursively-droppable collection of Move values.
+///
+/// Wraps `Rc<RefCell<Vec<Value>>>` and carries a custom `Drop` that drains a deeply-nested
+/// value iteratively (via a heap work-stack) instead of using the compiler's recursive drop.
+/// This prevents a stack overflow when a deep Value chain is dropped via RAII.
+///
+/// Deref to `Rc<RefCell<Vec<Value>>>` keeps the common `.borrow()`/`.borrow_mut()` call
+/// sites unchanged. To move the inner Rc out (e.g., for `take_unique_ownership`), call
+/// [`NestedValues::into_rc`]. To clone (share), use `.clone()`.
+#[derive(Debug)]
+pub(crate) struct NestedValues(Rc<RefCell<Vec<Value>>>);
+
+impl NestedValues {
+    #[inline]
+    pub(crate) fn new(vals: Vec<Value>) -> Self {
+        Self(Rc::new(RefCell::new(vals)))
+    }
+
+    #[inline]
+    pub(crate) fn from_rc(rc: Rc<RefCell<Vec<Value>>>) -> Self {
+        Self(rc)
+    }
+
+    /// Extracts the inner `Rc` without running the custom `Drop`.
+    ///
+    /// Bypasses `Drop` (which would otherwise drain the contents) so we avoid both the
+    /// work and the sentinel Rc allocation on every value cast / pack unwrap. Uses the
+    /// standard `ManuallyDrop` + `ptr::read` destructuring idiom (see the `ManuallyDrop`
+    /// docs and `Box::into_raw` / `Pin::into_inner_unchecked` in std).
+    ///
+    /// NOTE (maintainers): this leaves no per-field `Drop` running on `self`. It is
+    /// sound only because `self.0` is `Rc<...>` which is trivially bitwise-movable, and
+    /// because `NestedValues` has exactly one field. If another non-trivial field is
+    /// added, this function must be updated to drop that field (e.g. via
+    /// `std::ptr::drop_in_place` on that field) or leak it.
+    #[inline]
+    pub(crate) fn into_rc(self) -> Rc<RefCell<Vec<Value>>> {
+        let this = std::mem::ManuallyDrop::new(self);
+        // SAFETY: `this` is `ManuallyDrop`, so its `Drop` (which would recurse/drain the
+        // inner Vec) never runs. The bits of `this.0` are therefore never re-observed
+        // after this read — in particular, they are never decremented again — and the
+        // returned `Rc` is the sole owner of the refcount that `this.0` previously held.
+        // No panic is possible between the `ManuallyDrop::new` and the return, so there
+        // is no unwinding window.
+        unsafe { std::ptr::read(&this.0) }
+    }
+}
+
+impl Clone for NestedValues {
+    #[inline]
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+impl std::ops::Deref for NestedValues {
+    type Target = Rc<RefCell<Vec<Value>>>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Iterative drop: walk nested `Value::Container(Container::{Locals,Vec,Struct})` via a
+/// heap work-stack rather than the Rust call stack. Only uniquely-owned Rcs are decomposed;
+/// shared containers (refcount > 1) fall through to the default Rc drop (refcount decrement).
+///
+/// For nested children we use `into_rc` + `Rc::try_unwrap` to claim the inner `Vec<Value>`
+/// without re-entering this `Drop` on the consumed `NestedValues`. The work stack holds
+/// owned `Vec<Value>`s rather than `Rc<...>`s, so the only possible heap allocation is the
+/// stack itself, which stays at `Vec::new()` capacity 0 until the first push.
+impl Drop for NestedValues {
+    fn drop(&mut self) {
+        // Drain the root level in place: if we hold the sole reference, take the inner
+        // `Vec<Value>` out, leaving the `RefCell<Vec>` containing an empty Vec.  The
+        // `Rc` then drops normally (refcount 1 → 0, frees the RcBox) at the end of
+        // this function. No sentinel allocation.
+        let Some(cell) = Rc::get_mut(&mut self.0) else {
+            // Shared: other holders still reference this container; their view of
+            // the contents must be preserved. The Rc's default drop will just
+            // decrement the refcount.
+            return;
+        };
+        let mut cur_vec = std::mem::take(cell.get_mut());
+
+        // Lazy work stack: no heap until we actually queue a nested level. Shallow
+        // values never push, so this stays at capacity 0.
+        let mut stack: Vec<Vec<Value>> = vec![];
+        loop {
+            stack.reserve(cur_vec.len());
+            for v in cur_vec {
+                match v {
+                    Value::Container(c) => match c {
+                        Container::Locals(nv) | Container::Vec(nv) | Container::Struct(nv) => {
+                            // Claim sole ownership of the inner `RefCell<Vec<Value>>`
+                            // if unique. On the unique path we extract the `Vec` directly.
+                            // On the shared path the returned `Rc` drops normally — just a
+                            // refcount decrement.
+                            if let Ok(inner_cell) = Rc::try_unwrap(nv.into_rc()) {
+                                let inner = inner_cell.into_inner();
+                                if !inner.is_empty() {
+                                    stack.push(inner);
+                                }
+                            }
+                        },
+                        // Primitive-vec variants cannot hold further `Value`s — their
+                        // default drop is non-recursive and bounded.
+                        Container::VecU8(_)
+                        | Container::VecU16(_)
+                        | Container::VecU32(_)
+                        | Container::VecU64(_)
+                        | Container::VecU128(_)
+                        | Container::VecU256(_)
+                        | Container::VecI8(_)
+                        | Container::VecI16(_)
+                        | Container::VecI32(_)
+                        | Container::VecI64(_)
+                        | Container::VecI128(_)
+                        | Container::VecI256(_)
+                        | Container::VecBool(_)
+                        | Container::VecAddress(_) => {},
+                    },
+                    // Non-container Values drop in O(1) or bounded size. Closures'
+                    // captured args are `Value`s inside a `Vec` owned by the closure; if
+                    // they are containers, their default drop invokes *this* `Drop`
+                    // iteratively on each, not recursively.
+                    Value::Invalid
+                    | Value::U8(_)
+                    | Value::U16(_)
+                    | Value::U32(_)
+                    | Value::U64(_)
+                    | Value::U128(_)
+                    | Value::U256(_)
+                    | Value::I8(_)
+                    | Value::I16(_)
+                    | Value::I32(_)
+                    | Value::I64(_)
+                    | Value::I128(_)
+                    | Value::I256(_)
+                    | Value::Bool(_)
+                    | Value::Address(_)
+                    | Value::ContainerRef(_)
+                    | Value::IndexedRef(_)
+                    | Value::DelayedFieldID { .. }
+                    | Value::ClosureValue(_) => {},
+                }
+            }
+
+            cur_vec = match stack.pop() {
+                Some(v) => v,
+                None => break,
+            };
+        }
+    }
+}
+
 /// A container is a collection of values. It is used to represent data structures like a
 /// Move vector or struct.
 ///
@@ -130,9 +293,9 @@ pub enum Value {
 /// making it possible to be shared by references.
 #[derive(Debug)]
 pub(crate) enum Container {
-    Locals(Rc<RefCell<Vec<Value>>>),
-    Vec(Rc<RefCell<Vec<Value>>>),
-    Struct(Rc<RefCell<Vec<Value>>>),
+    Locals(NestedValues),
+    Vec(NestedValues),
+    Struct(NestedValues),
     VecU8(Rc<RefCell<Vec<u8>>>),
     VecU64(Rc<RefCell<Vec<u64>>>),
     VecU128(Rc<RefCell<Vec<u128>>>),
@@ -170,12 +333,17 @@ pub(crate) enum GlobalDataStatus {
     Dirty,
 }
 
-/// A Move reference pointing to an element in a container. Used only for primitive types, e.g.,
-/// vectors of integers or an integer field in a struct.
+/// A Move reference pointing to an element in a container.
+///
+/// This is used for non-container values stored directly in containers (e.g., primitive scalars,
+/// addresses, delayed values, or closures). Container values (structs/vectors/locals) use
+/// [`ContainerRef`] instead.
 #[derive(Debug)]
 pub(crate) struct IndexedRef {
-    idx: usize,
+    idx: u32,
     container_ref: ContainerRef,
+    /// Only set for enums.
+    tag: Option<u16>,
 }
 
 /// An umbrella enum for references. It is used to hide the internals of the public type
@@ -404,11 +572,34 @@ impl Container {
         }
     }
 
+    fn get_enum_tag(&self) -> PartialVMResult<u16> {
+        match self {
+            Self::Struct(vals) => {
+                let vals = vals.borrow();
+                vals.first()
+                    .and_then(|v| match v {
+                        Value::U16(x) => Some(*x),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                            .with_sub_status(EINDEXED_REF_TAG_MISMATCH)
+                            .with_message("invalid enum tag".to_string())
+                    })
+            },
+            _ => Err(
+                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                    .with_sub_status(EINDEXED_REF_TAG_MISMATCH)
+                    .with_message("expected struct enum container".to_string()),
+            ),
+        }
+    }
+
     fn master_signer(x: AccountAddress) -> Self {
-        Container::Struct(Rc::new(RefCell::new(vec![
+        Container::Struct(NestedValues::new(vec![
             Value::U16(MASTER_SIGNER_VARIANT),
-            Value::Address(x),
-        ])))
+            Value::Address(Box::new(x)),
+        ]))
     }
 }
 
@@ -484,20 +675,44 @@ macro_rules! impl_vm_value_ref {
     };
 }
 
+macro_rules! impl_vm_value_ref_boxed {
+    ($ty:ty, $tc:ident) => {
+        impl VMValueRef<$ty> for Value {
+            #[cfg_attr(feature = "inline-vm-casts", inline)]
+            fn value_ref(&self) -> PartialVMResult<&$ty> {
+                return match self {
+                    Value::$tc(x) => Ok(x.as_ref()),
+                    _ => __cannot_ref_cast(self),
+                };
+                #[cold]
+                fn __cannot_ref_cast(v: &Value) -> PartialVMResult<&$ty> {
+                    Err(
+                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(format!(
+                            "cannot take {:?} as &{}",
+                            v,
+                            stringify!($ty)
+                        )),
+                    )
+                }
+            }
+        }
+    };
+}
+
 impl_vm_value_ref!(u8, U8);
 impl_vm_value_ref!(u16, U16);
 impl_vm_value_ref!(u32, U32);
 impl_vm_value_ref!(u64, U64);
 impl_vm_value_ref!(u128, U128);
-impl_vm_value_ref!(int256::U256, U256);
+impl_vm_value_ref_boxed!(int256::U256, U256);
 impl_vm_value_ref!(i8, I8);
 impl_vm_value_ref!(i16, I16);
 impl_vm_value_ref!(i32, I32);
 impl_vm_value_ref!(i64, I64);
 impl_vm_value_ref!(i128, I128);
-impl_vm_value_ref!(int256::I256, I256);
+impl_vm_value_ref_boxed!(int256::I256, I256);
 impl_vm_value_ref!(bool, Bool);
-impl_vm_value_ref!(AccountAddress, Address);
+impl_vm_value_ref_boxed!(AccountAddress, Address);
 
 impl Value {
     fn as_value_ref<T>(&self) -> PartialVMResult<&T>
@@ -533,15 +748,15 @@ impl Value {
             U32(x) => U32(*x),
             U64(x) => U64(*x),
             U128(x) => U128(*x),
-            U256(x) => U256(*x),
+            U256(x) => U256(x.clone()),
             I8(x) => I8(*x),
             I16(x) => I16(*x),
             I32(x) => I32(*x),
             I64(x) => I64(*x),
             I128(x) => I128(*x),
-            I256(x) => I256(*x),
+            I256(x) => I256(x.clone()),
             Bool(x) => Bool(*x),
-            Address(x) => Address(*x),
+            Address(x) => Address(x.clone()),
 
             // Note: refs copy only clones Rc, so no need to increment depth.
             ContainerRef(r) => ContainerRef(r.copy_by_ref()),
@@ -562,7 +777,7 @@ impl Value {
                     .iter()
                     .map(|v| v.copy_value(depth + 1, max_depth))
                     .collect::<PartialVMResult<_>>()?;
-                ClosureValue(Closure(fun.clone_dyn()?, captured))
+                ClosureValue(Closure(fun.clone_dyn()?, Box::new(captured)))
             },
         })
     }
@@ -570,18 +785,22 @@ impl Value {
 
 impl Container {
     fn copy_value(&self, depth: u64, max_depth: Option<u64>) -> PartialVMResult<Self> {
-        let copy_rc_ref_vec_val = |r: &Rc<RefCell<Vec<Value>>>| {
-            Ok(Rc::new(RefCell::new(
-                r.borrow()
-                    .iter()
-                    .map(|v| v.copy_value(depth + 1, max_depth))
-                    .collect::<PartialVMResult<_>>()?,
-            )))
-        };
+        fn copy_nested_values(
+            r: &NestedValues,
+            depth: u64,
+            max_depth: Option<u64>,
+        ) -> PartialVMResult<NestedValues> {
+            let vals = r.borrow();
+            let mut copied_vals = Vec::with_capacity(vals.len());
+            for val in vals.iter() {
+                copied_vals.push(val.copy_value(depth + 1, max_depth)?);
+            }
+            Ok(NestedValues::new(copied_vals))
+        }
 
         Ok(match self {
-            Self::Vec(r) => Self::Vec(copy_rc_ref_vec_val(r)?),
-            Self::Struct(r) => Self::Struct(copy_rc_ref_vec_val(r)?),
+            Self::Vec(r) => Self::Vec(copy_nested_values(r, depth, max_depth)?),
+            Self::Struct(r) => Self::Struct(copy_nested_values(r, depth, max_depth)?),
 
             Self::VecU8(r) => Self::VecU8(Rc::new(RefCell::new(r.borrow().clone()))),
             Self::VecU16(r) => Self::VecU16(Rc::new(RefCell::new(r.borrow().clone()))),
@@ -610,8 +829,8 @@ impl Container {
     // Note(inline): expensive to inline, +10s compile time
     fn copy_by_ref(&self) -> Self {
         match self {
-            Self::Vec(r) => Self::Vec(Rc::clone(r)),
-            Self::Struct(r) => Self::Struct(Rc::clone(r)),
+            Self::Vec(r) => Self::Vec(r.clone()),
+            Self::Struct(r) => Self::Struct(r.clone()),
 
             Self::VecU8(r) => Self::VecU8(Rc::clone(r)),
             Self::VecU16(r) => Self::VecU16(Rc::clone(r)),
@@ -628,17 +847,120 @@ impl Container {
             Self::VecBool(r) => Self::VecBool(Rc::clone(r)),
             Self::VecAddress(r) => Self::VecAddress(Rc::clone(r)),
 
-            Self::Locals(r) => Self::Locals(Rc::clone(r)),
+            Self::Locals(r) => Self::Locals(r.clone()),
         }
     }
 }
 
 impl IndexedRef {
+    /// Runtime enum-variant tag guard for IndexedRef
+    ///
+    /// Motivation
+    /// ----------
+    /// In the absence of this guard, using a field reference from an enum after that enum has been
+    /// rewritten to a different variant can violate VM invariants: the stored index may no longer refer
+    /// to the same logical field (and if the new variant has fewer fields, it can even become out-of-bounds
+    /// and panic).
+    ///
+    /// Even when the index stays in-bounds, the value at that position may have a different type
+    /// (e.g., a struct B instead of a struct A). `IndexedRef` itself does not carry static type information; correctness
+    /// relies on runtime type checks in paranoid mode and on the bytecode verifier’s guarantees otherwise.
+    ///
+    /// Move’s bytecode verifier enforces reference-safety (no aliasing violations, no destructive
+    /// updates through aliases, etc.). However, if a verifier bug allows an enum value to be overwritten
+    /// via a mutable alias while a field reference to that enum is still live (either immutable or mutable), a classic “stale field reference”
+    /// can arise: the reference was created when the enum had variant A, but later that same enum value is rewritten in place to its B variant.
+    /// The stale `IndexedRef` still points into the enum container and would otherwise result in type confusion.
+    ///
+    /// Idea
+    /// ----
+    /// Whenever a field reference is created via `borrow_variant_field`, the VM captures the
+    /// current enum variant tag and stores it in the `IndexedRef` (as `self.tag = Some(tag)`).
+    ///
+    /// Note on Enum Layout:
+    /// Enums are represented as Structs where the first field (field 0) is a `u16` representing
+    /// the variant tag, followed by the fields of that variant.
+    ///
+    /// On every later use of that `IndexedRef`, we re-read the current tag from the same Struct
+    /// (checking field 0) and compare it with the stored tag. If they differ, we abort with an
+    /// invariant violation (“invalid enum tag”).
+    ///
+    /// Scope
+    /// -----
+    /// - Tagging applies only to `IndexedRef`s produced by `borrow_variant_field`. Other
+    ///   `IndexedRef`s (e.g., from locals, generic/specialized vectors of primitives, closures)
+    ///   have `self.tag = None` and skip this check.
+    /// - The check is enforced at all observable uses of a tagged `IndexedRef`:
+    ///   `read_ref`, `write_ref`, `equals`, `compare`, and value swaps that operate on
+    ///   `IndexedRef`s.
+    ///
+    /// Precision and Non-Goals
+    /// -----------------------
+    /// - This is a local, value-layer guard. It does not replace the verifier or the runtime
+    ///   alias checker; it simply makes the “stale enum-field reference” primitive harmless by
+    ///   refusing to read/write through it after a variant change.
+    /// - Moving the enum value around without rewriting it (e.g., `VecSwap`/`vec_swap` of elements inside a `vector<T>`,
+    ///   or host-side swaps such as Native `mem::swap`) does not change the underlying enum container or its tag. Because `container_ref`
+    ///   holds a reference-counted pointer to the underlying container (not to the variable slot where it is stored),
+    ///   such moves do not trigger the guard and uses continue to succeed.
+    /// - Overwriting an enum in place through a mutable alias (e.g., `vec_mut_borrow` + `write_ref`,
+    ///   or a mutable local/field ref) changes the tag. Any later use of the previously created,
+    ///   tagged `IndexedRef` will abort before a type-confusing read or write can occur.
+    /// - Reborrows/Copies preserve the stored tag (we copy the `IndexedRef`, including its tag),
+    ///   so the guard still triggers on use if the variant changes in the meantime.
+    ///
+    /// Error Semantics
+    /// ---------------
+    /// - On tag mismatch we return `UNKNOWN_INVARIANT_VIOLATION_ERROR` with sub-status
+    ///   `EINDEXED_REF_TAG_MISMATCH` and message "invalid enum tag". This reflects an internal
+    ///   safety violation observable only when code mutates an enum behind a live, tagged reference.
+    ///
+    /// Examples
+    /// --------
+    /// 1) Variant overwrite (should abort):
+    ///    - r = borrow_variant_field Foo, A::x         // r.tag = Some(A)
+    ///    - ... obtain &mut to the same enum ...       // because of a bug in the verifier or runtime
+    ///    - ... overwrite the enum with a different variant ...
+    ///    - read_ref r                                 // abort: "invalid enum tag"
+    ///
+    /// 2) Container moves (should succeed):
+    ///    - r = borrow_variant_field Foo, A::x         // r.tag = Some(A)
+    ///    - vec_swap<vector<Foo>> / Native `mem::swap`   // move containers; do not rewrite enum
+    ///    - read_ref r                                 // OK: tag unchanged
+    ///
+    /// Relationship to the bytecode verifier
+    /// -----------------------------------
+    /// If the verifier’s aliasing rules hold, this guard is redundant and always passes. If, however,
+    /// an implementation defect allows a destructive update through an alias (e.g., a bytecode verifier bug),
+    /// this guard dynamically prevents the resulting type confusion at the point of use.
+    ///
+    /// Clarification on “trusted code” (runtime)
+    /// ------------------------------------------------------
+    /// This tag guard is implemented in the value layer and is unconditional: it runs regardless
+    /// of whether a function is marked trusted or which paranoid flags are enabled.
+    #[cfg_attr(feature = "force-inline", inline(always))]
+    fn check_tag(&self) -> PartialVMResult<()> {
+        if let Some(tag) = self.tag {
+            let current_tag = self.container_ref.container().get_enum_tag()?;
+
+            if current_tag != tag {
+                let msg = "invalid enum tag".to_string();
+                return Err(
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                        .with_message(msg)
+                        .with_sub_status(EINDEXED_REF_TAG_MISMATCH),
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[cfg_attr(feature = "force-inline", inline(always))]
     fn copy_by_ref(&self) -> Self {
         Self {
             idx: self.idx,
             container_ref: self.container_ref.copy_by_ref(),
+            tag: self.tag,
         }
     }
 }
@@ -683,20 +1005,26 @@ impl Value {
 impl Value {
     #[cfg_attr(feature = "force-inline", inline(always))]
     pub fn equals(&self, other: &Self) -> PartialVMResult<bool> {
-        self.equals_with_depth(other, 1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH))
+        self.equals_with_depth(other, 1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH), true)
     }
 
     #[cfg_attr(feature = "force-inline", inline(always))]
     pub fn compare(&self, other: &Self) -> PartialVMResult<Ordering> {
-        self.compare_with_depth(other, 1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH))
+        self.compare_with_depth(other, 1, Some(DEFAULT_MAX_VM_VALUE_NESTED_DEPTH), true)
     }
 
+    /// Returns true if two Move values are equal.
+    ///
+    /// Additional parameters:
+    ///   - Maximum allowed depth of the traversal of value trees.
+    ///   - Whether to include closure mask in closure comparison or not.
     #[cfg_attr(feature = "force-inline", inline(always))]
     pub fn equals_with_depth(
         &self,
         other: &Self,
         depth: u64,
         max_depth: Option<u64>,
+        include_closure_mask: bool,
     ) -> PartialVMResult<bool> {
         use Value::*;
 
@@ -717,11 +1045,15 @@ impl Value {
             (Bool(l), Bool(r)) => l == r,
             (Address(l), Address(r)) => l == r,
 
-            (Container(l), Container(r)) => l.equals(r, depth, max_depth)?,
+            (Container(l), Container(r)) => l.equals(r, depth, max_depth, include_closure_mask)?,
 
             // We count references as +1 in nesting, hence increasing the depth.
-            (ContainerRef(l), ContainerRef(r)) => l.equals(r, depth + 1, max_depth)?,
-            (IndexedRef(l), IndexedRef(r)) => l.equals(r, depth + 1, max_depth)?,
+            (ContainerRef(l), ContainerRef(r)) => {
+                l.equals(r, depth + 1, max_depth, include_closure_mask)?
+            },
+            (IndexedRef(l), IndexedRef(r)) => {
+                l.equals(r, depth + 1, max_depth, include_closure_mask)?
+            },
 
             // Disallow equality for delayed values. The rationale behind this
             // semantics is that identifiers might not be deterministic, and
@@ -735,10 +1067,11 @@ impl Value {
 
             (ClosureValue(Closure(fun1, captured1)), ClosureValue(Closure(fun2, captured2))) => {
                 if fun1.cmp_dyn(fun2.as_ref())? == Ordering::Equal
+                    && (!include_closure_mask || fun1.closure_mask() == fun2.closure_mask())
                     && captured1.len() == captured2.len()
                 {
                     for (v1, v2) in captured1.iter().zip(captured2.iter()) {
-                        if !v1.equals_with_depth(v2, depth + 1, max_depth)? {
+                        if !v1.equals_with_depth(v2, depth + 1, max_depth, include_closure_mask)? {
                             return Ok(false);
                         }
                     }
@@ -780,11 +1113,17 @@ impl Value {
         Ok(res)
     }
 
+    /// Compares two Move values.
+    ///
+    /// Additional parameters:
+    ///   - Maximum allowed depth of the traversal of value trees.
+    ///   - Whether to include closure mask in closure comparison or not.
     pub fn compare_with_depth(
         &self,
         other: &Self,
         depth: u64,
         max_depth: Option<u64>,
+        include_closure_mask: bool,
     ) -> PartialVMResult<Ordering> {
         use Value::*;
 
@@ -805,11 +1144,15 @@ impl Value {
             (Bool(l), Bool(r)) => l.cmp(r),
             (Address(l), Address(r)) => l.cmp(r),
 
-            (Container(l), Container(r)) => l.compare(r, depth, max_depth)?,
+            (Container(l), Container(r)) => l.compare(r, depth, max_depth, include_closure_mask)?,
 
             // We count references as +1 in nesting, hence increasing the depth.
-            (ContainerRef(l), ContainerRef(r)) => l.compare(r, depth + 1, max_depth)?,
-            (IndexedRef(l), IndexedRef(r)) => l.compare(r, depth + 1, max_depth)?,
+            (ContainerRef(l), ContainerRef(r)) => {
+                l.compare(r, depth + 1, max_depth, include_closure_mask)?
+            },
+            (IndexedRef(l), IndexedRef(r)) => {
+                l.compare(r, depth + 1, max_depth, include_closure_mask)?
+            },
 
             // Disallow comparison for delayed values.
             // (see `ValueImpl::equals` above for details on reasoning behind it)
@@ -819,10 +1162,14 @@ impl Value {
             },
 
             (ClosureValue(Closure(fun1, captured1)), ClosureValue(Closure(fun2, captured2))) => {
-                let o = fun1.cmp_dyn(fun2.as_ref())?;
+                let mut o = fun1.cmp_dyn(fun2.as_ref())?;
+                if include_closure_mask {
+                    o = o.then_with(|| fun1.closure_mask().cmp(&fun2.closure_mask()));
+                }
                 if o == Ordering::Equal {
                     for (v1, v2) in captured1.iter().zip(captured2.iter()) {
-                        let o = v1.compare_with_depth(v2, depth + 1, max_depth)?;
+                        let o =
+                            v1.compare_with_depth(v2, depth + 1, max_depth, include_closure_mask)?;
                         if o != Ordering::Equal {
                             return Ok(o);
                         }
@@ -872,7 +1219,7 @@ impl Value {
         other: &Self,
         max_depth: u64,
     ) -> PartialVMResult<bool> {
-        self.equals_with_depth(other, 1, Some(max_depth))
+        self.equals_with_depth(other, 1, Some(max_depth), true)
     }
 
     // Test-only API to test depth checks.
@@ -882,12 +1229,18 @@ impl Value {
         other: &Self,
         max_depth: u64,
     ) -> PartialVMResult<Ordering> {
-        self.compare_with_depth(other, 1, Some(max_depth))
+        self.compare_with_depth(other, 1, Some(max_depth), true)
     }
 }
 
 impl Container {
-    fn equals(&self, other: &Self, depth: u64, max_depth: Option<u64>) -> PartialVMResult<bool> {
+    fn equals(
+        &self,
+        other: &Self,
+        depth: u64,
+        max_depth: Option<u64>,
+        include_closure_mask: bool,
+    ) -> PartialVMResult<bool> {
         use Container::*;
 
         let res = match (self, other) {
@@ -899,7 +1252,7 @@ impl Container {
                     return Ok(false);
                 }
                 for (v1, v2) in l.iter().zip(r.iter()) {
-                    if !v1.equals_with_depth(v2, depth + 1, max_depth)? {
+                    if !v1.equals_with_depth(v2, depth + 1, max_depth, include_closure_mask)? {
                         return Ok(false);
                     }
                 }
@@ -954,6 +1307,7 @@ impl Container {
         other: &Self,
         depth: u64,
         max_depth: Option<u64>,
+        include_closure_mask: bool,
     ) -> PartialVMResult<Ordering> {
         use Container::*;
 
@@ -963,7 +1317,8 @@ impl Container {
                 let r = &r.borrow();
 
                 for (v1, v2) in l.iter().zip(r.iter()) {
-                    let value_cmp = v1.compare_with_depth(v2, depth + 1, max_depth)?;
+                    let value_cmp =
+                        v1.compare_with_depth(v2, depth + 1, max_depth, include_closure_mask)?;
                     if value_cmp.is_ne() {
                         return Ok(value_cmp);
                     }
@@ -1018,10 +1373,17 @@ impl Container {
 
 impl ContainerRef {
     #[cfg_attr(feature = "force-inline", inline(always))]
-    fn equals(&self, other: &Self, depth: u64, max_depth: Option<u64>) -> PartialVMResult<bool> {
+    fn equals(
+        &self,
+        other: &Self,
+        depth: u64,
+        max_depth: Option<u64>,
+        include_closure_mask: bool,
+    ) -> PartialVMResult<bool> {
         // Note: the depth passed in accounts for the container.
         check_depth(depth, max_depth)?;
-        self.container().equals(other.container(), depth, max_depth)
+        self.container()
+            .equals(other.container(), depth, max_depth, include_closure_mask)
     }
 
     fn compare(
@@ -1029,20 +1391,31 @@ impl ContainerRef {
         other: &Self,
         depth: u64,
         max_depth: Option<u64>,
+        include_closure_mask: bool,
     ) -> PartialVMResult<Ordering> {
         // Note: the depth passed in accounts for the container.
         check_depth(depth, max_depth)?;
         self.container()
-            .compare(other.container(), depth, max_depth)
+            .compare(other.container(), depth, max_depth, include_closure_mask)
     }
 }
 
 impl IndexedRef {
     // note(inline): do not inline, too big
-    fn equals(&self, other: &Self, depth: u64, max_depth: Option<u64>) -> PartialVMResult<bool> {
+    fn equals(
+        &self,
+        other: &Self,
+        depth: u64,
+        max_depth: Option<u64>,
+        include_closure_mask: bool,
+    ) -> PartialVMResult<bool> {
         use Container::*;
 
+        self.check_tag()?;
+        other.check_tag()?;
         check_depth(depth, max_depth)?;
+        let self_index = self.idx as usize;
+        let other_index = other.idx as usize;
         let res = match (
             self.container_ref.container(),
             other.container_ref.container(),
@@ -1056,124 +1429,129 @@ impl IndexedRef {
             | (Struct(r1), Locals(r2))
             | (Locals(r1), Vec(r2))
             | (Locals(r1), Struct(r2))
-            | (Locals(r1), Locals(r2)) => r1.borrow()[self.idx].equals_with_depth(
-                &r2.borrow()[other.idx],
+            | (Locals(r1), Locals(r2)) => r1.borrow()[self_index].equals_with_depth(
+                &r2.borrow()[other_index],
                 depth + 1,
                 max_depth,
+                include_closure_mask,
             )?,
 
-            (VecU8(r1), VecU8(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecU16(r1), VecU16(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecU32(r1), VecU32(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecU64(r1), VecU64(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecU128(r1), VecU128(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecU256(r1), VecU256(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecI8(r1), VecI8(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecI16(r1), VecI16(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecI32(r1), VecI32(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecI64(r1), VecI64(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecI128(r1), VecI128(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecI256(r1), VecI256(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecBool(r1), VecBool(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
-            (VecAddress(r1), VecAddress(r2)) => r1.borrow()[self.idx] == r2.borrow()[other.idx],
+            (VecU8(r1), VecU8(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecU16(r1), VecU16(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecU32(r1), VecU32(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecU64(r1), VecU64(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecU128(r1), VecU128(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecU256(r1), VecU256(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecI8(r1), VecI8(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecI16(r1), VecI16(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecI32(r1), VecI32(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecI64(r1), VecI64(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecI128(r1), VecI128(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecI256(r1), VecI256(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecBool(r1), VecBool(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
+            (VecAddress(r1), VecAddress(r2)) => r1.borrow()[self_index] == r2.borrow()[other_index],
 
             // Equality between a generic and a specialized container.
             (Locals(r1), VecU8(r2)) | (Struct(r1), VecU8(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<u8>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<u8>()? == r2.borrow()[other_index]
             },
             (VecU8(r1), Locals(r2)) | (VecU8(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<u8>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<u8>()?
             },
 
             (Locals(r1), VecU16(r2)) | (Struct(r1), VecU16(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<u16>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<u16>()? == r2.borrow()[other_index]
             },
             (VecU16(r1), Locals(r2)) | (VecU16(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<u16>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<u16>()?
             },
 
             (Locals(r1), VecU32(r2)) | (Struct(r1), VecU32(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<u32>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<u32>()? == r2.borrow()[other_index]
             },
             (VecU32(r1), Locals(r2)) | (VecU32(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<u32>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<u32>()?
             },
 
             (Locals(r1), VecU64(r2)) | (Struct(r1), VecU64(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<u64>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<u64>()? == r2.borrow()[other_index]
             },
             (VecU64(r1), Locals(r2)) | (VecU64(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<u64>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<u64>()?
             },
 
             (Locals(r1), VecU128(r2)) | (Struct(r1), VecU128(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<u128>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<u128>()? == r2.borrow()[other_index]
             },
             (VecU128(r1), Locals(r2)) | (VecU128(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<u128>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<u128>()?
             },
 
             (Locals(r1), VecU256(r2)) | (Struct(r1), VecU256(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<int256::U256>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<int256::U256>()? == r2.borrow()[other_index]
             },
             (VecU256(r1), Locals(r2)) | (VecU256(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<int256::U256>()?
+                r1.borrow()[self_index]
+                    == *r2.borrow()[other_index].as_value_ref::<int256::U256>()?
             },
 
             (Locals(r1), VecI8(r2)) | (Struct(r1), VecI8(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<i8>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<i8>()? == r2.borrow()[other_index]
             },
             (VecI8(r1), Locals(r2)) | (VecI8(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<i8>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<i8>()?
             },
 
             (Locals(r1), VecI16(r2)) | (Struct(r1), VecI16(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<i16>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<i16>()? == r2.borrow()[other_index]
             },
             (VecI16(r1), Locals(r2)) | (VecI16(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<i16>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<i16>()?
             },
 
             (Locals(r1), VecI32(r2)) | (Struct(r1), VecI32(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<i32>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<i32>()? == r2.borrow()[other_index]
             },
             (VecI32(r1), Locals(r2)) | (VecI32(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<i32>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<i32>()?
             },
 
             (Locals(r1), VecI64(r2)) | (Struct(r1), VecI64(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<i64>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<i64>()? == r2.borrow()[other_index]
             },
             (VecI64(r1), Locals(r2)) | (VecI64(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<i64>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<i64>()?
             },
 
             (Locals(r1), VecI128(r2)) | (Struct(r1), VecI128(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<i128>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<i128>()? == r2.borrow()[other_index]
             },
             (VecI128(r1), Locals(r2)) | (VecI128(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<i128>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<i128>()?
             },
 
             (Locals(r1), VecI256(r2)) | (Struct(r1), VecI256(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<int256::I256>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<int256::I256>()? == r2.borrow()[other_index]
             },
             (VecI256(r1), Locals(r2)) | (VecI256(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<int256::I256>()?
+                r1.borrow()[self_index]
+                    == *r2.borrow()[other_index].as_value_ref::<int256::I256>()?
             },
 
             (Locals(r1), VecBool(r2)) | (Struct(r1), VecBool(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<bool>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<bool>()? == r2.borrow()[other_index]
             },
             (VecBool(r1), Locals(r2)) | (VecBool(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<bool>()?
+                r1.borrow()[self_index] == *r2.borrow()[other_index].as_value_ref::<bool>()?
             },
 
             (Locals(r1), VecAddress(r2)) | (Struct(r1), VecAddress(r2)) => {
-                *r1.borrow()[self.idx].as_value_ref::<AccountAddress>()? == r2.borrow()[other.idx]
+                *r1.borrow()[self_index].as_value_ref::<AccountAddress>()?
+                    == r2.borrow()[other_index]
             },
             (VecAddress(r1), Locals(r2)) | (VecAddress(r1), Struct(r2)) => {
-                r1.borrow()[self.idx] == *r2.borrow()[other.idx].as_value_ref::<AccountAddress>()?
+                r1.borrow()[self_index]
+                    == *r2.borrow()[other_index].as_value_ref::<AccountAddress>()?
             },
 
             // All other combinations are illegal.
@@ -1204,8 +1582,14 @@ impl IndexedRef {
         other: &Self,
         depth: u64,
         max_depth: Option<u64>,
+        include_closure_mask: bool,
     ) -> PartialVMResult<Ordering> {
         use Container::*;
+
+        self.check_tag()?;
+        other.check_tag()?;
+        let self_index = self.idx as usize;
+        let other_index = other.idx as usize;
 
         let res = match (
             self.container_ref.container(),
@@ -1220,125 +1604,125 @@ impl IndexedRef {
             | (Struct(r1), Locals(r2))
             | (Locals(r1), Vec(r2))
             | (Locals(r1), Struct(r2))
-            | (Locals(r1), Locals(r2)) => r1.borrow()[self.idx].compare_with_depth(
-                &r2.borrow()[other.idx],
+            | (Locals(r1), Locals(r2)) => r1.borrow()[self_index].compare_with_depth(
+                &r2.borrow()[other_index],
                 depth + 1,
                 max_depth,
+                include_closure_mask,
             )?,
 
-            (VecU8(r1), VecU8(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecU16(r1), VecU16(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecU32(r1), VecU32(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecU64(r1), VecU64(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecU128(r1), VecU128(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecU256(r1), VecU256(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecI8(r1), VecI8(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecI16(r1), VecI16(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecI32(r1), VecI32(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecI64(r1), VecI64(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecI128(r1), VecI128(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecI256(r1), VecI256(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecBool(r1), VecBool(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
-            (VecAddress(r1), VecAddress(r2)) => r1.borrow()[self.idx].cmp(&r2.borrow()[other.idx]),
+            (VecU8(r1), VecU8(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecU16(r1), VecU16(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecU32(r1), VecU32(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecU64(r1), VecU64(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecU128(r1), VecU128(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecU256(r1), VecU256(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecI8(r1), VecI8(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecI16(r1), VecI16(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecI32(r1), VecI32(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecI64(r1), VecI64(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecI128(r1), VecI128(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecI256(r1), VecI256(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecBool(r1), VecBool(r2)) => r1.borrow()[self_index].cmp(&r2.borrow()[other_index]),
+            (VecAddress(r1), VecAddress(r2)) => {
+                r1.borrow()[self_index].cmp(&r2.borrow()[other_index])
+            },
 
             // Comparison between a generic and a specialized container.
-            (Locals(r1), VecU8(r2)) | (Struct(r1), VecU8(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecU8(r2)) | (Struct(r1), VecU8(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<u8>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecU8(r1), Locals(r2)) | (VecU8(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<u8>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<u8>()?)
             },
 
-            (Locals(r1), VecU16(r2)) | (Struct(r1), VecU16(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecU16(r2)) | (Struct(r1), VecU16(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<u16>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecU16(r1), Locals(r2)) | (VecU16(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<u16>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<u16>()?)
             },
 
-            (Locals(r1), VecU32(r2)) | (Struct(r1), VecU32(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecU32(r2)) | (Struct(r1), VecU32(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<u32>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecU32(r1), Locals(r2)) | (VecU32(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<u32>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<u32>()?)
             },
 
-            (Locals(r1), VecU64(r2)) | (Struct(r1), VecU64(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecU64(r2)) | (Struct(r1), VecU64(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<u64>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecU64(r1), Locals(r2)) | (VecU64(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<u64>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<u64>()?)
             },
 
-            (Locals(r1), VecU128(r2)) | (Struct(r1), VecU128(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecU128(r2)) | (Struct(r1), VecU128(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<u128>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecU128(r1), Locals(r2)) | (VecU128(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<u128>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<u128>()?)
             },
 
-            (Locals(r1), VecU256(r2)) | (Struct(r1), VecU256(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecU256(r2)) | (Struct(r1), VecU256(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<int256::U256>()?
-                .cmp(&r2.borrow()[other.idx]),
-            (VecU256(r1), Locals(r2)) | (VecU256(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<int256::U256>()?)
-            },
+                .cmp(&r2.borrow()[other_index]),
+            (VecU256(r1), Locals(r2)) | (VecU256(r1), Struct(r2)) => r1.borrow()[self_index]
+                .cmp(r2.borrow()[other_index].as_value_ref::<int256::U256>()?),
 
-            (Locals(r1), VecI8(r2)) | (Struct(r1), VecI8(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecI8(r2)) | (Struct(r1), VecI8(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<i8>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecI8(r1), Locals(r2)) | (VecI8(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<i8>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<i8>()?)
             },
 
-            (Locals(r1), VecI16(r2)) | (Struct(r1), VecI16(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecI16(r2)) | (Struct(r1), VecI16(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<i16>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecI16(r1), Locals(r2)) | (VecI16(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<i16>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<i16>()?)
             },
 
-            (Locals(r1), VecI32(r2)) | (Struct(r1), VecI32(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecI32(r2)) | (Struct(r1), VecI32(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<i32>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecI32(r1), Locals(r2)) | (VecI32(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<i32>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<i32>()?)
             },
 
-            (Locals(r1), VecI64(r2)) | (Struct(r1), VecI64(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecI64(r2)) | (Struct(r1), VecI64(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<i64>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecI64(r1), Locals(r2)) | (VecI64(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<i64>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<i64>()?)
             },
 
-            (Locals(r1), VecI128(r2)) | (Struct(r1), VecI128(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecI128(r2)) | (Struct(r1), VecI128(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<i128>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecI128(r1), Locals(r2)) | (VecI128(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<i128>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<i128>()?)
             },
 
-            (Locals(r1), VecI256(r2)) | (Struct(r1), VecI256(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecI256(r2)) | (Struct(r1), VecI256(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<int256::I256>()?
-                .cmp(&r2.borrow()[other.idx]),
-            (VecI256(r1), Locals(r2)) | (VecI256(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<int256::I256>()?)
-            },
+                .cmp(&r2.borrow()[other_index]),
+            (VecI256(r1), Locals(r2)) | (VecI256(r1), Struct(r2)) => r1.borrow()[self_index]
+                .cmp(r2.borrow()[other_index].as_value_ref::<int256::I256>()?),
 
-            (Locals(r1), VecBool(r2)) | (Struct(r1), VecBool(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecBool(r2)) | (Struct(r1), VecBool(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<bool>()?
-                .cmp(&r2.borrow()[other.idx]),
+                .cmp(&r2.borrow()[other_index]),
             (VecBool(r1), Locals(r2)) | (VecBool(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<bool>()?)
+                r1.borrow()[self_index].cmp(r2.borrow()[other_index].as_value_ref::<bool>()?)
             },
 
-            (Locals(r1), VecAddress(r2)) | (Struct(r1), VecAddress(r2)) => r1.borrow()[self.idx]
+            (Locals(r1), VecAddress(r2)) | (Struct(r1), VecAddress(r2)) => r1.borrow()[self_index]
                 .as_value_ref::<AccountAddress>()?
-                .cmp(&r2.borrow()[other.idx]),
-            (VecAddress(r1), Locals(r2)) | (VecAddress(r1), Struct(r2)) => {
-                r1.borrow()[self.idx].cmp(r2.borrow()[other.idx].as_value_ref::<AccountAddress>()?)
-            },
+                .cmp(&r2.borrow()[other_index]),
+            (VecAddress(r1), Locals(r2)) | (VecAddress(r1), Struct(r2)) => r1.borrow()[self_index]
+                .cmp(r2.borrow()[other_index].as_value_ref::<AccountAddress>()?),
 
             // All other combinations are illegal.
             (Vec(_), _)
@@ -1384,26 +1768,28 @@ impl IndexedRef {
     fn read_ref(self, depth: u64, max_depth: Option<u64>) -> PartialVMResult<Value> {
         use Container::*;
 
+        self.check_tag()?;
+        let index = self.idx as usize;
         let res = match self.container_ref.container() {
-            Vec(r) => r.borrow()[self.idx].copy_value(depth + 1, max_depth)?,
-            Struct(r) => r.borrow()[self.idx].copy_value(depth + 1, max_depth)?,
+            Vec(r) => r.borrow()[index].copy_value(depth + 1, max_depth)?,
+            Struct(r) => r.borrow()[index].copy_value(depth + 1, max_depth)?,
 
-            VecU8(r) => Value::U8(r.borrow()[self.idx]),
-            VecU16(r) => Value::U16(r.borrow()[self.idx]),
-            VecU32(r) => Value::U32(r.borrow()[self.idx]),
-            VecU64(r) => Value::U64(r.borrow()[self.idx]),
-            VecU128(r) => Value::U128(r.borrow()[self.idx]),
-            VecU256(r) => Value::U256(r.borrow()[self.idx]),
-            VecI8(r) => Value::I8(r.borrow()[self.idx]),
-            VecI16(r) => Value::I16(r.borrow()[self.idx]),
-            VecI32(r) => Value::I32(r.borrow()[self.idx]),
-            VecI64(r) => Value::I64(r.borrow()[self.idx]),
-            VecI128(r) => Value::I128(r.borrow()[self.idx]),
-            VecI256(r) => Value::I256(r.borrow()[self.idx]),
-            VecBool(r) => Value::Bool(r.borrow()[self.idx]),
-            VecAddress(r) => Value::Address(r.borrow()[self.idx]),
+            VecU8(r) => Value::U8(r.borrow()[index]),
+            VecU16(r) => Value::U16(r.borrow()[index]),
+            VecU32(r) => Value::U32(r.borrow()[index]),
+            VecU64(r) => Value::U64(r.borrow()[index]),
+            VecU128(r) => Value::U128(r.borrow()[index]),
+            VecU256(r) => Value::U256(Box::new(r.borrow()[index])),
+            VecI8(r) => Value::I8(r.borrow()[index]),
+            VecI16(r) => Value::I16(r.borrow()[index]),
+            VecI32(r) => Value::I32(r.borrow()[index]),
+            VecI64(r) => Value::I64(r.borrow()[index]),
+            VecI128(r) => Value::I128(r.borrow()[index]),
+            VecI256(r) => Value::I256(Box::new(r.borrow()[index])),
+            VecBool(r) => Value::Bool(r.borrow()[index]),
+            VecAddress(r) => Value::Address(Box::new(r.borrow()[index])),
 
-            Locals(r) => r.borrow()[self.idx].copy_value(depth + 1, max_depth)?,
+            Locals(r) => r.borrow()[index].copy_value(depth + 1, max_depth)?,
         };
         res.check_valid_for_indexed_ref(&self)?;
         Ok(res)
@@ -1472,10 +1858,29 @@ impl ContainerRef {
                         *$r1.borrow_mut() = take_unique_ownership(r)?;
                     }};
                 }
+                // Variant of `assign!` for `NestedValues`-carrying variants (Struct/Vec).
+                // Unwraps the Rc from `NestedValues` before delegating to `take_unique_ownership`.
+                macro_rules! assign_nested {
+                    ($r1:expr, $tc:ident) => {{
+                        let r = match c {
+                            Container::$tc(v) => v.into_rc(),
+                            _ => {
+                                return Err(PartialVMError::new(
+                                    StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
+                                )
+                                .with_message(
+                                    "failed to write_ref: container type mismatch".to_string(),
+                                )
+                                .with_sub_status(move_core_types::vm_status::sub_status::unknown_invariant_violation::EPARANOID_FAILURE))
+                            },
+                        };
+                        *$r1.borrow_mut() = take_unique_ownership(r)?;
+                    }};
+                }
 
                 match self.container() {
-                    Container::Struct(r) => assign!(r, Struct),
-                    Container::Vec(r) => assign!(r, Vec),
+                    Container::Struct(r) => assign_nested!(r, Struct),
+                    Container::Vec(r) => assign_nested!(r, Vec),
                     Container::VecU8(r) => assign!(r, VecU8),
                     Container::VecU16(r) => assign!(r, VecU16),
                     Container::VecU32(r) => assign!(r, VecU32),
@@ -1516,25 +1921,27 @@ impl ContainerRef {
 impl IndexedRef {
     fn write_ref(self, x: Value) -> PartialVMResult<()> {
         x.check_valid_for_indexed_ref(&self)?;
+        self.check_tag()?;
+        let index = self.idx as usize;
         match (self.container_ref.container(), &x) {
             (Container::Locals(r), _) | (Container::Vec(r), _) | (Container::Struct(r), _) => {
                 let mut v = r.borrow_mut();
-                v[self.idx] = x;
+                v[index] = x;
             },
-            (Container::VecU8(r), Value::U8(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecU16(r), Value::U16(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecU32(r), Value::U32(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecU64(r), Value::U64(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecU128(r), Value::U128(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecU256(r), Value::U256(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecI8(r), Value::I8(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecI16(r), Value::I16(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecI32(r), Value::I32(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecI64(r), Value::I64(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecI128(r), Value::I128(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecI256(r), Value::I256(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecBool(r), Value::Bool(x)) => r.borrow_mut()[self.idx] = *x,
-            (Container::VecAddress(r), Value::Address(x)) => r.borrow_mut()[self.idx] = *x,
+            (Container::VecU8(r), Value::U8(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecU16(r), Value::U16(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecU32(r), Value::U32(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecU64(r), Value::U64(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecU128(r), Value::U128(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecU256(r), Value::U256(x)) => r.borrow_mut()[index] = **x,
+            (Container::VecI8(r), Value::I8(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecI16(r), Value::I16(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecI32(r), Value::I32(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecI64(r), Value::I64(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecI128(r), Value::I128(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecI256(r), Value::I256(x)) => r.borrow_mut()[index] = **x,
+            (Container::VecBool(r), Value::Bool(x)) => r.borrow_mut()[index] = *x,
+            (Container::VecAddress(r), Value::Address(x)) => r.borrow_mut()[index] = **x,
 
             (Container::VecU8(_), _)
             | (Container::VecU16(_), _)
@@ -1599,20 +2006,30 @@ macro_rules! impl_vm_value_from_primitive {
     };
 }
 
+macro_rules! impl_vm_value_from_primitive_boxed {
+    ($ty:ty, $tc:ident) => {
+        impl VMValueFromPrimitive<$ty> for Value {
+            fn from_primitive(val: $ty) -> Self {
+                Self::$tc(Box::new(val))
+            }
+        }
+    };
+}
+
 impl_vm_value_from_primitive!(u8, U8);
 impl_vm_value_from_primitive!(u16, U16);
 impl_vm_value_from_primitive!(u32, U32);
 impl_vm_value_from_primitive!(u64, U64);
 impl_vm_value_from_primitive!(u128, U128);
-impl_vm_value_from_primitive!(int256::U256, U256);
+impl_vm_value_from_primitive_boxed!(int256::U256, U256);
 impl_vm_value_from_primitive!(i8, I8);
 impl_vm_value_from_primitive!(i16, I16);
 impl_vm_value_from_primitive!(i32, I32);
 impl_vm_value_from_primitive!(i64, I64);
 impl_vm_value_from_primitive!(i128, I128);
-impl_vm_value_from_primitive!(int256::I256, I256);
+impl_vm_value_from_primitive_boxed!(int256::I256, I256);
 impl_vm_value_from_primitive!(bool, Bool);
-impl_vm_value_from_primitive!(AccountAddress, Address);
+impl_vm_value_from_primitive_boxed!(AccountAddress, Address);
 
 /**************************************************************************************
  *
@@ -1686,10 +2103,15 @@ impl IndexedRef {
     fn swap_values(self, other: Self) -> PartialVMResult<()> {
         use Container::*;
 
+        self.check_tag()?;
+        other.check_tag()?;
+        let self_index = self.idx as usize;
+        let other_index = other.idx as usize;
+
         macro_rules! swap {
             ($r1:ident, $r2:ident) => {{
                 if Rc::ptr_eq($r1, $r2) {
-                    if self.idx == other.idx {
+                    if self_index == other_index {
                         return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
                             .with_message(format!(
                                 "cannot swap references to the same item {:?}",
@@ -1697,11 +2119,11 @@ impl IndexedRef {
                             )));
                     }
 
-                    $r1.borrow_mut().swap(self.idx, other.idx);
+                    $r1.borrow_mut().swap(self_index, other_index);
                 } else {
                     mem::swap(
-                        &mut $r1.borrow_mut()[self.idx],
-                        &mut $r2.borrow_mut()[other.idx],
+                        &mut $r1.borrow_mut()[self_index],
+                        &mut $r2.borrow_mut()[other_index],
                     )
                 }
             }};
@@ -1712,9 +2134,9 @@ impl IndexedRef {
                 let mut r1 = $r1.borrow_mut();
                 let mut r2 = $r2.borrow_mut();
 
-                let v1 = *r1[self.idx].as_value_ref()?;
-                r1[self.idx] = Value::from_primitive(r2[other.idx]);
-                r2[other.idx] = v1;
+                let v1 = *r1[self_index].as_value_ref()?;
+                r1[self_index] = Value::from_primitive(r2[other_index]);
+                r2[other_index] = v1;
             }};
         }
 
@@ -1723,9 +2145,9 @@ impl IndexedRef {
                 let mut r1 = $r1.borrow_mut();
                 let mut r2 = $r2.borrow_mut();
 
-                let v2 = *r2[other.idx].as_value_ref()?;
-                r2[other.idx] = Value::from_primitive(r1[self.idx]);
-                r1[self.idx] = v2;
+                let v2 = *r2[other_index].as_value_ref()?;
+                r2[other_index] = Value::from_primitive(r1[self_index]);
+                r1[self_index] = v2;
             }};
         }
 
@@ -1869,8 +2291,14 @@ impl Reference {
  **************************************************************************************/
 
 impl ContainerRef {
+    /// Borrows element `idx` from this container.
+    ///
+    /// `tag` is only used when producing an [`IndexedRef`]. When `Some(tag)`, it records the enum
+    /// variant tag observed at borrow time (used by `borrow_variant_field`) so that later uses of the
+    /// returned reference can detect if the enum was rewritten to a different variant. For non-variant
+    /// borrows, callers should pass `None`. (Ignored when this returns a [`ContainerRef`].)
     #[cfg_attr(feature = "force-inline", inline(always))]
-    fn borrow_elem(&self, idx: usize) -> PartialVMResult<Value> {
+    fn borrow_elem(&self, idx: usize, tag: Option<u16>) -> PartialVMResult<Value> {
         let len = self.container().len();
         if idx >= len {
             return Err(
@@ -1898,8 +2326,9 @@ impl ContainerRef {
         macro_rules! indexed_ref {
             () => {
                 Value::IndexedRef(IndexedRef {
-                    idx,
+                    idx: idx as u32,
                     container_ref: self.copy_by_ref(),
+                    tag,
                 })
             };
         }
@@ -1939,8 +2368,8 @@ impl ContainerRef {
                 }
             },
 
-            // Borrowing from locals or structs produces IndexedRef only for primitive types. If
-            // element is also a container, we must produce ContainerRef.
+            // Borrowing from locals or structs produces IndexedRef for non-container values (e.g., primitives,
+            // closures, delayed values). If the element is a container, we must produce ContainerRef.
             Container::Locals(r) | Container::Struct(r) => {
                 let v = r.borrow();
                 match &v[idx] {
@@ -1995,7 +2424,7 @@ impl ContainerRef {
 
 impl StructRef {
     pub fn borrow_field(&self, idx: usize) -> PartialVMResult<Value> {
-        self.0.borrow_elem(idx)
+        self.0.borrow_elem(idx, None)
     }
 
     pub fn borrow_variant_field(
@@ -2006,7 +2435,7 @@ impl StructRef {
     ) -> PartialVMResult<Value> {
         let tag = self.get_variant_tag()?;
         if allowed.contains(&tag) {
-            Ok(self.0.borrow_elem(idx + 1)?)
+            Ok(self.0.borrow_elem(idx + 1, Some(tag))?)
         } else {
             Err(
                 PartialVMError::new(StatusCode::STRUCT_VARIANT_MISMATCH).with_message(format!(
@@ -2024,37 +2453,7 @@ impl StructRef {
     }
 
     fn get_variant_tag(&self) -> PartialVMResult<VariantIndex> {
-        match self.0.container() {
-            Container::Struct(vals) => {
-                let vals = vals.borrow();
-                vals.first()
-                    .and_then(|v| match v {
-                        Value::U16(x) => Some(*x),
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                    })
-            },
-            Container::Locals(_)
-            | Container::Vec(_)
-            | Container::VecU8(_)
-            | Container::VecU64(_)
-            | Container::VecU128(_)
-            | Container::VecBool(_)
-            | Container::VecAddress(_)
-            | Container::VecU16(_)
-            | Container::VecU32(_)
-            | Container::VecU256(_)
-            | Container::VecI8(_)
-            | Container::VecI16(_)
-            | Container::VecI32(_)
-            | Container::VecI64(_)
-            | Container::VecI128(_)
-            | Container::VecI256(_) => Err(PartialVMError::new(
-                StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
-            )),
-        }
+        self.0.container().get_enum_tag()
     }
 }
 
@@ -2093,8 +2492,11 @@ impl Locals {
             | Value::Address(_)
             | Value::ClosureValue(_)
             | Value::DelayedFieldID { .. } => Ok(Value::IndexedRef(IndexedRef {
-                idx,
-                container_ref: ContainerRef::Local(Container::Locals(Rc::clone(&self.0))),
+                idx: idx as u32,
+                container_ref: ContainerRef::Local(Container::Locals(NestedValues::from_rc(
+                    Rc::clone(&self.0),
+                ))),
+                tag: None,
             })),
 
             Value::ContainerRef(_) | Value::Invalid | Value::IndexedRef(_) => Err(
@@ -2107,7 +2509,10 @@ impl Locals {
 
 impl SignerRef {
     pub fn borrow_signer(&self) -> PartialVMResult<Value> {
-        self.0.borrow_elem(1)
+        // The signer is internally represented as an enum (Master or Permissioned), but both
+        // variants store the account address at index 1. Thus, we can access it without checking
+        // the variant tag.
+        self.0.borrow_elem(MASTER_ADDRESS_FIELD_OFFSET, None)
     }
 
     pub fn is_permissioned(&self) -> PartialVMResult<bool> {
@@ -2284,7 +2689,7 @@ impl Value {
     }
 
     pub fn u256(x: int256::U256) -> Self {
-        Value::U256(x)
+        Value::U256(Box::new(x))
     }
 
     pub fn i8(x: i8) -> Self {
@@ -2308,7 +2713,7 @@ impl Value {
     }
 
     pub fn i256(x: int256::I256) -> Self {
-        Value::I256(x)
+        Value::I256(Box::new(x))
     }
 
     pub fn bool(x: bool) -> Self {
@@ -2316,7 +2721,7 @@ impl Value {
     }
 
     pub fn address(x: AccountAddress) -> Self {
-        Value::Address(x)
+        Value::Address(Box::new(x))
     }
 
     pub fn master_signer(x: AccountAddress) -> Self {
@@ -2324,10 +2729,10 @@ impl Value {
     }
 
     pub fn permissioned_signer(x: AccountAddress, perm_storage_address: AccountAddress) -> Self {
-        Self::struct_(Struct::pack_variant(
-            PERMISSIONED_SIGNER_VARIANT,
-            vec![Value::address(x), Value::address(perm_storage_address)],
-        ))
+        Self::struct_(Struct::pack_variant(PERMISSIONED_SIGNER_VARIANT, vec![
+            Value::address(x),
+            Value::address(perm_storage_address),
+        ]))
     }
 
     /// Create a "unowned" reference to a signer value (&signer) for populating the &signer in
@@ -2338,7 +2743,7 @@ impl Value {
 
     #[cfg_attr(feature = "force-inline", inline(always))]
     pub fn struct_(s: Struct) -> Self {
-        Value::Container(Container::Struct(Rc::new(RefCell::new(s.fields))))
+        Value::Container(Container::Struct(NestedValues::new(s.fields)))
     }
 
     #[cfg_attr(feature = "force-inline", inline(always))]
@@ -2453,9 +2858,7 @@ impl Value {
                 Ok(v)
             })
             .collect::<PartialVMResult<Vec<_>>>()?;
-        Ok(Self::Container(Container::Vec(Rc::new(RefCell::new(
-            values,
-        )))))
+        Ok(Self::Container(Container::Vec(NestedValues::new(values))))
     }
 
     pub fn closure(
@@ -2510,20 +2913,44 @@ macro_rules! impl_vm_value_cast {
     };
 }
 
+macro_rules! impl_vm_value_cast_boxed {
+    ($ty:ty, $tc:ident) => {
+        impl VMValueCast<$ty> for Value {
+            #[cfg_attr(feature = "inline-vm-casts", inline)]
+            fn cast(self) -> PartialVMResult<$ty> {
+                return match self {
+                    Value::$tc(x) => Ok(*x),
+                    v => __cannot_cast(v),
+                };
+                #[cold]
+                fn __cannot_cast(v: Value) -> PartialVMResult<$ty> {
+                    Err(
+                        PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(format!(
+                            "cannot cast {:?} to {}",
+                            v,
+                            stringify!($ty)
+                        )),
+                    )
+                }
+            }
+        }
+    };
+}
+
 impl_vm_value_cast!(u8, U8);
 impl_vm_value_cast!(u16, U16);
 impl_vm_value_cast!(u32, U32);
 impl_vm_value_cast!(u64, U64);
 impl_vm_value_cast!(u128, U128);
-impl_vm_value_cast!(int256::U256, U256);
+impl_vm_value_cast_boxed!(int256::U256, U256);
 impl_vm_value_cast!(i8, I8);
 impl_vm_value_cast!(i16, I16);
 impl_vm_value_cast!(i32, I32);
 impl_vm_value_cast!(i64, I64);
 impl_vm_value_cast!(i128, I128);
-impl_vm_value_cast!(int256::I256, I256);
+impl_vm_value_cast_boxed!(int256::I256, I256);
 impl_vm_value_cast!(bool, Bool);
-impl_vm_value_cast!(AccountAddress, Address);
+impl_vm_value_cast_boxed!(AccountAddress, Address);
 impl_vm_value_cast!(ContainerRef, ContainerRef);
 impl_vm_value_cast!(IndexedRef, IndexedRef);
 
@@ -2570,7 +2997,7 @@ impl VMValueCast<Struct> for Value {
     fn cast(self) -> PartialVMResult<Struct> {
         match self {
             Value::Container(Container::Struct(r)) => Ok(Struct {
-                fields: take_unique_ownership(r)?,
+                fields: take_unique_ownership(r.into_rc())?,
             }),
             v => Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR)
                 .with_message(format!("cannot cast {:?} to struct", v,))),
@@ -2612,7 +3039,7 @@ impl VMValueCast<Vec<Value>> for Value {
     fn cast(self) -> PartialVMResult<Vec<Value>> {
         match self {
             Value::Container(Container::Vec(c)) => {
-                Ok(take_unique_ownership(c)?.into_iter().collect())
+                Ok(take_unique_ownership(c.into_rc())?.into_iter().collect())
             },
             Value::Address(_)
             | Value::Bool(_)
@@ -2694,13 +3121,13 @@ impl Value {
             Self::U32(x) => x == 0,
             Self::U64(x) => x == 0,
             Self::U128(x) => x == 0,
-            Self::U256(x) => x == int256::U256::ZERO,
+            Self::U256(x) => *x == int256::U256::ZERO,
             Self::I8(x) => x == 0,
             Self::I16(x) => x == 0,
             Self::I32(x) => x == 0,
             Self::I64(x) => x == 0,
             Self::I128(x) => x == 0,
-            Self::I256(x) => x == int256::I256::ZERO,
+            Self::I256(x) => *x == int256::I256::ZERO,
             _ => false,
         }
     }
@@ -2722,13 +3149,13 @@ impl Value {
             (U32(l), U32(r)) => u32::checked_add(l, r).map(U32),
             (U64(l), U64(r)) => u64::checked_add(l, r).map(U64),
             (U128(l), U128(r)) => u128::checked_add(l, r).map(U128),
-            (U256(l), U256(r)) => int256::U256::checked_add(l, r).map(U256),
+            (U256(l), U256(r)) => int256::U256::checked_add(*l, *r).map(|res| U256(Box::new(res))),
             (I8(l), I8(r)) => i8::checked_add(l, r).map(I8),
             (I16(l), I16(r)) => i16::checked_add(l, r).map(I16),
             (I32(l), I32(r)) => i32::checked_add(l, r).map(I32),
             (I64(l), I64(r)) => i64::checked_add(l, r).map(I64),
             (I128(l), I128(r)) => i128::checked_add(l, r).map(I128),
-            (I256(l), I256(r)) => int256::I256::checked_add(l, r).map(I256),
+            (I256(l), I256(r)) => int256::I256::checked_add(*l, *r).map(|res| I256(Box::new(res))),
             (l, r) => {
                 let msg = format!("Cannot add {:?} and {:?}", l, r);
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
@@ -2748,13 +3175,13 @@ impl Value {
             (U32(l), U32(r)) => u32::checked_sub(l, r).map(U32),
             (U64(l), U64(r)) => u64::checked_sub(l, r).map(U64),
             (U128(l), U128(r)) => u128::checked_sub(l, r).map(U128),
-            (U256(l), U256(r)) => int256::U256::checked_sub(l, r).map(U256),
+            (U256(l), U256(r)) => int256::U256::checked_sub(*l, *r).map(|res| U256(Box::new(res))),
             (I8(l), I8(r)) => i8::checked_sub(l, r).map(I8),
             (I16(l), I16(r)) => i16::checked_sub(l, r).map(I16),
             (I32(l), I32(r)) => i32::checked_sub(l, r).map(I32),
             (I64(l), I64(r)) => i64::checked_sub(l, r).map(I64),
             (I128(l), I128(r)) => i128::checked_sub(l, r).map(I128),
-            (I256(l), I256(r)) => int256::I256::checked_sub(l, r).map(I256),
+            (I256(l), I256(r)) => int256::I256::checked_sub(*l, *r).map(|res| I256(Box::new(res))),
             (l, r) => {
                 let msg = format!("Cannot sub {:?} from {:?}", r, l);
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
@@ -2774,13 +3201,13 @@ impl Value {
             (U32(l), U32(r)) => u32::checked_mul(l, r).map(U32),
             (U64(l), U64(r)) => u64::checked_mul(l, r).map(U64),
             (U128(l), U128(r)) => u128::checked_mul(l, r).map(U128),
-            (U256(l), U256(r)) => int256::U256::checked_mul(l, r).map(U256),
+            (U256(l), U256(r)) => int256::U256::checked_mul(*l, *r).map(|res| U256(Box::new(res))),
             (I8(l), I8(r)) => i8::checked_mul(l, r).map(I8),
             (I16(l), I16(r)) => i16::checked_mul(l, r).map(I16),
             (I32(l), I32(r)) => i32::checked_mul(l, r).map(I32),
             (I64(l), I64(r)) => i64::checked_mul(l, r).map(I64),
             (I128(l), I128(r)) => i128::checked_mul(l, r).map(I128),
-            (I256(l), I256(r)) => int256::I256::checked_mul(l, r).map(I256),
+            (I256(l), I256(r)) => int256::I256::checked_mul(*l, *r).map(|res| I256(Box::new(res))),
             (l, r) => {
                 let msg = format!("Cannot mul {:?} and {:?}", l, r);
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
@@ -2800,13 +3227,13 @@ impl Value {
             (U32(l), U32(r)) => u32::checked_div(l, *r).map(U32),
             (U64(l), U64(r)) => u64::checked_div(l, *r).map(U64),
             (U128(l), U128(r)) => u128::checked_div(l, *r).map(U128),
-            (U256(l), U256(r)) => int256::U256::checked_div(l, *r).map(U256),
+            (U256(l), U256(r)) => int256::U256::checked_div(*l, **r).map(|res| U256(Box::new(res))),
             (I8(l), I8(r)) => i8::checked_div(l, *r).map(I8),
             (I16(l), I16(r)) => i16::checked_div(l, *r).map(I16),
             (I32(l), I32(r)) => i32::checked_div(l, *r).map(I32),
             (I64(l), I64(r)) => i64::checked_div(l, *r).map(I64),
             (I128(l), I128(r)) => i128::checked_div(l, *r).map(I128),
-            (I256(l), I256(r)) => int256::I256::checked_div(l, *r).map(I256),
+            (I256(l), I256(r)) => int256::I256::checked_div(*l, **r).map(|res| I256(Box::new(res))),
             (l, r) => {
                 let msg = format!("Cannot div {:?} by {:?}", l, r);
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
@@ -2830,13 +3257,13 @@ impl Value {
             (U32(l), U32(r)) => u32::checked_rem(l, r).map(U32),
             (U64(l), U64(r)) => u64::checked_rem(l, r).map(U64),
             (U128(l), U128(r)) => u128::checked_rem(l, r).map(U128),
-            (U256(l), U256(r)) => int256::U256::checked_rem(l, r).map(U256),
+            (U256(l), U256(r)) => int256::U256::checked_rem(*l, *r).map(|res| U256(Box::new(res))),
             (I8(l), I8(r)) => i8::checked_rem(l, r).map(I8),
             (I16(l), I16(r)) => i16::checked_rem(l, r).map(I16),
             (I32(l), I32(r)) => i32::checked_rem(l, r).map(I32),
             (I64(l), I64(r)) => i64::checked_rem(l, r).map(I64),
             (I128(l), I128(r)) => i128::checked_rem(l, r).map(I128),
-            (I256(l), I256(r)) => int256::I256::checked_rem(l, r).map(I256),
+            (I256(l), I256(r)) => int256::I256::checked_rem(*l, *r).map(|res| I256(Box::new(res))),
             (l, r) => {
                 let msg = format!("Cannot rem {:?} by {:?}", l, r);
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
@@ -2856,7 +3283,7 @@ impl Value {
             I32(x) => x.checked_neg().map(I32),
             I64(x) => x.checked_neg().map(I64),
             I128(x) => x.checked_neg().map(I128),
-            I256(x) => x.checked_neg().map(I256),
+            I256(x) => x.checked_neg().map(|res| I256(Box::new(res))),
             _ => {
                 let msg = format!("Cannot negate {:?}", self);
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
@@ -2876,7 +3303,7 @@ impl Value {
             (U32(l), U32(r)) => U32(l | r),
             (U64(l), U64(r)) => U64(l | r),
             (U128(l), U128(r)) => U128(l | r),
-            (U256(l), U256(r)) => U256(l | r),
+            (U256(l), U256(r)) => U256(Box::new(*l | *r)),
             (l, r) => {
                 let msg = format!("Cannot bit_or {:?} and {:?}", l, r);
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
@@ -2892,7 +3319,7 @@ impl Value {
             (U32(l), U32(r)) => U32(l & r),
             (U64(l), U64(r)) => U64(l & r),
             (U128(l), U128(r)) => U128(l & r),
-            (U256(l), U256(r)) => U256(l & r),
+            (U256(l), U256(r)) => U256(Box::new(*l & *r)),
             (l, r) => {
                 let msg = format!("Cannot bit_and {:?} and {:?}", l, r);
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
@@ -2908,7 +3335,7 @@ impl Value {
             (U32(l), U32(r)) => U32(l ^ r),
             (U64(l), U64(r)) => U64(l ^ r),
             (U128(l), U128(r)) => U128(l ^ r),
-            (U256(l), U256(r)) => U256(l ^ r),
+            (U256(l), U256(r)) => U256(Box::new(*l ^ *r)),
             (l, r) => {
                 let msg = format!("Cannot bit_xor {:?} and {:?}", l, r);
                 return Err(PartialVMError::new(StatusCode::INTERNAL_TYPE_ERROR).with_message(msg));
@@ -2925,7 +3352,7 @@ impl Value {
             U32(x) if n_bits < 32 => U32(x << n_bits),
             U64(x) if n_bits < 64 => U64(x << n_bits),
             U128(x) if n_bits < 128 => U128(x << n_bits),
-            U256(x) => U256(x << int256::U256::from(n_bits)),
+            U256(x) => U256(Box::new(*x << int256::U256::from(n_bits))),
             _ => {
                 return Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
                     .with_message("Shift Left overflow".to_string()));
@@ -2942,7 +3369,7 @@ impl Value {
             U32(x) if n_bits < 32 => U32(x >> n_bits),
             U64(x) if n_bits < 64 => U64(x >> n_bits),
             U128(x) if n_bits < 128 => U128(x >> n_bits),
-            U256(x) => U256(x >> int256::U256::from(n_bits)),
+            U256(x) => U256(Box::new(*x >> int256::U256::from(n_bits))),
             _ => {
                 return Err(PartialVMError::new(StatusCode::ARITHMETIC_ERROR)
                     .with_message("Shift Right overflow".to_string()));
@@ -3181,13 +3608,13 @@ impl Value {
             U32(x) => cast_int_narrowing!(u32, u8, x),
             U64(x) => cast_int_narrowing!(u64, u8, x),
             U128(x) => cast_int_narrowing!(u128, u8, x),
-            U256(x) => cast_int_with_try_from!(U256, u8, x),
+            U256(x) => cast_int_with_try_from!(U256, u8, *x),
             I8(x) => cast_int_i2u_widening!(i8, u8, x),
             I16(x) => cast_int_i2u_narrowing!(i16, u8, x),
             I32(x) => cast_int_i2u_narrowing!(i32, u8, x),
             I64(x) => cast_int_i2u_narrowing!(i64, u8, x),
             I128(x) => cast_int_i2u_narrowing!(i128, u8, x),
-            I256(x) => cast_int_with_try_from!(I256, u8, x),
+            I256(x) => cast_int_with_try_from!(I256, u8, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3201,13 +3628,13 @@ impl Value {
             U32(x) => cast_int_narrowing!(u32, u16, x),
             U64(x) => cast_int_narrowing!(u64, u16, x),
             U128(x) => cast_int_narrowing!(u128, u16, x),
-            U256(x) => cast_int_with_try_from!(U256, u16, x),
+            U256(x) => cast_int_with_try_from!(U256, u16, *x),
             I8(x) => cast_int_i2u_widening!(i8, u16, x),
             I16(x) => cast_int_i2u_widening!(i16, u16, x),
             I32(x) => cast_int_i2u_narrowing!(i32, u16, x),
             I64(x) => cast_int_i2u_narrowing!(i64, u16, x),
             I128(x) => cast_int_i2u_narrowing!(i128, u16, x),
-            I256(x) => cast_int_with_try_from!(I256, u16, x),
+            I256(x) => cast_int_with_try_from!(I256, u16, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3221,13 +3648,13 @@ impl Value {
             U32(x) => Ok(x),
             U64(x) => cast_int_narrowing!(u64, u32, x),
             U128(x) => cast_int_narrowing!(u128, u32, x),
-            U256(x) => cast_int_with_try_from!(U256, u32, x),
+            U256(x) => cast_int_with_try_from!(U256, u32, *x),
             I8(x) => cast_int_i2u_widening!(i8, u32, x),
             I16(x) => cast_int_i2u_widening!(i16, u32, x),
             I32(x) => cast_int_i2u_widening!(i32, u32, x),
             I64(x) => cast_int_i2u_narrowing!(i64, u32, x),
             I128(x) => cast_int_i2u_narrowing!(i128, u32, x),
-            I256(x) => cast_int_with_try_from!(I256, u32, x),
+            I256(x) => cast_int_with_try_from!(I256, u32, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3241,13 +3668,13 @@ impl Value {
             U32(x) => cast_int_widening!(u32, u64, x),
             U64(x) => Ok(x),
             U128(x) => cast_int_narrowing!(u128, u64, x),
-            U256(x) => cast_int_with_try_from!(U256, u64, x),
+            U256(x) => cast_int_with_try_from!(U256, u64, *x),
             I8(x) => cast_int_i2u_widening!(i8, u64, x),
             I16(x) => cast_int_i2u_widening!(i16, u64, x),
             I32(x) => cast_int_i2u_widening!(i32, u64, x),
             I64(x) => cast_int_i2u_widening!(i64, u64, x),
             I128(x) => cast_int_i2u_narrowing!(i128, u64, x),
-            I256(x) => cast_int_with_try_from!(I256, u64, x),
+            I256(x) => cast_int_with_try_from!(I256, u64, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3261,13 +3688,13 @@ impl Value {
             U32(x) => cast_int_widening!(u32, u128, x),
             U64(x) => cast_int_widening!(u64, u128, x),
             U128(x) => Ok(x),
-            U256(x) => cast_int_with_try_from!(U256, u128, x),
+            U256(x) => cast_int_with_try_from!(U256, u128, *x),
             I8(x) => cast_int_i2u_widening!(i8, u128, x),
             I16(x) => cast_int_i2u_widening!(i16, u128, x),
             I32(x) => cast_int_i2u_widening!(i32, u128, x),
             I64(x) => cast_int_i2u_widening!(i64, u128, x),
             I128(x) => cast_int_i2u_widening!(i128, u128, x),
-            I256(x) => cast_int_with_try_from!(I256, u128, x),
+            I256(x) => cast_int_with_try_from!(I256, u128, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3281,13 +3708,13 @@ impl Value {
             U32(x) => int256::U256::from(x),
             U64(x) => int256::U256::from(x),
             U128(x) => int256::U256::from(x),
-            U256(x) => x,
+            U256(x) => *x,
             I8(x) => cast_int_with_try_from!(i8, int256::U256, x)?,
             I16(x) => cast_int_with_try_from!(i16, int256::U256, x)?,
             I32(x) => cast_int_with_try_from!(i32, int256::U256, x)?,
             I64(x) => cast_int_with_try_from!(i64, int256::U256, x)?,
             I128(x) => cast_int_with_try_from!(i128, int256::U256, x)?,
-            I256(x) => cast_int_with_try_from!(I256, int256::U256, x)?,
+            I256(x) => cast_int_with_try_from!(I256, int256::U256, *x)?,
             v => Self::no_int_cast_err(v)?,
         })
     }
@@ -3301,13 +3728,13 @@ impl Value {
             U32(x) => cast_int_u2i_narrowing!(u32, i8, x),
             U64(x) => cast_int_u2i_narrowing!(u64, i8, x),
             U128(x) => cast_int_u2i_narrowing!(u128, i8, x),
-            U256(x) => cast_int_with_try_from!(U256, i8, x),
+            U256(x) => cast_int_with_try_from!(U256, i8, *x),
             I8(x) => Ok(x),
             I16(x) => cast_int_narrowing!(i16, i8, x),
             I32(x) => cast_int_narrowing!(i32, i8, x),
             I64(x) => cast_int_narrowing!(i64, i8, x),
             I128(x) => cast_int_narrowing!(i128, i8, x),
-            I256(x) => cast_int_with_try_from!(I256, i8, x),
+            I256(x) => cast_int_with_try_from!(I256, i8, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3321,13 +3748,13 @@ impl Value {
             U32(x) => cast_int_u2i_narrowing!(u32, i16, x),
             U64(x) => cast_int_u2i_narrowing!(u64, i16, x),
             U128(x) => cast_int_u2i_narrowing!(u128, i16, x),
-            U256(x) => cast_int_with_try_from!(U256, i16, x),
+            U256(x) => cast_int_with_try_from!(U256, i16, *x),
             I8(x) => cast_int_widening!(i8, i16, x),
             I16(x) => Ok(x),
             I32(x) => cast_int_narrowing!(i32, i16, x),
             I64(x) => cast_int_narrowing!(i64, i16, x),
             I128(x) => cast_int_narrowing!(i128, i16, x),
-            I256(x) => cast_int_with_try_from!(I256, i16, x),
+            I256(x) => cast_int_with_try_from!(I256, i16, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3341,13 +3768,13 @@ impl Value {
             U32(x) => cast_int_u2i_narrowing!(u32, i32, x),
             U64(x) => cast_int_u2i_narrowing!(u64, i32, x),
             U128(x) => cast_int_u2i_narrowing!(u128, i32, x),
-            U256(x) => cast_int_with_try_from!(U256, i32, x),
+            U256(x) => cast_int_with_try_from!(U256, i32, *x),
             I8(x) => cast_int_widening!(i8, i32, x),
             I16(x) => cast_int_widening!(i16, i32, x),
             I32(x) => Ok(x),
             I64(x) => cast_int_narrowing!(i64, i32, x),
             I128(x) => cast_int_narrowing!(i128, i32, x),
-            I256(x) => cast_int_with_try_from!(I256, i32, x),
+            I256(x) => cast_int_with_try_from!(I256, i32, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3361,13 +3788,13 @@ impl Value {
             U32(x) => cast_int_u2i_widening!(u32, i64, x),
             U64(x) => cast_int_u2i_narrowing!(u64, i64, x),
             U128(x) => cast_int_u2i_narrowing!(u128, i64, x),
-            U256(x) => cast_int_with_try_from!(U256, i64, x),
+            U256(x) => cast_int_with_try_from!(U256, i64, *x),
             I8(x) => cast_int_widening!(i8, i64, x),
             I16(x) => cast_int_widening!(i16, i64, x),
             I32(x) => cast_int_widening!(i32, i64, x),
             I64(x) => Ok(x),
             I128(x) => cast_int_narrowing!(i128, i64, x),
-            I256(x) => cast_int_with_try_from!(I256, i64, x),
+            I256(x) => cast_int_with_try_from!(I256, i64, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3381,13 +3808,13 @@ impl Value {
             U32(x) => cast_int_u2i_widening!(u32, i128, x),
             U64(x) => cast_int_u2i_widening!(u64, i128, x),
             U128(x) => cast_int_u2i_narrowing!(u128, i128, x),
-            U256(x) => cast_int_with_try_from!(U256, i128, x),
+            U256(x) => cast_int_with_try_from!(U256, i128, *x),
             I8(x) => cast_int_widening!(i8, i128, x),
             I16(x) => cast_int_widening!(i16, i128, x),
             I32(x) => cast_int_widening!(i32, i128, x),
             I64(x) => cast_int_widening!(i64, i128, x),
             I128(x) => Ok(x),
-            I256(x) => cast_int_with_try_from!(I256, i128, x),
+            I256(x) => cast_int_with_try_from!(I256, i128, *x),
             v => Self::no_int_cast_err(v),
         }
     }
@@ -3401,25 +3828,25 @@ impl Value {
             U32(x) => Ok(int256::I256::from(x)),
             U64(x) => Ok(int256::I256::from(x)),
             U128(x) => Ok(int256::I256::from(x)),
-            U256(x) => cast_int_with_try_from!(int256::U256, int256::I256, x),
+            U256(x) => cast_int_with_try_from!(int256::U256, int256::I256, *x),
             I8(x) => Ok(int256::I256::from(x)),
             I16(x) => Ok(int256::I256::from(x)),
             I32(x) => Ok(int256::I256::from(x)),
             I64(x) => Ok(int256::I256::from(x)),
             I128(x) => Ok(int256::I256::from(x)),
-            I256(x) => Ok(x),
+            I256(x) => Ok(*x),
             v => Self::no_int_cast_err(v),
         }
     }
 }
 
 /***************************************************************************************
-*
-* Vector
-*
-*   Implemented as a built-in data type.
-*
-**************************************************************************************/
+ *
+ * Vector
+ *
+ *   Implemented as a built-in data type.
+ *
+ **************************************************************************************/
 
 pub const INDEX_OUT_OF_BOUNDS: u64 = NFE_VECTOR_ERROR_BASE + 1;
 pub const POP_EMPTY_VEC: u64 = NFE_VECTOR_ERROR_BASE + 2;
@@ -3509,7 +3936,15 @@ impl VectorRef {
             Container::VecBool(r) => r.borrow().len(),
             Container::VecAddress(r) => r.borrow().len(),
             Container::Vec(r) => r.borrow().len(),
-            Container::Locals(_) | Container::Struct(_) => unreachable!(),
+            Container::Locals(_) | Container::Struct(_) => {
+                return Err(
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                        .with_message(
+                            "length_as_usize called on non-vector container (Locals or Struct)"
+                                .to_string(),
+                        ),
+                );
+            },
         };
         Ok(len)
     }
@@ -3539,7 +3974,15 @@ impl VectorRef {
             Container::VecBool(r) => r.borrow_mut().push(e.value_as()?),
             Container::VecAddress(r) => r.borrow_mut().push(e.value_as()?),
             Container::Vec(r) => r.borrow_mut().push(e),
-            Container::Locals(_) | Container::Struct(_) => unreachable!(),
+            Container::Locals(_) | Container::Struct(_) => {
+                return Err(
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                        .with_message(
+                            "push_back called on non-vector container (Locals or Struct)"
+                                .to_string(),
+                        ),
+                );
+            },
         }
 
         self.0.mark_dirty();
@@ -3553,15 +3996,17 @@ impl VectorRef {
             return Err(PartialVMError::new(StatusCode::VECTOR_OPERATION_ERROR)
                 .with_sub_status(INDEX_OUT_OF_BOUNDS));
         }
-        self.0.borrow_elem(idx)
+        self.0.borrow_elem(idx, None)
     }
 
     /// Returns a RefCell reference to the underlying vector of a `&vector<u8>` value.
-    pub fn as_bytes_ref(&self) -> std::cell::Ref<'_, Vec<u8>> {
-        let c = self.0.container();
-        match c {
-            Container::VecU8(r) => r.borrow(),
-            _ => panic!("can only be called on vector<u8>"),
+    pub fn as_bytes_ref(&self) -> PartialVMResult<std::cell::Ref<'_, Vec<u8>>> {
+        if let Container::VecU8(r) = self.0.container() {
+            Ok(r.borrow())
+        } else {
+            Err(PartialVMError::new_invariant_violation(
+                "can only be called on vector<u8>",
+            ))
         }
     }
 
@@ -3637,7 +4082,14 @@ impl VectorRef {
                 Some(x) => x,
                 None => err_pop_empty_vec!(),
             },
-            Container::Locals(_) | Container::Struct(_) => unreachable!(),
+            Container::Locals(_) | Container::Struct(_) => {
+                return Err(
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                        .with_message(
+                            "pop called on non-vector container (Locals or Struct)".to_string(),
+                        ),
+                );
+            },
         };
 
         self.0.mark_dirty();
@@ -3674,7 +4126,14 @@ impl VectorRef {
             Container::VecBool(r) => swap!(r),
             Container::VecAddress(r) => swap!(r),
             Container::Vec(r) => swap!(r),
-            Container::Locals(_) | Container::Struct(_) => unreachable!(),
+            Container::Locals(_) | Container::Struct(_) => {
+                return Err(
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                        .with_message(
+                            "swap called on non-vector container (Locals or Struct)".to_string(),
+                        ),
+                );
+            },
         }
 
         self.0.mark_dirty();
@@ -3751,7 +4210,15 @@ impl VectorRef {
                 move_range!(from_r, to_r)
             },
             (Container::Vec(from_r), Container::Vec(to_r)) => move_range!(from_r, to_r),
-            (_, _) => unreachable!(),
+            (_, _) => {
+                return Err(
+                    PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                        .with_message(
+                            "move_range called with mismatched or non-vector container types"
+                                .to_string(),
+                        ),
+                );
+            },
         }
 
         from_self.0.mark_dirty();
@@ -3854,7 +4321,7 @@ impl Vector {
             | Type::Struct { .. }
             | Type::StructInstantiation { .. }
             | Type::Function { .. } => {
-                Value::Container(Container::Vec(Rc::new(RefCell::new(elements))))
+                Value::Container(Container::Vec(NestedValues::new(elements)))
             },
 
             Type::Reference(_) | Type::MutableReference(_) | Type::TyParam(_) => {
@@ -3926,7 +4393,7 @@ impl Vector {
                 .into_iter()
                 .map(Value::address)
                 .collect(),
-            Container::Vec(r) => take_unique_ownership(r)?.into_iter().collect(),
+            Container::Vec(r) => take_unique_ownership(r.into_rc())?.into_iter().collect(),
             Container::Locals(_) | Container::Struct(_) => {
                 return Err(PartialVMError::new_invariant_violation(
                     "Unexpected non-vector container",
@@ -4029,7 +4496,7 @@ impl Struct {
  **************************************************************************************/
 #[allow(clippy::unnecessary_wraps)]
 impl GlobalValueImpl {
-    fn expect_struct_fields(value: &Value) -> &Rc<RefCell<Vec<Value>>> {
+    fn expect_struct_fields(value: &Value) -> &NestedValues {
         match value {
             Value::Container(Container::Struct(fields)) => fields,
             _ => unreachable!("Global values must be structs"),
@@ -4066,13 +4533,17 @@ impl GlobalValueImpl {
             Self::None | Self::Deleted => {
                 return Err(PartialVMError::new(StatusCode::MISSING_DATA))
             },
-            Self::Fresh { .. } => match mem::replace(self, Self::None) {
-                Self::Fresh { value } => value,
-                _ => unreachable!(),
+            Self::Fresh { .. } => {
+                let Self::Fresh { value } = mem::replace(self, Self::None) else {
+                    unreachable!("Value has been checked to be fresh")
+                };
+                value
             },
-            Self::Cached { .. } => match mem::replace(self, Self::Deleted) {
-                Self::Cached { value, .. } => value,
-                _ => unreachable!(),
+            Self::Cached { .. } => {
+                let Self::Cached { value, .. } = mem::replace(self, Self::Deleted) else {
+                    unreachable!("Value has been checked to be cached")
+                };
+                value
             },
         };
         let fields = Self::expect_struct_fields(&value);
@@ -4113,13 +4584,13 @@ impl GlobalValueImpl {
             Self::Fresh { value } => {
                 let fields = Self::expect_struct_fields(value);
                 Ok(Value::ContainerRef(ContainerRef::Local(Container::Struct(
-                    Rc::clone(fields),
+                    fields.clone(),
                 ))))
             },
             Self::Cached { value, status } => {
                 let fields = Self::expect_struct_fields(value);
                 Ok(Value::ContainerRef(ContainerRef::Global {
-                    container: Container::Struct(Rc::clone(fields)),
+                    container: Container::Struct(fields.clone()),
                     status: Rc::clone(status),
                 }))
             },
@@ -4207,12 +4678,12 @@ impl GlobalValue {
 }
 
 /***************************************************************************************
-*
-* Debug
-*
-*   Implementation of the Debug trait for VM Values.
-*
-**************************************************************************************/
+ *
+ * Debug
+ *
+ *   Implementation of the Debug trait for VM Values.
+ *
+ **************************************************************************************/
 
 impl Debug for Value {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -4249,45 +4720,69 @@ impl Debug for Value {
 }
 
 /***************************************************************************************
-*
-* Display
-*
-*   Implementation of the Display trait for VM Values. These are supposed to be more
-*   friendly & readable than the generated Debug dump.
-*
-**************************************************************************************/
+ *
+ * Display
+ *
+ *   Implementation of the Display trait for VM Values. These are supposed to be more
+ *   friendly & readable than the generated Debug dump.
+ *
+ **************************************************************************************/
+
+/// Cap recursive `Display` of a `Value` so deeply nested values cannot blow the
+/// formatting thread's stack. Every recursive path (Value↔Container, Locals→Value,
+/// Closure→Value) flows through `fmt_value`, so a single check at its entry is
+/// sufficient; intermediate `fmt_*` helpers just thread `depth + 1` through.
+const MAX_DISPLAY_DEPTH: usize = 8;
+
+/// Adapter that re-enters depth-bounded `Display` on a `&Value`. Lets call sites
+/// that build up `format!` / `Vec<String>` plumbing (e.g. `Locals`, `Closure`)
+/// keep their existing shape while still participating in depth bounding.
+pub(crate) struct DepthDisplay<'a>(pub &'a Value, pub usize);
+
+impl<'a> Display for DepthDisplay<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt_value(self.0, f, self.1)
+    }
+}
+
+fn fmt_value(v: &Value, f: &mut fmt::Formatter, depth: usize) -> fmt::Result {
+    if depth > MAX_DISPLAY_DEPTH {
+        return write!(f, "...");
+    }
+    match v {
+        Value::Invalid => write!(f, "Invalid"),
+
+        Value::U8(x) => write!(f, "U8({})", x),
+        Value::U16(x) => write!(f, "U16({})", x),
+        Value::U32(x) => write!(f, "U32({})", x),
+        Value::U64(x) => write!(f, "U64({})", x),
+        Value::U128(x) => write!(f, "U128({})", x),
+        Value::U256(x) => write!(f, "U256({})", x),
+        Value::I8(x) => write!(f, "I8({})", x),
+        Value::I16(x) => write!(f, "I16({})", x),
+        Value::I32(x) => write!(f, "I32({})", x),
+        Value::I64(x) => write!(f, "I64({})", x),
+        Value::I128(x) => write!(f, "I128({})", x),
+        Value::I256(x) => write!(f, "I256({})", x),
+        Value::Bool(x) => write!(f, "{}", x),
+        Value::Address(addr) => write!(f, "Address({})", addr.short_str_lossless()),
+
+        Value::Container(r) => fmt_container(r, f, depth + 1),
+
+        Value::ContainerRef(r) => write!(f, "{}", r),
+        Value::IndexedRef(r) => write!(f, "{}", r),
+
+        Value::ClosureValue(c) => super::function_values_impl::fmt_closure(c, f, depth + 1),
+
+        // Display information must be deterministic, so we cannot print
+        // inner fields.
+        Value::DelayedFieldID { .. } => write!(f, "Delayed(?)"),
+    }
+}
 
 impl Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Invalid => write!(f, "Invalid"),
-
-            Self::U8(x) => write!(f, "U8({})", x),
-            Self::U16(x) => write!(f, "U16({})", x),
-            Self::U32(x) => write!(f, "U32({})", x),
-            Self::U64(x) => write!(f, "U64({})", x),
-            Self::U128(x) => write!(f, "U128({})", x),
-            Self::U256(x) => write!(f, "U256({})", x),
-            Self::I8(x) => write!(f, "I8({})", x),
-            Self::I16(x) => write!(f, "I16({})", x),
-            Self::I32(x) => write!(f, "I32({})", x),
-            Self::I64(x) => write!(f, "I64({})", x),
-            Self::I128(x) => write!(f, "I128({})", x),
-            Self::I256(x) => write!(f, "I256({})", x),
-            Self::Bool(x) => write!(f, "{}", x),
-            Self::Address(addr) => write!(f, "Address({})", addr.short_str_lossless()),
-
-            Self::Container(r) => write!(f, "{}", r),
-
-            Self::ContainerRef(r) => write!(f, "{}", r),
-            Self::IndexedRef(r) => write!(f, "{}", r),
-
-            Self::ClosureValue(c) => write!(f, "{}", c),
-
-            // Display information must be deterministic, so we cannot print
-            // inner fields.
-            Self::DelayedFieldID { .. } => write!(f, "Delayed(?)"),
-        }
+        fmt_value(self, f, 0)
     }
 }
 
@@ -4325,48 +4820,66 @@ impl Display for IndexedRef {
     }
 }
 
+fn fmt_container(c: &Container, f: &mut fmt::Formatter, depth: usize) -> fmt::Result {
+    write!(f, "(container: ")?;
+
+    match c {
+        Container::Locals(r) | Container::Vec(r) | Container::Struct(r) => {
+            display_list_of_items(r.borrow().iter().map(|v| DepthDisplay(v, depth + 1)), f)
+        },
+        Container::VecU8(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecU16(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecU32(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecU64(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecU128(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecU256(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecI8(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecI16(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecI32(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecI64(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecI128(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecI256(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecBool(r) => display_list_of_items(r.borrow().iter(), f),
+        Container::VecAddress(r) => display_list_of_items(r.borrow().iter(), f),
+    }?;
+
+    write!(f, ")")
+}
+
 impl Display for Container {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "(container: ")?;
-
-        match self {
-            Self::Locals(r) | Self::Vec(r) | Self::Struct(r) => {
-                display_list_of_items(r.borrow().iter(), f)
-            },
-            Self::VecU8(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecU16(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecU32(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecU64(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecU128(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecU256(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecI8(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecI16(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecI32(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecI64(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecI128(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecI256(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecBool(r) => display_list_of_items(r.borrow().iter(), f),
-            Self::VecAddress(r) => display_list_of_items(r.borrow().iter(), f),
-        }?;
-
-        write!(f, ")")
+        fmt_container(self, f, 0)
     }
+}
+
+fn fmt_locals(l: &Locals, f: &mut fmt::Formatter, depth: usize) -> fmt::Result {
+    write!(
+        f,
+        "{}",
+        l.0.borrow()
+            .iter()
+            .enumerate()
+            .map(|(idx, val)| format!("[{}] {}", idx, DepthDisplay(val, depth + 1)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
 }
 
 impl Display for Locals {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            self.0
-                .borrow()
-                .iter()
-                .enumerate()
-                .map(|(idx, val)| format!("[{}] {}", idx, val))
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
+        fmt_locals(self, f, 0)
     }
+}
+
+/// Type-level field information for annotated local-variable display in the
+/// debugger.  Passed per-local to [`debug::print_locals_with_info`].
+pub enum LocalTypeInfo {
+    /// Regular struct: field names in declaration order.
+    Struct(Vec<String>),
+    /// Enum: `(variant_name, field_names)` indexed by variant tag (0-based).
+    /// The runtime stores enum values as `[u16_tag, field0, field1, …]`, so
+    /// index 0 here corresponds to tag value `0`.
+    Enum(Vec<(String, Vec<String>)>),
 }
 
 #[allow(dead_code)]
@@ -4548,7 +5061,7 @@ pub mod debug {
     }
 
     fn print_indexed_ref<B: Write>(buf: &mut B, r: &IndexedRef) -> PartialVMResult<()> {
-        let idx = r.idx;
+        let idx = r.idx as usize;
         match r.container_ref.container() {
             Container::Locals(r) | Container::Vec(r) | Container::Struct(r) => {
                 print_slice_elem(buf, &r.borrow(), idx, print_value_impl)
@@ -4586,6 +5099,135 @@ pub mod debug {
             debug_writeln!(buf)?;
         }
         Ok(())
+    }
+
+    /// Extended locals printer that shows separate Parameters / Locals sections
+    /// with optional variable names and optional per-local type information.
+    ///
+    /// * `param_count` – how many of the first locals are parameters.
+    /// * `names`       – combined parameter + local names (may be shorter than
+    ///                   the actual local count; missing entries fall back to `_`).
+    /// * `type_info`   – for each local index, optional [`LocalTypeInfo`] that
+    ///                   annotates struct fields or enum variants in the output.
+    ///                   Pass `None` to skip annotation for all locals.
+    pub fn print_locals_with_info<B: Write>(
+        buf: &mut B,
+        locals: &Locals,
+        compact: bool,
+        param_count: usize,
+        names: Option<&[String]>,
+        type_info: Option<&[Option<LocalTypeInfo>]>,
+    ) -> PartialVMResult<()> {
+        let locals_ref = locals.0.borrow();
+        let total = locals_ref.len();
+
+        // ── Parameters section ────────────────────────────────────────────────
+        let mut printed_header = false;
+        for idx in 0..param_count.min(total) {
+            let val = &locals_ref[idx];
+            if compact && matches!(val, Value::Invalid) {
+                continue;
+            }
+            if !printed_header {
+                debug_writeln!(buf, "        Parameters:")?;
+                printed_header = true;
+            }
+            let name = names
+                .and_then(|n| n.get(idx))
+                .map(|s| s.as_str())
+                .unwrap_or("_");
+            debug_write!(buf, "            [{}] {}: ", idx, name)?;
+            print_value_with_type_info(
+                buf,
+                val,
+                type_info.and_then(|t| t.get(idx)).and_then(|o| o.as_ref()),
+            )?;
+            debug_writeln!(buf)?;
+        }
+
+        // ── Locals section ────────────────────────────────────────────────────
+        printed_header = false;
+        for idx in param_count..total {
+            let val = &locals_ref[idx];
+            if compact && matches!(val, Value::Invalid) {
+                continue;
+            }
+            if !printed_header {
+                debug_writeln!(buf, "        Locals:")?;
+                printed_header = true;
+            }
+            let name = names
+                .and_then(|n| n.get(idx))
+                .map(|s| s.as_str())
+                .unwrap_or("_");
+            debug_write!(buf, "            [{}] {}: ", idx, name)?;
+            print_value_with_type_info(
+                buf,
+                val,
+                type_info.and_then(|t| t.get(idx)).and_then(|o| o.as_ref()),
+            )?;
+            debug_writeln!(buf)?;
+        }
+
+        Ok(())
+    }
+
+    /// Print `val` with optional [`LocalTypeInfo`] for annotating struct fields
+    /// or enum variants.  Nested values are still printed positionally.
+    fn print_value_with_type_info<B: Write>(
+        buf: &mut B,
+        val: &Value,
+        info: Option<&LocalTypeInfo>,
+    ) -> PartialVMResult<()> {
+        match (val, info) {
+            // ── Struct with named fields ──────────────────────────────────────
+            (Value::Container(Container::Struct(r)), Some(LocalTypeInfo::Struct(names)))
+                if !names.is_empty() =>
+            {
+                debug_write!(buf, "{{ ")?;
+                let fields = r.borrow();
+                for (i, field_val) in fields.iter().enumerate() {
+                    if i > 0 {
+                        debug_write!(buf, ", ")?;
+                    }
+                    let fname = names.get(i).map(|s| s.as_str()).unwrap_or("_");
+                    debug_write!(buf, "{}: ", fname)?;
+                    print_value_impl(buf, field_val)?;
+                }
+                debug_write!(buf, " }}")
+            },
+            // ── Enum variant: [u16_tag, field0, field1, …] ───────────────────
+            (Value::Container(Container::Struct(r)), Some(LocalTypeInfo::Enum(variants)))
+                if !variants.is_empty() =>
+            {
+                let fields = r.borrow();
+                let tag = match fields.first() {
+                    Some(Value::U16(t)) => *t as usize,
+                    _ => return print_value_impl(buf, val),
+                };
+                match variants.get(tag) {
+                    Some((variant_name, field_names)) => {
+                        debug_write!(buf, "{}", variant_name)?;
+                        let payload = &fields[1..];
+                        if !payload.is_empty() {
+                            debug_write!(buf, " {{ ")?;
+                            for (i, field_val) in payload.iter().enumerate() {
+                                if i > 0 {
+                                    debug_write!(buf, ", ")?;
+                                }
+                                let fname = field_names.get(i).map(|s| s.as_str()).unwrap_or("_");
+                                debug_write!(buf, "{}: ", fname)?;
+                                print_value_impl(buf, field_val)?;
+                            }
+                            debug_write!(buf, " }}")?;
+                        }
+                        Ok(())
+                    },
+                    None => print_value_impl(buf, val),
+                }
+            },
+            _ => print_value_impl(buf, val),
+        }
     }
 
     pub fn print_value<B: Write>(buf: &mut B, val: &Value) -> PartialVMResult<()> {
@@ -4657,7 +5299,7 @@ impl serde::Serialize for SerializationReadyValue<'_, '_, '_, MoveTypeLayout, Va
             (L::Struct(struct_layout), Value::Container(Container::Struct(r))) => {
                 (SerializationReadyValue {
                     ctx: self.ctx,
-                    layout: struct_layout,
+                    layout: struct_layout.as_ref(),
                     value: &*r.borrow(),
                     // Note: for struct, we increment depth for fields in the corresponding
                     // serializer.
@@ -4770,8 +5412,8 @@ impl serde::Serialize for SerializationReadyValue<'_, '_, '_, MoveTypeLayout, Va
                                 .map_err(|e| S::Error::custom(format!("{}", e)))?,
                             None => id.try_into_move_value(layout).map_err(|_| {
                                 S::Error::custom(format!(
-                                    "Custom serialization failed for {:?} with layout {}",
-                                    kind, layout
+                                    "Custom serialization failed for {:?}",
+                                    kind
                                 ))
                             })?,
                         };
@@ -4791,8 +5433,8 @@ impl serde::Serialize for SerializationReadyValue<'_, '_, '_, MoveTypeLayout, Va
                         // If no delayed field extension, it is not known how the delayed value
                         // should be serialized. So, just return an error.
                         Err(invariant_violation::<S>(format!(
-                            "no custom serializer for delayed value ({:?}) with layout {}",
-                            kind, layout
+                            "no custom serializer for delayed value ({:?})",
+                            kind
                         )))
                     },
                 }
@@ -4811,6 +5453,11 @@ impl serde::Serialize for SerializationReadyValue<'_, '_, '_, MoveStructLayout, 
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut values = self.value.as_slice();
         if let Some((tag, variant_layouts)) = try_get_variant_field_layouts(self.layout, values) {
+            // Reject a tag that is out of range for the layout instead of
+            // serializing bytes that strict deserialization would later reject.
+            let variant_layouts = variant_layouts.ok_or_else(|| {
+                invariant_violation::<S>("cannot serialize value: invalid variant tag".to_string())
+            })?;
             let tag_idx = tag as usize;
             let variant_tag = tag_idx as u32;
             let variant_names = value::variant_name_placeholder((tag + 1) as usize)
@@ -4859,7 +5506,11 @@ impl serde::Serialize for SerializationReadyValue<'_, '_, '_, MoveStructLayout, 
                 },
             }
         } else {
-            let field_layouts = self.layout.fields(None);
+            let field_layouts = self.layout.fields(None).ok_or_else(|| {
+                invariant_violation::<S>(
+                    "cannot serialize value: missing field layouts".to_string(),
+                )
+            })?;
             let mut t = serializer.serialize_tuple(values.len())?;
             if field_layouts.len() != values.len() {
                 return Err(invariant_violation::<S>(format!(
@@ -4932,7 +5583,7 @@ impl<'d> serde::de::DeserializeSeed<'d> for DeserializationSeed<'_, &MoveTypeLay
             L::Struct(struct_layout) => {
                 let seed = DeserializationSeed {
                     ctx: self.ctx,
-                    layout: struct_layout,
+                    layout: struct_layout.as_ref(),
                 };
                 Ok(Value::struct_(seed.deserialize(deserializer)?))
             },
@@ -4959,7 +5610,7 @@ impl<'d> serde::de::DeserializeSeed<'d> for DeserializationSeed<'_, &MoveTypeLay
                         layout,
                     };
                     let vector = deserializer.deserialize_seq(VectorElementVisitor(seed))?;
-                    Value::Container(Container::Vec(Rc::new(RefCell::new(vector))))
+                    Value::Container(Container::Vec(NestedValues::new(vector)))
                 },
             }),
 
@@ -4995,9 +5646,9 @@ impl<'d> serde::de::DeserializeSeed<'d> for DeserializationSeed<'_, &MoveTypeLay
                                     DelayedFieldID::try_from_move_value(layout, value, &())
                                         .map_err(|_| {
                                             D::Error::custom(format!(
-                                        "Custom deserialization failed for {:?} with layout {}",
-                                        kind, layout
-                                    ))
+                                                "Custom deserialization failed for {:?}",
+                                                kind
+                                            ))
                                         })?;
                                 id
                             },
@@ -5011,8 +5662,8 @@ impl<'d> serde::de::DeserializeSeed<'d> for DeserializationSeed<'_, &MoveTypeLay
                         Err(D::Error::custom(
                             PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
                                 .with_message(format!(
-                                    "no custom deserializer for native value ({:?}) with layout {}",
-                                    kind, layout
+                                    "no custom deserializer for native value ({:?})",
+                                    kind
                                 )),
                         ))
                     },
@@ -5052,7 +5703,7 @@ impl<'d> serde::de::DeserializeSeed<'d> for DeserializationSeed<'_, &MoveStructL
             },
             MoveStructLayout::WithFields(_)
             | MoveStructLayout::WithTypes { .. }
-            | MoveStructLayout::WithVariants(_) => {
+            | MoveStructLayout::WithVariants { .. } => {
                 Err(D::Error::custom("cannot deserialize from decorated type"))
             },
         }
@@ -5202,12 +5853,12 @@ impl<'d, 'c, 'l> serde::de::Visitor<'d> for StructVariantVisitor<'c, 'l> {
 }
 
 /***************************************************************************************
-*
-* Constants
-*
-*   Implementation of deserialization of constant data into a runtime value
-*
-**************************************************************************************/
+ *
+ * Constants
+ *
+ *   Implementation of deserialization of constant data into a runtime value
+ *
+ **************************************************************************************/
 
 impl Value {
     fn constant_sig_token_to_layout(constant_signature: &SignatureToken) -> Option<MoveTypeLayout> {
@@ -5250,10 +5901,10 @@ impl Value {
 }
 
 /***************************************************************************************
-*
-* Destructors
-*
-**************************************************************************************/
+ *
+ * Destructors
+ *
+ **************************************************************************************/
 // Locals may contain reference values that points to the same cotnainer through Rc, hencing forming
 // a cycle. Therefore values need to be manually taken out of the Locals in order to not leak memory.
 impl Drop for Locals {
@@ -5272,10 +5923,10 @@ impl Drop for Locals {
 }
 
 /***************************************************************************************
-*
-* Views
-*
-**************************************************************************************/
+ *
+ * Views
+ *
+ **************************************************************************************/
 impl Container {
     fn visit_impl(&self, visitor: &mut impl ValueVisitor, depth: u64) -> PartialVMResult<()> {
         use Container::*;
@@ -5332,24 +5983,24 @@ impl Container {
             VecU32(vals) => visitor.visit_u32(depth + 1, vals.borrow()[idx]),
             VecU64(vals) => visitor.visit_u64(depth + 1, vals.borrow()[idx]),
             VecU128(vals) => visitor.visit_u128(depth + 1, vals.borrow()[idx]),
-            VecU256(vals) => visitor.visit_u256(depth + 1, vals.borrow()[idx]),
+            VecU256(vals) => visitor.visit_u256(depth + 1, &vals.borrow()[idx]),
             VecI8(vals) => visitor.visit_i8(depth + 1, vals.borrow()[idx]),
             VecI16(vals) => visitor.visit_i16(depth + 1, vals.borrow()[idx]),
             VecI32(vals) => visitor.visit_i32(depth + 1, vals.borrow()[idx]),
             VecI64(vals) => visitor.visit_i64(depth + 1, vals.borrow()[idx]),
             VecI128(vals) => visitor.visit_i128(depth + 1, vals.borrow()[idx]),
-            VecI256(vals) => visitor.visit_i256(depth + 1, vals.borrow()[idx]),
+            VecI256(vals) => visitor.visit_i256(depth + 1, &vals.borrow()[idx]),
             VecBool(vals) => visitor.visit_bool(depth + 1, vals.borrow()[idx]),
-            VecAddress(vals) => visitor.visit_address(depth + 1, vals.borrow()[idx]),
+            VecAddress(vals) => visitor.visit_address(depth + 1, &vals.borrow()[idx]),
         }
     }
 }
 
 impl Closure {
     fn visit_impl(&self, visitor: &mut impl ValueVisitor, depth: u64) -> PartialVMResult<()> {
-        let Self(_, captured) = self;
-        if visitor.visit_closure(depth, captured.len())? {
-            for val in captured {
+        let Self(fun, captured) = self;
+        if visitor.visit_closure(depth, fun.as_ref(), captured.len())? {
+            for val in captured.iter() {
                 val.visit_impl(visitor, depth + 1)?;
             }
         }
@@ -5375,15 +6026,12 @@ impl ContainerRef {
 
 impl IndexedRef {
     fn visit_impl(&self, visitor: &mut impl ValueVisitor, depth: u64) -> PartialVMResult<()> {
-        use ContainerRef::*;
-
-        let (container, is_global) = match &self.container_ref {
-            Local(container) => (container, false),
-            Global { container, .. } => (container, false),
-        };
+        // set is_global to false for now, replacing the enum match with a boolean literal
+        let is_global = false;
+        let container = self.container_ref.container();
 
         if visitor.visit_ref(depth, is_global)? {
-            container.visit_indexed(visitor, depth, self.idx)?;
+            container.visit_indexed(visitor, depth, self.idx as usize)?;
         }
         Ok(())
     }
@@ -5400,15 +6048,15 @@ impl Value {
             U32(val) => visitor.visit_u32(depth, *val),
             U64(val) => visitor.visit_u64(depth, *val),
             U128(val) => visitor.visit_u128(depth, *val),
-            U256(val) => visitor.visit_u256(depth, *val),
+            U256(val) => visitor.visit_u256(depth, val.as_ref()),
             I8(val) => visitor.visit_i8(depth, *val),
             I16(val) => visitor.visit_i16(depth, *val),
             I32(val) => visitor.visit_i32(depth, *val),
             I64(val) => visitor.visit_i64(depth, *val),
             I128(val) => visitor.visit_i128(depth, *val),
-            I256(val) => visitor.visit_i256(depth, *val),
+            I256(val) => visitor.visit_i256(depth, val.as_ref()),
             Bool(val) => visitor.visit_bool(depth, *val),
-            Address(val) => visitor.visit_address(depth, *val),
+            Address(val) => visitor.visit_address(depth, val.as_ref()),
             Container(c) => c.visit_impl(visitor, depth),
             ContainerRef(r) => r.visit_impl(visitor, depth),
             IndexedRef(r) => r.visit_impl(visitor, depth),
@@ -5438,6 +6086,12 @@ impl ValueView for Struct {
 impl ValueView for Vector {
     fn visit(&self, visitor: &mut impl ValueVisitor) -> PartialVMResult<()> {
         self.0.visit_impl(visitor, 0)
+    }
+}
+
+impl ValueView for &[u8] {
+    fn visit(&self, visitor: &mut impl ValueVisitor) -> PartialVMResult<()> {
+        visitor.visit_vec_u8(0, self)
     }
 }
 
@@ -5505,7 +6159,11 @@ impl Reference {
 
                 match self.0 {
                     ContainerRef(r) => r.container().visit_impl(visitor, 0),
-                    IndexedRef(r) => r.container_ref.container().visit_indexed(visitor, 0, r.idx),
+                    IndexedRef(r) => {
+                        r.container_ref
+                            .container()
+                            .visit_indexed(visitor, 0, r.idx as usize)
+                    },
                 }
             }
         }
@@ -5699,34 +6357,36 @@ pub mod prop {
                     })
                     .boxed(),
                 layout => vec(value_strategy_with_layout(layout), 0..10)
-                    .prop_map(|vals| Value::Container(Container::Vec(Rc::new(RefCell::new(vals)))))
+                    .prop_map(|vals| Value::Container(Container::Vec(NestedValues::new(vals))))
                     .boxed(),
             },
-            L::Struct(_struct_layout @ MoveStructLayout::RuntimeVariants(variants)) => {
-                // Randomly choose a variant index
-                let variant_count = variants.len();
-                let variants = variants.clone();
-                (0..variant_count as u16)
-                    .prop_flat_map(move |variant_tag| {
-                        let variant_layouts = variants[variant_tag as usize].clone();
-                        variant_layouts
-                            .iter()
-                            .map(value_strategy_with_layout)
-                            .collect::<Vec<_>>()
-                            .prop_map(move |vals| {
-                                Value::struct_(Struct::pack_variant(variant_tag, vals))
-                            })
-                    })
-                    .boxed()
+            L::Struct(struct_layout) => match struct_layout.as_ref() {
+                MoveStructLayout::RuntimeVariants(variants) => {
+                    // Randomly choose a variant index
+                    let variant_count = variants.len();
+                    let variants = variants.clone();
+                    (0..variant_count as u16)
+                        .prop_flat_map(move |variant_tag| {
+                            let variant_layouts = variants[variant_tag as usize].clone();
+                            variant_layouts
+                                .iter()
+                                .map(value_strategy_with_layout)
+                                .collect::<Vec<_>>()
+                                .prop_map(move |vals| {
+                                    Value::struct_(Struct::pack_variant(variant_tag, vals))
+                                })
+                        })
+                        .boxed()
+                },
+                _ => struct_layout
+                    .fields(None)
+                    .expect("Runtime struct layout always has fields")
+                    .iter()
+                    .map(value_strategy_with_layout)
+                    .collect::<Vec<_>>()
+                    .prop_map(move |vals| Value::struct_(Struct::pack(vals)))
+                    .boxed(),
             },
-
-            L::Struct(struct_layout) => struct_layout
-                .fields(None)
-                .iter()
-                .map(value_strategy_with_layout)
-                .collect::<Vec<_>>()
-                .prop_map(move |vals| Value::struct_(Struct::pack(vals)))
-                .boxed(),
 
             L::Function => {
                 (
@@ -5801,9 +6461,9 @@ pub mod prop {
                 prop_oneof![
                     1 => inner.clone().prop_map(|layout| L::Vector(Box::new(layout))),
                     1 => vec(inner.clone(), 0..=5).prop_map(|f_layouts| {
-                            L::Struct(MoveStructLayout::new(f_layouts))}),
+                            L::new_struct(MoveStructLayout::new(f_layouts))}),
                     1 => vec(vec(inner, 0..=3), 1..=4).prop_map(|variant_layouts| {
-                            L::Struct(MoveStructLayout::new_variants(variant_layouts))}),
+                            L::new_struct(MoveStructLayout::new_variants(variant_layouts))}),
                 ]
             }),
             2 => Just(L::Function),
@@ -5825,11 +6485,8 @@ impl Value {
         use crate::values::function_values_impl::mock::MockAbstractFunction;
         use MoveTypeLayout as L;
 
-        if let L::Native(kind, layout) = layout {
-            panic!(
-                "impossible to get native layout ({:?}) with {}",
-                kind, layout
-            )
+        if let L::Native(kind, _) = layout {
+            panic!("impossible to get native layout ({:?})", kind)
         }
 
         match (layout, &self) {
@@ -5838,22 +6495,24 @@ impl Value {
             (L::U32, Value::U32(x)) => MoveValue::U32(*x),
             (L::U64, Value::U64(x)) => MoveValue::U64(*x),
             (L::U128, Value::U128(x)) => MoveValue::U128(*x),
-            (L::U256, Value::U256(x)) => MoveValue::U256(*x),
+            (L::U256, Value::U256(x)) => MoveValue::U256(**x),
             (L::I8, Value::I8(x)) => MoveValue::I8(*x),
             (L::I16, Value::I16(x)) => MoveValue::I16(*x),
             (L::I32, Value::I32(x)) => MoveValue::I32(*x),
             (L::I64, Value::I64(x)) => MoveValue::I64(*x),
             (L::I128, Value::I128(x)) => MoveValue::I128(*x),
-            (L::I256, Value::I256(x)) => MoveValue::I256(*x),
+            (L::I256, Value::I256(x)) => MoveValue::I256(**x),
             (L::Bool, Value::Bool(x)) => MoveValue::Bool(*x),
-            (L::Address, Value::Address(x)) => MoveValue::Address(*x),
+            (L::Address, Value::Address(x)) => MoveValue::Address(**x),
 
             (L::Struct(struct_layout), Value::Container(Container::Struct(r))) => {
                 let values_ref = r.borrow();
                 let values = values_ref.as_slice();
                 if let Some((tag, variant_layouts)) =
-                    try_get_variant_field_layouts(struct_layout, values)
+                    try_get_variant_field_layouts(struct_layout.as_ref(), values)
                 {
+                    let variant_layouts =
+                        variant_layouts.expect("variant tag must be in range for the layout");
                     MoveValue::Struct(MoveStruct::new_variant(
                         tag,
                         values
@@ -5868,7 +6527,11 @@ impl Value {
                     MoveValue::Struct(MoveStruct::new(
                         values
                             .iter()
-                            .zip(struct_layout.fields(None))
+                            .zip(
+                                struct_layout
+                                    .fields(None)
+                                    .expect("Runtime struct layout always has fields"),
+                            )
                             .map(|(v, field_layout)| v.as_move_value(field_layout))
                             .collect(),
                     ))
@@ -5906,7 +6569,7 @@ impl Value {
             (L::Signer, Value::Container(Container::Struct(r))) => {
                 let v = r.borrow();
                 match &v[MASTER_ADDRESS_FIELD_OFFSET] {
-                    Value::Address(a) => MoveValue::Signer(*a),
+                    Value::Address(a) => MoveValue::Signer(**a),
                     v => panic!("Unexpected non-address while converting signer: {:?}", v),
                 }
             },
@@ -5943,10 +6606,12 @@ impl Value {
     }
 }
 
+// Outer `None`: not a variant layout (serialize as a plain struct). Inner
+// `None`: the tag is out of range for the layout, which callers must reject.
 fn try_get_variant_field_layouts<'a>(
     layout: &'a MoveStructLayout,
     values: &[Value],
-) -> Option<(u16, &'a [MoveTypeLayout])> {
+) -> Option<(u16, Option<&'a [MoveTypeLayout]>)> {
     if matches!(layout, MoveStructLayout::RuntimeVariants(..)) {
         if let Some(Value::U16(tag)) = values.first() {
             return Some((*tag, layout.fields(Some(*tag as usize))));
@@ -5955,10 +6620,128 @@ fn try_get_variant_field_layouts<'a>(
     None
 }
 
-#[cfg_attr(feature = "force-inline", inline(always))]
+#[inline]
 fn check_depth(depth: u64, max_depth: Option<u64>) -> PartialVMResult<()> {
     if max_depth.is_some_and(|max_depth| depth > max_depth) {
         return Err(PartialVMError::new(StatusCode::VM_MAX_VALUE_DEPTH_REACHED));
     }
     Ok(())
+}
+
+/// A visitor that checks the depth of values does not exceed a maximum.
+struct DepthCheckingVisitor {
+    max_depth: u64,
+}
+
+impl DepthCheckingVisitor {
+    #[inline]
+    fn check(&self, depth: u64) -> PartialVMResult<()> {
+        if depth > self.max_depth {
+            return Err(PartialVMError::new(StatusCode::VM_MAX_VALUE_DEPTH_REACHED));
+        }
+        Ok(())
+    }
+}
+
+impl ValueVisitor for DepthCheckingVisitor {
+    fn visit_delayed(&mut self, depth: u64, _id: DelayedFieldID) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_u8(&mut self, depth: u64, _val: u8) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_u16(&mut self, depth: u64, _val: u16) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_u32(&mut self, depth: u64, _val: u32) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_u64(&mut self, depth: u64, _val: u64) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_u128(&mut self, depth: u64, _val: u128) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_u256(
+        &mut self,
+        depth: u64,
+        _val: &move_core_types::int256::U256,
+    ) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_i8(&mut self, depth: u64, _val: i8) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_i16(&mut self, depth: u64, _val: i16) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_i32(&mut self, depth: u64, _val: i32) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_i64(&mut self, depth: u64, _val: i64) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_i128(&mut self, depth: u64, _val: i128) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_i256(
+        &mut self,
+        depth: u64,
+        _val: &move_core_types::int256::I256,
+    ) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_bool(&mut self, depth: u64, _val: bool) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_address(&mut self, depth: u64, _val: &AccountAddress) -> PartialVMResult<()> {
+        self.check(depth)
+    }
+
+    fn visit_struct(&mut self, depth: u64, _len: usize) -> PartialVMResult<bool> {
+        self.check(depth)?;
+        Ok(true) // continue into fields
+    }
+
+    fn visit_closure(
+        &mut self,
+        depth: u64,
+        _fun: &(dyn AbstractFunction + 'static),
+        _len: usize,
+    ) -> PartialVMResult<bool> {
+        self.check(depth)?;
+        Ok(true) // continue into captured values
+    }
+
+    fn visit_vec(&mut self, depth: u64, _len: usize) -> PartialVMResult<bool> {
+        self.check(depth)?;
+        Ok(true) // continue into elements
+    }
+
+    fn visit_ref(&mut self, depth: u64, _is_global: bool) -> PartialVMResult<bool> {
+        self.check(depth)?;
+        Ok(true) // continue into referenced value
+    }
+}
+
+impl Value {
+    /// Check that the depth of this value does not exceed `max_depth`.
+    /// Returns an error with `VM_MAX_VALUE_DEPTH_REACHED` if the depth is exceeded.
+    pub fn check_depth_of_value(&self, max_depth: u64) -> PartialVMResult<()> {
+        self.visit(&mut DepthCheckingVisitor { max_depth })
+    }
 }

@@ -1,26 +1,20 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use aptos_node::{utils::ERROR_MSG_BAD_FEATURE_FLAGS, AptosNodeArgs};
 use clap::Parser;
 
 #[cfg(unix)]
-#[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+aptos_jemalloc::setup_jemalloc!();
 
 fn main() {
+    // Atomica: the `testing` feature intentionally includes Move test natives.
     #[cfg(not(feature = "testing"))]
     {
         // Check that we are not including any Move test natives
         aptos_vm::natives::assert_no_test_natives(ERROR_MSG_BAD_FEATURE_FLAGS);
-
-        // Check that we do have the Move VM's tracing feature enabled
-        move_vm_runtime::tracing::assert_move_vm_tracing_feature_disabled(
-            ERROR_MSG_BAD_FEATURE_FLAGS,
-        );
     }
 
     // Start the node

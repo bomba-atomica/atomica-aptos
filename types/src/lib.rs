@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -12,6 +11,7 @@ pub mod block_metadata;
 pub mod block_metadata_ext;
 pub mod chain_id;
 pub mod contract_event;
+pub mod decryption;
 pub mod dkg;
 pub mod epoch_change;
 pub mod epoch_state;
@@ -37,12 +37,14 @@ pub mod proof;
 pub mod proptest_types;
 pub mod quorum_store;
 pub mod randomness;
+pub mod secret_sharing;
 pub mod serde_helper;
 pub mod stake_pool;
 pub mod staking_contract;
 pub mod state_proof;
 #[cfg(any(test, feature = "fuzzing"))]
 pub mod test_helpers;
+pub mod timelock;
 pub mod timestamp;
 pub mod transaction;
 pub mod trusted_state;
@@ -66,6 +68,7 @@ pub mod block_executor;
 pub mod bytes;
 pub mod delayed_fields;
 pub mod keyless;
+pub mod lazy_bls;
 pub mod state_store;
 #[cfg(test)]
 mod unit_tests;

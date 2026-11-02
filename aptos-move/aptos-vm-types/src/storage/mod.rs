@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::storage::{
     change_set_configs::ChangeSetConfigs, io_pricing::IoPricing, space_pricing::DiskSpacePricing,
@@ -79,7 +79,7 @@ impl StorageGasParameters {
 struct DummyConfigStorage;
 
 impl ConfigStorage for DummyConfigStorage {
-    fn fetch_config_bytes(&self, _state_key: &StateKey) -> Option<Bytes> {
+    fn fetch_config_bytes(&self, _state_key: &StateKey) -> anyhow::Result<Option<Bytes>> {
         unreachable!("Not supposed to be called from latest() / tests.")
     }
 }

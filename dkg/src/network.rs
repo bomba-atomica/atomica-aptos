@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     network_interface::{DKGNetworkClient, RPC},
@@ -152,10 +152,9 @@ impl NetworkTask {
         let network_events = select_all(network_events).fuse();
         let all_events = Box::new(select(network_events, self_receiver));
 
-        (
-            NetworkTask { rpc_tx, all_events },
-            NetworkReceivers { rpc_rx },
-        )
+        (NetworkTask { rpc_tx, all_events }, NetworkReceivers {
+            rpc_rx,
+        })
     }
 
     pub async fn start(mut self) {

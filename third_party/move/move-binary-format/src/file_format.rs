@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![allow(clippy::arc_with_non_send_sync)]
 
@@ -368,18 +369,50 @@ pub enum FunctionAttribute {
     Persistent,
     /// During execution of the function, a module reentrancy lock is established.
     ModuleLock,
+    /// Attribute for the API packing a non-private struct.
+    Pack,
+    /// Attribute for the API packing a non-private enum.
+    PackVariant(VariantIndex),
+    /// Attribute for the API unpacking a non-private struct.
+    Unpack,
+    /// Attribute for the API unpacking a non-private enum.
+    UnpackVariant(VariantIndex),
+    /// Attribute for the API testing variants for a non-private enum.
+    TestVariant(VariantIndex),
+    /// Attribute for the API immutably borrowing a field from a non-private struct or enum.
+    /// MemberCount represents the offset of the field.
+    BorrowFieldImmutable(MemberCount),
+    /// Attribute for the API mutably borrowing a field from a non-private struct or enum.
+    /// MemberCount represents the offset of the field.
+    BorrowFieldMutable(MemberCount),
 }
 
 impl FunctionAttribute {
     /// Returns true if the attributes in `with` are compatible with
     /// the attributes in `this`. Typically, `this` is an imported
     /// function handle and `with` the matching definition. Currently,
-    /// only the `Persistent` attribute is relevant for this check.
+    /// `persistent` and all non-private struct related attributes are relevant for this check.
     pub fn is_compatible_with(this: &[Self], with: &[Self]) -> bool {
-        if this.contains(&FunctionAttribute::Persistent) {
-            with.contains(&FunctionAttribute::Persistent)
-        } else {
-            true
+        for attr in this {
+            if attr.cannot_be_removed() && !with.contains(attr) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Returns true if the attribute cannot be removed from the function handle once added.
+    pub fn cannot_be_removed(&self) -> bool {
+        match self {
+            FunctionAttribute::ModuleLock => false,
+            FunctionAttribute::Persistent
+            | FunctionAttribute::Pack
+            | FunctionAttribute::PackVariant(_)
+            | FunctionAttribute::Unpack
+            | FunctionAttribute::UnpackVariant(_)
+            | FunctionAttribute::TestVariant(_)
+            | FunctionAttribute::BorrowFieldImmutable(_)
+            | FunctionAttribute::BorrowFieldMutable(_) => true,
         }
     }
 }
@@ -389,6 +422,27 @@ impl fmt::Display for FunctionAttribute {
         match self {
             FunctionAttribute::Persistent => write!(f, "persistent"),
             FunctionAttribute::ModuleLock => write!(f, "module_lock"),
+            FunctionAttribute::Pack => {
+                write!(f, "pack")
+            },
+            FunctionAttribute::PackVariant(variant_index) => {
+                write!(f, "pack_variant({})", variant_index)
+            },
+            FunctionAttribute::Unpack => {
+                write!(f, "unpack")
+            },
+            FunctionAttribute::UnpackVariant(variant_index) => {
+                write!(f, "unpack_variant({})", variant_index)
+            },
+            FunctionAttribute::TestVariant(variant_index) => {
+                write!(f, "test_variant({})", variant_index)
+            },
+            FunctionAttribute::BorrowFieldImmutable(offset) => {
+                write!(f, "borrow({})", offset)
+            },
+            FunctionAttribute::BorrowFieldMutable(offset) => {
+                write!(f, "borrow_mut({})", offset)
+            },
         }
     }
 }
@@ -667,6 +721,13 @@ impl Visibility {
             Self::Private | Self::Friend => false,
         }
     }
+
+    pub fn is_public_or_friend(&self) -> bool {
+        match self {
+            Self::Public | Self::Friend => true,
+            Self::Private => false,
+        }
+    }
 }
 
 impl std::convert::TryFrom<u8> for Visibility {
@@ -747,7 +808,7 @@ impl FunctionDefinition {
 )]
 pub struct TypeSignature(pub SignatureToken);
 
-// TODO: remove at some point or move it in the front end (language/move-ir-compiler)
+// TODO: remove at some point or move it in the front end.
 /// A `FunctionSignature` in internally used to create a unique representation of the overall
 /// signature as need. Consider deprecated...
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -1180,6 +1241,18 @@ impl SignatureToken {
         }
     }
 
+    /// Returns struct handle index and type argument list if this token is a struct.
+    pub fn struct_idx_and_ty_args(&self) -> Option<(&StructHandleIndex, &[SignatureToken])> {
+        use SignatureToken::*;
+        match self {
+            Struct(idx) => Some((idx, &[])),
+            StructInstantiation(idx, ty_args) => Some((idx, ty_args.as_slice())),
+            Bool | U8 | U16 | U32 | U64 | U128 | U256 | I8 | I16 | I32 | I64 | I128 | I256
+            | Address | Signer | Vector(_) | Function(..) | Reference(_) | MutableReference(_)
+            | TypeParameter(_) => None,
+        }
+    }
+
     /// Returns true if the `SignatureToken` is any kind of reference (mutable and immutable).
     pub fn is_reference(&self) -> bool {
         use SignatureToken::*;
@@ -1269,6 +1342,13 @@ impl SignatureToken {
 
     pub fn num_nodes(&self) -> usize {
         self.preorder_traversal().count()
+    }
+
+    pub fn num_nodes_with_max_depth(&self) -> (usize, usize) {
+        self.preorder_traversal_with_depth()
+            .fold((0, 0), |(count, max_depth), (_, depth)| {
+                (count + 1, max_depth.max(depth))
+            })
     }
 
     pub fn instantiate(&self, subst_mapping: &[SignatureToken]) -> SignatureToken {
@@ -2133,12 +2213,14 @@ pub enum Bytecode {
     #[description = r#"
         Perform a modulo operation on the two integer values at the top of the stack and push the result on the stack.
 
-        This operation aborts the transaction in case the right hand side is zero.
+        This operation aborts the transaction in case the right hand side is zero or overflow happens.
+        Overflow can only happen for signed integer types, when the left hand side is the minimum
+        value of the type and the right hand side is -1.
     "#]
     #[semantics = r#"
         stack >> rhs
         stack >> lhs
-        if rhs == 0
+        if rhs == 0 || (lhs == i<N>::MIN && rhs == -1)
             arithmetic error
         else
             stack << (lhs % rhs)
@@ -3043,6 +3125,21 @@ pub enum Bytecode {
         ty_stack << ty
     "#]
     Negate,
+
+    #[group = "control_flow"]
+    #[description = r#"
+        Abort the transaction with an error code and message.
+    "#]
+    #[semantics = r#"
+        stack >> (error_message: vector<u8>)
+        stack >> (error_code: u64)
+        abort transaction with error_code and error_message
+    "#]
+    #[runtime_check_prologue = r#"
+        ty_stack >> _
+        ty_stack >> _
+    "#]
+    AbortMsg,
 }
 
 impl ::std::fmt::Debug for Bytecode {
@@ -3142,6 +3239,7 @@ impl ::std::fmt::Debug for Bytecode {
             Bytecode::Le => write!(f, "Le"),
             Bytecode::Ge => write!(f, "Ge"),
             Bytecode::Abort => write!(f, "Abort"),
+            Bytecode::AbortMsg => write!(f, "AbortMsg"),
             Bytecode::Nop => write!(f, "Nop"),
             Bytecode::Exists(a) => write!(f, "Exists({:?})", a),
             Bytecode::ExistsGeneric(a) => write!(f, "ExistsGeneric({:?})", a),
@@ -3164,7 +3262,10 @@ impl ::std::fmt::Debug for Bytecode {
 impl Bytecode {
     /// Return true if this bytecode instruction always branches
     pub fn is_unconditional_branch(&self) -> bool {
-        matches!(self, Bytecode::Ret | Bytecode::Abort | Bytecode::Branch(_))
+        matches!(
+            self,
+            Bytecode::Ret | Bytecode::Abort | Bytecode::AbortMsg | Bytecode::Branch(_)
+        )
     }
 
     /// Return true if the branching behavior of this bytecode instruction depends on a runtime
@@ -3321,6 +3422,7 @@ impl Bytecode {
             | Le
             | Ge
             | Abort
+            | AbortMsg
             | Nop
             | ImmBorrowVariantField(_)
             | ImmBorrowVariantFieldGeneric(_)

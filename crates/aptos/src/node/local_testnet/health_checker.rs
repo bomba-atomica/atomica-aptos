@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::indexer_api::confirm_metadata_applied;
 use anyhow::{anyhow, Context, Result};
@@ -64,7 +64,7 @@ impl HealthChecker {
                 backoff::future::retry(backoff, || async {
                     let transaction_stream_config = TransactionStreamConfig {
                         indexer_grpc_data_service_address: url.clone(),
-                        auth_token: "notused".to_string(),
+                        auth_token: Some("notused".to_string()),
                         starting_version: Some(0),
                         request_ending_version: None,
                         request_name_header: "notused".to_string(),
@@ -72,9 +72,9 @@ impl HealthChecker {
                         indexer_grpc_http2_ping_interval_secs: Default::default(),
                         indexer_grpc_http2_ping_timeout_secs: 60,
                         indexer_grpc_response_item_timeout_secs: 60,
-                        indexer_grpc_reconnection_timeout_secs: 60,
-                        indexer_grpc_reconnection_max_retries: Default::default(),
+                        reconnection_config: Default::default(),
                         transaction_filter: None,
+                        backup_endpoints: Default::default(),
                     };
                     get_chain_id(transaction_stream_config)
                         .await
@@ -138,20 +138,17 @@ impl HealthChecker {
         waiting_service: Option<&str>,
     ) -> Result<()> {
         let prefix = self.to_string();
-        wait_for_startup(
-            || self.check(),
-            match waiting_service {
-                Some(waiting_service) => {
-                    format!(
-                        "{} at {} did not start up before {}",
-                        prefix,
-                        self.address_str(),
-                        waiting_service,
-                    )
-                },
-                None => format!("{} at {} did not start up", prefix, self.address_str()),
+        wait_for_startup(|| self.check(), match waiting_service {
+            Some(waiting_service) => {
+                format!(
+                    "{} at {} did not start up before {}",
+                    prefix,
+                    self.address_str(),
+                    waiting_service,
+                )
             },
-        )
+            None => format!("{} at {} did not start up", prefix, self.address_str()),
+        })
         .await
     }
 

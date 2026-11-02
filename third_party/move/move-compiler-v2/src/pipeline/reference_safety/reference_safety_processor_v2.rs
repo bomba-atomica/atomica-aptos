@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Implements memory safety analysis.
 //!
@@ -123,7 +123,7 @@ use itertools::Itertools;
 use log::{debug, log_enabled, Level};
 use move_binary_format::file_format::CodeOffset;
 use move_model::{
-    ast::{AccessSpecifierKind, TempIndex},
+    ast::TempIndex,
     model::{FieldId, FunId, FunctionEnv, GlobalEnv, Loc, Parameter, QualifiedInstId, StructId},
     symbol::Symbol,
     ty::{ReferenceKind, Type},
@@ -501,14 +501,11 @@ impl LifetimeState {
 impl LifetimeState {
     /// Creates a new node with the given label and location information.
     fn new_node(&mut self, assigned_label: LifetimeLabel, location: MemoryLocation) {
-        self.graph.insert(
-            assigned_label,
-            LifetimeNode {
-                locations: iter::once(location).collect(),
-                children: Default::default(),
-                parents: Default::default(),
-            },
-        );
+        self.graph.insert(assigned_label, LifetimeNode {
+            locations: iter::once(location).collect(),
+            children: Default::default(),
+            parents: Default::default(),
+        });
     }
 
     /// Returns reference to node.
@@ -1454,18 +1451,13 @@ impl LifetimeAnalysisStep<'_, '_> {
         let mut_prefix = if e.kind.is_mut() { "mutable " } else { "" };
         (
             e.loc.clone(),
-            format!(
-                "{}{}{}",
-                prefix,
-                mut_prefix,
-                match &e.kind {
-                    BorrowLocal(_) => "local borrow",
-                    BorrowGlobal(..) => "global borrow",
-                    BorrowField(..) => "field borrow",
-                    Call(..) => "call result",
-                    Freeze => "freeze",
-                },
-            ),
+            format!("{}{}{}", prefix, mut_prefix, match &e.kind {
+                BorrowLocal(_) => "local borrow",
+                BorrowGlobal(..) => "global borrow",
+                BorrowField(..) => "field borrow",
+                Call(..) => "call result",
+                Freeze => "freeze",
+            },),
         )
     }
 
@@ -1703,34 +1695,29 @@ impl LifetimeAnalysisStep<'_, '_> {
         }
     }
 
-    /// Checks whether a function potentially accesses a global resource which is
-    /// currently borrowed.
+    /// Checks whether a called function acquires a global resource which is currently
+    /// mutably borrowed. A mutable global borrow conflicts with any `acquires` of the
+    /// same resource by the called function.
     fn check_global_access(&mut self, fun_id: QualifiedInstId<FunId>) {
         let fun = self.global_env().get_function(fun_id.to_qualified_id());
         let specifiers = fun.get_access_specifiers().unwrap_or(&[]);
 
         for (global, label) in &self.state.global_to_label_map {
-            let is_mut = self.state.children(label).any(|e| e.kind.is_mut());
-            // We are only checking positive specifiers, as negatives say nothing
-            // about what is accessed.
-            for spec in specifiers.iter().filter(|s| !s.negated) {
+            if !self.state.children(label).any(|e| e.kind.is_mut()) {
+                continue;
+            }
+            for spec in specifiers {
                 if spec
                     .resource
                     .1
                     .matches(self.global_env(), &fun_id.inst, global)
-                    // For mut global borrows, no access is allowed at all. For
-                    // non-mut, write access is not allowed.
-                    // TODO: needs to be updated to use acquired resources instead
-                    //   access specifiers (see v3 code).
-                    && (is_mut || spec.kind.subsumes(&AccessSpecifierKind::Writes))
                 {
                     self.error_with_hints(
                         self.cur_loc(),
                         format!(
-                            "function {} global `{}` which is currently {}borrowed",
+                            "function {} global `{}` which is currently mutably borrowed",
                             spec.kind,
                             self.global_env().display(global),
-                            if is_mut { "mutably " } else { "" }
                         ),
                         "function called here",
                         self.borrow_info(label, |_| true)
@@ -1774,14 +1761,11 @@ impl LifetimeAnalysisStep<'_, '_> {
     ) {
         let label = *self.state.label_for_temp(src).expect("label for reference");
         let target = self.state.replace_ref(dest, code_offset, 0);
-        self.state.add_edge(
-            label,
-            BorrowEdge {
-                kind: BorrowEdgeKind::Freeze,
-                loc: self.cur_loc(),
-                target,
-            },
-        );
+        self.state.add_edge(label, BorrowEdge {
+            kind: BorrowEdgeKind::Freeze,
+            loc: self.cur_loc(),
+            target,
+        });
         if let Some(label) = self.state.label_for_temp(src) {
             // Handle case (a): search for any siblings which mutably borrow the same
             // parent.
@@ -2128,14 +2112,11 @@ impl FunctionTargetProcessor for ReferenceSafetyProcessor {
                     false,
                 );
                 label_counter += 1;
-                state.add_edge(
-                    label,
-                    BorrowEdge {
-                        kind: BorrowEdgeKind::BorrowLocal(ty.is_mutable_reference()),
-                        loc,
-                        target,
-                    },
-                )
+                state.add_edge(label, BorrowEdge {
+                    kind: BorrowEdgeKind::BorrowLocal(ty.is_mutable_reference()),
+                    loc,
+                    target,
+                })
             }
         }
         let state_map = analyzer.analyze_function(state, target.get_bytecode(), &cfg);

@@ -1,0 +1,125 @@
+name: Node and Framework Tests
+
+# Unit tests for the aptos-node crate and the Move framework (the Rust harness
+# in aptos-framework runs the Move unit tests). Every step is guarded: a step
+# that runs zero tests fails, and exit code 0 alone is not evidence of testing.
+
+on:
+  push:
+    branches:
+      - dev-atomica
+    paths:
+      - "**/*.rs"
+      - "**/*.move"
+      - "**/Move.toml"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/node-framework-tests.yml"
+      - ".github/scripts/**"
+  pull_request:
+    branches:
+      - dev-atomica
+    paths:
+      - "**/*.rs"
+      - "**/*.move"
+      - "**/Move.toml"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/node-framework-tests.yml"
+      - ".github/scripts/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.94.1"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_BUILD_JOBS: 2
+  CARGO_INCREMENTAL: 0
+  RUST_MIN_STACK: 104857600
+
+jobs:
+  node:
+    name: aptos-node tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake clang libssl-dev pkg-config libpq-dev lld libudev-dev libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2.7.8
+        with:
+          shared-key: "atomica-test"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+          save-if: true
+
+      - name: Run aptos-node tests
+        run: .github/scripts/run-tests-guarded.sh aptos-node 1 -- cargo test -p aptos-node --lib
+
+  framework:
+    name: Move framework tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake clang libssl-dev pkg-config libpq-dev lld libudev-dev libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2.7.8
+        with:
+          shared-key: "atomica-test"
+          cache-on-failure: true
+          cache-all-crates: true
+          workspaces: "."
+          add-job-id-key: false
+          save-if: true
+
+      # The prover tests (move_prover_tests.rs, 4 tests) need Boogie, Z3 and CVC5,
+      # which this runner does not install, so they panic. They are skipped, and
+      # the Move unit tests run (move_unit_test.rs, 7 tests, plus verify_tool = 8).
+      - name: Run aptos-framework tests (Move unit tests, prover skipped, minimum 8)
+        run: .github/scripts/run-tests-guarded.sh aptos-framework 8 -- cargo test -p aptos-framework -- --skip prover

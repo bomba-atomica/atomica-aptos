@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 // Functions for running benchmarks and storing the results as files, as well as reading
 // benchmark data back into memory.
@@ -18,6 +19,7 @@ use move_prover::{
     check_errors, cli::Options, create_and_process_bytecode, create_init_num_operation_state,
     generate_boogie, verify_boogie,
 };
+use move_prover_boogie_backend::bytecode_translator::BoogieTranslator;
 use move_prover_bytecode_pipeline::options::ProverOptions;
 use std::{
     fmt::Debug,
@@ -145,8 +147,6 @@ fn run_benchmark(
     };
     options.move_sources.append(&mut modules.to_vec());
     options.move_deps.append(&mut dep_dirs.to_vec());
-    options.skip_attribute_checks = true;
-
     if use_aptos_natives {
         options.backend.custom_natives =
             Some(move_prover_boogie_backend::options::CustomNativeOptions {
@@ -272,6 +272,10 @@ impl Runner {
             &mut self.error_writer,
             "unexpected transformation errors",
         )?;
+        if BoogieTranslator::verification_roots(env, &self.options.backend, &targets).is_empty() {
+            env.clear_diag();
+            return Ok((Duration::ZERO, "no-vc".to_string()));
+        }
 
         // Generate boogie code.
         let code_writer = generate_boogie(env, &self.options, None, &targets)?;
@@ -368,7 +372,7 @@ impl Benchmark {
         self.data
             .iter()
             .filter_map(|d| {
-                if d.status == "ok" || d.status == "error" {
+                if d.status == "ok" || d.status == "error" || d.status == "errors" {
                     Some(d.duration as u32)
                 } else {
                     None

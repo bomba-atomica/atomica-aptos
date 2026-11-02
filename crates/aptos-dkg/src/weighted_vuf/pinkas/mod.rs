@@ -1,12 +1,12 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     algebra::{lagrange::lagrange_coefficients, polynomials::get_powers_of_tau},
     pvss,
     pvss::{
         dealt_pub_key_share::g2::DealtPubKeyShare, traits::HasEncryptionPublicParams, Player,
-        WeightedConfig,
+        WeightedConfigBlstrs,
     },
     utils::{g1_multi_exp, g2_multi_exp, parallel_multi_pairing, random::random_nonzero_scalar},
     weighted_vuf::traits::WeightedVUF,
@@ -39,6 +39,23 @@ pub struct PinkasWUF;
 pub struct RandomizedPKs {
     pi: G1Projective,       // \hat{g}^{r}
     rks: Vec<G1Projective>, // g^{r \sk_i}, for all shares i
+}
+
+impl RandomizedPKs {
+    /// Construct from already-decompressed group elements. Callers must ensure
+    /// that `pi` and `rks` are valid subgroup elements (e.g., obtained from a
+    /// successful `G1Affine::from_compressed` decode).
+    pub fn from_decompressed(pi: G1Projective, rks: Vec<G1Projective>) -> Self {
+        Self { pi, rks }
+    }
+
+    pub fn pi(&self) -> &G1Projective {
+        &self.pi
+    }
+
+    pub fn rks(&self) -> &[G1Projective] {
+        &self.rks
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,7 +187,7 @@ impl WeightedVUF for PinkasWUF {
     }
 
     fn aggregate_shares(
-        _wc: &WeightedConfig,
+        _wc: &WeightedConfigBlstrs,
         apks_and_proofs: &[(Player, Self::AugmentedPubKeyShare, Self::ProofShare)],
     ) -> Self::Proof {
         let mut players_and_shares = Vec::with_capacity(apks_and_proofs.len());
@@ -190,7 +207,7 @@ impl WeightedVUF for PinkasWUF {
 
     // NOTE: This VUF has the same evaluation as its proof.
     fn derive_eval(
-        wc: &WeightedConfig,
+        wc: &WeightedConfigBlstrs,
         _pp: &Self::PublicParameters,
         _msg: &[u8],
         apks: &[Option<Self::AugmentedPubKeyShare>],
@@ -214,8 +231,9 @@ impl WeightedVUF for PinkasWUF {
         apks: &[Option<Self::AugmentedPubKeyShare>],
         msg: &[u8],
         proof: &Self::Proof,
+        thread_pool: &ThreadPool,
     ) -> anyhow::Result<()> {
-        if proof.len() >= apks.len() {
+        if proof.len() > apks.len() {
             bail!("Number of proof shares ({}) exceeds number of APKs ({}) when verifying aggregated WVUF proof", proof.len(), apks.len());
         }
 
@@ -223,13 +241,14 @@ impl WeightedVUF for PinkasWUF {
         let tau = random_scalar(&mut thread_rng());
         let taus = get_powers_of_tau(&tau, proof.len());
 
-        // [share_i^{\tau^i}]_{i \in [0, n)}
-        let shares = proof
-            .iter()
-            .map(|(_, share)| share)
-            .zip(taus.iter())
-            .map(|(share, tau)| share.mul(tau))
-            .collect::<Vec<G2Projective>>();
+        // [share_i^{\tau^i}]_{i \in [0, n)} -- parallelize the G2 scalar multiplications
+        let shares: Vec<G2Projective> = thread_pool.install(|| {
+            proof
+                .par_iter()
+                .zip(taus.par_iter())
+                .map(|((_, share), tau)| share.mul(tau))
+                .collect()
+        });
 
         let mut pis = Vec::with_capacity(proof.len());
         for (player, _) in proof {
@@ -253,9 +272,12 @@ impl WeightedVUF for PinkasWUF {
         let h = Self::hash_to_curve(msg);
         let sum_of_taus: Scalar = taus.iter().sum();
 
-        if multi_pairing(
+        let h_tau = h.mul(sum_of_taus);
+        if parallel_multi_pairing(
             pis.iter().chain([pp.g_neg].iter()),
-            shares.iter().chain([h.mul(sum_of_taus)].iter()),
+            shares.iter().chain([h_tau].iter()),
+            thread_pool,
+            MIN_MULTIPAIR_NUM_JOBS,
         ) != Gt::identity()
         {
             bail!("Multipairing check in batched aggregate verification failed");
@@ -271,7 +293,7 @@ impl PinkasWUF {
     }
 
     pub fn collect_lagrange_coeffs_shares_and_rks<'a>(
-        wc: &WeightedConfig,
+        wc: &WeightedConfigBlstrs,
         apks: &'a [Option<(RandomizedPKs, Vec<DealtPubKeyShare>)>],
         proof: &'a Vec<(Player, <Self as WeightedVUF>::ProofShare)>,
     ) -> anyhow::Result<(
@@ -291,8 +313,13 @@ impl PinkasWUF {
 
         let mut k = 0;
         for (player, share) in proof {
-            for j in 0..wc.get_player_weight(player) {
-                sub_player_ids.push(wc.get_virtual_player(player, j).id);
+            let w = wc.get_player_weight(player)?;
+            for j in 0..w {
+                sub_player_ids.push(
+                    wc.get_virtual_player(player, j)
+                        .expect("j < weight holds by construction")
+                        .id,
+                );
             }
 
             let apk = apks[player.id]
@@ -302,7 +329,6 @@ impl PinkasWUF {
             rks.push(&apk.0.rks);
             shares.push(share);
 
-            let w = wc.get_player_weight(player);
             ranges.push(k..k + w);
             k += w;
         }

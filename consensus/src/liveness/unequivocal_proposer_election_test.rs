@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::proposer_election::ProposerElection;
 use crate::liveness::unequivocal_proposer_election::UnequivocalProposerElection;
@@ -37,7 +37,7 @@ fn test_is_valid_proposal() {
     let quorum_cert = certificate_for_genesis();
 
     let good_proposal = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         1,
         quorum_cert.clone(),
@@ -46,7 +46,7 @@ fn test_is_valid_proposal() {
     )
     .unwrap();
     let bad_author_proposal = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         1,
         quorum_cert.clone(),
@@ -55,7 +55,7 @@ fn test_is_valid_proposal() {
     )
     .unwrap();
     let bad_duplicate_proposal = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         1,
         2,
         quorum_cert.clone(),
@@ -64,7 +64,7 @@ fn test_is_valid_proposal() {
     )
     .unwrap();
     let next_good_proposal = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         2,
         3,
         quorum_cert.clone(),
@@ -73,7 +73,7 @@ fn test_is_valid_proposal() {
     )
     .unwrap();
     let next_bad_duplicate_proposal = Block::new_proposal(
-        Payload::empty(false, true),
+        Payload::empty(false),
         2,
         4,
         quorum_cert,

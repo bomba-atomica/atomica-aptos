@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::move_vm_ext::AptosMoveResolver;
 use aptos_crypto::ed25519::Ed25519PublicKey;
@@ -9,7 +8,7 @@ use aptos_types::{
     jwks::{jwk::JWK, AllProvidersJWKs, FederatedJWKs, PatchedJWKs},
     keyless::{
         get_public_inputs_hash, AnyKeylessPublicKey, Configuration, EphemeralCertificate,
-        Groth16ProofAndStatement, Groth16VerificationKey, KeylessPublicKey, KeylessSignature, ZKP,
+        Groth16ProofAndStatement, KeylessPublicKey, KeylessSignature, ZKP,
     },
     on_chain_config::{CurrentTimeMicroseconds, Features, OnChainConfig},
     transaction::authenticator::{EphemeralPublicKey, EphemeralSignature},
@@ -32,13 +31,6 @@ macro_rules! value_deserialization_error {
             Some($message.to_owned()),
         )
     }};
-}
-
-fn get_resource_on_chain<T: MoveStructType + for<'a> Deserialize<'a>>(
-    resolver: &impl AptosMoveResolver,
-    module_storage: &impl ModuleStorage,
-) -> anyhow::Result<T, VMStatus> {
-    get_resource_on_chain_at_addr(&CORE_CODE_ADDRESS, resolver, module_storage)
 }
 
 fn get_resource_on_chain_at_addr<T: MoveStructType + for<'a> Deserialize<'a>>(
@@ -91,13 +83,18 @@ fn get_resource_on_chain_at_addr<T: MoveStructType + for<'a> Deserialize<'a>>(
 fn get_current_time_onchain(
     resolver: &impl AptosMoveResolver,
 ) -> anyhow::Result<CurrentTimeMicroseconds, VMStatus> {
-    CurrentTimeMicroseconds::fetch_config(resolver).ok_or_else(|| {
-        value_deserialization_error!("could not fetch CurrentTimeMicroseconds on-chain config")
-    })
+    CurrentTimeMicroseconds::fetch_config(resolver)
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            value_deserialization_error!("could not fetch CurrentTimeMicroseconds on-chain config")
+        })
 }
 
 fn get_jwks_onchain(resolver: &impl AptosMoveResolver) -> anyhow::Result<PatchedJWKs, VMStatus> {
     PatchedJWKs::fetch_config(resolver)
+        .ok()
+        .flatten()
         .ok_or_else(|| value_deserialization_error!("could not deserialize PatchedJWKs"))
 }
 
@@ -107,20 +104,6 @@ fn get_federated_jwks_onchain(
     module_storage: &impl ModuleStorage,
 ) -> anyhow::Result<FederatedJWKs, VMStatus> {
     get_resource_on_chain_at_addr::<FederatedJWKs>(jwk_addr, resolver, module_storage)
-}
-
-pub(crate) fn get_groth16_vk_onchain(
-    resolver: &impl AptosMoveResolver,
-    module_storage: &impl ModuleStorage,
-) -> anyhow::Result<Groth16VerificationKey, VMStatus> {
-    get_resource_on_chain::<Groth16VerificationKey>(resolver, module_storage)
-}
-
-fn get_configs_onchain(
-    resolver: &impl AptosMoveResolver,
-    module_storage: &impl ModuleStorage,
-) -> anyhow::Result<Configuration, VMStatus> {
-    get_resource_on_chain::<Configuration>(resolver, module_storage)
 }
 
 // Fetches a JWK from the PatchedJWKs dictionary (which maps each `iss` to its set of JWKs)
@@ -173,7 +156,8 @@ fn get_jwk_for_authenticator(
 
 /// Ensures that **all** keyless authenticators in the transaction are valid.
 pub(crate) fn validate_authenticators(
-    pvk: &Option<PreparedVerifyingKey<Bn254>>,
+    pvk: Option<&PreparedVerifyingKey<Bn254>>,
+    configuration: Option<&Configuration>,
     authenticators: &Vec<(AnyKeylessPublicKey, KeylessSignature)>,
     features: &Features,
     resolver: &impl AptosMoveResolver,
@@ -211,7 +195,15 @@ pub(crate) fn validate_authenticators(
         return Err(invalid_signature!("Groth16 VK has not been set on-chain"));
     }
 
-    let config = &get_configs_onchain(resolver, module_storage)?;
+    let config = configuration.ok_or_else(|| {
+        // Preserve error code for compatibility.
+        value_deserialization_error!(format!(
+            "get_resource failed on {}::{}::{}",
+            CORE_CODE_ADDRESS.to_hex_literal(),
+            Configuration::struct_tag().module,
+            Configuration::struct_tag().name
+        ))
+    })?;
     if authenticators.len() > config.max_signatures_per_txn as usize {
         // println!("[aptos-vm][groth16] Too many keyless authenticators");
         return Err(invalid_signature!("Too many keyless authenticators"));
@@ -292,7 +284,7 @@ pub fn verify_keyless_signature_without_ephemeral_signature_check(
     onchain_timestamp_microseconds: u64,
     training_wheels_pk: &Option<EphemeralPublicKey>,
     config: &Configuration,
-    pvk: &Option<PreparedVerifyingKey<Bn254>>,
+    pvk: Option<&PreparedVerifyingKey<Bn254>>,
 ) -> Result<(), VMStatus> {
     signature
         .verify_expiry(onchain_timestamp_microseconds)
@@ -311,8 +303,8 @@ pub fn verify_keyless_signature_without_ephemeral_signature_check(
 
                 // If an `aud` override was set for account recovery purposes, check that it is
                 // in the allow-list on-chain.
-                if zksig.override_aud_val.is_some() {
-                    config.is_allowed_override_aud(zksig.override_aud_val.as_ref().unwrap())?;
+                if let Some(override_aud_val) = &zksig.override_aud_val {
+                    config.is_allowed_override_aud(override_aud_val)?;
                 }
                 match &zksig.proof {
                     ZKP::Groth16(groth16proof) => {
@@ -357,8 +349,7 @@ pub fn verify_keyless_signature_without_ephemeral_signature_check(
                             }
                         }
 
-                        let result =
-                            zksig.verify_groth16_proof(public_inputs_hash, pvk.as_ref().unwrap());
+                        let result = zksig.verify_groth16_proof(public_inputs_hash, pvk.unwrap());
 
                         result.map_err(|_| {
                             // println!("[aptos-vm][groth16] ZKP verification failed");

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     config::{
@@ -21,6 +21,7 @@ pub struct AdminServiceConfig {
     // If empty, will allow all requests without authentication. (Not allowed on mainnet.)
     pub authentication_configs: Vec<AuthenticationConfig>,
     pub malloc_stats_max_len: usize,
+    pub num_threads: Option<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -46,6 +47,7 @@ impl Default for AdminServiceConfig {
             port: 9102,
             authentication_configs: vec![],
             malloc_stats_max_len: 2 * 1024 * 1024,
+            num_threads: Some(2),
         }
     }
 }

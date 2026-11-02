@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     manifest_parser::git_repo_cache_path,
@@ -14,6 +14,7 @@ use std::{fmt::Display, path::PathBuf};
 pub enum StdLib {
     AptosTokenObjects,
     AptosToken,
+    AptosTrading,
     AptosFramework,
     AptosStdlib,
     MoveStdlib,
@@ -56,6 +57,7 @@ impl StdLib {
     /// Returns the name of the standard library.
     pub fn as_str(&self) -> &'static str {
         match self {
+            StdLib::AptosTrading => "AptosTrading",
             StdLib::AptosToken => "AptosToken",
             StdLib::AptosTokenObjects => "AptosTokenObjects",
             StdLib::AptosFramework => "AptosFramework",
@@ -79,6 +81,7 @@ impl StdLib {
     /// Returns the subdirectory of the standard library in the git repository.
     fn sub_dir(&self) -> &'static str {
         match self {
+            StdLib::AptosTrading => "aptos-trading",
             StdLib::AptosToken => "aptos-token",
             StdLib::AptosTokenObjects => "aptos-token-objects",
             StdLib::AptosFramework => "aptos-framework",
@@ -89,7 +92,7 @@ impl StdLib {
 }
 
 /// Represents a standard library version.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, ValueEnum)]
+#[derive(Clone, Debug, Hash, Deserialize, Serialize, PartialEq, Eq, PartialOrd, ValueEnum)]
 #[clap(rename_all = "lower")]
 pub enum StdVersion {
     Mainnet,

@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     function_target::FunctionData,
@@ -16,7 +17,7 @@ use itertools::Itertools;
 use move_binary_format::{
     access::ModuleAccess,
     file_format::{
-        Bytecode as MoveBytecode, CodeOffset, CompiledModule, FieldHandleIndex,
+        Bytecode as MoveBytecode, CodeOffset, CompiledModule, FieldHandleIndex, FunctionAttribute,
         FunctionHandleIndex, SignatureIndex, SignatureToken, VariantFieldHandleIndex,
     },
     views::{FunctionHandleView, ModuleView, ViewInternals},
@@ -28,7 +29,10 @@ use move_core_types::{
     value::MoveValue,
 };
 use move_model::{
-    ast::{Address, Condition, ConditionKind, ExpData, PropertyValue, Spec, TempIndex, Value},
+    ast::{
+        Address, Condition, ConditionKind, ExpData, Operation as AstOperation, PropertyValue, Spec,
+        TempIndex, Value,
+    },
     model::{FunId, FunctionEnv, Loc, ModuleId, NodeId, StructId},
     pragmas::CONDITION_UNROLL_PROP,
     symbol::Symbol,
@@ -322,7 +326,18 @@ impl<'a> StacklessBytecodeGenerator<'a> {
 
             MoveBytecode::Abort => {
                 let error_code_index = self.temp_stack.pop().unwrap();
-                self.code.push(Bytecode::Abort(attr_id, error_code_index));
+                self.code
+                    .push(Bytecode::Abort(attr_id, error_code_index, None));
+            },
+
+            MoveBytecode::AbortMsg => {
+                let error_message_index = self.temp_stack.pop().unwrap();
+                let error_code_index = self.temp_stack.pop().unwrap();
+                self.code.push(Bytecode::Abort(
+                    attr_id,
+                    error_code_index,
+                    Some(error_message_index),
+                ));
             },
 
             MoveBytecode::StLoc(idx) => {
@@ -868,15 +883,20 @@ impl<'a> StacklessBytecodeGenerator<'a> {
                     .module_env
                     .get_used_function(*idx)
                     .expect(COMPILED_MODULE_AVAILABLE);
-                self.code.push(mk_call(
-                    Operation::Function(
-                        callee_env.module_env.get_id(),
-                        callee_env.get_id(),
-                        vec![],
-                    ),
-                    return_temp_indices,
-                    arg_temp_indices,
-                ))
+                // Convert struct API wrapper calls to native operations so that all
+                // downstream consumers (prover, decompiler, etc.) see Pack/BorrowField/…
+                // rather than calls to compiler-generated wrappers.
+                let op = self
+                    .struct_api_operation(&function_handle_view, &callee_env, &[])
+                    .unwrap_or_else(|| {
+                        Operation::Function(
+                            callee_env.module_env.get_id(),
+                            callee_env.get_id(),
+                            vec![],
+                        )
+                    });
+                self.code
+                    .push(mk_call(op, return_temp_indices, arg_temp_indices))
             },
             MoveBytecode::CallGeneric(idx) => {
                 let func_instantiation = self.module.function_instantiation_at(*idx);
@@ -908,15 +928,17 @@ impl<'a> StacklessBytecodeGenerator<'a> {
                     .module_env
                     .get_used_function(func_instantiation.handle)
                     .expect(COMPILED_MODULE_AVAILABLE);
-                self.code.push(mk_call(
-                    Operation::Function(
-                        callee_env.module_env.get_id(),
-                        callee_env.get_id(),
-                        type_sigs,
-                    ),
-                    return_temp_indices,
-                    arg_temp_indices,
-                ))
+                let op = self
+                    .struct_api_operation(&function_handle_view, &callee_env, &type_sigs)
+                    .unwrap_or_else(|| {
+                        Operation::Function(
+                            callee_env.module_env.get_id(),
+                            callee_env.get_id(),
+                            type_sigs,
+                        )
+                    });
+                self.code
+                    .push(mk_call(op, return_temp_indices, arg_temp_indices))
             },
 
             MoveBytecode::CallClosure(sidx) => self.call_closure(attr_id, *sidx),
@@ -1224,11 +1246,10 @@ impl<'a> StacklessBytecodeGenerator<'a> {
             MoveBytecode::WriteRef => {
                 let ref_operand_index = self.temp_stack.pop().unwrap();
                 let val_operand_index = self.temp_stack.pop().unwrap();
-                self.code.push(mk_call(
-                    Operation::WriteRef,
-                    vec![],
-                    vec![ref_operand_index, val_operand_index],
-                ));
+                self.code.push(mk_call(Operation::WriteRef, vec![], vec![
+                    ref_operand_index,
+                    val_operand_index,
+                ]));
             },
 
             MoveBytecode::Add
@@ -1613,7 +1634,7 @@ impl<'a> StacklessBytecodeGenerator<'a> {
                         vec![],
                     ),
                     vec![],
-                    vec![value_operand_index, signer_operand_index],
+                    vec![signer_operand_index, value_operand_index],
                 ));
             },
 
@@ -1630,7 +1651,7 @@ impl<'a> StacklessBytecodeGenerator<'a> {
                         self.get_type_params(struct_instantiation.type_parameters),
                     ),
                     vec![],
-                    vec![value_operand_index, signer_operand_index],
+                    vec![signer_operand_index, value_operand_index],
                 ));
             },
 
@@ -1992,8 +2013,29 @@ impl<'a> StacklessBytecodeGenerator<'a> {
                 },
                 // Updating global spec variables are translated to Assume, which will be replaced when instrumenting the spec
                 ConditionKind::Update => {
-                    update_map.insert(cond.exp.node_id(), cond.clone());
-                    PropKind::Assume
+                    // The prop expression is the only copy maintained by
+                    // downstream temp-renumbering passes; the fun-spec copy
+                    // goes stale. Ghost *field* update targets reference
+                    // temporaries, so encode the update as `lhs == rhs` to
+                    // keep both sides maintained. Ghost variable targets
+                    // contain no temporaries and stay as the plain rhs.
+                    let env = self.func_env.module_env.env;
+                    let lhs = &cond.additional_exps[0];
+                    let prop_exp = if lhs.extract_ghost_mem_access(env).is_some() {
+                        cond.exp.clone()
+                    } else {
+                        let node_id =
+                            env.new_node(cond.loc.clone(), Type::Primitive(PrimitiveType::Bool));
+                        ExpData::Call(node_id, AstOperation::Eq, vec![
+                            lhs.clone(),
+                            cond.exp.clone(),
+                        ])
+                        .into_exp()
+                    };
+                    update_map.insert(prop_exp.node_id(), cond.clone());
+                    self.code
+                        .push(Bytecode::Prop(attr_id, PropKind::Assume, prop_exp));
+                    continue;
                 },
                 _ => {
                     self.func_env.module_env.env.diag(
@@ -2015,6 +2057,78 @@ impl<'a> StacklessBytecodeGenerator<'a> {
             .module_env
             .globalize_signature(token)
             .expect(COMPILED_MODULE_AVAILABLE)
+    }
+
+    /// If `callee_env` is a struct API wrapper, return the equivalent native `Operation`.
+    /// The `FunctionAttribute` tags in the binary are the authoritative source.
+    fn struct_api_operation(
+        &self,
+        fhv: &FunctionHandleView<CompiledModule>,
+        callee_env: &move_model::model::FunctionEnv,
+        type_args: &[Type],
+    ) -> Option<Operation> {
+        let (mid, sid) = callee_env.get_struct_api_struct()?;
+
+        for attr in fhv.attributes() {
+            match attr {
+                FunctionAttribute::Pack => {
+                    return Some(Operation::Pack(mid, sid, type_args.to_vec()));
+                },
+                FunctionAttribute::Unpack => {
+                    return Some(Operation::Unpack(mid, sid, type_args.to_vec()));
+                },
+                FunctionAttribute::PackVariant(variant_idx) => {
+                    let variant = callee_env
+                        .module_env
+                        .env
+                        .get_struct(mid.qualified(sid))
+                        .get_variant_name_by_idx(*variant_idx)?;
+                    return Some(Operation::PackVariant(
+                        mid,
+                        sid,
+                        variant,
+                        type_args.to_vec(),
+                    ));
+                },
+                FunctionAttribute::UnpackVariant(variant_idx) => {
+                    let variant = callee_env
+                        .module_env
+                        .env
+                        .get_struct(mid.qualified(sid))
+                        .get_variant_name_by_idx(*variant_idx)?;
+                    return Some(Operation::UnpackVariant(
+                        mid,
+                        sid,
+                        variant,
+                        type_args.to_vec(),
+                    ));
+                },
+                FunctionAttribute::TestVariant(variant_idx) => {
+                    let variant = callee_env
+                        .module_env
+                        .env
+                        .get_struct(mid.qualified(sid))
+                        .get_variant_name_by_idx(*variant_idx)?;
+                    return Some(Operation::TestVariant(
+                        mid,
+                        sid,
+                        variant,
+                        type_args.to_vec(),
+                    ));
+                },
+                FunctionAttribute::BorrowFieldImmutable(offset)
+                | FunctionAttribute::BorrowFieldMutable(offset) => {
+                    return Some(Operation::BorrowField(
+                        mid,
+                        sid,
+                        type_args.to_vec(),
+                        *offset as usize,
+                    ));
+                },
+                FunctionAttribute::Persistent | FunctionAttribute::ModuleLock => {},
+            }
+        }
+        None
     }
 
     fn new_temp(&mut self, ty: Type) -> TempIndex {
@@ -2080,8 +2194,25 @@ impl BytecodeGeneratorContext {
                 },
                 // Updating global spec variables are translated to Assume, which will be replaced when instrumenting the spec
                 ConditionKind::Update => {
-                    update_map.insert(cond.exp.node_id(), cond.clone());
-                    PropKind::Assume
+                    // See the sibling arm above: ghost-field update targets
+                    // reference temporaries, so both sides are encoded in the
+                    // maintained prop expression as `lhs == rhs`.
+                    let env = func_env.module_env.env;
+                    let lhs = &cond.additional_exps[0];
+                    let prop_exp = if lhs.extract_ghost_mem_access(env).is_some() {
+                        cond.exp.clone()
+                    } else {
+                        let node_id =
+                            env.new_node(cond.loc.clone(), Type::Primitive(PrimitiveType::Bool));
+                        ExpData::Call(node_id, AstOperation::Eq, vec![
+                            lhs.clone(),
+                            cond.exp.clone(),
+                        ])
+                        .into_exp()
+                    };
+                    update_map.insert(prop_exp.node_id(), cond.clone());
+                    code.push(Bytecode::Prop(attr_id, PropKind::Assume, prop_exp));
+                    continue;
                 },
                 _ => {
                     func_env.module_env.env.diag(

@@ -1,5 +1,5 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     network_tests::NetworkPlayground,
@@ -9,7 +9,8 @@ use crate::{
 use aptos_config::config::BlockTransactionFilterConfig;
 use aptos_consensus_types::{
     block::{block_test_utils::certificate_for_genesis, Block},
-    common::{Payload, ProofWithData},
+    common::Payload,
+    payload::{OptQuorumStorePayload, PayloadExecutionLimit},
     proof_of_store::BatchInfo,
 };
 use aptos_crypto::{
@@ -39,12 +40,9 @@ fn test_no_vote_on_denied_inline_transactions() {
 
         // Create a block filter config that denies the first transaction sender
         let block_txn_filter = BlockTransactionFilter::empty()
-            .add_multiple_matchers_filter(
-                false,
-                vec![BlockTransactionMatcher::Transaction(
-                    TransactionMatcher::Sender(transactions[0].sender()),
-                )],
-            )
+            .add_multiple_matchers_filter(false, vec![BlockTransactionMatcher::Transaction(
+                TransactionMatcher::Sender(transactions[0].sender()),
+            )])
             .add_all_filter(true);
         let block_txn_filter_config = BlockTransactionFilterConfig::new(true, block_txn_filter);
 
@@ -164,12 +162,9 @@ fn test_vote_on_no_filter_matches() {
 
         // Create a block filter config that denies the first transaction sender
         let block_txn_filter = BlockTransactionFilter::empty()
-            .add_multiple_matchers_filter(
-                false,
-                vec![BlockTransactionMatcher::Transaction(
-                    TransactionMatcher::Sender(transactions[0].sender()),
-                )],
-            )
+            .add_multiple_matchers_filter(false, vec![BlockTransactionMatcher::Transaction(
+                TransactionMatcher::Sender(transactions[0].sender()),
+            )])
             .add_all_filter(true);
         let block_txn_filter_config = BlockTransactionFilterConfig::new(true, block_txn_filter);
 
@@ -243,7 +238,12 @@ fn create_payload(
 ) -> Payload {
     if use_quorum_store_payloads {
         let inline_batch = (create_batch_info(transactions.len()), transactions);
-        Payload::QuorumStoreInlineHybrid(vec![inline_batch], ProofWithData::empty(), None)
+        Payload::OptQuorumStore(OptQuorumStorePayload::new(
+            vec![inline_batch].into(),
+            Vec::<BatchInfo>::new().into(),
+            Vec::new().into(),
+            PayloadExecutionLimit::None,
+        ))
     } else {
         Payload::DirectMempool(transactions)
     }

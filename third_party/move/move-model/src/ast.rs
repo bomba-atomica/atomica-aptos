@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Contains definitions for the abstract syntax tree (AST) of the Move language.
 
@@ -52,18 +53,59 @@ pub struct SpecFunDecl {
     pub name: Symbol,
     pub type_params: Vec<TypeParameter>,
     pub params: Vec<Parameter>,
-    pub context_params: Option<Vec<(Symbol, bool)>>,
     pub result_type: Type,
     pub used_memory: BTreeSet<QualifiedInstId<StructId>>,
+    /// Resources accessed inside `old()` contexts (transitively).
+    /// These require dual-state parameters (pre and post) for verification.
+    pub old_memory: BTreeSet<QualifiedInstId<StructId>>,
     pub uninterpreted: bool,
     pub is_move_fun: bool,
     pub is_native: bool,
     pub body: Option<Exp>,
     pub callees: BTreeSet<QualifiedInstId<SpecFunId>>,
     pub is_recursive: RefCell<Option<bool>>,
+    /// Whether this spec fun (or any callee transitively) uses `old()` expressions
+    /// or has `&mut` parameters. Computed during the spec_rewriter pass.
+    pub uses_old: bool,
+    /// User-declared frame specification (modifies/reads) on spec funs.
+    /// For uninterpreted funs: contributes to used_memory/old_memory.
+    /// For funs with body: validated against body, then overrides used_memory/old_memory.
+    pub frame_spec: Option<FrameSpec>,
     /// The instantiations for which this function is known to use generic type reflection.
     pub insts_using_generic_type_reflection: RefCell<BTreeMap<Vec<Type>, bool>>,
+    /// Spec conditions (ensures, requires, aborts_if) for uninterpreted spec functions
+    /// derived from lambdas with imperative bodies that have spec blocks.
     pub spec: RefCell<Spec>,
+}
+
+/// Frame condition specification: which resources are modified and/or read.
+/// Used in `Spec` (function/lambda), `SpecFunDecl`, and `FunParamAccessOf`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FrameSpec {
+    /// Modify target expressions (`Operation::Global` with address).
+    pub modifies_targets: Vec<Exp>,
+    /// Resource types that are read (resolved struct IDs).
+    pub reads_targets: BTreeSet<QualifiedInstId<StructId>>,
+    /// Wildcard: `modifies_of<f> *` — function can modify any memory.
+    pub modifies_all: bool,
+    /// Wildcard: `reads_of<f> *` — function can read any memory.
+    pub reads_all: bool,
+}
+
+/// Combined reads/writes access for a function-typed parameter.
+/// Built from `modifies_of<param>(formals) targets;` and `reads_of<param> types;`.
+#[derive(Clone, Debug)]
+pub struct FunParamAccessOf {
+    pub loc: Loc,
+    pub fun_param: Symbol,
+    /// Formal parameters from `modifies_of` declaration, used in target expressions.
+    pub modifies_params: Vec<Parameter>,
+    /// Frame specification (modifies targets + reads types).
+    pub frame_spec: FrameSpec,
+    /// Resources accessed by this function parameter (modifies ∪ reads), derived.
+    pub used_memory: BTreeSet<QualifiedInstId<StructId>>,
+    /// Resources accessed in dual-state (write) context (modifies only), derived.
+    pub old_memory: BTreeSet<QualifiedInstId<StructId>>,
 }
 
 // =================================================================================================
@@ -112,7 +154,6 @@ pub enum ConditionKind {
     AbortsIf,
     AbortsWith,
     SucceedsIf,
-    Modifies,
     Emits,
     Ensures,
     Requires,
@@ -153,7 +194,6 @@ impl ConditionKind {
                 | SucceedsIf
                 | Emits
                 | Ensures
-                | Modifies
                 | FunctionInvariant
                 | LetPost(..)
                 | LetPre(..)
@@ -216,7 +256,6 @@ impl fmt::Display for ConditionKind {
             AbortsIf => write!(f, "aborts_if"),
             AbortsWith => write!(f, "aborts_with"),
             SucceedsIf => write!(f, "succeeds_if"),
-            Modifies => write!(f, "modifies"),
             Emits => write!(f, "emits"),
             Ensures => write!(f, "ensures"),
             Requires => write!(f, "requires"),
@@ -271,6 +310,63 @@ impl fmt::Display for QuantKind {
     }
 }
 
+/// The kind of behavior predicate for function values in specifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BehaviorKind {
+    /// `requires_of<f>(args)` - the precondition of function `f`
+    RequiresOf,
+    /// `aborts_of<f>(args)` - the aborts condition of function `f`
+    AbortsOf,
+    /// `ensures_of<f>(args)` - the postcondition of function `f`
+    EnsuresOf,
+    /// `result_of<f>(args)` — `choose r where ensures_of<f>(args, r, ...)`.
+    ResultOf,
+    /// `unchanged_of<f>(args)` — the global memory `f` may modify at the
+    /// given arguments is unchanged relative to the pre-state.
+    UnchangedOf,
+    /// `folds_of<f>(v, i)` / `folds_of<f>(g, i)` — the values written by `f`
+    /// to its captured variables over the first `i` iterations are the fold
+    /// of a transformer derived from `f`'s body, starting from the captures'
+    /// pre-state values, and no prefix iteration aborts. In the element form
+    /// the iterations apply unary `f` to `v[0..i]`; in the general form the
+    /// literal index lambda `g` maps iteration `j` to `f`'s argument tuple.
+    FoldsOf,
+    /// `write_of<f, j>(args)` — WP-internal selector for the post-state of
+    /// the j-th `&mut` parameter (counted among `&mut` parameters). Not
+    /// surface syntax; emitted by spec inference and translated by the
+    /// Boogie backend to a Skolem axiomatized against `ensures_of`.
+    WriteOf(usize),
+}
+
+impl BehaviorKind {
+    /// True for predicates whose semantics span pre- and post-memory.
+    pub fn is_two_state(&self) -> bool {
+        matches!(
+            self,
+            BehaviorKind::EnsuresOf
+                | BehaviorKind::ResultOf
+                | BehaviorKind::UnchangedOf
+                | BehaviorKind::FoldsOf
+                | BehaviorKind::WriteOf(_)
+        )
+    }
+}
+
+impl fmt::Display for BehaviorKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        use BehaviorKind::*;
+        match self {
+            RequiresOf => write!(f, "requires_of"),
+            AbortsOf => write!(f, "aborts_of"),
+            EnsuresOf => write!(f, "ensures_of"),
+            ResultOf => write!(f, "result_of"),
+            UnchangedOf => write!(f, "unchanged_of"),
+            FoldsOf => write!(f, "folds_of"),
+            WriteOf(j) => write!(f, "write_of_{}", j),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Condition {
     pub loc: Loc,
@@ -281,6 +377,19 @@ pub struct Condition {
 }
 
 impl Condition {
+    /// Compares two conditions for structural equality, ignoring NodeIds in expressions.
+    pub fn structural_eq(&self, other: &Condition) -> bool {
+        self.kind == other.kind
+            && self.properties == other.properties
+            && self.exp.structural_eq(&other.exp)
+            && self.additional_exps.len() == other.additional_exps.len()
+            && self
+                .additional_exps
+                .iter()
+                .zip(other.additional_exps.iter())
+                .all(|(e1, e2)| e1.structural_eq(e2))
+    }
+
     /// Return all expressions in the condition, the primary one and the additional ones.
     pub fn all_exps(&self) -> impl Iterator<Item = &Exp> {
         std::iter::once(&self.exp).chain(self.additional_exps.iter())
@@ -306,6 +415,121 @@ pub enum PropertyValue {
     QualifiedSymbol(QualifiedSymbol),
 }
 
+// =================================================================================================
+/// # Proof Language
+
+/// A structured proof statement from a `proof { ... }` block in a spec.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Proof {
+    /// `let name = exp;` — introduce a local abbreviation.
+    Let(Loc, Symbol, Exp),
+    /// `if (cond) proof [else proof]` — conditional proof.
+    IfElse(Loc, Exp, Box<Proof>, Option<Box<Proof>>),
+    /// `{ proof_stmts }` — a block of proof statements.
+    Block(Loc, Vec<Proof>),
+    /// `assert exp;` — auxiliary assertion.
+    Assert(Loc, Exp),
+    /// `assume [trusted] exp;` — trusted assumption (emits a warning).
+    Assume(Loc, Exp),
+    /// `apply lemma(args);` — instantiate a lemma's requires/ensures.
+    Apply(Loc, QualifiedId<LemmaId>, Vec<Exp>),
+    /// `forall bindings [triggers] [weight = N] apply lemma(args);` — quantified lemma
+    /// instantiation. Optional `weight` forwards to SMT-LIB `:weight N` on the quantifier.
+    ForallApply(
+        Loc,
+        Vec<(Symbol, Type)>,
+        Vec<Vec<Exp>>,
+        QualifiedId<LemmaId>,
+        Vec<Exp>,
+        Option<u32>,
+    ),
+    /// `calc(e1 relop e2 relop ... en);` — calculational proof chain.
+    /// Each triple is (lhs, relop, rhs).
+    Calc(Loc, Vec<(Exp, Operation, Exp)>),
+    /// `post <proof_stmt>` — emit at return point instead of entry.
+    Post(Loc, Box<Proof>),
+    /// `split expr;` — case-split on boolean or enum, creating verification variants.
+    Split(Loc, Exp),
+}
+
+impl Proof {
+    /// Structural equality ignoring `Loc` fields, comparing expressions via `Exp::structural_eq`.
+    pub fn structural_eq(&self, other: &Proof) -> bool {
+        match (self, other) {
+            (Proof::Let(_, s1, e1), Proof::Let(_, s2, e2)) => s1 == s2 && e1.structural_eq(e2),
+            (Proof::IfElse(_, c1, t1, e1), Proof::IfElse(_, c2, t2, e2)) => {
+                c1.structural_eq(c2)
+                    && t1.structural_eq(t2)
+                    && match (e1, e2) {
+                        (Some(a), Some(b)) => a.structural_eq(b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            },
+            (Proof::Block(_, ss1), Proof::Block(_, ss2)) => {
+                ss1.len() == ss2.len() && ss1.iter().zip(ss2).all(|(a, b)| a.structural_eq(b))
+            },
+            (Proof::Assert(_, e1), Proof::Assert(_, e2)) => e1.structural_eq(e2),
+            (Proof::Assume(_, e1), Proof::Assume(_, e2)) => e1.structural_eq(e2),
+            (Proof::Apply(_, l1, a1), Proof::Apply(_, l2, a2)) => {
+                l1 == l2
+                    && a1.len() == a2.len()
+                    && a1.iter().zip(a2).all(|(x, y)| x.structural_eq(y))
+            },
+            (
+                Proof::ForallApply(_, b1, t1, l1, a1, w1),
+                Proof::ForallApply(_, b2, t2, l2, a2, w2),
+            ) => {
+                b1 == b2
+                    && t1.len() == t2.len()
+                    && t1.iter().zip(t2).all(|(ts1, ts2)| {
+                        ts1.len() == ts2.len()
+                            && ts1.iter().zip(ts2).all(|(x, y)| x.structural_eq(y))
+                    })
+                    && l1 == l2
+                    && a1.len() == a2.len()
+                    && a1.iter().zip(a2).all(|(x, y)| x.structural_eq(y))
+                    && w1 == w2
+            },
+            (Proof::Calc(_, s1), Proof::Calc(_, s2)) => {
+                s1.len() == s2.len()
+                    && s1.iter().zip(s2).all(|((l1, o1, r1), (l2, o2, r2))| {
+                        l1.structural_eq(l2) && o1 == o2 && r1.structural_eq(r2)
+                    })
+            },
+            (Proof::Post(_, p1), Proof::Post(_, p2)) => p1.structural_eq(p2),
+            (Proof::Split(_, e1), Proof::Split(_, e2)) => e1.structural_eq(e2),
+            _ => false,
+        }
+    }
+}
+
+/// A lemma declaration.
+#[derive(Debug, Clone)]
+pub struct LemmaDecl {
+    pub loc: Loc,
+    pub name: Symbol,
+    pub type_params: Vec<TypeParameter>,
+    pub params: Vec<Parameter>,
+    pub conditions: Vec<Condition>,
+    pub properties: PropertyBag,
+    pub proof: Option<Proof>,
+}
+
+/// Id for lemma declarations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LemmaId(pub u16);
+
+impl LemmaId {
+    pub fn new(idx: usize) -> Self {
+        Self(idx as u16)
+    }
+
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// Specification and properties associated with a language item.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Spec {
@@ -313,6 +537,8 @@ pub struct Spec {
     pub loc: Option<Loc>,
     /// The set of conditions associated with this item.
     pub conditions: Vec<Condition>,
+    /// Frame condition (modifies/reads) associated with this item.
+    pub frame_spec: Option<FrameSpec>,
     /// Any pragma properties associated with this item.
     pub properties: PropertyBag,
     /// If this is a function, specs associated with individual code points. Note: only used
@@ -320,9 +546,47 @@ pub struct Spec {
     pub on_impl: BTreeMap<CodeOffset, Spec>,
     /// The map to store ghost variable update statements inlined in the function body.
     pub update_map: BTreeMap<NodeId, Condition>,
+    /// Structured proof guiding the SMT solver.
+    pub proof: Option<Proof>,
 }
 
 impl Spec {
+    /// Compares two specs for structural equality, ignoring NodeIds in expressions.
+    pub fn structural_eq(&self, other: &Spec) -> bool {
+        self.conditions.len() == other.conditions.len()
+            && self
+                .conditions
+                .iter()
+                .zip(other.conditions.iter())
+                .all(|(c1, c2)| c1.structural_eq(c2))
+            && self.properties == other.properties
+            && self.on_impl.len() == other.on_impl.len()
+            && self
+                .on_impl
+                .iter()
+                .zip(other.on_impl.iter())
+                .all(|((off1, s1), (off2, s2))| off1 == off2 && s1.structural_eq(s2))
+            && self.update_map.len() == other.update_map.len()
+            && {
+                // `NodeId` keys are intentionally ignored in structural comparison, so pair
+                // conditions by structure rather than by `BTreeMap` key order.
+                let mut unmatched = other.update_map.values().collect_vec();
+                self.update_map.values().all(|c1| {
+                    if let Some(pos) = unmatched.iter().position(|c2| c1.structural_eq(c2)) {
+                        unmatched.swap_remove(pos);
+                        true
+                    } else {
+                        false
+                    }
+                })
+            }
+            && match (&self.proof, &other.proof) {
+                (Some(p1), Some(p2)) => p1.structural_eq(p2),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
     pub fn has_conditions(&self) -> bool {
         !self.conditions.is_empty()
     }
@@ -332,6 +596,13 @@ impl Spec {
             && self.on_impl.is_empty()
             && self.properties.is_empty()
             && self.update_map.is_empty()
+            && self.proof.is_none()
+            && self.frame_spec.as_ref().is_none_or(|fs| {
+                fs.modifies_targets.is_empty()
+                    && fs.reads_targets.is_empty()
+                    && !fs.modifies_all
+                    && !fs.reads_all
+            })
     }
 
     pub fn filter<P>(&self, pred: P) -> impl Iterator<Item = &Condition>
@@ -360,6 +631,15 @@ impl Spec {
         self.any(move |c| c.kind == kind)
     }
 
+    /// Returns expressions contained in the proof, if any.
+    pub fn proof_exps(&self) -> Vec<&Exp> {
+        let mut result = vec![];
+        if let Some(proof) = &self.proof {
+            collect_proof_exps(proof, &mut result);
+        }
+        result
+    }
+
     /// Returns the functions used (called or loaded as a function value) in this spec, along with
     /// the sites of the calls or loads.
     pub fn used_funs_with_uses(&self) -> BTreeMap<QualifiedId<FunId>, BTreeSet<NodeId>> {
@@ -371,6 +651,14 @@ impl Spec {
         }
         for on_impl in self.on_impl.values() {
             result.append(&mut on_impl.used_funs_with_uses())
+        }
+        for exp in self.proof_exps() {
+            result.append(&mut exp.used_funs_with_uses())
+        }
+        if let Some(fs) = &self.frame_spec {
+            for target in &fs.modifies_targets {
+                result.append(&mut target.used_funs_with_uses())
+            }
         }
         result
     }
@@ -386,6 +674,14 @@ impl Spec {
         }
         for on_impl in self.on_impl.values() {
             result.append(&mut on_impl.called_funs_with_callsites())
+        }
+        for exp in self.proof_exps() {
+            result.append(&mut exp.called_funs_with_callsites())
+        }
+        if let Some(fs) = &self.frame_spec {
+            for target in &fs.modifies_targets {
+                result.append(&mut target.called_funs_with_callsites())
+            }
         }
         result
     }
@@ -433,6 +729,54 @@ impl Spec {
         };
         self.visit_post_order(&mut visitor);
         temps
+    }
+}
+
+/// Recursively collects all expressions from a proof tree.
+pub fn collect_proof_exps<'a>(proof: &'a Proof, result: &mut Vec<&'a Exp>) {
+    match proof {
+        Proof::Let(_, _, exp) | Proof::Assert(_, exp) | Proof::Assume(_, exp) => {
+            result.push(exp);
+        },
+        Proof::IfElse(_, cond, then_branch, else_branch) => {
+            result.push(cond);
+            collect_proof_exps(then_branch, result);
+            if let Some(eb) = else_branch {
+                collect_proof_exps(eb, result);
+            }
+        },
+        Proof::Block(_, stmts) => {
+            for s in stmts {
+                collect_proof_exps(s, result);
+            }
+        },
+        Proof::Apply(_, _, args) => {
+            for arg in args {
+                result.push(arg);
+            }
+        },
+        Proof::ForallApply(_, _, patterns, _, args, _) => {
+            for group in patterns {
+                for exp in group {
+                    result.push(exp);
+                }
+            }
+            for arg in args {
+                result.push(arg);
+            }
+        },
+        Proof::Calc(_, steps) => {
+            for (lhs, _, rhs) in steps {
+                result.push(lhs);
+                result.push(rhs);
+            }
+        },
+        Proof::Post(_, inner) => {
+            collect_proof_exps(inner, result);
+        },
+        Proof::Split(_, exp) => {
+            result.push(exp);
+        },
     }
 }
 
@@ -521,7 +865,6 @@ pub struct FriendDecl {
 pub struct AccessSpecifier {
     pub loc: Loc,
     pub kind: AccessSpecifierKind,
-    pub negated: bool,
     pub resource: (Loc, ResourceSpecifier),
     pub address: (Loc, AddressSpecifier),
 }
@@ -539,16 +882,7 @@ impl AccessSpecifier {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AccessSpecifierKind {
-    Reads,
-    Writes,
     LegacyAcquires,
-}
-
-impl AccessSpecifierKind {
-    pub fn subsumes(&self, other: &Self) -> bool {
-        use AccessSpecifierKind::*;
-        matches!((self, other), (_, Reads) | (Writes, Writes))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -565,6 +899,20 @@ pub enum AddressSpecifier {
     Address(Address),
     Parameter(Symbol),
     Call(QualifiedInstId<FunId>, Symbol),
+}
+
+/// Derived access kind for frame condition computation.
+/// Used to constrain the relationship between pre and post memory snapshots
+/// in behavioral predicates and spec functions with `uses_old`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameAccessKind {
+    /// Resource is only read: pre == post
+    Reads,
+    /// Resource may be written at any address: no frame constraint
+    WritesAll,
+    /// Resource may be written at specific addresses only.
+    /// Each Exp is an address expression (already substituted for call site).
+    WritesAt(Vec<Exp>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Copy, Hash, Default)]
@@ -833,7 +1181,10 @@ impl ExpData {
         use ExpData::*;
         matches!(
             self,
-            LocalVar(..) | Temporary(..) | Call(_, Operation::Select(..), _)
+            LocalVar(..)
+                | Temporary(..)
+                | Call(_, Operation::Select(..), _)
+                | Call(_, Operation::SelectVariants(..), _)
         )
     }
 
@@ -859,6 +1210,158 @@ impl ExpData {
         // For the internement based implementations, we can just test equality. Other
         // representations may need different measures.
         e1 == e2
+    }
+
+    /// Compares two expressions for structural equality, ignoring NodeIds.
+    /// This is useful when expressions are logically equivalent but were created
+    /// with different NodeIds.
+    pub fn structural_eq(&self, other: &Exp) -> bool {
+        use ExpData::*;
+        match (self, other.as_ref()) {
+            (Invalid(_), Invalid(_)) => true,
+            (Value(_, v1), Value(_, v2)) => v1 == v2,
+            (LocalVar(_, s1), LocalVar(_, s2)) => s1 == s2,
+            (Temporary(_, t1), Temporary(_, t2)) => t1 == t2,
+            (Call(_, op1, args1), Call(_, op2, args2)) => {
+                op1 == op2
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(a1, a2)| a1.structural_eq(a2))
+            },
+            (Invoke(_, f1, args1), Invoke(_, f2, args2)) => {
+                f1.structural_eq(f2)
+                    && args1.len() == args2.len()
+                    && args1
+                        .iter()
+                        .zip(args2.iter())
+                        .all(|(a1, a2)| a1.structural_eq(a2))
+            },
+            (Lambda(_, p1, body1, cap1, spec1), Lambda(_, p2, body2, cap2, spec2)) => {
+                p1.structural_eq(p2)
+                    && body1.structural_eq(body2)
+                    && cap1 == cap2
+                    && match (spec1, spec2) {
+                        (Some(s1), Some(s2)) => s1.structural_eq(s2),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            },
+            (Quant(_, k1, r1, t1, c1, b1), Quant(_, k2, r2, t2, c2, b2)) => {
+                k1 == k2
+                    && r1.len() == r2.len()
+                    && r1
+                        .iter()
+                        .zip(r2.iter())
+                        .all(|((p1, e1), (p2, e2))| p1.structural_eq(p2) && e1.structural_eq(e2))
+                    && t1.len() == t2.len()
+                    && t1.iter().zip(t2.iter()).all(|(ts1, ts2)| {
+                        ts1.len() == ts2.len()
+                            && ts1
+                                .iter()
+                                .zip(ts2.iter())
+                                .all(|(e1, e2)| e1.structural_eq(e2))
+                    })
+                    && match (c1, c2) {
+                        (Some(c1), Some(c2)) => c1.structural_eq(c2),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                    && b1.structural_eq(b2)
+            },
+            (Block(_, pat1, opt1, body1), Block(_, pat2, opt2, body2)) => {
+                pat1.structural_eq(pat2)
+                    && match (opt1, opt2) {
+                        (Some(e1), Some(e2)) => e1.structural_eq(e2),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                    && body1.structural_eq(body2)
+            },
+            (IfElse(_, c1, t1, e1), IfElse(_, c2, t2, e2)) => {
+                c1.structural_eq(c2) && t1.structural_eq(t2) && e1.structural_eq(e2)
+            },
+            (Match(_, d1, arms1), Match(_, d2, arms2)) => {
+                d1.structural_eq(d2)
+                    && arms1.len() == arms2.len()
+                    && arms1.iter().zip(arms2.iter()).all(|(a1, a2)| {
+                        a1.pattern.structural_eq(&a2.pattern)
+                            && match (&a1.condition, &a2.condition) {
+                                (Some(c1), Some(c2)) => c1.structural_eq(c2),
+                                (None, None) => true,
+                                _ => false,
+                            }
+                            && a1.body.structural_eq(&a2.body)
+                    })
+            },
+            (Sequence(_, items1), Sequence(_, items2)) => {
+                items1.len() == items2.len()
+                    && items1
+                        .iter()
+                        .zip(items2.iter())
+                        .all(|(i1, i2)| i1.structural_eq(i2))
+            },
+            (Loop(_, body1), Loop(_, body2)) => body1.structural_eq(body2),
+            (LoopCont(_, nest1, cont1), LoopCont(_, nest2, cont2)) => {
+                nest1 == nest2 && cont1 == cont2
+            },
+            (Return(_, val1), Return(_, val2)) => val1.structural_eq(val2),
+            (Mutate(_, l1, r1), Mutate(_, l2, r2)) => l1.structural_eq(l2) && r1.structural_eq(r2),
+            (Assign(_, l1, r1), Assign(_, l2, r2)) => l1.structural_eq(l2) && r1.structural_eq(r2),
+            (SpecBlock(_, spec1), SpecBlock(_, spec2)) => spec1.structural_eq(spec2),
+            _ => false,
+        }
+    }
+
+    /// Compares two expressions for equivalence as specification values: up to
+    /// renaming of bound variables (alpha-equivalence), ignoring NodeIds,
+    /// reference operations (`Borrow`, `Deref`, and `Freeze` are transparent
+    /// in specifications), and lambda capture kinds. Specs attached to
+    /// lambdas must correspond: both absent, or spec-equivalent condition by
+    /// condition — behavioral predicates over a lambda resolve to its
+    /// attached spec when present, so it is part of the lambda's identity
+    /// here. Type-dependent nodes are compared via their instantiations
+    /// (and, for casts, their reference-stripped node types), so `env` is
+    /// required. Free variables must be identical in symbol, temporaries in
+    /// index, and both in reference-stripped node type: they become typed
+    /// context parameters of a unified specialization, so like-named
+    /// variables of different types must not be identified. This is used to
+    /// unify spec function specializations over lambdas stemming from
+    /// different contexts (e.g. a lambda argument of an inline function call
+    /// and its restatement in a lemma).
+    pub fn is_spec_equivalent(&self, env: &GlobalEnv, other: &ExpData) -> bool {
+        spec_equivalent(env, self, other, &mut vec![])
+    }
+
+    /// Returns true if this expression is state-neutral: its value does not depend on
+    /// global state and is the same regardless of which program state it's evaluated in.
+    /// Such expressions can safely be extracted into spec-level `let` bindings.
+    pub fn is_state_neutral(&self) -> bool {
+        let mut neutral = true;
+        self.visit_pre_order(&mut |e: &ExpData| match e {
+            ExpData::Call(_, Operation::Global(_), _)
+            | ExpData::Call(_, Operation::Exists(_), _)
+            | ExpData::Call(_, Operation::Old, _)
+            | ExpData::Call(_, Operation::Result(..), _) => {
+                neutral = false;
+                false
+            },
+            ExpData::Call(
+                _,
+                Operation::Behavior(_, range)
+                | Operation::SpecFunction(_, _, range)
+                | Operation::SpecPublish(range)
+                | Operation::SpecRemove(range)
+                | Operation::SpecUpdate(range),
+                _,
+            ) if range.pre.is_some() || range.post.is_some() => {
+                neutral = false;
+                false
+            },
+            _ => neutral,
+        });
+        neutral
     }
 
     pub fn node_id(&self) -> NodeId {
@@ -1061,15 +1564,14 @@ impl ExpData {
                     let (mid, sid, sinst) = inst[0].require_struct();
                     result.insert((mid.qualified_inst(sid, sinst.to_owned()), label.to_owned()));
                 },
-                Call(id, SpecFunction(mid, fid, labels), _) => {
+                Call(id, SpecFunction(mid, fid, range), _) => {
                     let inst = &env.get_node_instantiation(*id);
                     let module = env.get_module(*mid);
                     let fun = module.get_spec_fun(*fid);
-                    for (i, mem) in fun.used_memory.iter().enumerate() {
-                        result.insert((
-                            mem.to_owned().instantiate(inst),
-                            labels.as_ref().map(|l| l[i]),
-                        ));
+                    for mem in fun.used_memory.iter() {
+                        // Use the post label from the range if available, otherwise pre
+                        let label = range.post.or(range.pre);
+                        result.insert((mem.to_owned().instantiate(inst), label));
                     }
                 },
                 _ => {},
@@ -1092,6 +1594,21 @@ impl ExpData {
                     let (mid, sid, sinst) = inst[0].require_struct();
                     result.insert(mid.qualified_inst(sid, sinst.to_owned()));
                 },
+                Call(id, SpecFunction(mid, fid, _range), _) => {
+                    let inst = &env.get_node_instantiation(*id);
+                    let module = env.get_module(*mid);
+                    let fun = module.get_spec_fun(*fid);
+                    for mem in fun.used_memory.iter() {
+                        result.insert(mem.to_owned().instantiate(inst));
+                    }
+                },
+                Call(id, SpecPublish(_), _)
+                | Call(id, SpecRemove(_), _)
+                | Call(id, SpecUpdate(_), _) => {
+                    let inst = &env.get_node_instantiation(*id);
+                    let (mid, sid, sinst) = inst[0].require_struct();
+                    result.insert(mid.qualified_inst(sid, sinst.to_owned()));
+                },
                 _ => {},
             }
             true // keep going
@@ -1102,6 +1619,8 @@ impl ExpData {
 
     /// Returns the temporaries used in this expression, with types. Result is ordered by occurrence.
     pub fn used_temporaries_with_types(&self, env: &GlobalEnv) -> Vec<(TempIndex, Type)> {
+        // Temporaries in behavior predicates (args[0]) are captured by the standard visitor
+        // since they are now represented as regular Temporary expressions.
         self.used_temporaries_with_ids()
             .into_iter()
             .map(|(t, i)| (t, env.get_node_type(i)))
@@ -1644,6 +2163,60 @@ impl ExpData {
         for update in spec.update_map.values() {
             Self::visit_positions_cond_impl(update, visitor)?;
         }
+        if let Some(proof) = &spec.proof {
+            Self::visit_positions_proof_impl(proof, visitor)?;
+        }
+        Some(())
+    }
+
+    fn visit_positions_proof_impl<F>(proof: &Proof, visitor: &mut F) -> Option<()>
+    where
+        F: FnMut(VisitorPosition, &ExpData) -> Option<()>,
+    {
+        match proof {
+            Proof::Let(_, _, exp) | Proof::Assert(_, exp) | Proof::Assume(_, exp) => {
+                exp.visit_positions_impl(visitor)?;
+            },
+            Proof::IfElse(_, cond, then_branch, else_branch) => {
+                cond.visit_positions_impl(visitor)?;
+                Self::visit_positions_proof_impl(then_branch, visitor)?;
+                if let Some(eb) = else_branch {
+                    Self::visit_positions_proof_impl(eb, visitor)?;
+                }
+            },
+            Proof::Block(_, stmts) => {
+                for s in stmts {
+                    Self::visit_positions_proof_impl(s, visitor)?;
+                }
+            },
+            Proof::Apply(_, _, args) => {
+                for arg in args {
+                    arg.visit_positions_impl(visitor)?;
+                }
+            },
+            Proof::ForallApply(_, _, patterns, _, args, _) => {
+                for group in patterns {
+                    for exp in group {
+                        exp.visit_positions_impl(visitor)?;
+                    }
+                }
+                for arg in args {
+                    arg.visit_positions_impl(visitor)?;
+                }
+            },
+            Proof::Calc(_, steps) => {
+                for (lhs, _, rhs) in steps {
+                    lhs.visit_positions_impl(visitor)?;
+                    rhs.visit_positions_impl(visitor)?;
+                }
+            },
+            Proof::Post(_, inner) => {
+                Self::visit_positions_proof_impl(inner, visitor)?;
+            },
+            Proof::Split(_, exp) => {
+                exp.visit_positions_impl(visitor)?;
+            },
+        }
         Some(())
     }
 
@@ -1742,6 +2315,9 @@ impl ExpData {
             if let Some(inst) = new_node_inst {
                 env.set_node_instantiation(new_id, inst);
             }
+            if let Some(weight) = env.get_quant_weight(id) {
+                env.set_quant_weight(new_id, weight);
+            }
             Some(new_id)
         } else {
             None
@@ -1766,6 +2342,9 @@ impl ExpData {
             let new_id = env.new_node(new_loc.clone(), new_node_ty);
             if let Some(inst) = new_node_inst {
                 env.set_node_instantiation(new_id, inst);
+            }
+            if let Some(weight) = env.get_quant_weight(id) {
+                env.set_quant_weight(new_id, weight);
             }
             Some(new_id)
         } else {
@@ -1818,20 +2397,198 @@ impl ExpData {
         None
     }
 
-    /// Collect struct-related operations
-    pub fn struct_usage(&self, usage: &mut BTreeSet<QualifiedId<StructId>>) {
-        self.visit_post_order(&mut |e| {
-            if let ExpData::Call(_, oper, _) = e {
-                use Operation::*;
-                match oper {
-                    Select(mid, sid, ..) | UpdateField(mid, sid, ..) | Pack(mid, sid, _) => {
+    fn collect_struct_pattern(pat: &Pattern, usage: &mut BTreeSet<QualifiedId<StructId>>) {
+        if let Pattern::Struct(_, qid, _, pats) = pat {
+            usage.insert(qid.to_qualified_id());
+            // Collect struct types from the type instantiation (e.g., Inner in Outer<Inner>)
+            for ty in &qid.inst {
+                ty.visit(&mut |t| {
+                    if let Type::Struct(mid, sid, _) = t {
                         usage.insert(mid.qualified(*sid));
-                    },
-                    _ => {},
-                }
+                    }
+                });
             }
-            true // keep going.
+            for p in pats {
+                Self::collect_struct_pattern(p, usage);
+            }
+        }
+    }
+
+    /// Collect struct-related operations including unpacking.
+    /// If `include_specs` is false, spec blocks are skipped.
+    pub fn struct_usage(
+        &self,
+        env: &GlobalEnv,
+        include_specs: bool,
+    ) -> BTreeSet<QualifiedId<StructId>> {
+        let mut usage = BTreeSet::new();
+        let mut spec_depth = 0usize;
+        self.visit_pre_post(&mut |post, e| {
+            // Skip spec blocks when not including specs
+            if !include_specs && matches!(e, ExpData::SpecBlock(..)) {
+                spec_depth = if post {
+                    spec_depth.saturating_sub(1)
+                } else {
+                    spec_depth + 1
+                };
+            }
+
+            // We skip `post` since the exp has been visited during `pre`
+            // Also, `spec_depth > 0` implies inside a spec block and `!include_specs`
+            if post || spec_depth > 0 {
+                return true;
+            }
+
+            match e {
+                ExpData::Call(node_id, oper, _) => {
+                    use Operation::*;
+                    match oper {
+                        SelectVariants(mid, sid, ..)
+                        | TestVariants(mid, sid, ..)
+                        | Select(mid, sid, ..)
+                        | UpdateField(mid, sid, ..)
+                        | Pack(mid, sid, _) => {
+                            usage.insert(mid.qualified(*sid));
+                        },
+                        MoveFunction(..)
+                        | Closure(..)
+                        | Tuple
+                        | SpecFunction(..)
+                        | Behavior(..)
+                        | Result(..)
+                        | Index
+                        | Slice
+                        | Range
+                        | Implies
+                        | Iff
+                        | Identical
+                        | Add
+                        | Sub
+                        | Mul
+                        | Mod
+                        | Div
+                        | BitOr
+                        | BitAnd
+                        | Xor
+                        | Shl
+                        | Shr
+                        | And
+                        | Or
+                        | Eq
+                        | Neq
+                        | Lt
+                        | Gt
+                        | Le
+                        | Ge
+                        | Copy
+                        | Move
+                        | Not
+                        | Cast
+                        | Negate
+                        | Exists(..)
+                        | BorrowGlobal(..)
+                        | Borrow(..)
+                        | Deref
+                        | MoveTo
+                        | MoveFrom
+                        | Freeze(..)
+                        | Abort(..)
+                        | Vector
+                        | Len
+                        | TypeValue
+                        | TypeDomain
+                        | ResourceDomain
+                        | StateDomain
+                        | Global(..)
+                        | CanModify
+                        | Old
+                        | SaveStateAnchor(..)
+                        | WithStateAnchor(..)
+                        | FoldsCaptureAnchor(..)
+                        | Trace(..)
+                        | SpecPublish(..)
+                        | SpecRemove(..)
+                        | SpecUpdate(..)
+                        | EmptyVec
+                        | SingleVec
+                        | UpdateVec
+                        | ConcatVec
+                        | IndexOfVec
+                        | ContainsVec
+                        | InRangeRange
+                        | InRangeVec
+                        | RangeVec
+                        | MaxU8
+                        | MaxU16
+                        | MaxU32
+                        | MaxU64
+                        | MaxU128
+                        | MaxU256
+                        | Bv2Int
+                        | Int2Bv
+                        | AbortFlag
+                        | AbortCode
+                        | WellFormed
+                        | BoxValue
+                        | UnboxValue
+                        | EmptyEventStore
+                        | ExtendEventStore
+                        | EventStoreIncludes
+                        | EventStoreIncludedIn
+                        | NoOp => {},
+                    }
+                    // Collect struct types from type instantiations (e.g., borrow_global<MyStruct>)
+                    if let Some(inst) = env.get_node_instantiation_opt(*node_id) {
+                        for ty in inst {
+                            ty.visit(&mut |t| {
+                                if let Type::Struct(mid, sid, _) = t {
+                                    usage.insert(mid.qualified(*sid));
+                                }
+                            });
+                        }
+                    }
+                },
+                ExpData::Assign(_, pat, _) | ExpData::Block(_, pat, _, _) => {
+                    Self::collect_struct_pattern(pat, &mut usage);
+                },
+                ExpData::Lambda(id, pat, _, _, _) => {
+                    let fun_ty = env.get_node_type(*id);
+                    if let Some((wrapper_struct, _)) = fun_ty.get_struct(env) {
+                        usage.insert(wrapper_struct.get_qualified_id());
+                    }
+                    Self::collect_struct_pattern(pat, &mut usage);
+                },
+                ExpData::Quant(_, _, pattern_tuple, _, _, _) => {
+                    for (pat, _) in pattern_tuple {
+                        Self::collect_struct_pattern(pat, &mut usage);
+                    }
+                },
+                ExpData::Match(_, _, arms) => {
+                    for arm in arms.iter() {
+                        Self::collect_struct_pattern(&arm.pattern, &mut usage);
+                    }
+                },
+                ExpData::Invoke(_, exp, _) => {
+                    let fun_ty = env.get_node_type(exp.node_id());
+                    if let Some((wrapper_struct, _)) = fun_ty.get_struct(env) {
+                        usage.insert(wrapper_struct.get_qualified_id());
+                    }
+                },
+                ExpData::Invalid(..)
+                | ExpData::Value(..)
+                | ExpData::LocalVar(..)
+                | ExpData::Temporary(..)
+                | ExpData::IfElse(..)
+                | ExpData::Return(..)
+                | ExpData::Sequence(..)
+                | ExpData::Loop(..)
+                | ExpData::LoopCont(..)
+                | ExpData::Mutate(..)
+                | ExpData::SpecBlock(..) => {},
+            }
+            true // continue visiting
         });
+        usage
     }
 
     /// Collect field-related operations
@@ -1876,6 +2633,398 @@ impl ExpData {
             self.node_id()
         }
     }
+}
+
+/// Compares node instantiations for `is_spec_equivalent`, modulo top-level
+/// references: references are transparent in specification contexts (see
+/// `skip_ref_ops`), and the type tags recorded in node instantiations may
+/// carry the reference-wrapped operand type on the code side — e.g. a
+/// `Select` over `&mut S` records `&mut S` where the spec side records `S`.
+fn inst_spec_equivalent(inst1: &[Type], inst2: &[Type]) -> bool {
+    inst1.len() == inst2.len()
+        && inst1
+            .iter()
+            .zip(inst2)
+            .all(|(t1, t2)| t1.skip_reference() == t2.skip_reference())
+}
+
+/// Strips reference operations, which are transparent in specification
+/// contexts, for `is_spec_equivalent` comparison.
+fn skip_ref_ops(e: &ExpData) -> &ExpData {
+    let mut cur = e;
+    while let ExpData::Call(
+        _,
+        Operation::Borrow(_) | Operation::Deref | Operation::Freeze(_),
+        args,
+    ) = cur
+    {
+        if args.len() != 1 {
+            break;
+        }
+        cur = args[0].as_ref();
+    }
+    cur
+}
+
+/// Implements `ExpData::is_spec_equivalent`. `bound` is the stack of
+/// corresponding bound variable pairs, innermost last.
+fn spec_equivalent(
+    env: &GlobalEnv,
+    e1: &ExpData,
+    e2: &ExpData,
+    bound: &mut Vec<(Symbol, Symbol)>,
+) -> bool {
+    use ExpData::*;
+    let e1 = skip_ref_ops(e1);
+    let e2 = skip_ref_ops(e2);
+    let all_equivalent = |exps1: &[Exp], exps2: &[Exp], bound: &mut Vec<(Symbol, Symbol)>| {
+        exps1.len() == exps2.len()
+            && exps1
+                .iter()
+                .zip(exps2)
+                .all(|(a1, a2)| spec_equivalent(env, a1, a2, bound))
+    };
+    match (e1, e2) {
+        (Value(_, v1), Value(_, v2)) => v1 == v2,
+        (LocalVar(id1, s1), LocalVar(id2, s2)) => match match_vars(*s1, *s2, bound) {
+            // Bound variables correspond positionally; their types follow
+            // from the compared binders.
+            VarMatch::Bound => true,
+            // A free variable is lifted into a context parameter of a
+            // unified specialization, typed from its occurrences:
+            // like-named variables of different types are not
+            // interchangeable.
+            VarMatch::Free => var_types_spec_equivalent(env, *id1, *id2),
+            VarMatch::Mismatch => false,
+        },
+        (Temporary(id1, t1), Temporary(id2, t2)) => {
+            // Temporaries reference the enclosing function's parameters by
+            // index; across contexts the same index can name parameters of
+            // different types, which — like free variables — must not
+            // share a specialization's context parameter.
+            t1 == t2 && var_types_spec_equivalent(env, *id1, *id2)
+        },
+        (Call(id1, op1, args1), Call(id2, op2, args2)) => {
+            op1 == op2
+                && (!op_inst_dependent_in_spec(op1)
+                    || inst_spec_equivalent(
+                        &env.get_node_instantiation(*id1),
+                        &env.get_node_instantiation(*id2),
+                    ))
+                && (!matches!(op1, Operation::Cast)
+                    || env.get_node_type(*id1).skip_reference()
+                        == env.get_node_type(*id2).skip_reference())
+                && all_equivalent(args1, args2, bound)
+        },
+        (Invoke(_, f1, args1), Invoke(_, f2, args2)) => {
+            spec_equivalent(env, f1, f2, bound) && all_equivalent(args1, args2, bound)
+        },
+        (Lambda(_, p1, body1, _, s1), Lambda(_, p2, body2, _, s2)) => {
+            // Capture kind is not part of the lambda's value semantics. The
+            // attached spec is: behavioral predicates over the lambda resolve
+            // to it when present, and to the body-derived spec otherwise, so
+            // the specs must correspond — both absent, or spec-equivalent
+            // condition by condition.
+            scoped_equivalent(env, p1, p2, bound, |env, bound| {
+                spec_equivalent(env, body1, body2, bound)
+                    && lambda_spec_equivalent(env, s1, s2, bound)
+            })
+        },
+        (Block(_, p1, opt1, body1), Block(_, p2, opt2, body2)) => {
+            opt_spec_equivalent(env, opt1, opt2, bound)
+                && scoped_equivalent(env, p1, p2, bound, |env, bound| {
+                    spec_equivalent(env, body1, body2, bound)
+                })
+        },
+        (Quant(_, k1, rs1, ts1, c1, b1), Quant(_, k2, rs2, ts2, c2, b2)) => {
+            if k1 != k2 || rs1.len() != rs2.len() {
+                return false;
+            }
+            // Ranges bind sequentially: each domain may reference earlier
+            // bound variables.
+            let mut pushed = 0;
+            let mut ranges_ok = true;
+            for ((p1, d1), (p2, d2)) in rs1.iter().zip(rs2) {
+                if !spec_equivalent(env, d1, d2, bound)
+                    || !collect_pattern_pairs(p1, p2, bound, &mut pushed)
+                {
+                    ranges_ok = false;
+                    break;
+                }
+            }
+            let result = ranges_ok
+                && ts1.len() == ts2.len()
+                && ts1
+                    .iter()
+                    .zip(ts2)
+                    .all(|(t1, t2)| all_equivalent(t1, t2, bound))
+                && opt_spec_equivalent(env, c1, c2, bound)
+                && spec_equivalent(env, b1, b2, bound);
+            bound.truncate(bound.len() - pushed);
+            result
+        },
+        (IfElse(_, c1, t1, e1), IfElse(_, c2, t2, e2)) => {
+            spec_equivalent(env, c1, c2, bound)
+                && spec_equivalent(env, t1, t2, bound)
+                && spec_equivalent(env, e1, e2, bound)
+        },
+        (Match(_, d1, arms1), Match(_, d2, arms2)) => {
+            spec_equivalent(env, d1, d2, bound)
+                && arms1.len() == arms2.len()
+                && arms1.iter().zip(arms2).all(|(a1, a2)| {
+                    scoped_equivalent(env, &a1.pattern, &a2.pattern, bound, |env, bound| {
+                        opt_spec_equivalent(env, &a1.condition, &a2.condition, bound)
+                            && spec_equivalent(env, &a1.body, &a2.body, bound)
+                    })
+                })
+        },
+        (Sequence(_, items1), Sequence(_, items2)) => all_equivalent(items1, items2, bound),
+        (Loop(_, body1), Loop(_, body2)) => spec_equivalent(env, body1, body2, bound),
+        (LoopCont(_, nest1, cont1), LoopCont(_, nest2, cont2)) => nest1 == nest2 && cont1 == cont2,
+        (Return(_, v1), Return(_, v2)) => spec_equivalent(env, v1, v2, bound),
+        (Mutate(_, l1, r1), Mutate(_, l2, r2)) => {
+            spec_equivalent(env, l1, l2, bound) && spec_equivalent(env, r1, r2, bound)
+        },
+        (Assign(_, p1, r1), Assign(_, p2, r2)) => {
+            // Assignment patterns reference existing variables, they do not
+            // bind fresh ones; compare their variables through the mapping.
+            assign_pattern_equivalent(env, p1, p2, bound) && spec_equivalent(env, r1, r2, bound)
+        },
+        (SpecBlock(_, s1), SpecBlock(_, s2)) => s1.structural_eq(s2),
+        _ => false,
+    }
+}
+
+/// Returns true if the specification semantics of the operation depend on
+/// its node instantiation. Arithmetic and relational operators only record
+/// the operand (bit-width) type there, which is irrelevant in specifications
+/// where arithmetic is over unbounded integers; one side may stem from code
+/// (concrete integer types) and the other from a spec context (widened to
+/// `num`). Bitwise and shift operations operate on the bit representation
+/// and stay instantiation-dependent, as does everything else (casts, packs,
+/// memory operations, function calls).
+fn op_inst_dependent_in_spec(op: &Operation) -> bool {
+    !matches!(
+        op,
+        Operation::Add
+            | Operation::Sub
+            | Operation::Mul
+            | Operation::Div
+            | Operation::Mod
+            | Operation::Lt
+            | Operation::Gt
+            | Operation::Le
+            | Operation::Ge
+            | Operation::Eq
+            | Operation::Neq
+            | Operation::Not
+            | Operation::And
+            | Operation::Or
+            // The generic vector value operations: their specification
+            // semantics is structural over the operand values and does not
+            // depend on the recorded element instantiation, which one side
+            // may omit (generated expressions) or widen (spec contexts).
+            // `EmptyVec` stays dependent: it has no operands pinning its
+            // element type.
+            | Operation::Len
+            | Operation::Index
+            | Operation::Slice
+            | Operation::ConcatVec
+            | Operation::SingleVec
+            | Operation::UpdateVec
+            | Operation::ContainsVec
+            | Operation::IndexOfVec
+            | Operation::InRangeVec
+            | Operation::RangeVec
+    )
+}
+
+/// Compares the attached specs of two lambdas: both absent, or spec-equivalent
+/// condition by condition (same kind and properties, expressions compared
+/// under the bound stack, which carries the corresponding lambda parameters).
+/// Spec members which cannot occur on a lambda spec must be absent on both
+/// sides.
+fn lambda_spec_equivalent(
+    env: &GlobalEnv,
+    s1: &Option<Exp>,
+    s2: &Option<Exp>,
+    bound: &mut Vec<(Symbol, Symbol)>,
+) -> bool {
+    let conditions_equivalent = |spec1: &Spec, spec2: &Spec, bound: &mut Vec<(Symbol, Symbol)>| {
+        spec1.conditions.len() == spec2.conditions.len()
+            && spec1
+                .conditions
+                .iter()
+                .zip(&spec2.conditions)
+                .all(|(c1, c2)| {
+                    c1.kind == c2.kind
+                        && c1.properties == c2.properties
+                        && spec_equivalent(env, &c1.exp, &c2.exp, bound)
+                        && c1.additional_exps.len() == c2.additional_exps.len()
+                        && c1
+                            .additional_exps
+                            .iter()
+                            .zip(&c2.additional_exps)
+                            .all(|(e1, e2)| spec_equivalent(env, e1, e2, bound))
+                })
+    };
+    match (s1, s2) {
+        (None, None) => true,
+        (Some(e1), Some(e2)) => match (e1.as_ref(), e2.as_ref()) {
+            (ExpData::SpecBlock(_, spec1), ExpData::SpecBlock(_, spec2)) => {
+                conditions_equivalent(spec1, spec2, bound)
+                    && spec1.properties == spec2.properties
+                    && spec1.on_impl.is_empty()
+                    && spec2.on_impl.is_empty()
+                    && spec1.update_map.is_empty()
+                    && spec2.update_map.is_empty()
+                    && spec1.proof.is_none()
+                    && spec2.proof.is_none()
+            },
+            _ => spec_equivalent(env, e1, e2, bound),
+        },
+        _ => false,
+    }
+}
+
+/// Compares two optional expressions for spec equivalence; `None` matches
+/// only `None`.
+fn opt_spec_equivalent(
+    env: &GlobalEnv,
+    o1: &Option<Exp>,
+    o2: &Option<Exp>,
+    bound: &mut Vec<(Symbol, Symbol)>,
+) -> bool {
+    match (o1, o2) {
+        (Some(e1), Some(e2)) => spec_equivalent(env, e1, e2, bound),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// The result of matching two variable references against the bound-pair
+/// stack: a corresponding bound pair, two identical free variables, or a
+/// mismatch.
+enum VarMatch {
+    Bound,
+    Free,
+    Mismatch,
+}
+
+/// Matches two variable references under the bound-pair stack (innermost
+/// binding wins); free variables must be identical.
+fn match_vars(s1: Symbol, s2: Symbol, bound: &[(Symbol, Symbol)]) -> VarMatch {
+    for (b1, b2) in bound.iter().rev() {
+        if *b1 == s1 || *b2 == s2 {
+            return if *b1 == s1 && *b2 == s2 {
+                VarMatch::Bound
+            } else {
+                VarMatch::Mismatch
+            };
+        }
+    }
+    if s1 == s2 {
+        VarMatch::Free
+    } else {
+        VarMatch::Mismatch
+    }
+}
+
+/// Compares the reference-stripped node types of two free variable (or
+/// temporary) occurrences for `is_spec_equivalent`. Free variables and
+/// temporaries of unified lambda material become typed context parameters
+/// of the shared specialization, so occurrences of different types must
+/// not be identified — sharing would splice one context's type into the
+/// other's calls.
+fn var_types_spec_equivalent(env: &GlobalEnv, id1: NodeId, id2: NodeId) -> bool {
+    env.get_node_type(id1).skip_reference() == env.get_node_type(id2).skip_reference()
+}
+
+/// Runs `body_cmp` with the corresponding variable pairs of two binding
+/// patterns pushed on the bound stack, restoring the stack afterwards.
+/// Returns false if the patterns do not correspond.
+fn scoped_equivalent(
+    env: &GlobalEnv,
+    p1: &Pattern,
+    p2: &Pattern,
+    bound: &mut Vec<(Symbol, Symbol)>,
+    body_cmp: impl FnOnce(&GlobalEnv, &mut Vec<(Symbol, Symbol)>) -> bool,
+) -> bool {
+    let mut pushed = 0;
+    let result = collect_pattern_pairs(p1, p2, bound, &mut pushed) && body_cmp(env, bound);
+    bound.truncate(bound.len() - pushed);
+    result
+}
+
+/// Structurally compares two patterns, delegating variable correspondence to
+/// `on_var` (receiving the variables' node ids and symbols), which may record
+/// binding pairs or check them against a scope.
+fn patterns_equivalent(
+    p1: &Pattern,
+    p2: &Pattern,
+    on_var: &mut impl FnMut(NodeId, Symbol, NodeId, Symbol) -> bool,
+) -> bool {
+    use Pattern::*;
+    match (p1, p2) {
+        (Var(id1, s1), Var(id2, s2)) => on_var(*id1, *s1, *id2, *s2),
+        (Wildcard(_), Wildcard(_)) => true,
+        (Tuple(_, ps1), Tuple(_, ps2)) => {
+            ps1.len() == ps2.len()
+                && ps1
+                    .iter()
+                    .zip(ps2)
+                    .all(|(q1, q2)| patterns_equivalent(q1, q2, on_var))
+        },
+        (Struct(_, id1, v1, ps1), Struct(_, id2, v2, ps2)) => {
+            id1 == id2
+                && v1 == v2
+                && ps1.len() == ps2.len()
+                && ps1
+                    .iter()
+                    .zip(ps2)
+                    .all(|(q1, q2)| patterns_equivalent(q1, q2, on_var))
+        },
+        (LiteralValue(_, v1), LiteralValue(_, v2)) => v1 == v2,
+        (Range(_, lo1, hi1, incl1), Range(_, lo2, hi2, incl2)) => {
+            lo1 == lo2 && hi1 == hi2 && incl1 == incl2
+        },
+        _ => false,
+    }
+}
+
+/// Structurally compares two binding patterns, pushing corresponding variable
+/// pairs onto the bound stack (`pushed` counts them, for later removal).
+fn collect_pattern_pairs(
+    p1: &Pattern,
+    p2: &Pattern,
+    bound: &mut Vec<(Symbol, Symbol)>,
+    pushed: &mut usize,
+) -> bool {
+    patterns_equivalent(p1, p2, &mut |_, s1, _, s2| {
+        bound.push((s1, s2));
+        *pushed += 1;
+        true
+    })
+}
+
+/// Compares two assignment patterns, whose variables reference existing
+/// bindings rather than introducing fresh ones; free variables get the
+/// same type requirement as free variable occurrences in expressions.
+fn assign_pattern_equivalent(
+    env: &GlobalEnv,
+    p1: &Pattern,
+    p2: &Pattern,
+    bound: &[(Symbol, Symbol)],
+) -> bool {
+    patterns_equivalent(
+        p1,
+        p2,
+        &mut |id1, s1, id2, s2| match match_vars(s1, s2, bound) {
+            VarMatch::Bound => true,
+            VarMatch::Free => var_types_spec_equivalent(env, id1, id2),
+            VarMatch::Mismatch => false,
+        },
+    )
 }
 
 struct ExpRewriter<'a> {
@@ -1928,6 +3077,14 @@ impl ExpRewriterFunctions for LoopNestRewriter {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AbortKind {
+    /// Code only
+    Code,
+    /// Code and message
+    Message,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Operation {
     MoveFunction(ModuleId, FunId),
     Pack(ModuleId, StructId, /*variant*/ Option<Symbol>),
@@ -1942,8 +3099,14 @@ pub enum Operation {
     TestVariants(ModuleId, StructId, /* variants */ Vec<Symbol>),
 
     // Specification specific
-    SpecFunction(ModuleId, SpecFunId, Option<Vec<MemoryLabel>>),
+    SpecFunction(ModuleId, SpecFunId, MemoryRange),
     UpdateField(ModuleId, StructId, FieldId),
+    /// Behavior predicate for function values (requires_of, aborts_of, ensures_of, result_of).
+    /// args[0] is the function expression (Closure for global functions, Temporary for
+    /// function parameters, LocalVar for spec function parameters).
+    /// args[1..] are the predicate arguments.
+    /// The `MemoryRange` defines the pre/post memory states for the predicate evaluation.
+    Behavior(BehaviorKind, MemoryRange),
     Result(usize),
     Index,
     Slice,
@@ -1991,7 +3154,7 @@ pub enum Operation {
     MoveTo,
     MoveFrom,
     Freeze(/*explicit*/ bool),
-    Abort,
+    Abort(AbortKind),
     Vector,
 
     // Builtin functions (spec only)
@@ -1999,10 +3162,39 @@ pub enum Operation {
     TypeValue,
     TypeDomain,
     ResourceDomain,
+    StateDomain,
     Global(Option<MemoryLabel>),
     CanModify,
     Old,
+    /// Prover-internal marker (no surface syntax), emitted as an `assume`
+    /// condition in an inline spec block: instructs spec instrumentation to
+    /// snapshot, at this program point, the memories and parameter values
+    /// which conditions anchored at the label reference under `old(..)`.
+    SaveStateAnchor(MemoryLabel),
+    /// Prover-internal wrapper (no surface syntax) around a condition whose
+    /// `old(..)` and pre-state references resolve to the state saved at the
+    /// matching `SaveStateAnchor` marker instead of function entry.
+    WithStateAnchor(MemoryLabel),
+    /// Inliner-internal marker (no surface syntax), emitted as an `assume`
+    /// condition in an inline spec block at the entry of an inline-function
+    /// expansion whose `folds_of` occurrences were deferred through a
+    /// forwarding lambda (see the inliner's anchored `folds_of` deferral):
+    /// marks the program point at which the captured variables of the
+    /// eventually supplied lambda are snapshotted. Consumed by the inliner
+    /// itself — replaced by the snapshot bindings when a deferred
+    /// occurrence anchored at the label resolves, erased when none
+    /// remains — and never reaches code generation or the prover backend.
+    FoldsCaptureAnchor(MemoryLabel),
     Trace(TraceKind),
+
+    // Spec-level mutation builtins. Two-state predicates carrying MemoryRange.
+    // Type argument: the resource type. Args: (addr, value) or (addr).
+    // `publish<R>(addr, value)` — resource R is published at addr
+    SpecPublish(MemoryRange),
+    // `remove<R>(addr)` — resource R is removed from addr
+    SpecRemove(MemoryRange),
+    // `update<R>(addr, value)` — resource R at addr is updated to value
+    SpecUpdate(MemoryRange),
 
     EmptyVec,
     SingleVec,
@@ -2038,10 +3230,46 @@ pub enum Operation {
 }
 
 /// A label used for referring to a specific memory in Global and Exists expressions.
-pub type MemoryLabel = GlobalId;
+/// This is a function-scoped identifier — labels are only meaningful within the
+/// context of a single function's spec. When inlining specs across functions,
+/// labels are freshened to avoid collisions.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub struct MemoryLabel(usize);
 
-/// A pattern, either a variable, a tuple, or a struct instantiation applied to a sequence of patterns.
-/// Carries a node_id which has (at least) a type and location.
+impl MemoryLabel {
+    pub fn new(idx: usize) -> Self {
+        Self(idx)
+    }
+
+    pub fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
+/// Describes the memory state range for an operation that accesses global state.
+/// - `pre`: which memory snapshot `old()` references resolve to
+/// - `post`: which memory snapshot current-state references resolve to
+/// When `None`, the respective state is the default (current memory or saved pre-state).
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MemoryRange {
+    pub pre: Option<MemoryLabel>,
+    pub post: Option<MemoryLabel>,
+}
+
+impl MemoryRange {
+    /// Returns true if this range has no labels set.
+    pub fn is_default(&self) -> bool {
+        self.pre.is_none() && self.post.is_none()
+    }
+
+    /// Iterate over all labels in this range.
+    pub fn labels(&self) -> impl Iterator<Item = MemoryLabel> + '_ {
+        self.pre.iter().chain(self.post.iter()).copied()
+    }
+}
+
+/// A pattern, either a variable, a wildcard, a literal value, a tuple, or a struct instantiation
+/// applied to a sequence of patterns. Carries a node_id which has (at least) a type and location.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Pattern {
     Var(NodeId, Symbol),
@@ -2054,6 +3282,11 @@ pub enum Pattern {
         Option<Symbol>,
         Vec<Pattern>,
     ),
+    /// A literal value pattern (for matching literal constants)
+    LiteralValue(NodeId, Value),
+    /// A range pattern: Range(id, lo, hi, inclusive_upper)
+    /// lo..hi, lo..=hi, lo.., ..hi, ..=hi, ..
+    Range(NodeId, Option<Value>, Option<Value>, bool),
     Error(NodeId),
 }
 
@@ -2065,7 +3298,39 @@ impl Pattern {
             | Pattern::Wildcard(id)
             | Pattern::Tuple(id, _)
             | Pattern::Struct(id, _, _, _)
+            | Pattern::LiteralValue(id, _)
+            | Pattern::Range(id, _, _, _)
             | Pattern::Error(id) => *id,
+        }
+    }
+
+    /// Compares two patterns for structural equality, ignoring NodeIds.
+    pub fn structural_eq(&self, other: &Pattern) -> bool {
+        match (self, other) {
+            (Pattern::Var(_, s1), Pattern::Var(_, s2)) => s1 == s2,
+            (Pattern::Wildcard(_), Pattern::Wildcard(_)) => true,
+            (Pattern::Tuple(_, pats1), Pattern::Tuple(_, pats2)) => {
+                pats1.len() == pats2.len()
+                    && pats1
+                        .iter()
+                        .zip(pats2.iter())
+                        .all(|(p1, p2)| p1.structural_eq(p2))
+            },
+            (Pattern::Struct(_, qid1, v1, pats1), Pattern::Struct(_, qid2, v2, pats2)) => {
+                qid1 == qid2
+                    && v1 == v2
+                    && pats1.len() == pats2.len()
+                    && pats1
+                        .iter()
+                        .zip(pats2.iter())
+                        .all(|(p1, p2)| p1.structural_eq(p2))
+            },
+            (Pattern::LiteralValue(_, v1), Pattern::LiteralValue(_, v2)) => v1 == v2,
+            (Pattern::Range(_, lo1, hi1, inc1), Pattern::Range(_, lo2, hi2, inc2)) => {
+                lo1 == lo2 && hi1 == hi2 && inc1 == inc2
+            },
+            (Pattern::Error(_), Pattern::Error(_)) => true,
+            _ => false,
         }
     }
 
@@ -2099,7 +3364,7 @@ impl Pattern {
     pub fn has_no_struct(&self) -> bool {
         use Pattern::*;
         match self {
-            Var(..) | Wildcard(..) | Error(..) => true,
+            Var(..) | Wildcard(..) | LiteralValue(..) | Range(..) | Error(..) => true,
             Tuple(_, pats) => pats.iter().all(|p| p.has_no_struct()),
             Struct(..) => false,
         }
@@ -2326,7 +3591,10 @@ impl Pattern {
                     .map(|pat| pat.remove_vars(vars))
                     .collect(),
             ),
-            Pattern::Error(..) | Pattern::Wildcard(..) => self,
+            Pattern::Error(..)
+            | Pattern::Wildcard(..)
+            | Pattern::LiteralValue(..)
+            | Pattern::Range(..) => self,
         }
     }
 
@@ -2373,7 +3641,10 @@ impl Pattern {
                     None
                 }
             },
-            Pattern::Error(..) | Pattern::Wildcard(..) => None,
+            Pattern::Error(..)
+            | Pattern::Wildcard(..)
+            | Pattern::LiteralValue(..)
+            | Pattern::Range(..) => None,
         }
     }
 
@@ -2387,7 +3658,7 @@ impl Pattern {
         use Pattern::*;
         visitor(false, self);
         match self {
-            Var(..) | Wildcard(..) | Error(..) => {},
+            Var(..) | Wildcard(..) | LiteralValue(..) | Range(..) | Error(..) => {},
             Tuple(_, patvec) => {
                 for pat in patvec {
                     pat.visit_pre_post(visitor);
@@ -2537,6 +3808,22 @@ impl PatDisplay<'_> {
                 )?;
                 showed_type = true
             },
+            LiteralValue(_, val) => {
+                write!(f, "{}", self.env.display(val))?;
+            },
+            Range(_, lo, hi, inclusive) => {
+                if let Some(l) = lo {
+                    write!(f, "{}", self.env.display(l))?;
+                }
+                if *inclusive {
+                    write!(f, "..=")?;
+                } else {
+                    write!(f, "..")?;
+                }
+                if let Some(h) = hi {
+                    write!(f, "{}", self.env.display(h))?;
+                }
+            },
             Error(_) => write!(f, "Pattern::Error")?,
         }
         if self.show_type && !showed_type {
@@ -2591,6 +3878,15 @@ pub enum Value {
 }
 
 impl Value {
+    /// If this is a `Number`, return the contained `BigInt`; otherwise `None`.
+    pub fn to_bigint(&self) -> Option<BigInt> {
+        if let Value::Number(n) = self {
+            Some(n.clone())
+        } else {
+            None
+        }
+    }
+
     /// Implement an equality relation on values which identifies representations which
     /// implement the same runtime value, assuming that types match.
     ///
@@ -2700,10 +3996,53 @@ impl fmt::Display for EnvDisplay<'_, Value> {
     }
 }
 
+// enables `env.display(&property_value)`
+impl fmt::Display for EnvDisplay<'_, PropertyValue> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
+        match self.val {
+            PropertyValue::Value(v) => write!(f, "{}", self.env.display(v)),
+            PropertyValue::Symbol(s) => write!(f, "{}", s.display(self.env.symbol_pool())),
+            PropertyValue::QualifiedSymbol(qs) => write!(f, "{}", qs.display(self.env)),
+        }
+    }
+}
+
+// enables `env.display(&property_bag)`
+impl fmt::Display for EnvDisplay<'_, PropertyBag> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
+        write!(f, "[")?;
+        let mut first = true;
+        for (key, value) in self.val {
+            if !first {
+                write!(f, ", ")?;
+            }
+            first = false;
+            write!(
+                f,
+                "{}={}",
+                key.display(self.env.symbol_pool()),
+                self.env.display(value)
+            )?;
+        }
+        write!(f, "]")
+    }
+}
+
 // =================================================================================================
 /// # Purity of Expressions
 
 impl Operation {
+    /// Returns all `MemoryLabel` values embedded in this operation.
+    pub fn memory_labels(&self) -> Vec<MemoryLabel> {
+        use Operation::*;
+        match self {
+            Global(Some(l)) | Exists(Some(l)) => vec![*l],
+            Behavior(_, range) | SpecFunction(_, _, range) => range.labels().collect(),
+            SpecPublish(range) | SpecRemove(range) | SpecUpdate(range) => range.labels().collect(),
+            _ => vec![],
+        }
+    }
+
     /// Determines whether this operation depends on global memory
     pub fn uses_no_memory<F>(&self, check_pure: &F) -> bool
     where
@@ -2766,13 +4105,14 @@ impl Operation {
             UpdateField(..) => false,    // Move-related
 
             // Specification specific
-            Result(..) => false, // Spec
-            Index => false,      // Spec
-            Slice => false,      // Spec
-            Range => false,      // Spec
-            Implies => false,    // Spec
-            Iff => false,        // Spec
-            Identical => false,  // Spec
+            Result(..) => false,   // Spec
+            Index => false,        // Spec
+            Slice => false,        // Spec
+            Range => false,        // Spec
+            Implies => false,      // Spec
+            Iff => false,          // Spec
+            Identical => false,    // Spec
+            Behavior(..) => false, // Spec
 
             // Binary operators
             Add => false, // can overflow
@@ -2813,18 +4153,24 @@ impl Operation {
             MoveTo => false,           // Move-related
             MoveFrom => false,         // Move-related
             Freeze(_) => false,        // Move-related
-            Abort => false,            // Move-related
+            Abort(_) => false,         // Move-related
             Vector => false,           // Move-related
 
             // Builtin functions (spec only)
-            Len => false,            // Spec
-            TypeValue => false,      // Spec
-            TypeDomain => false,     // Spec
-            ResourceDomain => false, // Spec
-            Global(..) => false,     // Spec
-            CanModify => false,      // Spec
-            Old => false,            // Spec
-            Trace(..) => false,      // Spec
+            Len => false,                    // Spec
+            TypeValue => false,              // Spec
+            TypeDomain => false,             // Spec
+            ResourceDomain => false,         // Spec
+            Global(..) => false,             // Spec
+            CanModify => false,              // Spec
+            Old => false,                    // Spec
+            SaveStateAnchor(..) => false,    // Spec
+            WithStateAnchor(..) => false,    // Spec
+            FoldsCaptureAnchor(..) => false, // Spec
+            Trace(..) => false,              // Spec
+            SpecPublish(..) => false,        // Spec
+            SpecRemove(..) => false,         // Spec
+            SpecUpdate(..) => false,         // Spec
 
             EmptyVec => false,     // Spec
             SingleVec => false,    // Spec
@@ -2858,6 +4204,7 @@ impl Operation {
             // Operation with no effect
             TestVariants(..) => true, // Cannot abort
             NoOp => true,
+            StateDomain => true, // Spec domain, not runtime
         }
     }
 
@@ -3645,14 +4992,20 @@ impl fmt::Display for OperationDisplay<'_> {
                 let ty = self.env.get_node_type(self.node_id);
                 write!(f, "{:?}<{}>", self.oper, ty.display(self.get_tctx()))
             },
-            SpecFunction(mid, fid, labels_opt) => {
+            SpecFunction(mid, fid, range) => {
                 write!(f, "{}", self.fun_str(mid, fid))?;
-                if let Some(labels) = labels_opt {
-                    write!(
-                        f,
-                        "[{}]",
-                        labels.iter().map(|l| format!("{}", l)).join(", ")
-                    )?;
+                if !range.is_default() {
+                    write!(f, "[")?;
+                    if let Some(pre) = range.pre {
+                        write!(f, "pre={}", pre)?;
+                        if range.post.is_some() {
+                            write!(f, ",")?;
+                        }
+                    }
+                    if let Some(post) = range.post {
+                        write!(f, "post={}", post)?;
+                    }
+                    write!(f, "]")?;
                 }
                 Ok(())
             },
@@ -3719,6 +5072,24 @@ impl fmt::Display for OperationDisplay<'_> {
                 write!(f, "update {}", self.field_str(mid, sid, fid))
             },
             Result(t) => write!(f, "result{}", t),
+            Behavior(kind, range) => {
+                write!(f, "{}", kind)?;
+                if !range.is_default() {
+                    write!(f, "[")?;
+                    if let Some(pre) = range.pre {
+                        write!(f, "pre={}", pre)?;
+                        if range.post.is_some() {
+                            write!(f, ",")?;
+                        }
+                    }
+                    if let Some(post) = range.post {
+                        write!(f, "post={}", post)?;
+                    }
+                    write!(f, "]")?;
+                }
+                Ok(())
+            },
+            Abort(_) => write!(f, "Abort"),
             _ => write!(f, "{:?}", self.oper),
         }?;
 
@@ -3820,7 +5191,13 @@ impl fmt::Display for EnvDisplay<'_, Condition> {
                 self.val.additional_exps[0].display(self.env),
                 self.val.exp.display(self.env)
             )?,
-            _ => write!(f, "{} {};", self.val.kind, self.val.exp.display(self.env))?,
+            _ => {
+                write!(f, "{}", self.val.kind)?;
+                if !self.val.properties.is_empty() {
+                    write!(f, " {}", self.env.display(&self.val.properties))?;
+                }
+                write!(f, " {};", self.val.exp.display(self.env))?
+            },
         }
         Ok(())
     }
@@ -3829,6 +5206,14 @@ impl fmt::Display for EnvDisplay<'_, Condition> {
 impl fmt::Display for EnvDisplay<'_, Spec> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(f, "spec {{")?;
+        if let Some(frame) = &self.val.frame_spec {
+            for target in &frame.modifies_targets {
+                writeln!(f, "  modifies {};", target.display(self.env))?;
+            }
+            for target in &frame.reads_targets {
+                writeln!(f, "  reads {};", self.env.display(target))?;
+            }
+        }
         for cond in &self.val.conditions {
             writeln!(f, "  {}", self.env.display(cond))?
         }
@@ -3851,8 +5236,6 @@ fn optional_variant_suffix(pool: &SymbolPool, variant: &Option<Symbol>) -> Strin
 impl fmt::Display for AccessSpecifierKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            AccessSpecifierKind::Reads => f.write_str("reads"),
-            AccessSpecifierKind::Writes => f.write_str("writes"),
             AccessSpecifierKind::LegacyAcquires => f.write_str("acquires"),
         }
     }
@@ -3861,11 +5244,24 @@ impl fmt::Display for AccessSpecifierKind {
 #[cfg(test)]
 mod tests {
     use crate::{
-        ast::{Address, Value},
+        ast::{Address, Condition, ConditionKind, ExpData, Spec, Value},
+        model::{Loc, NodeId},
         symbol::Symbol,
         AccountAddress,
     };
     use num::BigInt;
+    use std::collections::BTreeMap;
+
+    fn update_condition(exp_node_id: usize, val: bool) -> Condition {
+        Condition {
+            loc: Loc::default(),
+            kind: ConditionKind::Update,
+            properties: BTreeMap::new(),
+            exp: ExpData::Value(NodeId::new(exp_node_id), Value::Bool(val)).into_exp(),
+            additional_exps: vec![],
+        }
+    }
+
     #[test]
     fn test_value_equivalence() {
         // Some test values
@@ -4053,5 +5449,36 @@ mod tests {
         for val1 in &symbolic_examples {
             assert!(val1.equivalent(&((*val1).clone())) == Some(true));
         }
+    }
+
+    #[test]
+    fn test_spec_structural_eq_update_map_ignores_node_id_keys() {
+        let spec1 = Spec {
+            loc: None,
+            conditions: vec![],
+            frame_spec: None,
+            properties: BTreeMap::new(),
+            on_impl: BTreeMap::new(),
+            update_map: BTreeMap::from([
+                (NodeId::new(1), update_condition(11, true)),
+                (NodeId::new(2), update_condition(22, false)),
+            ]),
+            proof: None,
+        };
+        let spec2 = Spec {
+            loc: None,
+            conditions: vec![],
+            frame_spec: None,
+            properties: BTreeMap::new(),
+            on_impl: BTreeMap::new(),
+            update_map: BTreeMap::from([
+                (NodeId::new(100), update_condition(33, false)),
+                (NodeId::new(200), update_condition(44, true)),
+            ]),
+            proof: None,
+        };
+
+        assert!(spec1.structural_eq(&spec2));
+        assert!(spec2.structural_eq(&spec1));
     }
 }

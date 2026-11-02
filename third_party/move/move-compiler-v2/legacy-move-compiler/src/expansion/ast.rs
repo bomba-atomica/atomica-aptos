@@ -1,13 +1,14 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     expansion::translate::is_valid_struct_constant_or_schema_name,
     parser::ast::{
-        self as P, Ability, Ability_, BinOp, CallKind, ConstantName, Field, FunctionName, Label,
-        LambdaCaptureKind, ModuleName, QuantKind, SpecApplyPattern, StructName, UnaryOp, UseDecl,
-        Var, VariantName, ENTRY_MODIFIER,
+        self as P, Ability, Ability_, BehaviorKind, BinOp, CallKind, ConstantName, Field,
+        FunctionName, Label, LambdaCaptureKind, ModuleName, QuantKind, SpecApplyPattern,
+        StructName, UnaryOp, UseDecl, Var, VariantName, ENTRY_MODIFIER,
     },
     shared::{
         ast_debug::*,
@@ -166,6 +167,7 @@ pub struct StructDefinition {
     pub abilities: AbilitySet,
     pub type_parameters: Vec<StructTypeParameter>,
     pub layout: StructLayout,
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -232,7 +234,6 @@ pub struct Function {
 #[derive(PartialEq, Clone, Debug)]
 pub struct AccessSpecifier_ {
     pub kind: AccessSpecifierKind,
-    pub negated: bool,
     pub module_address: Option<Address>,
     pub module_name: Option<ModuleName>,
     pub resource_name: Option<Name>,
@@ -242,8 +243,6 @@ pub struct AccessSpecifier_ {
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum AccessSpecifierKind {
-    Reads,
-    Writes,
     LegacyAcquires,
 }
 
@@ -268,6 +267,7 @@ pub type AddressSpecifier = Spanned<AddressSpecifier_>;
 pub struct Constant {
     pub attributes: Attributes,
     pub loc: Loc,
+    pub visibility: Visibility,
     pub signature: Type,
     pub value: Exp,
 }
@@ -307,10 +307,34 @@ pub enum SpecBlockMember_ {
         uninterpreted: bool,
         name: FunctionName,
         signature: FunctionSignature,
+        modifies: Vec<Exp>,
+        reads: Vec<Type>,
+        /// Optional `:weight N` on the spec function's defining axiom.
+        weight: Option<u32>,
         body: FunctionBody,
+    },
+    ModifiesOf {
+        fun_param: Name,
+        params: Vec<(Var, Type)>,
+        targets: Vec<Exp>,
+        all: bool,
+    },
+    ReadsOf {
+        fun_param: Name,
+        types: Vec<Type>,
+        all: bool,
+    },
+    Modifies {
+        targets: Vec<Exp>,
+    },
+    Reads {
+        types: Vec<Type>,
     },
     Variable {
         is_global: bool,
+        /// Ghost struct field, declared in a struct spec block: model-only
+        /// state carried by each value of the struct.
+        is_ghost: bool,
         name: Name,
         type_parameters: Vec<(Name, AbilitySet)>,
         type_: Type,
@@ -337,8 +361,53 @@ pub enum SpecBlockMember_ {
     Pragma {
         properties: Vec<PragmaProperty>,
     },
+    /// `proof { ... }` — a structured proof block guiding the SMT solver.
+    Proof {
+        body: Proof,
+    },
+    /// `spec lemma name(params) { requires; ensures; } proof { ... }`
+    Lemma {
+        name: FunctionName,
+        signature: FunctionSignature,
+        spec_members: Vec<SpecBlockMember>,
+        proof: Option<Proof>,
+    },
 }
 pub type SpecBlockMember = Spanned<SpecBlockMember_>;
+
+/// A proof statement inside a `proof { ... }` block (expansion-phase AST).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Proof_ {
+    /// `let name = exp;`
+    Let(Name, Exp),
+    /// `if (cond) proof [else proof]`
+    IfElse(Exp, Box<Proof>, Option<Box<Proof>>),
+    /// `{ proof_stmts }`
+    Block(Vec<Proof>),
+    /// `assert exp;`
+    Assert(Exp),
+    /// `assume [trusted] exp;`
+    Assume(Vec<PragmaProperty>, Exp),
+    /// `apply lemma(args);`
+    Apply(ModuleAccess, Vec<Exp>),
+    /// `forall bindings [triggers] [weight = N] apply lemma(args);`
+    ForallApply {
+        bindings: LValueWithRangeList,
+        patterns: Vec<Vec<Exp>>,
+        lemma: ModuleAccess,
+        args: Vec<Exp>,
+        /// Optional `:weight N` annotation on the emitted SMT quantifier.
+        weight: Option<u32>,
+    },
+    /// `calc(e1 relop e2 relop ... en);`
+    Calc(Vec<(Exp, Option<BinOp>)>),
+    /// `post <proof_stmt>` — emit at return point instead of entry.
+    Post(Box<Proof>),
+    /// `split expr;` — case-split on boolean or enum expression.
+    Split(Exp),
+}
+
+pub type Proof = Spanned<Proof_>;
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum SpecConditionKind_ {
@@ -348,7 +417,6 @@ pub enum SpecConditionKind_ {
     AbortsIf,
     AbortsWith,
     SucceedsIf,
-    Modifies,
     Emits,
     Ensures,
     Requires,
@@ -426,6 +494,10 @@ pub enum LValue_ {
         Option<DotDot>,
     ),
     PositionalUnpack(ModuleAccess, Option<Vec<Type>>, LValueOrDotDotList),
+    // Literal value pattern (for primitive pattern matching)
+    Literal(Value),
+    // Range pattern: (lo, hi, inclusive_upper)
+    Range(Option<Value>, Option<Value>, bool),
 }
 pub type LValue = Spanned<LValue_>;
 pub type LValueList_ = Vec<LValue>;
@@ -526,6 +598,9 @@ pub enum Exp_ {
     Match(Box<Exp>, Vec<Spanned<(LValueList, Option<Exp>, Exp)>>),
     While(Option<Label>, Box<Exp>, Box<Exp>),
     Loop(Option<Label>, Box<Exp>),
+    // for (iter in lb..ub [spec]) body, where the optional spec expression
+    // (`Exp_::Spec`) holds loop invariants declared.
+    For(Var, Box<Exp>, Box<Exp>, Box<Exp>, Option<Box<Exp>>),
     Block(Sequence),
     Lambda(
         TypedLValueList,
@@ -538,8 +613,24 @@ pub enum Exp_ {
         QuantKind,
         LValueWithRangeList,
         Vec<Vec<Exp>>,
+        Option<u32>,
         Option<Box<Exp>>,
         Box<Exp>,
+    ), // spec only
+    // Behavior predicate for function values in specifications:
+    // requires_of<target>(args)
+    // where target is an expression evaluating to function type
+    Behavior(
+        BehaviorKind,
+        Box<Exp>,          // target expression (must have function type)
+        Spanned<Vec<Exp>>, // arguments
+    ), // spec only
+    // State-labeled expression in specifications:
+    // label |~ expr | pre.. |~ expr | ..post |~ expr | pre..post |~ expr
+    StateLabeled(
+        Option<Label>, // pre-state label
+        Box<Exp>,      // inner expression
+        Option<Label>, // post-state label
     ), // spec only
 
     Assign(LValueList, Box<Exp>),
@@ -926,16 +1017,12 @@ impl fmt::Display for ModuleAccess_ {
 
 impl fmt::Display for Visibility {
     fn fmt(&self, f: &mut fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match &self {
-                Visibility::Public(_) => Visibility::PUBLIC,
-                Visibility::Package(_) => Visibility::PACKAGE,
-                Visibility::Friend(_) => Visibility::FRIEND,
-                Visibility::Internal => Visibility::INTERNAL,
-            }
-        )
+        write!(f, "{}", match &self {
+            Visibility::Public(_) => Visibility::PUBLIC,
+            Visibility::Package(_) => Visibility::PACKAGE,
+            Visibility::Friend(_) => Visibility::FRIEND,
+            Visibility::Internal => Visibility::INTERNAL,
+        })
     }
 }
 
@@ -1104,11 +1191,13 @@ impl AstDebug for ModuleDefinition {
             w.writeln(format!("{}", n))
         }
         attributes.ast_debug(w);
-        w.writeln(if *is_source_module {
-            "source module"
-        } else {
-            "library module"
-        });
+        w.writeln(
+            if *is_source_module {
+                "source module"
+            } else {
+                "library module"
+            },
+        );
         w.writeln(format!("dependency order #{}", dependency_order));
         for (mident, neighbor) in immediate_neighbors.key_cloned_iter() {
             w.write(format!("{} {};", neighbor, mident));
@@ -1161,6 +1250,7 @@ impl AstDebug for (StructName, &StructDefinition) {
                 abilities,
                 type_parameters,
                 layout: fields,
+                visibility,
             },
         ) = self;
 
@@ -1170,7 +1260,7 @@ impl AstDebug for (StructName, &StructDefinition) {
             w.write("native ");
         }
 
-        w.write(format!("struct {}", name));
+        w.write(format!("{} struct {}", visibility, name));
         type_parameters.ast_debug(w);
         ability_modifiers_ast_debug(w, abilities);
         if let StructLayout::Singleton(fields, _) = fields {
@@ -1232,7 +1322,6 @@ impl AstDebug for SpecConditionKind_ {
             AbortsIf => w.write("aborts_if "),
             AbortsWith => w.write("aborts_with "),
             SucceedsIf => w.write("succeeds_if "),
-            Modifies => w.write("modifies "),
             Emits => w.write("emits "),
             Ensures => w.write("ensures "),
             Requires => w.write("requires "),
@@ -1275,6 +1364,9 @@ impl AstDebug for SpecBlockMember_ {
                 uninterpreted,
                 signature,
                 name,
+                modifies,
+                reads,
+                weight,
                 body,
             } => {
                 if *uninterpreted {
@@ -1284,19 +1376,91 @@ impl AstDebug for SpecBlockMember_ {
                 }
                 w.write(format!("define {}", name));
                 signature.ast_debug(w);
+                if let Some(n) = weight {
+                    w.write(format!(" [weight = {}]", n));
+                }
+                if !modifies.is_empty() {
+                    w.write(" modifies ");
+                    w.list(modifies, ", ", |w, e| {
+                        e.ast_debug(w);
+                        true
+                    });
+                }
+                if !reads.is_empty() {
+                    w.write(" reads ");
+                    w.list(reads, ", ", |w, ty| {
+                        ty.ast_debug(w);
+                        true
+                    });
+                }
                 match &body.value {
                     FunctionBody_::Defined(body) => w.block(|w| body.ast_debug(w)),
                     FunctionBody_::Native => w.writeln(";"),
                 }
             },
+            SpecBlockMember_::ModifiesOf {
+                fun_param,
+                params,
+                targets,
+                all,
+            } => {
+                w.write(format!("modifies_of<{}>", fun_param));
+                if *all {
+                    w.write(" *");
+                } else {
+                    w.write("(");
+                    w.list(params, ", ", |w, (v, ty)| {
+                        w.write(format!("{}: ", v));
+                        ty.ast_debug(w);
+                        true
+                    });
+                    w.write(") ");
+                    w.list(targets, ", ", |w, e| {
+                        e.ast_debug(w);
+                        true
+                    });
+                }
+            },
+            SpecBlockMember_::ReadsOf {
+                fun_param,
+                types,
+                all,
+            } => {
+                w.write(format!("reads_of<{}> ", fun_param));
+                if *all {
+                    w.write("*");
+                } else {
+                    w.list(types, ", ", |w, ty| {
+                        ty.ast_debug(w);
+                        true
+                    });
+                }
+            },
+            SpecBlockMember_::Modifies { targets } => {
+                w.write("modifies ");
+                w.list(targets, ", ", |w, e| {
+                    e.ast_debug(w);
+                    true
+                });
+            },
+            SpecBlockMember_::Reads { types } => {
+                w.write("reads ");
+                w.list(types, ", ", |w, ty| {
+                    ty.ast_debug(w);
+                    true
+                });
+            },
             SpecBlockMember_::Variable {
                 is_global,
+                is_ghost,
                 name,
                 type_parameters,
                 type_,
                 init: _,
             } => {
-                if *is_global {
+                if *is_ghost {
+                    w.write("ghost ");
+                } else if *is_global {
                     w.write("global ");
                 } else {
                     w.write("local");
@@ -1354,6 +1518,143 @@ impl AstDebug for SpecBlockMember_ {
                     p.ast_debug(w);
                     true
                 });
+            },
+            SpecBlockMember_::Proof { body } => {
+                w.write("proof ");
+                body.ast_debug(w);
+            },
+            SpecBlockMember_::Lemma {
+                name,
+                signature,
+                spec_members,
+                proof,
+            } => {
+                w.write(format!("lemma {}", name));
+                signature.ast_debug(w);
+                w.write(" ");
+                w.block(|w| {
+                    for m in spec_members {
+                        m.ast_debug(w);
+                        w.new_line();
+                    }
+                });
+                if let Some(p) = proof {
+                    w.write(" proof ");
+                    p.ast_debug(w);
+                }
+            },
+        }
+    }
+}
+
+impl AstDebug for Proof_ {
+    fn ast_debug(&self, w: &mut AstWriter) {
+        match self {
+            Proof_::Let(name, exp) => {
+                w.write(format!("let {} = ", name));
+                exp.ast_debug(w);
+                w.write(";");
+            },
+            Proof_::IfElse(cond, then_branch, else_branch) => {
+                w.write("if (");
+                cond.ast_debug(w);
+                w.write(") ");
+                then_branch.ast_debug(w);
+                if let Some(eb) = else_branch {
+                    w.write(" else ");
+                    eb.ast_debug(w);
+                }
+            },
+            Proof_::Block(stmts) => {
+                w.block(|w| {
+                    for stmt in stmts {
+                        stmt.ast_debug(w);
+                        w.new_line();
+                    }
+                });
+            },
+            Proof_::Assert(exp) => {
+                w.write("assert ");
+                exp.ast_debug(w);
+                w.write(";");
+            },
+            Proof_::Assume(props, exp) => {
+                w.write("assume ");
+                if !props.is_empty() {
+                    w.write("[");
+                    w.list(props, ", ", |w, p| {
+                        p.ast_debug(w);
+                        true
+                    });
+                    w.write("] ");
+                }
+                exp.ast_debug(w);
+                w.write(";");
+            },
+            Proof_::Apply(access, args) => {
+                w.write("apply ");
+                access.ast_debug(w);
+                w.write("(");
+                w.list(args, ", ", |w, e| {
+                    e.ast_debug(w);
+                    true
+                });
+                w.write(");");
+            },
+            Proof_::ForallApply {
+                bindings,
+                patterns,
+                lemma,
+                args,
+                weight,
+            } => {
+                w.write("forall ");
+                w.list(&bindings.value, ", ", |w, sp!(_, (lv, range))| {
+                    lv.ast_debug(w);
+                    w.write(": ");
+                    range.ast_debug(w);
+                    true
+                });
+                for group in patterns {
+                    w.write(" {");
+                    w.list(group, ", ", |w, e| {
+                        e.ast_debug(w);
+                        true
+                    });
+                    w.write("}");
+                }
+                if let Some(w_val) = weight {
+                    w.write(format!(" [weight = {}]", w_val));
+                }
+                w.write(" apply ");
+                lemma.ast_debug(w);
+                w.write("(");
+                w.list(args, ", ", |w, e| {
+                    e.ast_debug(w);
+                    true
+                });
+                w.write(");");
+            },
+            Proof_::Calc(steps) => {
+                w.write("calc(");
+                for (i, (exp, _op)) in steps.iter().enumerate() {
+                    if i > 0 {
+                        if let Some(op) = &steps[i - 1].1 {
+                            w.write(format!(" {} ", op));
+                        }
+                    }
+                    exp.ast_debug(w);
+                }
+                w.write(");");
+            },
+            Proof_::Post(inner) => {
+                w.write("post ");
+                inner.ast_debug(w);
+            },
+            Proof_::Split(exp) => {
+                w.write("split ");
+                exp.ast_debug(w);
+                w.write(";");
             },
         }
     }
@@ -1446,6 +1747,7 @@ impl AstDebug for (ConstantName, &Constant) {
             Constant {
                 attributes,
                 loc: _loc,
+                visibility: _,
                 signature,
                 value,
             },
@@ -1712,6 +2014,20 @@ impl AstDebug for Exp_ {
                 w.write("loop ");
                 e.ast_debug(w);
             },
+            E::For(iter, lb, ub, body, spec) => {
+                w.write("for (");
+                w.write(iter.0.value.as_str());
+                w.write(" in ");
+                lb.ast_debug(w);
+                w.write("..");
+                ub.ast_debug(w);
+                if let Some(spec) = spec {
+                    w.write(" ");
+                    spec.ast_debug(w);
+                }
+                w.write(") ");
+                body.ast_debug(w);
+            },
             E::Match(e, arms) => {
                 w.write("match (");
                 e.ast_debug(w);
@@ -1739,11 +2055,14 @@ impl AstDebug for Exp_ {
                     spec.ast_debug(w);
                 }
             },
-            E::Quant(kind, sp!(_, rs), trs, c_opt, e) => {
+            E::Quant(kind, sp!(_, rs), trs, weight, c_opt, e) => {
                 kind.ast_debug(w);
                 w.write(" ");
                 rs.ast_debug(w);
                 trs.ast_debug(w);
+                if let Some(n) = weight {
+                    w.write(format!(" [weight = {}]", n));
+                }
                 if let Some(c) = c_opt {
                     w.write(" where ");
                     c.ast_debug(w);
@@ -1863,6 +2182,31 @@ impl AstDebug for Exp_ {
                     w.write("]");
                 }
             },
+            E::Behavior(kind, target, sp!(_, args)) => {
+                let kind_str = match kind {
+                    BehaviorKind::RequiresOf => "requires_of",
+                    BehaviorKind::AbortsOf => "aborts_of",
+                    BehaviorKind::EnsuresOf => "ensures_of",
+                    BehaviorKind::ResultOf => "result_of",
+                    BehaviorKind::UnchangedOf => "unchanged_of",
+                    BehaviorKind::FoldsOf => "folds_of",
+                };
+                w.write(kind_str);
+                w.write("<");
+                target.ast_debug(w);
+                w.write(">(");
+                w.comma(args, |w, e: &Exp| e.ast_debug(w));
+                w.write(")");
+            },
+            E::StateLabeled(pre_label, inner, post_label) => {
+                if let Some(label) = pre_label {
+                    w.write(format!("{}@", label.value().as_str()));
+                }
+                inner.ast_debug(w);
+                if let Some(label) = post_label {
+                    w.write(format!("@{}", label.value().as_str()));
+                }
+            },
             E::UnresolvedError => w.write("_|_"),
         }
     }
@@ -1954,6 +2298,22 @@ impl AstDebug for LValue_ {
                 w.write("(");
                 w.comma(&args.value, |w, b| b.ast_debug(w));
                 w.write(")");
+            },
+            L::Literal(val) => {
+                val.value.ast_debug(w);
+            },
+            L::Range(lo, hi, inclusive) => {
+                if let Some(l) = lo {
+                    l.value.ast_debug(w);
+                }
+                if *inclusive {
+                    w.write("..=");
+                } else {
+                    w.write("..");
+                }
+                if let Some(h) = hi {
+                    h.value.ast_debug(w);
+                }
             },
         }
     }

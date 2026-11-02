@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::on_chain_config::OnChainConfig;
 use move_binary_format::{
@@ -81,11 +81,13 @@ pub enum FeatureFlag {
     TRANSACTION_CONTEXT_EXTENSION = 59,
     COIN_TO_FUNGIBLE_ASSET_MIGRATION = 60,
     PRIMARY_APT_FUNGIBLE_STORE_AT_USER_ADDRESS = 61,
-    OBJECT_NATIVE_DERIVED_ADDRESS = 62,
+    // Feature rolled out, no longer can be disabled.
+    _OBJECT_NATIVE_DERIVED_ADDRESS = 62,
     DISPATCHABLE_FUNGIBLE_ASSET = 63,
     NEW_ACCOUNTS_DEFAULT_TO_FA_APT_STORE = 64,
     OPERATIONS_DEFAULT_TO_FA_APT_STORE = 65,
-    AGGREGATOR_V2_IS_AT_LEAST_API = 66,
+    // Feature rolled out, no longer can be disabled.
+    _AGGREGATOR_V2_IS_AT_LEAST_API = 66,
     CONCURRENT_FUNGIBLE_BALANCE = 67,
     DEFAULT_TO_CONCURRENT_FUNGIBLE_BALANCE = 68,
     /// Enabled on mainnet, cannot be disabled.
@@ -97,15 +99,18 @@ pub enum FeatureFlag {
     /// Enabled on mainnet, cannot be disabled.
     _USE_COMPATIBILITY_CHECKER_V2 = 73,
     ENABLE_ENUM_TYPES = 74,
-    ENABLE_RESOURCE_ACCESS_CONTROL = 75,
+    /// Never enabled. Resource access control was removed; access specifiers are
+    /// permanently rejected by the verifier.
+    _DEPRECATED_ENABLE_RESOURCE_ACCESS_CONTROL = 75,
     /// Enabled on mainnet, can never be disabled.
     _REJECT_UNSTABLE_BYTECODE_FOR_SCRIPT = 76,
     FEDERATED_KEYLESS = 77,
     TRANSACTION_SIMULATION_ENHANCEMENT = 78,
     COLLECTION_OWNER = 79,
-    /// covers mem::swap and vector::move_range
-    /// AIP-105 (https://github.com/aptos-foundation/AIPs/blob/main/aips/aip-105.md)
-    NATIVE_MEMORY_OPERATIONS = 80,
+    /// Enabled on mainnet, cannot be rolled back. Was gating `mem::swap` and `vector::move_range`
+    /// natives. For more details, see:
+    ///   AIP-105 (https://github.com/aptos-foundation/AIPs/blob/main/aips/aip-105.md)
+    _NATIVE_MEMORY_OPERATIONS = 80,
     /// The feature was used to gate the rollout of new loader used by Move VM. It was enabled on
     /// mainnet and can no longer be disabled.
     _ENABLE_LOADER_V2 = 81,
@@ -125,8 +130,8 @@ pub enum FeatureFlag {
     /// implementations. If required in the future, we can add a flag
     /// to explicitly disable the instruction cache.
     ENABLE_CALL_TREE_AND_INSTRUCTION_VM_CACHE = 83,
-    /// AIP-103 (https://github.com/aptos-foundation/AIPs/blob/main/aips/aip-103.md)
-    PERMISSIONED_SIGNER = 84,
+    /// AIP-103; the permissioned signer feature has been removed.
+    _DEPRECATED_PERMISSIONED_SIGNER = 84,
     ACCOUNT_ABSTRACTION = 85,
     /// Enables bytecode version v8
     VM_BINARY_FORMAT_V8 = 86,
@@ -139,12 +144,14 @@ pub enum FeatureFlag {
     JWK_CONSENSUS_PER_KEY_MODE = 92,
     TRANSACTION_PAYLOAD_V2 = 93,
     ORDERLESS_TRANSACTIONS = 94,
-    // TODO(lazy-loading): Add link to AIP and its number + brief description.
+    /// With lazy loading, modules are loaded lazily (as opposed to loading the transitive closure
+    /// of dependencies). For more details, see:
+    ///   AIP-127 (https://github.com/aptos-foundation/AIPs/blob/main/aips/aip-127.md)
     ENABLE_LAZY_LOADING = 95,
     CALCULATE_TRANSACTION_FEE_FOR_DISTRIBUTION = 96,
     DISTRIBUTE_TRANSACTION_FEE = 97,
     MONOTONICALLY_INCREASING_COUNTER = 98,
-    ENABLE_CAPTURE_OPTION = 99,
+    _ENABLE_CAPTURE_OPTION = 99,
     /// Whether to allow trusted code optimizations.
     ENABLE_TRUSTED_CODE = 100,
     ENABLE_ENUM_OPTION = 101,
@@ -154,110 +161,184 @@ pub enum FeatureFlag {
     /// If enabled, new single session is used by the VM to avoid squashing write-sets and cache
     /// reads between sessions (e.g., between transaction prologue, user session and epilogue).
     SESSION_CONTINUATION = 104,
+    /// Enables function value reflection in the stdlib
+    ENABLE_FUNCTION_REFLECTION = 105,
+    /// Enables bytecode version v10
+    VM_BINARY_FORMAT_V10 = 106,
+    /// Whether SLH-DSA-SHA2-128s signature scheme is enabled for transaction authentication.
+    SLH_DSA_SHA2_128S_SIGNATURE = 107,
+    /// Whether EncryptedTransactions is enabled
+    ENCRYPTED_TRANSACTIONS = 108,
+    /// Enables public struct and enum types as transaction arguments.
+    PUBLIC_STRUCT_ENUM_ARGS = 109,
+    /// Whether multisig script payloads are enabled
+    MULTISIG_SCRIPT = 110,
+    /// Enables higher transaction execution/IO limits backed by staking voting power.
+    TRANSACTION_LIMITS = 111,
+    /// Whether versioned enum-based transaction validation is enabled.
+    VERSIONED_TRANSACTION_VALIDATION = 112,
+    /// Whether storage_slot move natives are enabled.
+    STORAGE_SLOT_NATIVES = 113,
+    /// If enabled, a module upgrade may downgrade the visibility of an `entry` function
+    /// from `friend/package` to private, while keeping the `entry` modifier. The `entry`
+    /// modifier itself still cannot be removed. See issue #19650.
+    ALLOW_FRIEND_ENTRY_VISIBILITY_DOWNGRADE = 114,
+    /// When enabled, per-block hot-state promotions are persisted through the block
+    /// epilogue: the promotion set is embedded into the block epilogue transaction
+    /// payload (`BlockEpiloguePayload::V2`), and every transaction output in the block
+    /// uses the V1 write-set format, which encodes hot-state changes in its serialized
+    /// writes.
+    HOTNESS_IN_EPILOGUE = 116,
+    /// When enabled, execution assembles `TransactionInfoV1` instead of `TransactionInfoV0`.
+    TRANSACTION_INFO_V1 = 117,
+    /// Umbrella auth flag for the native-trading subsystem; the per-store
+    /// flags below gate the actual writes. Both must be on to write.
+    TRADING_NATIVE = 118,
+    /// Gates native-position writes.
+    NATIVE_POSITION = 119,
+    /// Gates native-orderbook writes.
+    NATIVE_ORDERBOOK = 120,
+    /// Gates native-collateral writes.
+    NATIVE_COLLATERAL = 121,
+    /// When enabled, execution computes the native-position state root at the
+    /// checkpoint stage and commits it to `TransactionInfoV1`, so it is
+    /// consensus-verified. Requires `TRANSACTION_INFO_V1`.
+    COMPUTE_TRADING_NATIVE_STATE_ROOTS = 122,
+    /// When enabled, execution populates `TransactionInfoV1`'s hot state root hash, so it
+    /// is committed to the ledger accumulator. Requires `TRANSACTION_INFO_V1`.
+    HOT_STATE_ROOT_IN_TXN_INFO = 123,
+    /// When enabled, the gas refund in the epilogue mints APT directly as a fungible asset
+    /// via the paired `MintRef`, instead of minting a coin and converting it. This avoids
+    /// touching the legacy coin supply aggregator (v1), reducing Block-STM contention.
+    GAS_REFUND_FA_MINT = 124,
+    /// When enabled, `FunctionInfo`-based dispatch (dispatchable fungible assets and
+    /// account abstraction) runs via function values from `std::reflect` instead of the
+    /// legacy native dispatch machinery. Requires `ENABLE_FUNCTION_REFLECTION`.
+    FUNCTION_VALUE_DISPATCH = 125,
+    /// When enabled, BCS serialization of values containing function values fails:
+    /// `bcs::to_bytes` and `bcs::serialized_size` abort, and table operations with keys
+    /// containing function values fail. Storage writes and events are unaffected.
+    /// Transient: active while the function value storage format migration is in
+    /// progress, so no on-chain state can depend on the old bytes.
+    DISABLE_CLOSURE_BCS_SERIALIZATION = 126,
+    /// Enables lazy module initialization via `aptos_framework::init::internal_maybe_initialize`
+    /// (a module self-initializes on first use rather than via a genesis-time `init_module`).
+    /// While disabled, that entry point aborts.
+    LAZY_MODULE_INITIALIZATION = 127,
 }
 
 impl FeatureFlag {
     pub fn default_features() -> Vec<Self> {
         vec![
-            FeatureFlag::CODE_DEPENDENCY_CHECK,
-            FeatureFlag::TREAT_FRIEND_AS_PRIVATE,
-            FeatureFlag::SHA_512_AND_RIPEMD_160_NATIVES,
-            FeatureFlag::APTOS_STD_CHAIN_ID_NATIVES,
+            Self::CODE_DEPENDENCY_CHECK,
+            Self::TREAT_FRIEND_AS_PRIVATE,
+            Self::SHA_512_AND_RIPEMD_160_NATIVES,
+            Self::APTOS_STD_CHAIN_ID_NATIVES,
             // Feature flag V6 is used to enable metadata v1 format and needs to stay on, even
             // if we enable a higher version.
-            FeatureFlag::VM_BINARY_FORMAT_V6,
-            FeatureFlag::VM_BINARY_FORMAT_V7,
-            FeatureFlag::MULTI_ED25519_PK_VALIDATE_V2_NATIVES,
-            FeatureFlag::BLAKE2B_256_NATIVE,
-            FeatureFlag::RESOURCE_GROUPS,
-            FeatureFlag::MULTISIG_ACCOUNTS,
-            FeatureFlag::DELEGATION_POOLS,
-            FeatureFlag::CRYPTOGRAPHY_ALGEBRA_NATIVES,
-            FeatureFlag::BLS12_381_STRUCTURES,
-            FeatureFlag::ED25519_PUBKEY_VALIDATE_RETURN_FALSE_WRONG_LENGTH,
-            FeatureFlag::STRUCT_CONSTRUCTORS,
-            FeatureFlag::PERIODICAL_REWARD_RATE_DECREASE,
-            FeatureFlag::PARTIAL_GOVERNANCE_VOTING,
-            FeatureFlag::_SIGNATURE_CHECKER_V2,
-            FeatureFlag::STORAGE_SLOT_METADATA,
-            FeatureFlag::CHARGE_INVARIANT_VIOLATION,
-            FeatureFlag::DELEGATION_POOL_PARTIAL_GOVERNANCE_VOTING,
-            FeatureFlag::APTOS_UNIQUE_IDENTIFIERS,
-            FeatureFlag::GAS_PAYER_ENABLED,
-            FeatureFlag::BULLETPROOFS_NATIVES,
-            FeatureFlag::SIGNER_NATIVE_FORMAT_FIX,
-            FeatureFlag::MODULE_EVENT,
-            FeatureFlag::EMIT_FEE_STATEMENT,
-            FeatureFlag::STORAGE_DELETION_REFUND,
-            FeatureFlag::SIGNATURE_CHECKER_V2_SCRIPT_FIX,
-            FeatureFlag::AGGREGATOR_V2_API,
-            FeatureFlag::SAFER_RESOURCE_GROUPS,
-            FeatureFlag::SAFER_METADATA,
-            FeatureFlag::SINGLE_SENDER_AUTHENTICATOR,
-            FeatureFlag::SPONSORED_AUTOMATIC_ACCOUNT_V1_CREATION,
-            FeatureFlag::FEE_PAYER_ACCOUNT_OPTIONAL,
-            FeatureFlag::AGGREGATOR_V2_DELAYED_FIELDS,
-            FeatureFlag::CONCURRENT_TOKEN_V2,
-            FeatureFlag::LIMIT_MAX_IDENTIFIER_LENGTH,
-            FeatureFlag::OPERATOR_BENEFICIARY_CHANGE,
-            FeatureFlag::BN254_STRUCTURES,
-            FeatureFlag::RESOURCE_GROUPS_SPLIT_IN_VM_CHANGE_SET,
-            FeatureFlag::COMMISSION_CHANGE_DELEGATION_POOL,
-            FeatureFlag::WEBAUTHN_SIGNATURE,
-            FeatureFlag::KEYLESS_ACCOUNTS,
-            FeatureFlag::FEDERATED_KEYLESS,
-            FeatureFlag::KEYLESS_BUT_ZKLESS_ACCOUNTS,
-            FeatureFlag::JWK_CONSENSUS,
-            FeatureFlag::REFUNDABLE_BYTES,
-            FeatureFlag::OBJECT_CODE_DEPLOYMENT,
-            FeatureFlag::MAX_OBJECT_NESTING_CHECK,
-            FeatureFlag::KEYLESS_ACCOUNTS_WITH_PASSKEYS,
-            FeatureFlag::MULTISIG_V2_ENHANCEMENT,
-            FeatureFlag::DELEGATION_POOL_ALLOWLISTING,
-            FeatureFlag::MODULE_EVENT_MIGRATION,
-            FeatureFlag::_REJECT_UNSTABLE_BYTECODE,
-            FeatureFlag::TRANSACTION_CONTEXT_EXTENSION,
-            FeatureFlag::COIN_TO_FUNGIBLE_ASSET_MIGRATION,
-            FeatureFlag::OBJECT_NATIVE_DERIVED_ADDRESS,
-            FeatureFlag::DISPATCHABLE_FUNGIBLE_ASSET,
-            FeatureFlag::NEW_ACCOUNTS_DEFAULT_TO_FA_APT_STORE,
-            FeatureFlag::OPERATIONS_DEFAULT_TO_FA_APT_STORE,
-            FeatureFlag::CONCURRENT_FUNGIBLE_ASSETS,
-            FeatureFlag::AGGREGATOR_V2_IS_AT_LEAST_API,
-            FeatureFlag::CONCURRENT_FUNGIBLE_BALANCE,
-            FeatureFlag::_LIMIT_VM_TYPE_SIZE,
-            FeatureFlag::ABORT_IF_MULTISIG_PAYLOAD_MISMATCH,
-            FeatureFlag::_DISALLOW_USER_NATIVES,
-            FeatureFlag::ALLOW_SERIALIZED_SCRIPT_ARGS,
-            FeatureFlag::_USE_COMPATIBILITY_CHECKER_V2,
-            FeatureFlag::ENABLE_ENUM_TYPES,
-            FeatureFlag::ENABLE_RESOURCE_ACCESS_CONTROL,
-            FeatureFlag::_REJECT_UNSTABLE_BYTECODE_FOR_SCRIPT,
-            FeatureFlag::TRANSACTION_SIMULATION_ENHANCEMENT,
-            FeatureFlag::NATIVE_MEMORY_OPERATIONS,
-            FeatureFlag::_ENABLE_LOADER_V2,
-            FeatureFlag::_DISALLOW_INIT_MODULE_TO_PUBLISH_MODULES,
-            FeatureFlag::COLLECTION_OWNER,
-            FeatureFlag::PERMISSIONED_SIGNER,
-            FeatureFlag::ENABLE_CALL_TREE_AND_INSTRUCTION_VM_CACHE,
-            FeatureFlag::ACCOUNT_ABSTRACTION,
-            FeatureFlag::BULLETPROOFS_BATCH_NATIVES,
-            FeatureFlag::DERIVABLE_ACCOUNT_ABSTRACTION,
-            FeatureFlag::VM_BINARY_FORMAT_V8,
-            FeatureFlag::ENABLE_FUNCTION_VALUES,
-            FeatureFlag::NEW_ACCOUNTS_DEFAULT_TO_FA_STORE,
-            FeatureFlag::DEFAULT_ACCOUNT_RESOURCE,
-            FeatureFlag::JWK_CONSENSUS_PER_KEY_MODE,
-            FeatureFlag::TRANSACTION_PAYLOAD_V2,
-            FeatureFlag::ORDERLESS_TRANSACTIONS,
-            FeatureFlag::CALCULATE_TRANSACTION_FEE_FOR_DISTRIBUTION,
-            FeatureFlag::DISTRIBUTE_TRANSACTION_FEE,
-            FeatureFlag::ENABLE_LAZY_LOADING,
-            FeatureFlag::MONOTONICALLY_INCREASING_COUNTER,
-            FeatureFlag::ENABLE_CAPTURE_OPTION,
-            FeatureFlag::ENABLE_TRUSTED_CODE,
-            FeatureFlag::ENABLE_ENUM_OPTION,
-            FeatureFlag::VM_BINARY_FORMAT_V9,
+            Self::VM_BINARY_FORMAT_V6,
+            Self::VM_BINARY_FORMAT_V7,
+            Self::MULTI_ED25519_PK_VALIDATE_V2_NATIVES,
+            Self::BLAKE2B_256_NATIVE,
+            Self::RESOURCE_GROUPS,
+            Self::MULTISIG_ACCOUNTS,
+            Self::DELEGATION_POOLS,
+            Self::CRYPTOGRAPHY_ALGEBRA_NATIVES,
+            Self::BLS12_381_STRUCTURES,
+            Self::ED25519_PUBKEY_VALIDATE_RETURN_FALSE_WRONG_LENGTH,
+            Self::STRUCT_CONSTRUCTORS,
+            Self::PERIODICAL_REWARD_RATE_DECREASE,
+            Self::PARTIAL_GOVERNANCE_VOTING,
+            Self::_SIGNATURE_CHECKER_V2,
+            Self::STORAGE_SLOT_METADATA,
+            Self::CHARGE_INVARIANT_VIOLATION,
+            Self::DELEGATION_POOL_PARTIAL_GOVERNANCE_VOTING,
+            Self::APTOS_UNIQUE_IDENTIFIERS,
+            Self::GAS_PAYER_ENABLED,
+            Self::BULLETPROOFS_NATIVES,
+            Self::SIGNER_NATIVE_FORMAT_FIX,
+            Self::MODULE_EVENT,
+            Self::EMIT_FEE_STATEMENT,
+            Self::STORAGE_DELETION_REFUND,
+            Self::SIGNATURE_CHECKER_V2_SCRIPT_FIX,
+            Self::AGGREGATOR_V2_API,
+            Self::SAFER_RESOURCE_GROUPS,
+            Self::SAFER_METADATA,
+            Self::SINGLE_SENDER_AUTHENTICATOR,
+            Self::SPONSORED_AUTOMATIC_ACCOUNT_V1_CREATION,
+            Self::FEE_PAYER_ACCOUNT_OPTIONAL,
+            Self::AGGREGATOR_V2_DELAYED_FIELDS,
+            Self::CONCURRENT_TOKEN_V2,
+            Self::LIMIT_MAX_IDENTIFIER_LENGTH,
+            Self::OPERATOR_BENEFICIARY_CHANGE,
+            Self::BN254_STRUCTURES,
+            Self::RESOURCE_GROUPS_SPLIT_IN_VM_CHANGE_SET,
+            Self::COMMISSION_CHANGE_DELEGATION_POOL,
+            Self::WEBAUTHN_SIGNATURE,
+            Self::KEYLESS_ACCOUNTS,
+            Self::FEDERATED_KEYLESS,
+            Self::KEYLESS_BUT_ZKLESS_ACCOUNTS,
+            Self::JWK_CONSENSUS,
+            Self::REFUNDABLE_BYTES,
+            Self::OBJECT_CODE_DEPLOYMENT,
+            Self::MAX_OBJECT_NESTING_CHECK,
+            Self::KEYLESS_ACCOUNTS_WITH_PASSKEYS,
+            Self::MULTISIG_V2_ENHANCEMENT,
+            Self::DELEGATION_POOL_ALLOWLISTING,
+            Self::MODULE_EVENT_MIGRATION,
+            Self::_REJECT_UNSTABLE_BYTECODE,
+            Self::TRANSACTION_CONTEXT_EXTENSION,
+            Self::COIN_TO_FUNGIBLE_ASSET_MIGRATION,
+            Self::_OBJECT_NATIVE_DERIVED_ADDRESS,
+            Self::DISPATCHABLE_FUNGIBLE_ASSET,
+            Self::NEW_ACCOUNTS_DEFAULT_TO_FA_APT_STORE,
+            Self::OPERATIONS_DEFAULT_TO_FA_APT_STORE,
+            Self::CONCURRENT_FUNGIBLE_ASSETS,
+            Self::_AGGREGATOR_V2_IS_AT_LEAST_API,
+            Self::CONCURRENT_FUNGIBLE_BALANCE,
+            Self::_LIMIT_VM_TYPE_SIZE,
+            Self::ABORT_IF_MULTISIG_PAYLOAD_MISMATCH,
+            Self::_DISALLOW_USER_NATIVES,
+            Self::ALLOW_SERIALIZED_SCRIPT_ARGS,
+            Self::_USE_COMPATIBILITY_CHECKER_V2,
+            Self::ENABLE_ENUM_TYPES,
+            Self::_REJECT_UNSTABLE_BYTECODE_FOR_SCRIPT,
+            Self::TRANSACTION_SIMULATION_ENHANCEMENT,
+            Self::_NATIVE_MEMORY_OPERATIONS,
+            Self::_ENABLE_LOADER_V2,
+            Self::_DISALLOW_INIT_MODULE_TO_PUBLISH_MODULES,
+            Self::COLLECTION_OWNER,
+            Self::ENABLE_CALL_TREE_AND_INSTRUCTION_VM_CACHE,
+            Self::ACCOUNT_ABSTRACTION,
+            Self::BULLETPROOFS_BATCH_NATIVES,
+            Self::DERIVABLE_ACCOUNT_ABSTRACTION,
+            Self::VM_BINARY_FORMAT_V8,
+            Self::ENABLE_FUNCTION_VALUES,
+            Self::NEW_ACCOUNTS_DEFAULT_TO_FA_STORE,
+            Self::DEFAULT_ACCOUNT_RESOURCE,
+            Self::JWK_CONSENSUS_PER_KEY_MODE,
+            Self::TRANSACTION_PAYLOAD_V2,
+            Self::ORDERLESS_TRANSACTIONS,
+            Self::CALCULATE_TRANSACTION_FEE_FOR_DISTRIBUTION,
+            Self::DISTRIBUTE_TRANSACTION_FEE,
+            Self::ENABLE_LAZY_LOADING,
+            Self::MONOTONICALLY_INCREASING_COUNTER,
+            Self::_ENABLE_CAPTURE_OPTION,
+            Self::ENABLE_TRUSTED_CODE,
+            Self::ENABLE_ENUM_OPTION,
+            Self::VM_BINARY_FORMAT_V9,
+            Self::ENABLE_FRAMEWORK_FOR_OPTION,
+            Self::ENABLE_FUNCTION_REFLECTION,
+            Self::VM_BINARY_FORMAT_V10,
+            Self::SLH_DSA_SHA2_128S_SIGNATURE,
+            Self::PUBLIC_STRUCT_ENUM_ARGS,
+            Self::MULTISIG_SCRIPT,
+            Self::TRANSACTION_LIMITS,
+            Self::VERSIONED_TRANSACTION_VALIDATION,
+            Self::STORAGE_SLOT_NATIVES,
+            Self::ALLOW_FRIEND_ENTRY_VISIBILITY_DOWNGRADE,
+            Self::HOTNESS_IN_EPILOGUE,
+            Self::ENCRYPTED_TRANSACTIONS,
         ]
     }
 }
@@ -323,7 +404,14 @@ impl Features {
             .flat_map(|byte| (0..8).map(move |bit_idx| byte & (1 << bit_idx) != 0))
             .enumerate()
             .filter(|(_feature_idx, enabled)| *enabled)
-            .map(|(feature_idx, _)| FeatureFlag::from_repr(feature_idx).unwrap())
+            .map(|(feature_idx, _)| {
+                FeatureFlag::from_repr(feature_idx).unwrap_or_else(|| {
+                    panic!(
+                        "unknown FeatureFlag index {feature_idx} in features bitmap; \
+                         a newer-binary override likely set a flag this binary does not know"
+                    )
+                })
+            })
             .collect()
     }
 
@@ -415,10 +503,6 @@ impl Features {
         self.is_enabled(FeatureFlag::TRANSACTION_SIMULATION_ENHANCEMENT)
     }
 
-    pub fn is_native_memory_operations_enabled(&self) -> bool {
-        self.is_enabled(FeatureFlag::NATIVE_MEMORY_OPERATIONS)
-    }
-
     pub fn is_call_tree_and_instruction_vm_cache_enabled(&self) -> bool {
         self.is_enabled(FeatureFlag::ENABLE_CALL_TREE_AND_INSTRUCTION_VM_CACHE)
     }
@@ -463,6 +547,49 @@ impl Features {
         self.is_enabled(FeatureFlag::SESSION_CONTINUATION)
     }
 
+    pub fn is_encrypted_transactions_enabled(&self) -> bool {
+        self.is_enabled(FeatureFlag::ENCRYPTED_TRANSACTIONS)
+    }
+
+    pub fn is_multisig_script_enabled(&self) -> bool {
+        self.is_enabled(FeatureFlag::MULTISIG_SCRIPT)
+    }
+
+    pub fn is_transaction_limits_enabled(&self) -> bool {
+        // Transaction limits are enforced only through the versioned prologue path
+        // (via PrologueArgs::V1.txn_limits_request), so both flags must be on.
+        self.is_enabled(FeatureFlag::TRANSACTION_LIMITS)
+            && self.is_enabled(FeatureFlag::VERSIONED_TRANSACTION_VALIDATION)
+    }
+
+    pub fn is_versioned_transaction_validation_enabled(&self) -> bool {
+        self.is_enabled(FeatureFlag::VERSIONED_TRANSACTION_VALIDATION)
+    }
+
+    pub fn is_hotness_in_epilogue_enabled(&self) -> bool {
+        self.is_enabled(FeatureFlag::HOTNESS_IN_EPILOGUE)
+    }
+
+    pub fn is_transaction_info_v1_enabled(&self) -> bool {
+        self.is_enabled(FeatureFlag::TRANSACTION_INFO_V1)
+    }
+
+    pub fn is_compute_trading_native_state_roots_enabled(&self) -> bool {
+        self.is_enabled(FeatureFlag::COMPUTE_TRADING_NATIVE_STATE_ROOTS)
+    }
+
+    pub fn is_hot_state_root_in_txn_info_enabled(&self) -> bool {
+        self.is_enabled(FeatureFlag::HOT_STATE_ROOT_IN_TXN_INFO)
+    }
+
+    pub fn is_gas_refund_fa_mint_enabled(&self) -> bool {
+        self.is_enabled(FeatureFlag::GAS_REFUND_FA_MINT)
+    }
+
+    pub fn is_closure_bcs_serialization_disabled(&self) -> bool {
+        self.is_enabled(FeatureFlag::DISABLE_CLOSURE_BCS_SERIALIZATION)
+    }
+
     pub fn get_max_identifier_size(&self) -> u64 {
         if self.is_enabled(FeatureFlag::LIMIT_MAX_IDENTIFIER_LENGTH) {
             IDENTIFIER_SIZE_MAX
@@ -472,7 +599,9 @@ impl Features {
     }
 
     pub fn get_max_binary_format_version(&self) -> u32 {
-        if self.is_enabled(FeatureFlag::VM_BINARY_FORMAT_V9) {
+        if self.is_enabled(FeatureFlag::VM_BINARY_FORMAT_V10) {
+            file_format_common::VERSION_10
+        } else if self.is_enabled(FeatureFlag::VM_BINARY_FORMAT_V9) {
             file_format_common::VERSION_9
         } else if self.is_enabled(FeatureFlag::VM_BINARY_FORMAT_V8) {
             file_format_common::VERSION_8
@@ -530,7 +659,7 @@ mod test {
             file_format_common::VERSION_MIN
         );
         assert_eq!(
-            file_format_common::VERSION_9,
+            file_format_common::VERSION_10,
             file_format_common::VERSION_MAX
         );
     }

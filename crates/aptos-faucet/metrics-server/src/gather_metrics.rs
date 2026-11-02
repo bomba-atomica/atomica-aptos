@@ -1,16 +1,14 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_logger::prelude::*;
 use aptos_metrics_core::{register_int_counter_vec, IntCounterVec};
 use once_cell::sync::Lazy;
 
 pub static NUM_METRICS: Lazy<IntCounterVec> = Lazy::new(|| {
-    register_int_counter_vec!(
-        "aptos_metrics",
-        "Number of metrics in certain states",
-        &["type"]
-    )
+    register_int_counter_vec!("aptos_metrics", "Number of metrics in certain states", &[
+        "type"
+    ])
     .unwrap()
 });
 

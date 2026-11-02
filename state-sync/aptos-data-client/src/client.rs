@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     error::Error,
@@ -30,19 +30,22 @@ use aptos_network::{
     application::{interface::NetworkClient, storage::PeersAndMetadata},
     protocols::network::RpcError,
 };
-use aptos_storage_interface::DbReader;
+use aptos_storage_interface::{DbReader, StateKind};
 use aptos_storage_service_client::StorageServiceClient;
 use aptos_storage_service_types::{
     requests::{
         DataRequest, EpochEndingLedgerInfoRequest, NewTransactionOutputsWithProofRequest,
         NewTransactionsOrOutputsWithProofRequest, NewTransactionsWithProofRequest,
-        StateValuesWithProofRequest, StorageServiceRequest,
-        SubscribeTransactionOutputsWithProofRequest,
+        NumberOfStatesRequestV2, StateValuesWithProofRequest, StateValuesWithProofRequestV2,
+        StorageServiceRequest, SubscribeTransactionOutputsWithProofRequest,
         SubscribeTransactionsOrOutputsWithProofRequest, SubscribeTransactionsWithProofRequest,
         SubscriptionStreamMetadata, TransactionOutputsWithProofRequest,
         TransactionsOrOutputsWithProofRequest, TransactionsWithProofRequest,
     },
-    responses::{StorageServerSummary, StorageServiceResponse, TransactionOrOutputListWithProofV2},
+    responses::{
+        NumberOfStatesResponseV2, StateValueChunkWithProofResponseV2, StorageServerSummary,
+        StorageServiceResponse, TransactionOrOutputListWithProofV2,
+    },
     Epoch, StorageServiceMessage,
 };
 use aptos_time_service::TimeService;
@@ -290,22 +293,25 @@ impl AptosDataClient {
         let multi_fetch_config = self.data_client_config.data_multi_fetch_config;
         let num_peers_for_request = if multi_fetch_config.enable_multi_fetch {
             // Calculate the total number of priority serviceable peers
-            let mut num_serviceable_peers = 0;
+            let mut num_serviceable_peers: usize = 0;
             for (index, peers) in serviceable_peers_by_priorities.iter().enumerate() {
                 // Only include the lowest priority peers if no other peers are
                 // available (the lowest priority peers are generally unreliable).
                 if (num_serviceable_peers == 0)
                     || (index < serviceable_peers_by_priorities.len() - 1)
                 {
-                    num_serviceable_peers += peers.len();
+                    num_serviceable_peers = num_serviceable_peers.saturating_add(peers.len());
                 }
             }
 
             // Calculate the number of peers to select for the request
             let peer_ratio_for_request =
                 num_serviceable_peers / multi_fetch_config.multi_fetch_peer_bucket_size;
-            let mut num_peers_for_request = multi_fetch_config.min_peers_for_multi_fetch
-                + (peer_ratio_for_request * multi_fetch_config.additional_requests_per_peer_bucket);
+            let additional_peers_for_request = peer_ratio_for_request
+                .saturating_mul(multi_fetch_config.additional_requests_per_peer_bucket);
+            let mut num_peers_for_request = multi_fetch_config
+                .min_peers_for_multi_fetch
+                .saturating_add(additional_peers_for_request);
 
             // Bound the number of peers by the number of serviceable peers
             num_peers_for_request = min(num_peers_for_request, num_serviceable_peers);
@@ -1031,10 +1037,29 @@ impl AptosDataClientInterface for AptosDataClient {
         &self,
         version: Version,
         request_timeout_ms: u64,
+        kind: StateKind,
     ) -> crate::error::Result<Response<u64>> {
-        let data_request = DataRequest::GetNumberOfStatesAtVersion(version);
-        self.create_and_send_storage_request(request_timeout_ms, data_request)
-            .await
+        // TODO(grao): once the V2 state requests are supported fleet-wide, route
+        // main state through them too (behind a config flag, like
+        // `enable_transaction_data_v2`) and drop the V1 branch / variant.
+        match kind {
+            StateKind::MainState => {
+                let data_request = DataRequest::GetNumberOfStatesAtVersion(version);
+                self.create_and_send_storage_request(request_timeout_ms, data_request)
+                    .await
+            },
+            StateKind::Position => {
+                let data_request =
+                    DataRequest::GetNumberOfStatesAtVersionV2(NumberOfStatesRequestV2 {
+                        version,
+                        state_kind: kind,
+                    });
+                let response: Response<NumberOfStatesResponseV2> = self
+                    .create_and_send_storage_request(request_timeout_ms, data_request)
+                    .await?;
+                Ok(response.map(|response| response.number_of_states))
+            },
+        }
     }
 
     async fn get_state_values_with_proof(
@@ -1043,14 +1068,33 @@ impl AptosDataClientInterface for AptosDataClient {
         start_index: u64,
         end_index: u64,
         request_timeout_ms: u64,
+        kind: StateKind,
     ) -> crate::error::Result<Response<StateValueChunkWithProof>> {
-        let data_request = DataRequest::GetStateValuesWithProof(StateValuesWithProofRequest {
-            version,
-            start_index,
-            end_index,
-        });
-        self.create_and_send_storage_request(request_timeout_ms, data_request)
-            .await
+        match kind {
+            StateKind::MainState => {
+                let data_request =
+                    DataRequest::GetStateValuesWithProof(StateValuesWithProofRequest {
+                        version,
+                        start_index,
+                        end_index,
+                    });
+                self.create_and_send_storage_request(request_timeout_ms, data_request)
+                    .await
+            },
+            StateKind::Position => {
+                let data_request =
+                    DataRequest::GetStateValuesWithProofV2(StateValuesWithProofRequestV2 {
+                        version,
+                        start_index,
+                        end_index,
+                        state_kind: kind,
+                    });
+                let response: Response<StateValueChunkWithProofResponseV2> = self
+                    .create_and_send_storage_request(request_timeout_ms, data_request)
+                    .await?;
+                Ok(response.map(|response| response.state_value_chunk_with_proof))
+            },
+        }
     }
 
     async fn get_transaction_outputs_with_proof(

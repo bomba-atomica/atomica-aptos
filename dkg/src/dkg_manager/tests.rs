@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     agg_trx_producer::DummyAggTranscriptProducer,
@@ -60,6 +60,7 @@ async fn test_dkg_state_transition() {
     let agg_node_producer = DummyAggTranscriptProducer {};
     let mut dkg_manager: DKGManager<DummyDKG> = DKGManager::new(
         private_keys[0].clone(),
+        Arc::new(public_keys[0].clone()),
         0,
         addrs[0],
         Arc::new(epoch_state),

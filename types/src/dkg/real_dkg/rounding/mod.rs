@@ -1,8 +1,8 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use anyhow::{bail, ensure};
-use aptos_dkg::pvss::WeightedConfig;
+use aptos_dkg::pvss::WeightedConfigBlstrs;
 use fixed::types::U64F64;
 use once_cell::sync::Lazy;
 use std::{
@@ -52,8 +52,8 @@ pub struct DKGRounding {
     /// Currently either "binary_search" or "infallible".
     pub rounding_method: String,
     pub profile: DKGRoundingProfile,
-    pub wconfig: WeightedConfig,
-    pub fast_wconfig: Option<WeightedConfig>,
+    pub wconfig: WeightedConfigBlstrs,
+    pub fast_wconfig: Option<WeightedConfigBlstrs>,
     pub rounding_error: Option<String>,
 }
 
@@ -69,17 +69,8 @@ impl DKGRounding {
             secrecy_threshold_in_stake_ratio + U64F64::DELTA,
         );
 
-        let total_weight_min = total_weight_lower_bound(validator_stakes);
-        let total_weight_max = total_weight_upper_bound(
-            validator_stakes,
-            reconstruct_threshold_in_stake_ratio,
-            secrecy_threshold_in_stake_ratio,
-        );
-
         let (profile, rounding_error, rounding_method) = match DKGRoundingProfile::new(
             validator_stakes,
-            total_weight_min,
-            total_weight_max,
             secrecy_threshold_in_stake_ratio,
             reconstruct_threshold_in_stake_ratio,
             fast_secrecy_threshold_in_stake_ratio,
@@ -95,7 +86,7 @@ impl DKGRounding {
                 (profile, Some(format!("{e}")), "infallible".to_string())
             },
         };
-        let wconfig = WeightedConfig::new(
+        let wconfig = WeightedConfigBlstrs::new(
             profile.reconstruct_threshold_in_weights as usize,
             profile
                 .validator_weights
@@ -107,7 +98,7 @@ impl DKGRounding {
 
         let fast_wconfig = profile.fast_reconstruct_threshold_in_weights.map(
             |fast_reconstruct_threshold_in_weights| {
-                WeightedConfig::new(
+                WeightedConfigBlstrs::new(
                     fast_reconstruct_threshold_in_weights as usize,
                     profile
                         .validator_weights
@@ -186,17 +177,20 @@ impl Debug for DKGRoundingProfile {
 impl DKGRoundingProfile {
     pub fn new(
         validator_stakes: &Vec<u64>,
-        total_weight_min: usize,
-        total_weight_max: usize,
         secrecy_threshold_in_stake_ratio: U64F64,
         reconstruct_threshold_in_stake_ratio: U64F64,
         fast_secrecy_threshold_in_stake_ratio: Option<U64F64>,
     ) -> anyhow::Result<Self> {
-        ensure!(total_weight_min >= validator_stakes.len());
-        ensure!(total_weight_max >= total_weight_min);
         ensure!(secrecy_threshold_in_stake_ratio * U64F64::from_num(3) > U64F64::from_num(1));
         ensure!(secrecy_threshold_in_stake_ratio < reconstruct_threshold_in_stake_ratio);
         ensure!(reconstruct_threshold_in_stake_ratio * U64F64::from_num(3) <= U64F64::from_num(2));
+
+        let total_weight_min = total_weight_lower_bound(validator_stakes);
+        let total_weight_max = total_weight_upper_bound(
+            validator_stakes,
+            reconstruct_threshold_in_stake_ratio,
+            secrecy_threshold_in_stake_ratio,
+        );
 
         let stake_total: u64 = validator_stakes.iter().sum();
         let mut weight_low = total_weight_min as u64;

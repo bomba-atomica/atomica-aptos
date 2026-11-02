@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This file contains utilities that are helpful for performing
 //! database restore operations, as required by restore and
@@ -242,17 +242,15 @@ pub(crate) fn save_transactions_impl(
         &mut ledger_db_batch.event_db_batches,
     )?;
 
-    if ledger_db.enable_storage_sharding() {
-        for (idx, txn_events) in events.iter().enumerate() {
-            for event in txn_events {
-                if let Some(event_key) = event.event_key() {
-                    if *event_key == new_block_event_key() {
-                        LedgerMetadataDb::put_block_info(
-                            first_version + idx as Version,
-                            event,
-                            &mut ledger_db_batch.ledger_metadata_db_batches,
-                        )?;
-                    }
+    for (idx, txn_events) in events.iter().enumerate() {
+        for event in txn_events {
+            if let Some(event_key) = event.event_key() {
+                if *event_key == new_block_event_key() {
+                    LedgerMetadataDb::put_block_info(
+                        first_version + idx as Version,
+                        event,
+                        &mut ledger_db_batch.ledger_metadata_db_batches,
+                    )?;
                 }
             }
         }
@@ -267,7 +265,7 @@ pub(crate) fn save_transactions_impl(
     }
 
     if kv_replay && first_version > 0 && state_store.get_usage(Some(first_version - 1)).is_ok() {
-        let ledger_state = state_store.calculate_state_and_put_updates(
+        let (ledger_state, _hot_state_updates) = state_store.calculate_state_and_put_updates(
             &StateUpdateRefs::index_write_sets(first_version, write_sets, write_sets.len(), vec![]),
             &mut ledger_db_batch.ledger_metadata_db_batches, // used for storing the storage usage
             state_kv_batches,

@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module implements a checker for verifying that basic blocks in the bytecode instruction
 //! sequence of a function use the evaluation stack in a balanced manner. Every basic block,
@@ -211,11 +212,12 @@ impl<'a> StackUsageVerifier<'a> {
             // Vector indexing operations (pop twice and push once)
             Bytecode::VecImmBorrow(_) | Bytecode::VecMutBorrow(_) => (2, 1),
 
-            // MoveTo, WriteRef, and VecPushBack pop twice but do not push
+            // MoveTo, WriteRef, VecPushBack, and AbortMsg pop twice but do not push
             Bytecode::MoveTo(_)
             | Bytecode::MoveToGeneric(_)
             | Bytecode::WriteRef
-            | Bytecode::VecPushBack(_) => (2, 0),
+            | Bytecode::VecPushBack(_)
+            | Bytecode::AbortMsg => (2, 0),
 
             // VecSwap pops three times but does not push
             Bytecode::VecSwap(_) => (3, 0),

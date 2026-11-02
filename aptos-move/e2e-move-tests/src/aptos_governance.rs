@@ -1,31 +1,13 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-use crate::harness::MoveHarness;
 use aptos_cached_packages::aptos_stdlib;
 use aptos_language_e2e_tests::account::Account;
+use aptos_move_e2e_test_harness::MoveHarness;
 use aptos_types::{
-    account_address::AccountAddress, move_utils::MemberId, state_store::table::TableHandle,
-    transaction::TransactionStatus,
+    account_address::AccountAddress, move_utils::MemberId, transaction::TransactionStatus,
 };
-use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-
-#[derive(Deserialize, Serialize)]
-struct PartialVotingProposals {
-    pub proposals: TableHandle,
-}
-
-#[derive(Deserialize, Serialize)]
-struct RecordKey {
-    pub stake_pool: AccountAddress,
-    pub proposal_id: u64,
-}
-
-#[derive(Deserialize, Serialize)]
-struct VotingRecordsV2 {
-    pub votes: TableHandle,
-}
 
 pub fn create_proposal_v2(
     harness: &mut MoveHarness,
@@ -74,14 +56,10 @@ pub fn get_remaining_voting_power(
 ) -> u64 {
     let fun = MemberId::from_str("0x1::aptos_governance::get_remaining_voting_power").unwrap();
     let res = harness
-        .execute_view_function(
-            fun,
-            vec![],
-            vec![
-                bcs::to_bytes(&stake_pool).unwrap(),
-                bcs::to_bytes(&proposal_id).unwrap(),
-            ],
-        )
+        .execute_view_function(fun, vec![], vec![
+            bcs::to_bytes(&stake_pool).unwrap(),
+            bcs::to_bytes(&proposal_id).unwrap(),
+        ])
         .values
         .unwrap();
     bcs::from_bytes::<u64>(&res[0]).unwrap()

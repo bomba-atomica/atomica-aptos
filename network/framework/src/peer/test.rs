@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     constants::{
@@ -97,6 +96,7 @@ fn build_test_peer(
         MAX_CONCURRENT_OUTBOUND_RPCS,
         MAX_FRAME_SIZE,
         MAX_MESSAGE_SIZE,
+        None, /* inbound_rate_limiter */
     );
     let peer_handle = PeerHandle(peer_reqs_tx);
 

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     code_cache_global::GlobalModuleCache,
@@ -8,33 +8,45 @@ use crate::{
 };
 use anyhow::bail;
 use aptos_aggregator::{
-    delta_change_set::serialize,
     delta_math::DeltaHistory,
     types::{DelayedFieldValue, DelayedFieldsSpeculativeError, ReadPosition},
 };
 use aptos_mvhashmap::{
     types::{
         Incarnation, MVDataError, MVDataOutput, MVDelayedFieldsError, MVGroupError, StorageVersion,
-        TxnIndex, ValueWithLayout, Version,
+        TxnIndex, Version,
     },
     versioned_data::VersionedData,
     versioned_delayed_fields::TVersionedDelayedFieldView,
     versioned_group_data::VersionedGroupData,
 };
 use aptos_types::{
+    block_executor::value::{SpeculativeValue, ValueWithLayout},
     error::{code_invariant_error, PanicError, PanicOr},
     executable::ModulePath,
     state_store::{state_value::StateValueMetadata, TStateView},
     transaction::BlockExecutableTransaction as Transaction,
+    vm::modules::AptosModuleExtension,
     vm_status::StatusCode,
     write_set::TransactionWrite,
 };
 use aptos_vm_types::resolver::ResourceGroupSize;
+use bytes::Bytes;
 use derivative::Derivative;
-use move_binary_format::errors::{PartialVMError, PartialVMResult};
-use move_core_types::value::MoveTypeLayout;
+use hashbrown::Equivalent;
+use move_binary_format::{
+    errors::{Location, PartialVMError, PartialVMResult, VMResult},
+    CompiledModule,
+};
+use move_core_types::{
+    account_address::AccountAddress, identifier::IdentStr, language_storage::ModuleId,
+    value::MoveTypeLayout,
+};
+use move_vm_runtime::{
+    Module, ModuleStorage, NoOpLayoutCache, RuntimeEnvironment, WithRuntimeEnvironment,
+};
 use move_vm_types::{
-    code::{ModuleCode, SyncModuleCache, WithAddress, WithName, WithSize},
+    code::{ModuleCode, SyncModuleCache, WithAddress, WithBytes, WithHash, WithName, WithSize},
     delayed_values::delayed_field_id::DelayedFieldID,
 };
 use std::{
@@ -82,21 +94,18 @@ pub(crate) enum DataRead<V> {
     ResourceSize(Option<u64>),
     // Exists is a lower tier, can be determined both from Metadata and ResourceSize.
     Exists(bool),
-    /// Read resolved an aggregatorV1 delta to a value.
-    /// TODO[agg_v1](cleanup): deprecate.
-    Resolved(u128),
     // CAUTION: when adding a new variant here, it must be ensured that compare
     // data reads implements a comparison (o.w. unreachable arm will be hit).
 }
 
 impl<V> DataRead<V> {
-    // Assigns highest rank to Versioned / Resolved, then Metadata, then Exists.
+    // Assigns highest rank to Versioned, then Metadata, then Exists.
     // (e.g. versioned read implies metadata and existence information, and
     // metadata information implies existence information).
     fn get_kind(&self) -> ReadKind {
         use DataRead::*;
         match self {
-            Versioned(_, _, _) | Resolved(_) => ReadKind::Value,
+            Versioned(_, _, _) => ReadKind::Value,
             MetadataAndResourceSize(_, _) => ReadKind::MetadataAndResourceSize,
             Metadata(_) => ReadKind::Metadata,
             ResourceSize(_) => ReadKind::ResourceSize,
@@ -138,7 +147,6 @@ impl<V: TransactionWrite> DataRead<V> {
             DataRead::Versioned(version, v, layout) => {
                 Self::versioned_convert_to(version, v, layout, kind)
             },
-            DataRead::Resolved(v) => Self::resolved_convert_to(*v, kind),
             DataRead::MetadataAndResourceSize(metadata, size) => {
                 Self::metadata_and_size_convert_to(metadata, *size, kind)
             },
@@ -167,21 +175,6 @@ impl<V: TransactionWrite> DataRead<V> {
             ReadKind::Metadata => Some(DataRead::Metadata(v.as_state_value_metadata())),
             ReadKind::ResourceSize => Some(DataRead::ResourceSize(Self::value_size(v))),
             ReadKind::Exists => Some(DataRead::Exists(!v.is_deletion())),
-        }
-    }
-
-    fn resolved_convert_to(v: u128, kind: &ReadKind) -> Option<DataRead<V>> {
-        match kind {
-            ReadKind::Value => Some(DataRead::Resolved(v)),
-            ReadKind::MetadataAndResourceSize => Some(DataRead::MetadataAndResourceSize(
-                Some(StateValueMetadata::none()),
-                Some(serialize(&v).len() as u64),
-            )),
-            ReadKind::Metadata => Some(DataRead::Metadata(Some(StateValueMetadata::none()))),
-            ReadKind::ResourceSize => {
-                Some(DataRead::ResourceSize(Some(serialize(&v).len() as u64)))
-            },
-            ReadKind::Exists => Some(DataRead::Exists(true)),
         }
     }
 
@@ -294,9 +287,6 @@ impl DataReadComparator {
                 v1_metadata == v2_metadata
             },
             (DataRead::Exists(v1_exists), DataRead::Exists(v2_exists)) => v1_exists == v2_exists,
-            (DataRead::Resolved(v1_resolved), DataRead::Resolved(v2_resolved)) => {
-                v1_resolved == v2_resolved
-            },
             (
                 DataRead::MetadataAndResourceSize(v1_metadata, v1_size),
                 DataRead::MetadataAndResourceSize(v2_metadata, v2_size),
@@ -306,16 +296,7 @@ impl DataReadComparator {
             },
             (
                 DataRead::Versioned(_, _, _),
-                DataRead::Resolved(_)
-                | DataRead::MetadataAndResourceSize(_, _)
-                | DataRead::Metadata(_)
-                | DataRead::ResourceSize(_)
-                | DataRead::Exists(_),
-            )
-            | (
-                DataRead::Resolved(_),
-                DataRead::Versioned(_, _, _)
-                | DataRead::MetadataAndResourceSize(_, _)
+                DataRead::MetadataAndResourceSize(_, _)
                 | DataRead::Metadata(_)
                 | DataRead::ResourceSize(_)
                 | DataRead::Exists(_),
@@ -323,7 +304,6 @@ impl DataReadComparator {
             | (
                 DataRead::MetadataAndResourceSize(_, _),
                 DataRead::Versioned(_, _, _)
-                | DataRead::Resolved(_)
                 | DataRead::Metadata(_)
                 | DataRead::ResourceSize(_)
                 | DataRead::Exists(_),
@@ -331,7 +311,6 @@ impl DataReadComparator {
             | (
                 DataRead::Metadata(_),
                 DataRead::Versioned(_, _, _)
-                | DataRead::Resolved(_)
                 | DataRead::MetadataAndResourceSize(_, _)
                 | DataRead::ResourceSize(_)
                 | DataRead::Exists(_),
@@ -339,7 +318,6 @@ impl DataReadComparator {
             | (
                 DataRead::ResourceSize(_),
                 DataRead::Versioned(_, _, _)
-                | DataRead::Resolved(_)
                 | DataRead::MetadataAndResourceSize(_, _)
                 | DataRead::Metadata(_)
                 | DataRead::Exists(_),
@@ -347,7 +325,6 @@ impl DataReadComparator {
             | (
                 DataRead::Exists(_),
                 DataRead::Versioned(_, _, _)
-                | DataRead::Resolved(_)
                 | DataRead::MetadataAndResourceSize(_, _)
                 | DataRead::Metadata(_)
                 | DataRead::ResourceSize(_),
@@ -543,12 +520,10 @@ pub enum CacheRead<T> {
 /// resolution from MVHashMap/storage should be captured. This enforces an invariant that
 /// 'capture_read' will never be called with a read that can be resolved from the already
 /// captured variant (e.g. Size, Metadata, or exists if SizeAndMetadata is already captured).
-pub(crate) struct CapturedReads<T: Transaction, K, DC, VC, S> {
+pub struct CapturedReads<T: Transaction, K, DC, VC, S> {
     data_reads: HashMap<T::Key, DataRead<T::Value>>,
     group_reads: HashMap<T::Key, GroupRead<T>>,
     delayed_field_reads: HashMap<DelayedFieldID, DelayedFieldRead>,
-    // Captured always, but used for aggregator v1 validation in BlockSTMv2 flow.
-    aggregator_v1_reads: HashSet<T::Key>,
 
     module_reads: hashbrown::HashMap<K, ModuleRead<DC, VC, S>>,
 
@@ -578,7 +553,6 @@ impl<T: Transaction, K, DC, VC, S> CapturedReads<T, K, DC, VC, S> {
             data_reads: HashMap::new(),
             group_reads: HashMap::new(),
             delayed_field_reads: HashMap::new(),
-            aggregator_v1_reads: HashSet::new(),
             module_reads: hashbrown::HashMap::new(),
             delayed_field_speculative_failure: false,
             non_delayed_field_speculative_failure: false,
@@ -748,10 +722,6 @@ where
         }
     }
 
-    pub(crate) fn capture_aggregator_v1_read(&mut self, key: T::Key) {
-        self.aggregator_v1_reads.insert(key);
-    }
-
     pub(crate) fn capture_data_read(
         &mut self,
         group_key: T::Key,
@@ -912,7 +882,7 @@ where
     fn validate_data_reads_impl<'a>(
         &'a self,
         iter: impl Iterator<Item = (&'a T::Key, &'a DataRead<T::Value>)>,
-        data_map: &VersionedData<T::Key, T::Value>,
+        data_map: &VersionedData<T::Key, ValueWithLayout<T::Value>>,
         idx_to_validate: TxnIndex,
     ) -> bool {
         use MVDataError::*;
@@ -929,18 +899,8 @@ where
                         DataReadComparison::Contains
                     )
                 },
-                Ok(Resolved(value)) => matches!(
-                    self.data_read_comparator
-                        .compare_data_reads(&DataRead::Resolved(value), read),
-                    DataReadComparison::Contains
-                ),
-                // Dependency implies a validation failure, and if the original read were to
-                // observe an unresolved delta, it would set the aggregator base value in the
-                // multi-versioned data-structure, resolve, and record the resolved value.
-                Err(Dependency(_))
-                | Err(Unresolved(_))
-                | Err(DeltaApplicationFailure)
-                | Err(Uninitialized) => false,
+                // Dependency implies a validation failure.
+                Err(Dependency(_)) | Err(Uninitialized) => false,
             } {
                 return false;
             }
@@ -950,63 +910,14 @@ where
 
     pub(crate) fn validate_data_reads(
         &self,
-        data_map: &VersionedData<T::Key, T::Value>,
+        data_map: &VersionedData<T::Key, ValueWithLayout<T::Value>>,
         idx_to_validate: TxnIndex,
     ) -> bool {
         if self.non_delayed_field_speculative_failure {
             return false;
         }
 
-        // This includes AggregatorV1 reads and keeps BlockSTMv1 behavior intact.
         self.validate_data_reads_impl(self.data_reads.iter(), data_map, idx_to_validate)
-    }
-
-    // This method is only used in the BlockSTMv2 flow. BlockSTMv1 validates
-    // aggregator v1 reads as a part of data reads.
-    pub(crate) fn validate_aggregator_v1_reads(
-        &self,
-        data_map: &VersionedData<T::Key, T::Value>,
-        aggregator_write_keys: impl Iterator<Item = T::Key>,
-        idx_to_validate: TxnIndex,
-    ) -> Result<bool, PanicError> {
-        // Few aggregator v1 instances exist in the system (and legacy now, deprecated
-        // by DelayedFields), hence the efficiency of construction below is not a concern.
-        let mut aggregator_v1_iterable = Vec::with_capacity(self.aggregator_v1_reads.len());
-        for k in &self.aggregator_v1_reads {
-            match self.data_reads.get(k) {
-                Some(data_read) => aggregator_v1_iterable.push((k, data_read)),
-                None => {
-                    return Err(code_invariant_error(format!(
-                        "Aggregator v1 read {:?} not found among captured data reads",
-                        k
-                    )));
-                },
-            }
-        }
-
-        let ret = self.validate_data_reads_impl(
-            aggregator_v1_iterable.into_iter(),
-            data_map,
-            idx_to_validate,
-        );
-
-        if ret {
-            // Additional invariant check (that AggregatorV1 reads are captured for
-            // aggregator write keys). This protects against the case where aggregator v1
-            // state value read was read by a wrong interface (e.g. via resource API).
-            for key in aggregator_write_keys {
-                if self.data_reads.contains_key(&key) && !self.aggregator_v1_reads.contains(&key) {
-                    // Not assuming read-before-write here: if there was a read, it must also be
-                    // captured as an aggregator_v1 read.
-                    return Err(code_invariant_error(format!(
-                        "Captured read at aggregator key {:?} not found among AggregatorV1 reads",
-                        key
-                    )));
-                }
-            }
-        }
-
-        Ok(ret)
     }
 
     /// Records the read to global cache that spans across multiple blocks.
@@ -1025,10 +936,13 @@ where
     }
 
     /// If the module has been previously read, returns it.
-    pub(crate) fn get_module_read(
+    pub(crate) fn get_module_read<Q>(
         &self,
-        key: &K,
-    ) -> CacheRead<Option<(Arc<ModuleCode<DC, VC, S>>, Option<TxnIndex>)>> {
+        key: &Q,
+    ) -> CacheRead<Option<(Arc<ModuleCode<DC, VC, S>>, Option<TxnIndex>)>>
+    where
+        Q: Hash + Equivalent<K>,
+    {
         match self.module_reads.get(key) {
             Some(ModuleRead::PerBlockCache(read)) => CacheRead::Hit(read.clone()),
             Some(ModuleRead::GlobalCache(read)) => {
@@ -1090,7 +1004,7 @@ where
 
     pub(crate) fn validate_group_reads(
         &self,
-        group_map: &VersionedGroupData<T::Key, T::Tag, T::Value>,
+        group_map: &VersionedGroupData<T::Key, T::Tag, ValueWithLayout<T::Value>>,
         idx_to_validate: TxnIndex,
     ) -> bool {
         use MVGroupError::*;
@@ -1236,7 +1150,7 @@ where
 
 #[derive(Derivative)]
 #[derivative(Default(bound = "", new = "true"))]
-pub(crate) struct UnsyncReadSet<T: Transaction, K> {
+pub struct UnsyncReadSet<T: Transaction, K> {
     pub(crate) resource_reads: HashSet<T::Key>,
     pub(crate) group_reads: HashMap<T::Key, HashSet<T::Tag>>,
     pub(crate) delayed_field_reads: HashSet<DelayedFieldID>,
@@ -1276,6 +1190,448 @@ where
         }
 
         ret
+    }
+}
+
+/// A transaction's read set, validated against the multi-version data structures
+/// to decide whether the transaction must re-execute. Abstracts the concrete
+/// read-set representation so the executor does not depend on a specific VM's form.
+pub trait TxnInput: Send + Sync {
+    type Key;
+    type Tag;
+    type Value: SpeculativeValue;
+
+    /// Returns true if the data reads are still consistent with the multi-version
+    /// data map at the given validation index.
+    fn validate_data_reads(
+        &self,
+        data_map: &VersionedData<Self::Key, Self::Value>,
+        idx_to_validate: TxnIndex,
+    ) -> bool;
+
+    /// Returns true if the resource group reads are still consistent with the
+    /// multi-version group data map at the given validation index.
+    fn validate_group_reads(
+        &self,
+        group_map: &VersionedGroupData<Self::Key, Self::Tag, Self::Value>,
+        idx_to_validate: TxnIndex,
+    ) -> bool;
+
+    /// Returns true if the delayed-field reads are still consistent with the
+    /// versioned delayed fields at the given validation index.
+    fn validate_delayed_field_reads(
+        &self,
+        delayed_fields: &dyn TVersionedDelayedFieldView<DelayedFieldID>,
+        idx_to_validate: TxnIndex,
+    ) -> Result<bool, PanicError>;
+
+    /// Returns true if the module reads are still consistent with the code caches.
+    /// Used for the legacy publishing flow when modules may have been upgraded
+    /// concurrently within the block.
+    fn legacy_validate_module_reads(
+        &self,
+        global_module_cache: &GlobalModuleCache<
+            ModuleId,
+            CompiledModule,
+            Module,
+            AptosModuleExtension,
+        >,
+        per_block_module_cache: &SyncModuleCache<
+            ModuleId,
+            CompiledModule,
+            Module,
+            AptosModuleExtension,
+            Option<TxnIndex>,
+        >,
+        maybe_updated_module_keys: Option<&BTreeSet<ModuleId>>,
+    ) -> bool;
+
+    /// Records a delayed-field delta application failure so re-validation fails and
+    /// the transaction re-executes.
+    fn record_delayed_field_application_failure(&mut self);
+
+    /// The incarnation whose reads were captured, used for BlockSTMv2 module validation.
+    fn incarnation(&self) -> Option<Incarnation>;
+
+    /// Returns true if capturing the read set hit a code-invariant violation.
+    /// Such a read set is invalid and must be handled by the caller.
+    fn is_incorrect_use(&self) -> bool;
+
+    /// Keys read by this transaction.
+    fn get_read_summary(&self) -> HashSet<InputOutputKey<Self::Key, Self::Tag>>;
+}
+
+/// The read set produced by the legacy Move VM path (captured via `LatestView`).
+pub type CapturedReadSet<T> =
+    CapturedReads<T, ModuleId, CompiledModule, Module, AptosModuleExtension>;
+
+impl<T: Transaction> TxnInput for CapturedReadSet<T> {
+    type Key = T::Key;
+    type Tag = T::Tag;
+    type Value = ValueWithLayout<T::Value>;
+
+    fn validate_data_reads(
+        &self,
+        data_map: &VersionedData<T::Key, ValueWithLayout<T::Value>>,
+        idx_to_validate: TxnIndex,
+    ) -> bool {
+        CapturedReads::validate_data_reads(self, data_map, idx_to_validate)
+    }
+
+    fn validate_group_reads(
+        &self,
+        group_map: &VersionedGroupData<T::Key, T::Tag, ValueWithLayout<T::Value>>,
+        idx_to_validate: TxnIndex,
+    ) -> bool {
+        CapturedReads::validate_group_reads(self, group_map, idx_to_validate)
+    }
+
+    fn validate_delayed_field_reads(
+        &self,
+        delayed_fields: &dyn TVersionedDelayedFieldView<DelayedFieldID>,
+        idx_to_validate: TxnIndex,
+    ) -> Result<bool, PanicError> {
+        CapturedReads::validate_delayed_field_reads(self, delayed_fields, idx_to_validate)
+    }
+
+    fn legacy_validate_module_reads(
+        &self,
+        global_module_cache: &GlobalModuleCache<
+            ModuleId,
+            CompiledModule,
+            Module,
+            AptosModuleExtension,
+        >,
+        per_block_module_cache: &SyncModuleCache<
+            ModuleId,
+            CompiledModule,
+            Module,
+            AptosModuleExtension,
+            Option<TxnIndex>,
+        >,
+        maybe_updated_module_keys: Option<&BTreeSet<ModuleId>>,
+    ) -> bool {
+        CapturedReads::validate_module_reads(
+            self,
+            global_module_cache,
+            per_block_module_cache,
+            maybe_updated_module_keys,
+        )
+    }
+
+    fn record_delayed_field_application_failure(&mut self) {
+        self.capture_delayed_field_read_error(&PanicOr::Or(
+            MVDelayedFieldsError::DeltaApplicationFailure,
+        ));
+    }
+
+    fn incarnation(&self) -> Option<Incarnation> {
+        self.blockstm_v2_incarnation()
+    }
+
+    fn is_incorrect_use(&self) -> bool {
+        CapturedReads::is_incorrect_use(self)
+    }
+
+    fn get_read_summary(&self) -> HashSet<InputOutputKey<T::Key, T::Tag>> {
+        CapturedReads::get_read_summary(self)
+    }
+}
+
+/// The legacy Move VM's read set: BlockSTM (parallel) captures `CapturedReads`,
+/// sequential execution captures an `UnsyncReadSet`. Adapts both behind one type
+/// so the executor stores a single read-set type. The `validate_*` methods are
+/// only reached for the parallel variant.
+pub enum LegacyReads<T: Transaction> {
+    Parallel(CapturedReadSet<T>),
+    Sequential(UnsyncReadSet<T, ModuleId>),
+}
+
+impl<T: Transaction> TxnInput for LegacyReads<T> {
+    type Key = T::Key;
+    type Tag = T::Tag;
+    type Value = ValueWithLayout<T::Value>;
+
+    fn validate_data_reads(
+        &self,
+        data_map: &VersionedData<T::Key, ValueWithLayout<T::Value>>,
+        idx_to_validate: TxnIndex,
+    ) -> bool {
+        match self {
+            LegacyReads::Parallel(reads) => reads.validate_data_reads(data_map, idx_to_validate),
+            LegacyReads::Sequential(_) => {
+                unreachable!("Sequential execution does not validate reads")
+            },
+        }
+    }
+
+    fn validate_group_reads(
+        &self,
+        group_map: &VersionedGroupData<T::Key, T::Tag, ValueWithLayout<T::Value>>,
+        idx_to_validate: TxnIndex,
+    ) -> bool {
+        match self {
+            LegacyReads::Parallel(reads) => reads.validate_group_reads(group_map, idx_to_validate),
+            LegacyReads::Sequential(_) => {
+                unreachable!("Sequential execution does not validate reads")
+            },
+        }
+    }
+
+    fn validate_delayed_field_reads(
+        &self,
+        delayed_fields: &dyn TVersionedDelayedFieldView<DelayedFieldID>,
+        idx_to_validate: TxnIndex,
+    ) -> Result<bool, PanicError> {
+        match self {
+            LegacyReads::Parallel(reads) => {
+                reads.validate_delayed_field_reads(delayed_fields, idx_to_validate)
+            },
+            LegacyReads::Sequential(_) => Err(code_invariant_error(
+                "Sequential execution does not validate reads",
+            )),
+        }
+    }
+
+    fn legacy_validate_module_reads(
+        &self,
+        global_module_cache: &GlobalModuleCache<
+            ModuleId,
+            CompiledModule,
+            Module,
+            AptosModuleExtension,
+        >,
+        per_block_module_cache: &SyncModuleCache<
+            ModuleId,
+            CompiledModule,
+            Module,
+            AptosModuleExtension,
+            Option<TxnIndex>,
+        >,
+        maybe_updated_module_keys: Option<&BTreeSet<ModuleId>>,
+    ) -> bool {
+        match self {
+            LegacyReads::Parallel(reads) => reads.validate_module_reads(
+                global_module_cache,
+                per_block_module_cache,
+                maybe_updated_module_keys,
+            ),
+            LegacyReads::Sequential(_) => {
+                unreachable!("Sequential execution does not validate reads")
+            },
+        }
+    }
+
+    fn record_delayed_field_application_failure(&mut self) {
+        match self {
+            LegacyReads::Parallel(reads) => reads.capture_delayed_field_read_error(&PanicOr::Or(
+                MVDelayedFieldsError::DeltaApplicationFailure,
+            )),
+            LegacyReads::Sequential(_) => {
+                unreachable!(
+                    "Sequential execution does not apply delayed field changes speculatively"
+                )
+            },
+        }
+    }
+
+    fn incarnation(&self) -> Option<Incarnation> {
+        match self {
+            LegacyReads::Parallel(reads) => reads.blockstm_v2_incarnation(),
+            LegacyReads::Sequential(_) => None,
+        }
+    }
+
+    fn is_incorrect_use(&self) -> bool {
+        match self {
+            LegacyReads::Parallel(reads) => reads.is_incorrect_use(),
+            LegacyReads::Sequential(reads) => reads.incorrect_use,
+        }
+    }
+
+    fn get_read_summary(&self) -> HashSet<InputOutputKey<T::Key, T::Tag>> {
+        match self {
+            LegacyReads::Parallel(reads) => reads.get_read_summary(),
+            LegacyReads::Sequential(reads) => reads.get_read_summary(),
+        }
+    }
+}
+
+/// A module storage view that retrieves modules from a captured read-set snapshot.
+///
+/// This is used during trace replay to ensure modules are resolved from execution-time state, not
+/// from the current cache state (which may have been updated by subsequent transactions). This
+/// prevents race conditions where transaction A executes at time T1 with code state S1, commits,
+/// then transaction B publishes new modules (code state S2), and finally A's post-commit replay
+/// runs at time T3 - without this snapshot view, replay would incorrectly see code state S2 and
+/// not state S1.
+pub(crate) struct SnapshotModuleView<'a> {
+    /// Reference to the captured reads containing the module snapshot from execution time.
+    captured_module_reads:
+        &'a hashbrown::HashMap<ModuleId, ModuleRead<CompiledModule, Module, AptosModuleExtension>>,
+    /// Runtime environment for accessing VM config and other shared state.
+    runtime_environment: &'a RuntimeEnvironment,
+}
+
+impl<'a> SnapshotModuleView<'a> {
+    pub(crate) fn new<T: Transaction>(
+        captured_reads: &'a CapturedReads<
+            T,
+            ModuleId,
+            CompiledModule,
+            Module,
+            AptosModuleExtension,
+        >,
+        runtime_environment: &'a RuntimeEnvironment,
+    ) -> Self {
+        Self {
+            captured_module_reads: &captured_reads.module_reads,
+            runtime_environment,
+        }
+    }
+
+    fn get_module_read(
+        &self,
+        address: &AccountAddress,
+        module_name: &IdentStr,
+    ) -> VMResult<&ModuleRead<CompiledModule, Module, AptosModuleExtension>> {
+        self.captured_module_reads
+            .get(&(address, module_name))
+            .ok_or_else(|| {
+                // Module has to be in the read-set during execution.
+                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                    .with_message(format!(
+                        "Module {}::{} does not exist in read-set snapshot",
+                        address.to_hex_literal(),
+                        module_name,
+                    ))
+                    .finish(Location::Undefined)
+            })
+    }
+}
+
+impl WithRuntimeEnvironment for SnapshotModuleView<'_> {
+    fn runtime_environment(&self) -> &RuntimeEnvironment {
+        self.runtime_environment
+    }
+}
+
+// No-op: no need for layouts in snapshot.
+impl NoOpLayoutCache for SnapshotModuleView<'_> {}
+
+impl ModuleStorage for SnapshotModuleView<'_> {
+    fn unmetered_check_module_exists(
+        &self,
+        address: &AccountAddress,
+        module_name: &IdentStr,
+    ) -> VMResult<bool> {
+        match self.get_module_read(address, module_name)? {
+            ModuleRead::GlobalCache(_) => Ok(true),
+            ModuleRead::PerBlockCache(code) => Ok(code.is_some()),
+        }
+    }
+
+    fn unmetered_get_module_bytes(
+        &self,
+        address: &AccountAddress,
+        module_name: &IdentStr,
+    ) -> VMResult<Option<Bytes>> {
+        match self.get_module_read(address, module_name)? {
+            ModuleRead::GlobalCache(code) => Ok(Some(code.extension().bytes().clone())),
+            ModuleRead::PerBlockCache(code) => {
+                Ok(code.as_ref().map(|(c, _)| c.extension().bytes().clone()))
+            },
+        }
+    }
+
+    fn unmetered_get_module_hash_and_size(
+        &self,
+        address: &AccountAddress,
+        module_name: &IdentStr,
+    ) -> VMResult<Option<([u8; 32], usize)>> {
+        match self.get_module_read(address, module_name)? {
+            ModuleRead::GlobalCache(code) => Ok(Some((
+                *code.extension().hash(),
+                code.extension().size_in_bytes(),
+            ))),
+            ModuleRead::PerBlockCache(code) => Ok(code
+                .as_ref()
+                .map(|(c, _)| (*c.extension().hash(), c.extension().size_in_bytes()))),
+        }
+    }
+
+    fn unmetered_get_module_size(
+        &self,
+        address: &AccountAddress,
+        module_name: &IdentStr,
+    ) -> VMResult<Option<usize>> {
+        match self.get_module_read(address, module_name)? {
+            ModuleRead::GlobalCache(code) => Ok(Some(code.extension().bytes().len())),
+            ModuleRead::PerBlockCache(code) => {
+                Ok(code.as_ref().map(|(c, _)| c.extension().bytes().len()))
+            },
+        }
+    }
+
+    fn unmetered_get_deserialized_module(
+        &self,
+        address: &AccountAddress,
+        module_name: &IdentStr,
+    ) -> VMResult<Option<Arc<CompiledModule>>> {
+        match self.get_module_read(address, module_name)? {
+            ModuleRead::GlobalCache(code) => Ok(Some(code.code().deserialized().clone())),
+            ModuleRead::PerBlockCache(code) => {
+                Ok(code.as_ref().map(|(c, _)| c.code().deserialized().clone()))
+            },
+        }
+    }
+
+    fn unmetered_get_eagerly_verified_module(
+        &self,
+        _address: &AccountAddress,
+        _module_name: &IdentStr,
+    ) -> VMResult<Option<Arc<Module>>> {
+        // Snapshot module view does not need to support eagerly verified loading of modules
+        // because it is only used lazily.
+        Err(
+            PartialVMError::new_invariant_violation("Eager verification is not supported")
+                .finish(Location::Undefined),
+        )
+    }
+
+    fn unmetered_get_lazily_verified_module(
+        &self,
+        module_id: &ModuleId,
+    ) -> VMResult<Option<Arc<Module>>> {
+        let code = match self.get_module_read(module_id.address(), module_id.name())? {
+            ModuleRead::GlobalCache(code) => Some(code.code()),
+            ModuleRead::PerBlockCache(code) => code.as_ref().map(|(c, _)| c.code()),
+        };
+        match code {
+            None => Ok(None),
+            Some(code) => {
+                if code.is_verified() {
+                    Ok(Some(code.verified().clone()))
+                } else {
+                    // Should not happen: read-set records verification results.
+                    Err(PartialVMError::new_invariant_violation(format!(
+                        "Verified module {}::{} does not exist in read-set",
+                        module_id.address(),
+                        module_id.name()
+                    ))
+                    .finish(Location::Undefined))
+                }
+            },
+        }
+    }
+
+    #[cfg(fuzzing)]
+    fn unmetered_get_module_skip_verification(
+        &self,
+        _address: &AccountAddress,
+        _module_name: &IdentStr,
+    ) -> VMResult<Option<Arc<Module>>> {
+        Ok(None)
     }
 }
 
@@ -1425,10 +1781,6 @@ mod test {
             ReadKind::Value
         );
         assert_eq!(
-            DataRead::Resolved::<ValueType>(200).get_kind(),
-            ReadKind::Value
-        );
-        assert_eq!(
             DataRead::Metadata::<ValueType>(Some(StateValueMetadata::none())).get_kind(),
             ReadKind::Metadata
         );
@@ -1524,7 +1876,6 @@ mod test {
             TriompheArc::new(ValueType::with_len_and_metadata(2, raw_metadata(1))),
             None,
         );
-        let resolved = DataRead::Resolved::<ValueType>(200);
         let deletion_metadata = DataRead::Metadata(None);
         let legacy_metadata = DataRead::Metadata(Some(StateValueMetadata::none()));
         let metadata = DataRead::Metadata(Some(raw_metadata(1)));
@@ -1533,11 +1884,9 @@ mod test {
 
         // Test contains & downcast.
         assert_contains!(versioned_legacy, legacy_metadata);
-        assert_contains!(resolved, legacy_metadata);
         assert_contains!(versioned_legacy, exists);
-        assert_contains!(resolved, exists);
         assert_contains!(legacy_metadata, exists);
-        // Same checks for deletion (Resolved cannot be a deletion).
+        // Same checks for deletion.
         assert_contains!(versioned_deletion, deletion_metadata);
         assert_contains!(versioned_deletion, not_exists);
         assert_contains!(deletion_metadata, not_exists);
@@ -1561,17 +1910,11 @@ mod test {
         assert_inconsistent_same_kind!(legacy_metadata, metadata);
         assert_inconsistent_same_kind!(versioned_legacy, versioned_with_metadata);
         assert_inconsistent_same_kind!(versioned_legacy, versioned_deletion);
-        assert_inconsistent_same_kind!(versioned_legacy, resolved);
         assert_inconsistent_same_kind!(versioned_with_metadata, versioned_deletion);
-        assert_inconsistent_same_kind!(versioned_with_metadata, resolved);
-        assert_inconsistent_same_kind!(versioned_deletion, resolved);
         // Test inconsistency with downcast.
         assert_inconsistent_downcast!(versioned_legacy, metadata);
         assert_inconsistent_downcast!(versioned_legacy, deletion_metadata);
         assert_inconsistent_downcast!(versioned_legacy, not_exists);
-        assert_inconsistent_downcast!(resolved, deletion_metadata);
-        assert_inconsistent_downcast!(resolved, metadata);
-        assert_inconsistent_downcast!(resolved, not_exists);
         assert_inconsistent_downcast!(versioned_with_metadata, legacy_metadata);
         assert_inconsistent_downcast!(versioned_with_metadata, deletion_metadata);
         assert_inconsistent_downcast!(versioned_with_metadata, not_exists);
@@ -1748,7 +2091,6 @@ mod test {
             TriompheArc::new(ValueType::with_len_and_metadata(2, raw_metadata(1))),
             None,
         );
-        let resolved = DataRead::Resolved::<ValueType>(200);
         let deletion_metadata = DataRead::Metadata(None);
         let legacy_metadata = DataRead::Metadata(Some(StateValueMetadata::none()));
         let metadata = DataRead::Metadata(Some(raw_metadata(1)));
@@ -1775,8 +2117,6 @@ mod test {
         assert_update_incorrect!(map, 0, deletion_metadata);
 
         assert_update_insufficient!(map, 0, exists);
-        assert_update_inconsistent!(map, 0, resolved);
-        assert_update_insufficient!(map, 0, exists);
         assert_update_inconsistent!(map, 0, versioned_with_metadata);
         // Updated key 0 for the last time.
         assert_update!(map, 0, versioned_deletion);
@@ -1794,28 +2134,12 @@ mod test {
         assert_update_inconsistent!(map, 1, versioned_deletion);
         assert_update_insufficient!(map, 1, not_exists);
         assert_update_incorrect!(map, 1, metadata);
-        assert_update_inconsistent!(map, 1, resolved);
         assert_update!(map, 1, versioned_with_metadata);
         assert_update_insufficient!(map, 1, metadata);
         assert_update_insufficient!(map, 1, not_exists);
         assert_update_insufficient!(map, 1, exists);
         assert_update_insufficient!(map, 1, legacy_metadata);
         assert_update_incorrect!(map, 1, versioned_deletion);
-
-        assert_none!(map.get(&2));
-        assert_insert!(map, 2, legacy_metadata);
-        assert_update!(map, 2, resolved);
-        // Resolved also has Value ReadKind, and it is incorrect to call
-        // with the same ReadKind,
-        assert_update_incorrect!(map, 2, versioned_legacy);
-        assert_update_insufficient!(map, 2, legacy_metadata);
-        assert_update_incorrect!(map, 2, versioned_deletion);
-        assert_update_insufficient!(map, 2, not_exists);
-        assert_update_insufficient!(map, 2, metadata);
-        assert_update_insufficient!(map, 2, exists);
-        assert_update_incorrect!(map, 2, versioned_with_metadata);
-        assert_update_insufficient!(map, 2, deletion_metadata);
-        assert_update_incorrect!(map, 2, resolved);
     }
 
     fn legacy_reads_by_kind() -> Vec<DataRead<ValueType>> {
@@ -1941,12 +2265,7 @@ mod test {
         let deletion_reads = deletion_reads_by_kind();
         let with_metadata_reads = with_metadata_reads_by_kind();
 
-        let resolved = DataRead::Resolved::<ValueType>(200);
-        let mixed_reads = [
-            deletion_reads[0].clone(),
-            with_metadata_reads[1].clone(),
-            resolved,
-        ];
+        let mixed_reads = [deletion_reads[0].clone(), with_metadata_reads[1].clone()];
 
         assert_incorrect_use!(
             captured_reads,
@@ -1970,7 +2289,7 @@ mod test {
         // Test incorrect with with incompatible types.
         assert!(!captured_reads.incorrect_use);
 
-        for i in 0..3 {
+        for i in 0..2 {
             let key = KeyType::<u32>(20 + i);
             assert_ok!(captured_reads.capture_read(
                 key,
@@ -2001,7 +2320,6 @@ mod test {
             )),
             None,
         );
-        let resolved = DataRead::Resolved::<ValueType>(200);
         let metadata = DataRead::Metadata(Some(raw_metadata(1)));
         let deletion_metadata = DataRead::Metadata(None);
         let exists = DataRead::Exists(true);
@@ -2018,14 +2336,18 @@ mod test {
         assert!(captured_reads.non_delayed_field_speculative_failure);
         assert!(!captured_reads.delayed_field_speculative_failure);
 
-        let mvhashmap = MVHashMap::<KeyType<u32>, u32, ValueType, DelayedFieldID>::new();
+        let mvhashmap = MVHashMap::<KeyType<u32>, u32, _, DelayedFieldID>::new();
 
         captured_reads.incorrect_use = false;
         captured_reads.non_delayed_field_speculative_failure = false;
         captured_reads.delayed_field_speculative_failure = false;
         let key = KeyType::<u32>(21);
         assert_ok!(captured_reads.capture_read(key, use_tag.then_some(30), deletion_metadata));
-        assert_err!(captured_reads.capture_read(key, use_tag.then_some(30), resolved));
+        assert_err!(captured_reads.capture_read(
+            key,
+            use_tag.then_some(30),
+            versioned_legacy.clone()
+        ));
         assert!(captured_reads.non_delayed_field_speculative_failure);
         assert!(!captured_reads.validate_data_reads(mvhashmap.data(), 0));
         assert!(!captured_reads.validate_group_reads(mvhashmap.group_data(), 0));

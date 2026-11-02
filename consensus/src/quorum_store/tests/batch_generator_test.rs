@@ -1,10 +1,14 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     quorum_store::{
-        batch_coordinator::BatchCoordinatorCommand, batch_generator::BatchGenerator,
-        batch_store::BatchWriter, quorum_store_db::MockQuorumStoreDB, types::PersistedValue,
+        batch_coordinator::BatchCoordinatorCommand,
+        batch_generator::BatchGenerator,
+        batch_store::{BatchStore, BatchWriter},
+        proof_manager::ProofManager,
+        quorum_store_db::{MockQuorumStoreDB, QuorumStoreDB},
+        types::PersistedValue,
     },
     test_utils::{
         create_signed_transaction, create_vec_signed_transactions,
@@ -13,20 +17,133 @@ use crate::{
 };
 use aptos_config::config::QuorumStoreConfig;
 use aptos_consensus_types::{
-    common::{TransactionInProgress, TransactionSummary},
-    proof_of_store::SignedBatchInfo,
+    common::{Payload, PayloadFilter, TransactionInProgress, TransactionSummary},
+    payload::OptQuorumStorePayload,
+    payload_pull_params::OptQSPayloadPullParams,
+    proof_of_store::{BatchInfoExt, BatchKind, ProofCache, SignedBatchInfo, TBatchInfo},
+    request_response::{GetPayloadCommand, GetPayloadRequest, GetPayloadResponse},
+    utils::PayloadTxnsSize,
 };
 use aptos_mempool::{QuorumStoreRequest, QuorumStoreResponse};
-use aptos_types::{quorum_store::BatchId, transaction::SignedTransaction};
+use aptos_temppath::TempPath;
+use aptos_types::{
+    quorum_store::BatchId,
+    test_helpers::encrypted_transactions::{
+        encrypted_transaction, encrypted_transaction_with_gas, non_valid_encrypted_transactions,
+    },
+    transaction::SignedTransaction,
+    validator_verifier::{random_validator_verifier, ValidatorVerifier},
+};
 use futures::{
-    channel::mpsc::{channel, Receiver},
+    channel::{
+        mpsc::{channel, Receiver},
+        oneshot,
+    },
     StreamExt,
 };
 use move_core_types::account_address::AccountAddress;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{sync::mpsc::channel as TokioChannel, time::timeout};
 
 struct MockBatchWriter {}
+
+// Test whether inline txns w/ non-valid EncryptedPayload states are rejected
+#[tokio::test]
+async fn test_local_inline_proposal_rejects_non_encrypted_states() {
+    for txn in non_valid_encrypted_transactions() {
+        assert_inline_proposal_rejects(txn).await;
+    }
+}
+
+async fn assert_inline_proposal_rejects(poisoned: SignedTransaction) {
+    let (mempool_tx, mut mempool_rx) = channel(1_024);
+    let author = AccountAddress::random();
+    let now = aptos_infallible::duration_since_epoch();
+    let mut generator = BatchGenerator::new(
+        10,
+        author,
+        QuorumStoreConfig::default(),
+        Arc::new(MockQuorumStoreDB::new()),
+        Arc::new(MockBatchWriter::new()),
+        mempool_tx,
+        now.as_micros() as u64,
+    );
+    let honest = encrypted_transaction(1, false);
+    let poisoned_hash = poisoned.committed_hash();
+    let response =
+        queue_mempool_batch_response(vec![poisoned, honest.clone()], usize::MAX, &mut mempool_rx);
+    let (batches, _) = tokio::join!(generator.handle_scheduled_pull(100), response);
+
+    let path = TempPath::new();
+    let (signers, _) = random_validator_verifier(1, None, false);
+    let store = BatchStore::new(
+        10,
+        false,
+        10,
+        Arc::new(QuorumStoreDB::new(&path)),
+        5 * 1024 * 1024,
+        5 * 1024 * 1024,
+        100,
+        signers[0].clone(),
+        0,
+    );
+    let mut proof_manager = ProofManager::new(author, 100, 100, store.clone(), true, 1);
+    for batch in batches {
+        let value =
+            PersistedValue::new(batch.batch_info().clone(), Some(batch.into_transactions()));
+        store.insert_to_cache(&value).unwrap();
+        proof_manager.receive_batches(vec![(value.batch_info().clone(), value.summary())]);
+    }
+    let (callback, receiver) = oneshot::channel();
+    proof_manager.handle_proposal_request(GetPayloadCommand::GetPayloadRequest(
+        GetPayloadRequest {
+            max_txns: PayloadTxnsSize::new(100, 1_000_000),
+            max_txns_after_filtering: 100,
+            soft_max_txns_after_filtering: 100,
+            max_inline_txns: PayloadTxnsSize::new(100, 1_000_000),
+            filter: PayloadFilter::InQuorumStore(HashSet::new()),
+            callback,
+            block_timestamp: now,
+            return_non_full: true,
+            // Exclude this author's batches from the optimistic reference pull,
+            // leaving them available for the subsequent inline pull.
+            maybe_optqs_payload_pull_params: Some(OptQSPayloadPullParams {
+                exclude_authors: HashSet::from([author]),
+                minimum_batch_age_usecs: 0,
+                enable_opt_qs_v2_payload: true,
+                per_kind_txn_limits: Default::default(),
+            }),
+        },
+    ));
+    let GetPayloadResponse::GetPayloadResponse(payload) = receiver.await.unwrap().unwrap();
+    let Payload::OptQuorumStore(OptQuorumStorePayload::V2(proposal)) = &payload else {
+        panic!("Expected a V2 inline proposal");
+    };
+    let txns = proposal.inline_batches().transactions();
+    assert!(
+        txns.iter().all(|txn| txn.committed_hash() != poisoned_hash),
+        "Locally generated inline proposal contains an unsigned decryption state"
+    );
+    assert_eq!(
+        txns,
+        vec![honest],
+        "The valid encrypted control must still be proposed inline"
+    );
+    payload
+        .verify(
+            &ValidatorVerifier::new(vec![]),
+            &ProofCache::new(1),
+            true,
+            true,
+            100,
+            1_000_000,
+        )
+        .unwrap();
+}
 
 impl MockBatchWriter {
     fn new() -> Self {
@@ -35,7 +152,10 @@ impl MockBatchWriter {
 }
 
 impl BatchWriter for MockBatchWriter {
-    fn persist(&self, _persist_requests: Vec<PersistedValue>) -> Vec<SignedBatchInfo> {
+    fn persist(
+        &self,
+        _persist_requests: Vec<PersistedValue<BatchInfoExt>>,
+    ) -> Vec<SignedBatchInfo<BatchInfoExt>> {
         vec![]
     }
 }
@@ -779,6 +899,387 @@ async fn test_remote_batches_in_progress() {
     let result = batch_generator.handle_scheduled_pull(300).await;
     assert_eq!(result.len(), 1);
     assert_eq!(batch_generator.txns_in_progress_sorted_len(), 3);
+
+    timeout(Duration::from_millis(10_000), join_handle)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+// Helper function to create an encrypted transaction
+fn create_encrypted_transaction(gas_unit_price: u64) -> SignedTransaction {
+    encrypted_transaction_with_gas(0, false, gas_unit_price)
+}
+
+fn create_vec_encrypted_transactions(size: u64) -> Vec<SignedTransaction> {
+    (0..size).map(|_| create_encrypted_transaction(1)).collect()
+}
+
+fn create_vec_encrypted_transactions_with_gas(
+    size: u64,
+    gas_unit_price: u64,
+) -> Vec<SignedTransaction> {
+    (0..size)
+        .map(|_| create_encrypted_transaction(gas_unit_price))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_encrypted_transactions_separated_with_batch_v2() {
+    let (quorum_store_to_mempool_tx, mut quorum_store_to_mempool_rx) = channel(1_024);
+    let (batch_coordinator_cmd_tx, mut batch_coordinator_cmd_rx) = TokioChannel(100);
+
+    let config = QuorumStoreConfig {
+        enable_batch_v2_tx: true,
+        ..Default::default()
+    };
+    let max_batch_bytes = config.sender_max_batch_bytes;
+
+    let author = AccountAddress::random();
+    let mut batch_generator = BatchGenerator::new(
+        0,
+        author,
+        config,
+        Arc::new(MockQuorumStoreDB::new()),
+        Arc::new(MockBatchWriter::new()),
+        quorum_store_to_mempool_tx,
+        1000,
+    );
+
+    let join_handle = tokio::spawn(async move {
+        // Create mixed transactions: 5 normal + 3 encrypted
+        let mut signed_txns = vec![];
+        signed_txns.append(&mut create_vec_signed_transactions(5));
+        signed_txns.append(&mut create_vec_encrypted_transactions(3));
+
+        queue_mempool_batch_response(
+            signed_txns.clone(),
+            max_batch_bytes,
+            &mut quorum_store_to_mempool_rx,
+        )
+        .await;
+
+        let quorum_store_command = batch_coordinator_cmd_rx.recv().await.unwrap();
+        if let BatchCoordinatorCommand::NewBatches(_, result) = quorum_store_command {
+            // Should have 2 batches: one Normal, one Encrypted
+            assert_eq!(result.len(), 2);
+
+            // First batch should be Normal with 5 txns
+            let normal_batch = &result[0];
+            assert_eq!(normal_batch.num_txns(), 5);
+            assert_eq!(normal_batch.batch_kind(), Some(BatchKind::Normal));
+            let normal_txns = normal_batch.txns();
+            for txn in normal_txns {
+                assert!(!txn.is_encrypted_txn());
+            }
+
+            // Second batch should be Encrypted with 3 txns
+            let encrypted_batch = &result[1];
+            assert_eq!(encrypted_batch.num_txns(), 3);
+            assert_eq!(encrypted_batch.batch_kind(), Some(BatchKind::Encrypted));
+            let encrypted_txns = encrypted_batch.txns();
+            for txn in encrypted_txns {
+                assert!(txn.is_encrypted_txn());
+            }
+        } else {
+            panic!("Unexpected variant")
+        }
+    });
+
+    let result = batch_generator.handle_scheduled_pull(300).await;
+    batch_coordinator_cmd_tx
+        .send(BatchCoordinatorCommand::NewBatches(author, result))
+        .await
+        .unwrap();
+
+    timeout(Duration::from_millis(10_000), join_handle)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_encrypted_transactions_filtered_without_batch_v2() {
+    let (quorum_store_to_mempool_tx, mut quorum_store_to_mempool_rx) = channel(1_024);
+    let (batch_coordinator_cmd_tx, mut batch_coordinator_cmd_rx) = TokioChannel(100);
+
+    let config = QuorumStoreConfig {
+        enable_batch_v2_tx: false, // V2 disabled
+        ..Default::default()
+    };
+    let max_batch_bytes = config.sender_max_batch_bytes;
+
+    let author = AccountAddress::random();
+    let mut batch_generator = BatchGenerator::new(
+        0,
+        author,
+        config,
+        Arc::new(MockQuorumStoreDB::new()),
+        Arc::new(MockBatchWriter::new()),
+        quorum_store_to_mempool_tx,
+        1000,
+    );
+
+    let join_handle = tokio::spawn(async move {
+        // Create mixed transactions: 5 normal + 3 encrypted
+        let mut signed_txns = vec![];
+        signed_txns.append(&mut create_vec_signed_transactions(5));
+        signed_txns.append(&mut create_vec_encrypted_transactions(3));
+
+        queue_mempool_batch_response(
+            signed_txns.clone(),
+            max_batch_bytes,
+            &mut quorum_store_to_mempool_rx,
+        )
+        .await;
+
+        let quorum_store_command = batch_coordinator_cmd_rx.recv().await.unwrap();
+        if let BatchCoordinatorCommand::NewBatches(_, result) = quorum_store_command {
+            // Should have 1 batch with ONLY normal transactions (encrypted filtered out)
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].num_txns(), 5); // Only 5 normal txns
+                                                 // BatchKind should be None for V1 batches
+            assert_eq!(result[0].batch_kind(), None);
+
+            // Verify all transactions are non-encrypted
+            for txn in result[0].txns() {
+                assert!(!txn.is_encrypted_txn());
+            }
+        } else {
+            panic!("Unexpected variant")
+        }
+    });
+
+    let result = batch_generator.handle_scheduled_pull(300).await;
+    batch_coordinator_cmd_tx
+        .send(BatchCoordinatorCommand::NewBatches(author, result))
+        .await
+        .unwrap();
+
+    timeout(Duration::from_millis(10_000), join_handle)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_encrypted_transactions_with_gas_buckets() {
+    let (quorum_store_to_mempool_tx, mut quorum_store_to_mempool_rx) = channel(1_024);
+    let (batch_coordinator_cmd_tx, mut batch_coordinator_cmd_rx) = TokioChannel(100);
+
+    let config = QuorumStoreConfig {
+        enable_batch_v2_tx: true,
+        ..Default::default()
+    };
+    let max_batch_bytes = config.sender_max_batch_bytes;
+    let buckets = config.batch_buckets.clone();
+
+    let author = AccountAddress::random();
+    let mut batch_generator = BatchGenerator::new(
+        0,
+        author,
+        config,
+        Arc::new(MockQuorumStoreDB::new()),
+        Arc::new(MockBatchWriter::new()),
+        quorum_store_to_mempool_tx,
+        1000,
+    );
+
+    let join_handle = tokio::spawn(async move {
+        // Create mixed transactions with different gas prices
+        let mut signed_txns = vec![];
+        // Normal transactions with high gas
+        signed_txns.append(&mut create_vec_signed_transactions_with_gas(3, buckets[4]));
+        // Normal transactions with medium gas
+        signed_txns.append(&mut create_vec_signed_transactions_with_gas(2, buckets[1]));
+        // Encrypted transactions with high gas
+        signed_txns.append(&mut create_vec_encrypted_transactions_with_gas(
+            2, buckets[4],
+        ));
+        // Encrypted transactions with low gas
+        signed_txns.append(&mut create_vec_encrypted_transactions_with_gas(
+            2, buckets[0],
+        ));
+
+        queue_mempool_batch_response(
+            signed_txns.clone(),
+            max_batch_bytes,
+            &mut quorum_store_to_mempool_rx,
+        )
+        .await;
+
+        let quorum_store_command = batch_coordinator_cmd_rx.recv().await.unwrap();
+        if let BatchCoordinatorCommand::NewBatches(_, result) = quorum_store_command {
+            // Should have 4 batches: 2 Normal (buckets 4 and 1) + 2 Encrypted (buckets 4 and 0)
+            assert_eq!(result.len(), 4);
+
+            // First batch: Normal with high gas
+            assert_eq!(result[0].batch_kind(), Some(BatchKind::Normal));
+            assert_eq!(result[0].gas_bucket_start(), buckets[4]);
+            assert_eq!(result[0].num_txns(), 3);
+
+            // Second batch: Normal with medium gas
+            assert_eq!(result[1].batch_kind(), Some(BatchKind::Normal));
+            assert_eq!(result[1].gas_bucket_start(), buckets[1]);
+            assert_eq!(result[1].num_txns(), 2);
+
+            // Third batch: Encrypted with high gas
+            assert_eq!(result[2].batch_kind(), Some(BatchKind::Encrypted));
+            assert_eq!(result[2].gas_bucket_start(), buckets[4]);
+            assert_eq!(result[2].num_txns(), 2);
+
+            // Fourth batch: Encrypted with low gas
+            assert_eq!(result[3].batch_kind(), Some(BatchKind::Encrypted));
+            assert_eq!(result[3].gas_bucket_start(), buckets[0]);
+            assert_eq!(result[3].num_txns(), 2);
+
+            // Verify no transactions are mixed
+            for batch in &result {
+                let txns = batch.txns();
+                let is_encrypted_batch = batch.batch_kind() == Some(BatchKind::Encrypted);
+                for txn in txns {
+                    assert_eq!(txn.is_encrypted_txn(), is_encrypted_batch);
+                }
+            }
+        } else {
+            panic!("Unexpected variant")
+        }
+    });
+
+    let result = batch_generator.handle_scheduled_pull(300).await;
+    batch_coordinator_cmd_tx
+        .send(BatchCoordinatorCommand::NewBatches(author, result))
+        .await
+        .unwrap();
+
+    timeout(Duration::from_millis(10_000), join_handle)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_only_encrypted_transactions() {
+    let (quorum_store_to_mempool_tx, mut quorum_store_to_mempool_rx) = channel(1_024);
+    let (batch_coordinator_cmd_tx, mut batch_coordinator_cmd_rx) = TokioChannel(100);
+
+    let config = QuorumStoreConfig {
+        enable_batch_v2_tx: true,
+        ..Default::default()
+    };
+    let max_batch_bytes = config.sender_max_batch_bytes;
+
+    let author = AccountAddress::random();
+    let mut batch_generator = BatchGenerator::new(
+        0,
+        author,
+        config,
+        Arc::new(MockQuorumStoreDB::new()),
+        Arc::new(MockBatchWriter::new()),
+        quorum_store_to_mempool_tx,
+        1000,
+    );
+
+    let join_handle = tokio::spawn(async move {
+        // Create only encrypted transactions
+        let signed_txns = create_vec_encrypted_transactions(5);
+
+        queue_mempool_batch_response(
+            signed_txns.clone(),
+            max_batch_bytes,
+            &mut quorum_store_to_mempool_rx,
+        )
+        .await;
+
+        let quorum_store_command = batch_coordinator_cmd_rx.recv().await.unwrap();
+        if let BatchCoordinatorCommand::NewBatches(_, result) = quorum_store_command {
+            // Should have 1 Encrypted batch
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].num_txns(), 5);
+            assert_eq!(result[0].batch_kind(), Some(BatchKind::Encrypted));
+
+            // All transactions should be encrypted
+            for txn in result[0].txns() {
+                assert!(txn.is_encrypted_txn());
+            }
+        } else {
+            panic!("Unexpected variant")
+        }
+    });
+
+    let result = batch_generator.handle_scheduled_pull(300).await;
+    batch_coordinator_cmd_tx
+        .send(BatchCoordinatorCommand::NewBatches(author, result))
+        .await
+        .unwrap();
+
+    timeout(Duration::from_millis(10_000), join_handle)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_oversized_transaction_skipped() {
+    let (quorum_store_to_mempool_tx, mut quorum_store_to_mempool_rx) = channel(1_024);
+    let (batch_coordinator_cmd_tx, mut batch_coordinator_cmd_rx) = TokioChannel(100);
+
+    let txn_size = 168;
+    // Set batch bytes limit smaller than a single transaction to trigger the oversized path
+    let config = QuorumStoreConfig {
+        sender_max_batch_bytes: txn_size - 1,
+        sender_max_total_bytes: txn_size * 10, // Allow mempool to return txns
+        ..Default::default()
+    };
+
+    let author = AccountAddress::random();
+    let mut batch_generator = BatchGenerator::new(
+        0,
+        author,
+        config,
+        Arc::new(MockQuorumStoreDB::new()),
+        Arc::new(MockBatchWriter::new()),
+        quorum_store_to_mempool_tx,
+        1000,
+    );
+
+    let join_handle = tokio::spawn(async move {
+        let signed_txns = create_vec_signed_transactions(3);
+        assert_eq!(signed_txns[0].txn_bytes_len(), txn_size);
+
+        // Return txns directly without size filtering to simulate oversized txns reaching batch generator
+        if let QuorumStoreRequest::GetBatchRequest(_, _, _, _, callback) = timeout(
+            Duration::from_millis(1_000),
+            quorum_store_to_mempool_rx.select_next_some(),
+        )
+        .await
+        .unwrap()
+        {
+            callback
+                .send(Ok(QuorumStoreResponse::GetBatchResponse(signed_txns)))
+                .unwrap();
+        } else {
+            panic!("Unexpected variant")
+        }
+
+        // All transactions should be skipped (no batches created) since each exceeds batch limit
+        let quorum_store_command = batch_coordinator_cmd_rx.recv().await.unwrap();
+        if let BatchCoordinatorCommand::NewBatches(_, result) = quorum_store_command {
+            assert_eq!(
+                result.len(),
+                0,
+                "Oversized transactions should be skipped, not batched"
+            );
+        } else {
+            panic!("Unexpected variant")
+        }
+    });
+
+    let result = batch_generator.handle_scheduled_pull(300).await;
+    batch_coordinator_cmd_tx
+        .send(BatchCoordinatorCommand::NewBatches(author, result))
+        .await
+        .unwrap();
 
     timeout(Duration::from_millis(10_000), join_handle)
         .await

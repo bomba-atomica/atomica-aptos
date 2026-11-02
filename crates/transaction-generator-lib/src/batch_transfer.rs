@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{ObjectPool, TransactionGenerator, TransactionGeneratorCreator};
 use aptos_sdk::{
@@ -49,10 +49,10 @@ impl TransactionGenerator for BatchTransferTransactionGenerator {
                 .clone_from_pool(self.batch_size, &mut self.rng);
             requests.push(
                 account.sign_with_transaction_builder(self.txn_factory.payload(
-                    aptos_stdlib::aptos_account_batch_transfer(
-                        receivers,
-                        vec![self.send_amount; self.batch_size],
-                    ),
+                    aptos_stdlib::aptos_account_batch_transfer(receivers, vec![
+                        self.send_amount;
+                        self.batch_size
+                    ]),
                 )),
             );
         }

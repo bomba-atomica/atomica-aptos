@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     compiler::{as_module, compile_units},
@@ -156,10 +157,9 @@ fn expected_u64_got_u64() {
 #[test]
 #[allow(non_snake_case)]
 fn expected_Foo_got_Foo() {
-    expect_ok(
-        &["Foo"],
-        vec![MoveValue::Struct(MoveStruct::new(vec![MoveValue::U64(0)]))],
-    )
+    expect_ok(&["Foo"], vec![MoveValue::Struct(MoveStruct::new(vec![
+        MoveValue::U64(0),
+    ]))])
 }
 
 #[test]
@@ -169,10 +169,10 @@ fn expected_signer_ref_got_signer() {
 
 #[test]
 fn expected_u64_signer_ref_got_u64_signer() {
-    expect_ok(
-        &["u64", "&signer"],
-        vec![MoveValue::U64(0), MoveValue::Signer(TEST_ADDR)],
-    )
+    expect_ok(&["u64", "&signer"], vec![
+        MoveValue::U64(0),
+        MoveValue::Signer(TEST_ADDR),
+    ])
 }
 
 #[test]
@@ -231,25 +231,17 @@ fn expected_A_B__A_u32_vector_B_got_u16_u256__u16_u32_vector_u256() {
 #[test]
 #[allow(non_snake_case)]
 fn expected_T__Bar_T_got_bool__Bar_bool() {
-    expect_ok_generic(
-        &["T"],
-        &["Bar<T>"],
-        vec![TypeTag::Bool],
-        vec![MoveValue::Struct(MoveStruct::new(vec![MoveValue::Bool(
-            false,
-        )]))],
-    )
+    expect_ok_generic(&["T"], &["Bar<T>"], vec![TypeTag::Bool], vec![
+        MoveValue::Struct(MoveStruct::new(vec![MoveValue::Bool(false)])),
+    ])
 }
 
 #[test]
 #[allow(non_snake_case)]
 fn expected_T__T_got_bool__bool() {
-    expect_ok_generic(
-        &["T"],
-        &["T"],
-        vec![TypeTag::Bool],
-        vec![MoveValue::Bool(false)],
-    )
+    expect_ok_generic(&["T"], &["T"], vec![TypeTag::Bool], vec![MoveValue::Bool(
+        false,
+    )])
 }
 
 #[test]

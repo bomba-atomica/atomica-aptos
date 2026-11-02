@@ -3,15 +3,13 @@ module aptos_framework::aptos_account {
     use aptos_framework::aptos_coin::AptosCoin;
     use aptos_framework::coin::{Self, Coin};
     use aptos_framework::create_signer::create_signer;
-    use aptos_framework::event::{EventHandle, emit_event, emit};
-    use aptos_framework::fungible_asset::{Self, Metadata, BurnRef, FungibleAsset};
+    use aptos_framework::event::{EventHandle, emit};
+    use aptos_framework::fungible_asset::{Self, Metadata, BurnRef, MintRef, FungibleAsset};
     use aptos_framework::primary_fungible_store;
     use aptos_framework::object;
 
     use std::error;
-    use std::features;
     use std::signer;
-    use std::vector;
     use aptos_framework::object::Object;
 
     friend aptos_framework::genesis;
@@ -62,19 +60,16 @@ module aptos_framework::aptos_account {
     public entry fun batch_transfer(
         source: &signer, recipients: vector<address>, amounts: vector<u64>
     ) {
-        let recipients_len = vector::length(&recipients);
+        let recipients_len = recipients.length();
         assert!(
-            recipients_len == vector::length(&amounts),
+            recipients_len == amounts.length(),
             error::invalid_argument(EMISMATCHING_RECIPIENTS_AND_AMOUNTS_LENGTH)
         );
 
-        vector::enumerate_ref(
-            &recipients,
-            |i, to| {
-                let amount = *vector::borrow(&amounts, i);
+        recipients.enumerate_ref(|i, to| {
+                let amount = amounts[i];
                 transfer(source, *to, amount);
-            }
-        );
+            });
     }
 
     /// Convenient function to transfer APT to a recipient account that might not exist.
@@ -84,35 +79,23 @@ module aptos_framework::aptos_account {
             create_account(to)
         };
 
-        if (features::operations_default_to_fa_apt_store_enabled()) {
-            fungible_transfer_only(source, to, amount)
-        } else {
-            // Resource accounts can be created without registering them to receive APT.
-            // This conveniently does the registration if necessary.
-            if (!coin::is_account_registered<AptosCoin>(to)) {
-                coin::register<AptosCoin>(&create_signer(to));
-            };
-            coin::transfer<AptosCoin>(source, to, amount)
-        }
+        fungible_transfer_only(source, to, amount)
     }
 
     /// Batch version of transfer_coins.
     public entry fun batch_transfer_coins<CoinType>(
         from: &signer, recipients: vector<address>, amounts: vector<u64>
     ) acquires DirectTransferConfig {
-        let recipients_len = vector::length(&recipients);
+        let recipients_len = recipients.length();
         assert!(
-            recipients_len == vector::length(&amounts),
+            recipients_len == amounts.length(),
             error::invalid_argument(EMISMATCHING_RECIPIENTS_AND_AMOUNTS_LENGTH)
         );
 
-        vector::enumerate_ref(
-            &recipients,
-            |i, to| {
-                let amount = *vector::borrow(&amounts, i);
+        recipients.enumerate_ref(|i, to| {
+                let amount = amounts[i];
                 transfer_coins<CoinType>(from, *to, amount);
-            }
-        );
+            });
     }
 
     /// Convenient function to transfer a custom CoinType to a recipient account that might not exist.
@@ -154,19 +137,16 @@ module aptos_framework::aptos_account {
         recipients: vector<address>,
         amounts: vector<u64>
     ) {
-        let recipients_len = vector::length(&recipients);
+        let recipients_len = recipients.length();
         assert!(
-            recipients_len == vector::length(&amounts),
+            recipients_len == amounts.length(),
             error::invalid_argument(EMISMATCHING_RECIPIENTS_AND_AMOUNTS_LENGTH)
         );
 
-        vector::enumerate_ref(
-            &recipients,
-            |i, to| {
-                let amount = *vector::borrow(&amounts, i);
+        recipients.enumerate_ref(|i, to| {
+                let amount = amounts[i];
                 transfer_fungible_assets(from, metadata, *to, amount);
-            }
-        );
+            });
     }
 
     /// Convenient function to deposit fungible asset into a recipient account that might not exist.
@@ -216,42 +196,24 @@ module aptos_framework::aptos_account {
 
             direct_transfer_config.allow_arbitrary_coin_transfers = allow;
 
-            if (std::features::module_event_migration_enabled()) {
-                emit(
-                    DirectCoinTransferConfigUpdated {
-                        account: addr,
-                        new_allow_direct_transfers: allow
-                    }
-                );
-            } else {
-                emit_event(
-                    &mut direct_transfer_config.update_coin_transfer_events,
-                    DirectCoinTransferConfigUpdatedEvent {
-                        new_allow_direct_transfers: allow
-                    }
-                );
-            };
+            emit(
+                DirectCoinTransferConfigUpdated {
+                    account: addr,
+                    new_allow_direct_transfers: allow
+                }
+            );
         } else {
             let direct_transfer_config = DirectTransferConfig {
                 allow_arbitrary_coin_transfers: allow,
                 update_coin_transfer_events: new_event_handle<
                     DirectCoinTransferConfigUpdatedEvent>(account)
             };
-            if (std::features::module_event_migration_enabled()) {
-                emit(
-                    DirectCoinTransferConfigUpdated {
-                        account: addr,
-                        new_allow_direct_transfers: allow
-                    }
-                );
-            } else {
-                emit_event(
-                    &mut direct_transfer_config.update_coin_transfer_events,
-                    DirectCoinTransferConfigUpdatedEvent {
-                        new_allow_direct_transfers: allow
-                    }
-                );
-            };
+            emit(
+                DirectCoinTransferConfigUpdated {
+                    account: addr,
+                    new_allow_direct_transfers: allow
+                }
+            );
             move_to(account, direct_transfer_config);
         };
     }
@@ -269,11 +231,7 @@ module aptos_framework::aptos_account {
     }
 
     public(friend) fun register_apt(account_signer: &signer) {
-        if (features::new_accounts_default_to_fa_apt_store_enabled()) {
-            ensure_primary_fungible_store_exists(signer::address_of(account_signer));
-        } else {
-            coin::register<AptosCoin>(account_signer);
-        }
+        ensure_primary_fungible_store_exists(signer::address_of(account_signer));
     }
 
     /// APT Primary Fungible Store specific specialized functions,
@@ -295,9 +253,6 @@ module aptos_framework::aptos_account {
         // as APT cannot be frozen or have dispatch, and PFS cannot be transfered
         // (PFS could potentially be burned. regular transfer would permanently unburn the store.
         // Ignoring the check here has the equivalent of unburning, transfers, and then burning again)
-        fungible_asset::withdraw_permission_check_by_address(
-            source, sender_store, amount
-        );
         fungible_asset::unchecked_deposit(
             recipient_store, fungible_asset::unchecked_withdraw(sender_store, amount)
         );
@@ -318,7 +273,19 @@ module aptos_framework::aptos_account {
         // Skip burning if amount is zero. This shouldn't error out as it's called as part of transaction fee burning.
         if (amount != 0) {
             let store_addr = primary_fungible_store_address(account);
-            fungible_asset::address_burn_from_for_gas(ref, store_addr, amount);
+            ref.address_burn_from_for_gas(store_addr, amount);
+        };
+    }
+
+    /// Mint into APT Primary FungibleStore for gas refund
+    public(friend) fun mint_to_fungible_store_for_gas(
+        ref: &MintRef, account: address, amount: u64
+    ) {
+        // Skip minting if amount is zero. This shouldn't error out as it's called as part of gas refund.
+        if (amount != 0) {
+            let store_addr = ensure_primary_fungible_store_exists(account);
+            let fa = fungible_asset::mint(ref, amount);
+            fungible_asset::unchecked_deposit_with_no_events(store_addr, fa);
         };
     }
 
@@ -328,11 +295,9 @@ module aptos_framework::aptos_account {
         if (fungible_asset::store_exists(store_addr)) {
             store_addr
         } else {
-            object::object_address(
-                &primary_fungible_store::create_primary_store(
+            primary_fungible_store::create_primary_store(
                     owner, object::address_to_object<Metadata>(@aptos_fungible_asset)
-                )
-            )
+                ).object_address()
         }
     }
 
@@ -378,30 +343,6 @@ module aptos_framework::aptos_account {
         coin::destroy_mint_cap(mint_cap);
     }
 
-    #[test(alice = @0xa11ce, core = @0x1)]
-    public fun test_transfer_permission(alice: &signer, core: &signer) {
-        use aptos_framework::permissioned_signer;
-
-        let bob =
-            from_bcs::to_address(
-                x"0000000000000000000000000000000000000000000000000000000000000b0b"
-            );
-
-        let (burn_cap, mint_cap) = aptos_framework::aptos_coin::initialize_for_test(core);
-        create_account(signer::address_of(alice));
-        coin::deposit(signer::address_of(alice), coin::mint(10000, &mint_cap));
-
-        let perm_handle = permissioned_signer::create_permissioned_handle(alice);
-        let alice_perm_signer =
-            permissioned_signer::signer_from_permissioned_handle(&perm_handle);
-        primary_fungible_store::grant_apt_permission(alice, &alice_perm_signer, 500);
-
-        transfer(&alice_perm_signer, bob, 500);
-
-        coin::destroy_burn_cap(burn_cap);
-        coin::destroy_mint_cap(mint_cap);
-        permissioned_signer::destroy_permissioned_handle(perm_handle);
-    }
 
     #[test(alice = @0xa11ce, core = @0x1)]
     public fun test_transfer_to_resource_account(

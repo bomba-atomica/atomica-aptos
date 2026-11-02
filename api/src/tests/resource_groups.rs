@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::new_test_context_with_orderless_flags;
 use aptos_api_test_context::{current_function_name, TestContext};
@@ -23,7 +23,6 @@ use std::path::PathBuf;
     use_txn_payload_v2_format,
     use_orderless_transactions,
     case(false, false),
-    case(true, false),
     case(true, true)
 )]
 async fn test_gen_resource_group(

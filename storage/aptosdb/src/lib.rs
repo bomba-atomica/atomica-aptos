@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 #![forbid(unsafe_code)]
 
@@ -32,9 +31,28 @@ mod db_options;
 mod event_store;
 mod ledger_db;
 mod lru_node_cache;
+pub mod native_state_committer;
+pub mod position_buffered_state;
+pub mod position_db;
+pub(crate) mod position_merkle_batch_committer;
+pub mod position_merkle_db;
+pub mod position_metrics;
+pub(crate) mod position_pruner;
+pub(crate) mod position_snapshot_committer;
+pub mod position_state_store;
+pub mod position_state_sync;
 mod pruner;
+mod sharded_jmt_merkle_db;
+mod sharded_kv_db;
+mod trading_native;
+
+#[cfg(test)]
+mod native_storage_tests;
+
+pub use native_state_committer::{MerkleLeafUpdate, NativeMerkleLeafUpdates, NativeStateCommitter};
 mod state_kv_db;
 mod state_merkle_db;
 mod state_store;
+mod state_value_chunk;
 mod transaction_store;
 mod versioned_node_cache;

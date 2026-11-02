@@ -1,12 +1,13 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_api_types::{
     transaction::ValidatorTransaction as ApiValidatorTransactionEnum, AccountSignature,
-    DeleteModule, DeleteResource, Ed25519Signature, EntryFunctionId, EntryFunctionPayload, Event,
-    GenesisPayload, MoveAbility, MoveFunction, MoveFunctionGenericTypeParam,
-    MoveFunctionVisibility, MoveModule, MoveModuleBytecode, MoveModuleId, MoveScriptBytecode,
-    MoveStruct, MoveStructField, MoveStructTag, MoveType, MultiEd25519Signature, MultiKeySignature,
+    DeleteModule, DeleteResource, Ed25519Signature, EncryptedTransactionInnerPayload,
+    EncryptedTransactionPayload, EntryFunctionId, EntryFunctionPayload, Event, GenesisPayload,
+    MoveAbility, MoveFunction, MoveFunctionGenericTypeParam, MoveFunctionVisibility, MoveModule,
+    MoveModuleBytecode, MoveModuleId, MoveScriptBytecode, MoveStruct, MoveStructField,
+    MoveStructTag, MoveStructVariant, MoveType, MultiEd25519Signature, MultiKeySignature,
     MultisigPayload, MultisigTransactionPayload, PublicKey, ScriptPayload, Signature,
     SingleKeySignature, Transaction, TransactionInfo, TransactionPayload, TransactionSignature,
     WriteSet, WriteSetChange,
@@ -23,7 +24,7 @@ use aptos_protos::{
                 Jwk as ProtoJwk,
             },
         },
-        Ed25519, Keyless, Secp256k1Ecdsa, TransactionSizeInfo, WebAuthn,
+        Ed25519, Keyless, Secp256k1Ecdsa, SlhDsaSha2128s, TransactionSizeInfo, WebAuthn,
     },
     util::timestamp,
 };
@@ -55,6 +56,17 @@ pub fn convert_move_struct_field(msf: &MoveStructField) -> transaction::MoveStru
     }
 }
 
+pub fn convert_move_struct_variant(variant: &MoveStructVariant) -> transaction::MoveStructVariant {
+    transaction::MoveStructVariant {
+        name: variant.name.0.to_string(),
+        fields: variant
+            .fields
+            .iter()
+            .map(convert_move_struct_field)
+            .collect(),
+    }
+}
+
 pub fn convert_move_struct(move_struct: &MoveStruct) -> transaction::MoveStruct {
     transaction::MoveStruct {
         name: move_struct.name.0.to_string(),
@@ -71,6 +83,11 @@ pub fn convert_move_struct(move_struct: &MoveStruct) -> transaction::MoveStruct 
             .fields
             .iter()
             .map(convert_move_struct_field)
+            .collect(),
+        variants: move_struct
+            .variants
+            .iter()
+            .map(convert_move_struct_variant)
             .collect(),
     }
 }
@@ -207,6 +224,59 @@ pub fn convert_transaction_payload(
             ),
         },
 
+        TransactionPayload::EncryptedTransactionPayload(ep) => {
+            let state = match ep {
+                EncryptedTransactionPayload::Encrypted(_) => {
+                    unreachable!("Encrypted state should not reach indexer gRPC")
+                },
+                EncryptedTransactionPayload::FailedDecryption(_) => {
+                    transaction::encrypted_transaction_payload::State::FailedDecryption(
+                        transaction::FailedDecryptionPayloadState {},
+                    )
+                },
+                EncryptedTransactionPayload::Decrypted(p) => {
+                    let decrypted_payload = match &p.decrypted_payload {
+                        EncryptedTransactionInnerPayload::EntryFunctionPayload(efp) => {
+                            transaction::decrypted_payload_state::DecryptedPayload::EntryFunctionPayload(
+                                convert_entry_function_payload(efp),
+                            )
+                        },
+                        EncryptedTransactionInnerPayload::ScriptPayload(sp) => {
+                            transaction::decrypted_payload_state::DecryptedPayload::ScriptPayload(
+                                convert_script_payload(sp),
+                            )
+                        },
+                        EncryptedTransactionInnerPayload::MultisigPayload(mp) => {
+                            transaction::decrypted_payload_state::DecryptedPayload::MultisigPayload(
+                                convert_multisig_payload(mp),
+                            )
+                        },
+                    };
+                    transaction::encrypted_transaction_payload::State::Decrypted(
+                        transaction::DecryptedPayloadState {
+                            decrypted_payload: Some(decrypted_payload),
+                        },
+                    )
+                },
+            };
+            transaction::TransactionPayload {
+                r#type: transaction::transaction_payload::Type::EncryptedTransactionPayload as i32,
+                payload: Some(
+                    transaction::transaction_payload::Payload::EncryptedTransactionPayload(
+                        transaction::EncryptedTransactionPayload { state: Some(state) },
+                    ),
+                ),
+                extra_config: Some(
+                    transaction::transaction_payload::ExtraConfig::ExtraConfigV1(
+                        transaction::ExtraConfigV1 {
+                            multisig_address: None,
+                            replay_protection_nonce: nonce,
+                        },
+                    ),
+                ),
+            }
+        },
+
         // Deprecated.
         TransactionPayload::ModuleBundlePayload(_) => {
             unreachable!("Module bundle payload has been removed")
@@ -264,23 +334,22 @@ pub fn convert_move_type(move_type: &MoveType) -> transaction::MoveType {
         MoveType::U64 => transaction::MoveTypes::U64,
         MoveType::U128 => transaction::MoveTypes::U128,
         MoveType::U256 => transaction::MoveTypes::U256,
+        MoveType::I8 => transaction::MoveTypes::I8,
+        MoveType::I16 => transaction::MoveTypes::I16,
+        MoveType::I32 => transaction::MoveTypes::I32,
+        MoveType::I64 => transaction::MoveTypes::I64,
+        MoveType::I128 => transaction::MoveTypes::I128,
+        MoveType::I256 => transaction::MoveTypes::I256,
         MoveType::Address => transaction::MoveTypes::Address,
         MoveType::Signer => transaction::MoveTypes::Signer,
         MoveType::Vector { .. } => transaction::MoveTypes::Vector,
         MoveType::Struct(_) => transaction::MoveTypes::Struct,
         MoveType::GenericTypeParam { .. } => transaction::MoveTypes::GenericTypeParam,
         MoveType::Reference { .. } => transaction::MoveTypes::Reference,
+        // TODO(#20246): function type info is silently lost here; the protos have no
+        // function type variant.
         MoveType::Function { .. } => transaction::MoveTypes::Unparsable,
         MoveType::Unparsable(_) => transaction::MoveTypes::Unparsable,
-        MoveType::I8
-        | MoveType::I16
-        | MoveType::I32
-        | MoveType::I64
-        | MoveType::I128
-        | MoveType::I256 => {
-            //TODO(#17645): support signed integers
-            transaction::MoveTypes::Unparsable
-        },
     };
     let content = match move_type {
         MoveType::Bool => None,
@@ -290,6 +359,12 @@ pub fn convert_move_type(move_type: &MoveType) -> transaction::MoveType {
         MoveType::U64 => None,
         MoveType::U128 => None,
         MoveType::U256 => None,
+        MoveType::I8 => None,
+        MoveType::I16 => None,
+        MoveType::I32 => None,
+        MoveType::I64 => None,
+        MoveType::I128 => None,
+        MoveType::I256 => None,
         MoveType::Address => None,
         MoveType::Signer => None,
         MoveType::Vector { items } => Some(transaction::move_type::Content::Vector(Box::from(
@@ -312,15 +387,6 @@ pub fn convert_move_type(move_type: &MoveType) -> transaction::MoveType {
         )),
         MoveType::Unparsable(string) => {
             Some(transaction::move_type::Content::Unparsable(string.clone()))
-        },
-        MoveType::I8
-        | MoveType::I16
-        | MoveType::I32
-        | MoveType::I64
-        | MoveType::I128
-        | MoveType::I256 => {
-            //TODO(#17645): make sure `None` is enough here
-            None
         },
     };
     transaction::MoveType {
@@ -388,13 +454,15 @@ pub fn convert_write_set_change(change: &WriteSetChange) -> transaction::WriteSe
             )),
         },
         WriteSetChange::DeleteTableItem(delete_table_item) => {
-            let data = delete_table_item.data.as_ref().unwrap_or_else(|| {
-                panic!(
-                    "Could not extract data from DeletedTableItem '{:?}' with handle '{:?}'",
-                    delete_table_item,
-                    delete_table_item.handle.to_string()
-                )
-            });
+            // Decoded `data` can be absent if the table was never indexed; emit the change
+            // without it instead of panicking (raw key bytes are still preserved).
+            let data = delete_table_item
+                .data
+                .as_ref()
+                .map(|data| transaction::DeleteTableData {
+                    key: data.key.to_string(),
+                    key_type: data.key_type.clone(),
+                });
 
             transaction::WriteSetChange {
                 r#type: transaction::write_set_change::Type::DeleteTableItem as i32,
@@ -405,10 +473,7 @@ pub fn convert_write_set_change(change: &WriteSetChange) -> transaction::WriteSe
                         ),
                         handle: delete_table_item.handle.to_string(),
                         key: delete_table_item.key.to_string(),
-                        data: Some(transaction::DeleteTableData {
-                            key: data.key.to_string(),
-                            key_type: data.key_type.clone(),
-                        }),
+                        data,
                     },
                 )),
             }
@@ -441,13 +506,17 @@ pub fn convert_write_set_change(change: &WriteSetChange) -> transaction::WriteSe
             )),
         },
         WriteSetChange::WriteTableItem(write_table_item) => {
-            let data = write_table_item.data.as_ref().unwrap_or_else(|| {
-                panic!(
-                    "Could not extract data from DecodedTableData '{:?}' with handle '{:?}'",
-                    write_table_item,
-                    write_table_item.handle.to_string(),
-                )
-            });
+            // Decoded `data` can be absent if the table was never indexed; emit the change
+            // without it instead of panicking (raw key/value bytes are still preserved).
+            let data = write_table_item
+                .data
+                .as_ref()
+                .map(|data| transaction::WriteTableData {
+                    key: data.key.to_string(),
+                    key_type: data.key_type.clone(),
+                    value: data.value.to_string(),
+                    value_type: data.value_type.clone(),
+                });
             transaction::WriteSetChange {
                 r#type: transaction::write_set_change::Type::WriteTableItem as i32,
                 change: Some(transaction::write_set_change::Change::WriteTableItem(
@@ -457,12 +526,7 @@ pub fn convert_write_set_change(change: &WriteSetChange) -> transaction::WriteSe
                         ),
                         handle: write_table_item.handle.to_string(),
                         key: write_table_item.key.to_string(),
-                        data: Some(transaction::WriteTableData {
-                            key: data.key.to_string(),
-                            key_type: data.key_type.clone(),
-                            value: data.value.to_string(),
-                            value_type: data.value_type.clone(),
-                        }),
+                        data,
                     },
                 )),
             }
@@ -532,6 +596,16 @@ pub fn convert_multisig_payload(
                     payload: Some(
                         transaction::multisig_transaction_payload::Payload::EntryFunctionPayload(
                             convert_entry_function_payload(entry_function_payload),
+                        ),
+                    ),
+                }
+            },
+            MultisigTransactionPayload::ScriptPayload(script_payload) => {
+                transaction::MultisigTransactionPayload {
+                    r#type: transaction::multisig_transaction_payload::Type::ScriptPayload as i32,
+                    payload: Some(
+                        transaction::multisig_transaction_payload::Payload::ScriptPayload(
+                            convert_script_payload(script_payload),
                         ),
                     ),
                 }
@@ -668,6 +742,15 @@ fn convert_signature(signature: &Signature) -> transaction::AnySignature {
                 signature: s.value.clone().into(),
             })),
         },
+        Signature::SlhDsa_Sha2_128s(s) => transaction::AnySignature {
+            r#type: transaction::any_signature::Type::SlhDsaSha2128s as i32,
+            signature: s.value.clone().into(),
+            signature_variant: Some(any_signature::SignatureVariant::SlhDsaSha2128s(
+                SlhDsaSha2128s {
+                    signature: s.value.clone().into(),
+                },
+            )),
+        },
     }
 }
 
@@ -691,6 +774,10 @@ fn convert_public_key(public_key: &PublicKey) -> transaction::AnyPublicKey {
         },
         PublicKey::FederatedKeyless(p) => transaction::AnyPublicKey {
             r#type: transaction::any_public_key::Type::FederatedKeyless as i32,
+            public_key: p.value.clone().into(),
+        },
+        PublicKey::SlhDsa_Sha2_128s(p) => transaction::AnyPublicKey {
+            r#type: transaction::any_public_key::Type::SlhDsaSha2128s as i32,
             public_key: p.value.clone().into(),
         },
     }
@@ -1014,11 +1101,78 @@ fn convert_validator_transaction(
                     )
                 )
             },
+            ApiValidatorTransactionEnum::ChunkyDKGResult(_) => {
+                // TODO(ibalajiarun): Support indexer
+                None
+            },
+            ApiValidatorTransactionEnum::TimelockDKGResult(_) => {
+                // Not indexed, like TimelockShare. The transaction is kept with its events.
+                None
+            },
             ApiValidatorTransactionEnum::TimelockShare(_) => {
-                // TODO: Implement full TimelockShare conversion when proto is ready
+                // The indexer protobuf has no timelock share type yet. The transaction is kept
+                // with its events, and the share payload is not indexed.
                 None
             },
         },
         events: convert_events(api_validator_txn.events()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aptos_api_types::{
+        DeleteTableItem as ApiDeleteTableItem, HexEncodedBytes, WriteTableItem as ApiWriteTableItem,
+    };
+
+    // Converting a table item with no decoded `data` must not panic.
+
+    #[test]
+    fn write_table_item_without_decoded_data_does_not_panic() {
+        let change = WriteSetChange::WriteTableItem(ApiWriteTableItem {
+            state_key_hash: "0xdeadbeef".to_string(),
+            handle: HexEncodedBytes::from(vec![0x11, 0x22]),
+            key: HexEncodedBytes::from(vec![0x33]),
+            value: HexEncodedBytes::from(vec![0x44]),
+            data: None,
+        });
+
+        match convert_write_set_change(&change).change.unwrap() {
+            transaction::write_set_change::Change::WriteTableItem(item) => {
+                assert!(
+                    item.data.is_none(),
+                    "decoded data must be omitted, not faked"
+                );
+                assert_eq!(
+                    item.handle,
+                    HexEncodedBytes::from(vec![0x11, 0x22]).to_string()
+                );
+                assert_eq!(item.key, HexEncodedBytes::from(vec![0x33]).to_string());
+            },
+            other => panic!("expected WriteTableItem, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn delete_table_item_without_decoded_data_does_not_panic() {
+        let change = WriteSetChange::DeleteTableItem(ApiDeleteTableItem {
+            state_key_hash: "0xdeadbeef".to_string(),
+            handle: HexEncodedBytes::from(vec![0x55]),
+            key: HexEncodedBytes::from(vec![0x66]),
+            data: None,
+        });
+
+        match convert_write_set_change(&change).change.unwrap() {
+            transaction::write_set_change::Change::DeleteTableItem(item) => {
+                assert!(
+                    item.data.is_none(),
+                    "decoded data must be omitted, not faked"
+                );
+                assert_eq!(item.handle, HexEncodedBytes::from(vec![0x55]).to_string());
+                assert_eq!(item.key, HexEncodedBytes::from(vec![0x66]).to_string());
+            },
+            other => panic!("expected DeleteTableItem, got {:?}", other),
+        }
+    }
 }

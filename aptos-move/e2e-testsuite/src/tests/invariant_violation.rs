@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_language_e2e_tests::{common_transactions::peer_to_peer_txn, executor::FakeExecutor};
 use aptos_types::{
@@ -39,22 +39,17 @@ fn invariant_violation_error() {
     );
 
     // Disable the CHARGE_INVARIANT_VIOLATION flag.
-    executor.exec(
-        "features",
-        "change_feature_flags_internal",
-        vec![],
-        vec![
-            MoveValue::Signer(AccountAddress::ONE)
-                .simple_serialize()
-                .unwrap(),
-            MoveValue::Vector(vec![]).simple_serialize().unwrap(),
-            MoveValue::Vector(vec![MoveValue::U64(
-                FeatureFlag::CHARGE_INVARIANT_VIOLATION as u64,
-            )])
+    executor.exec("features", "change_feature_flags_internal", vec![], vec![
+        MoveValue::Signer(AccountAddress::ONE)
             .simple_serialize()
             .unwrap(),
-        ],
-    );
+        MoveValue::Vector(vec![]).simple_serialize().unwrap(),
+        MoveValue::Vector(vec![MoveValue::U64(
+            FeatureFlag::CHARGE_INVARIANT_VIOLATION as u64,
+        )])
+        .simple_serialize()
+        .unwrap(),
+    ]);
 
     let output = executor.execute_transaction(txn);
 

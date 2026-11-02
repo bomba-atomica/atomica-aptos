@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::tests::execute_script_for_test;
 use claims::assert_ok;
@@ -17,7 +19,7 @@ use move_vm_test_utils::InMemoryStorage;
 fn initialize_storage_with_binary_format_version(binary_format_version: u32) -> InMemoryStorage {
     let vm_config = VMConfig {
         deserializer_config: DeserializerConfig::new(binary_format_version, IDENTIFIER_SIZE_MAX),
-        ..Default::default()
+        ..VMConfig::default_for_test()
     };
     let runtime_environment = RuntimeEnvironment::new_with_config(vec![], vm_config);
     InMemoryStorage::new_with_runtime_environment(runtime_environment)
@@ -42,17 +44,14 @@ fn test_publish_module_with_custom_max_binary_format_version() {
         let storage = initialize_storage_with_binary_format_version(new_version);
         let module_storage = storage.as_unsync_module_storage();
 
-        let new_module_storage = StagingModuleStorage::create(
-            m.self_addr(),
-            &module_storage,
-            vec![b_new.clone().into()],
-        )
-        .expect("New module should be publishable");
-        StagingModuleStorage::create(
-            m.self_addr(),
-            &new_module_storage,
-            vec![b_old.clone().into()],
-        )
+        let new_module_storage =
+            StagingModuleStorage::create(m.self_addr(), &module_storage, vec![b_new
+                .clone()
+                .into()])
+            .expect("New module should be publishable");
+        StagingModuleStorage::create(m.self_addr(), &new_module_storage, vec![b_old
+            .clone()
+            .into()])
         .expect("Old module should be publishable");
     }
 
@@ -61,11 +60,9 @@ fn test_publish_module_with_custom_max_binary_format_version() {
         let storage = initialize_storage_with_binary_format_version(old_version);
         let module_storage = storage.as_unsync_module_storage();
 
-        let result_new = StagingModuleStorage::create(
-            m.self_addr(),
-            &module_storage,
-            vec![b_new.clone().into()],
-        );
+        let result_new = StagingModuleStorage::create(m.self_addr(), &module_storage, vec![b_new
+            .clone()
+            .into()]);
         if let Err(err) = result_new {
             assert_eq!(err.major_status(), StatusCode::UNKNOWN_VERSION);
         } else {

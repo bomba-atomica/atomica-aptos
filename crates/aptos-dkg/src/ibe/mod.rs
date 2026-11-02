@@ -1,760 +1,535 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-//! Identity-Based Encryption (IBE) primitives for timelock encryption.
+//! Boneh-Franklin identity-based encryption on BLS12-381 for the Atomica timelock, on arkworks.
 //!
-//! This module implements a Boneh-Franklin style IBE scheme using BLS12-381:
+//! Design: `atomica/docs/decisions/aptos-upgrade-ibe-chunky-spec.md` (sections 5 and 6).
 //!
-//! - **Master Public Key (MPK)**: A G2 element `mpk = g2^s` where `s` is the master secret
-//! - **Identity**: A domain-specific string hashed to G1
-//! - **Decryption Key**: For identity `id`, the key is `dk = H(id)^s` in G1
-//! - **Encryption**: Uses the pairing `e(H(id), mpk)` to derive a symmetric key
-//! - **Decryption**: Uses the pairing `e(dk, U)` to recover the symmetric key
+//! - Master public key `mpk = g2^s` (G2, 96 bytes compressed). `s` is dealt by a chunky DKG
+//!   session and is never reconstructed. Only shares of `s * H1(id)` are combined.
+//! - Identity `id = SHA3-256(tag || chain_id || epoch || timelock_id || deadline_us)`, `Q = H1(id)`
+//!   with H1 the RFC 9380 `BLS12381G1_XMD:SHA-256_SSWU_RO_` suite and a dedicated DST.
+//! - Decryption key `dk = s * Q` (G1, 48 bytes compressed). A share is `s_p * Q`.
+//! - KEM: `U = g2^r`, `K = e(Q, mpk)^r`. Decapsulation: `K = e(dk, U)`.
 //!
-//! ## Architecture Overview
+//! The un-authenticated XOR stream cipher of the earlier `blstrs` code is not ported. Bids use
+//! the AEAD wrapper in [`ciphertext`].
 //!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │                         IBE Encryption Flow                              │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │                                                                          │
-//! │  Input: (mpk, identity, message)                                        │
-//! │         │                                                               │
-//! │         ▼                                                               │
-//! │  1. h = H(identity) ──► G1 point                                        │
-//! │  2. r ← random scalar                                                   │
-//! │  3. U = g2^r ──► G2 element (sent with ciphertext)                      │
-//! │  4. g_id = e(h, mpk)^r ──► Gt element                                   │
-//! │  5. k = SHA3-256(g_id)[0:32] ──► symmetric key                          │
-//! │  6. V = message XOR k ──► ciphertext payload                            │
-//! │                                                                          │
-//! │  Output: (U, V) ciphertext                                               │
-//! └─────────────────────────────────────────────────────────────────────────┘
-//!
-//! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │                         IBE Decryption Flow                              │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │                                                                          │
-//! │  Input: (dk, identity, ciphertext = (U, V))                             │
-//! │         │                                                               │
-//! │         ▼                                                               │
-//! │  1. h = H(identity) ──► G1 point                                        │
-//! │  2. g_id = e(dk, U) ──► Gt element (reconstructs same as encrypt)       │
-//! │  3. k = SHA3-256(g_id)[0:32] ──► symmetric key                          │
-//! │  4. message = V XOR k ──► plaintext                                     │
-//! │                                                                          │
-//! │  Output: message                                                         │
-//! └─────────────────────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! ## Integration with DKG
-//!
-//! The IBE module consumes the output of the Scalar ElGamal PVSS:
-//! - DKG produces scalar shares via [`scalar_elgamal::Transcript`](../../pvss/scalar_elgamal/transcript.rs)
-//! - Shares are reconstructed to get the master secret `s`
-//! - Decryption keys are derived: `dk = H(id)^s`
-//!
-//! See [`transcript.rs`](../../pvss/scalar_elgamal/transcript.rs) for DKG integration.
-//!
-//! ## Documentation References
-//!
-//! **Core Documentation:**
-//! - [ADR-001: Dual-Output DKG](atomica/docs/adr-001-dual-output-dkg.md)
-//! - [Implementation Plan](atomica/docs/implementation-plan-unified-dkg-ibe.md)
-//! - [Definitions](atomica/docs/definitions.md)
-//!
-//! **Technical Details:**
-//! - [Chunked ElGamal Scalar Generation](atomica/docs/technical/chunked-elgamal-scalar-generation.md)
-//! - [Scalar ElGamal PVSS](../pvss/scalar_elgamal/transcript.rs)
-//!
-//! **Testing:**
-//! - [IBE Unit Tests](tests.rs)
-//! - [mpk_encrypt_decrypt Smoke Test](../../../../testsuite/smoke-test/src/timelock/mpk_encrypt_decrypt.rs)
-//!
-//! ## Security
-//!
-//! The IBE scheme relies on the Bilinear Diffie-Hellman (BDH) assumption.
-//! The identity derivation includes the timelock ID and deadline to prevent
-//! cross-timelock attacks.
-//!
-//! ## File Structure
-//!
-//! - [`mod.rs`](mod.rs) - Core IBE primitives (encrypt, decrypt, key derivation)
-//! - [`ciphertext.rs`](ciphertext.rs) - Ciphertext structure and serialization
-//! - [`tests.rs`](tests.rs) - Unit tests with known scalar examples
-//!
+//! Every group element that arrives from outside (shares, keys, `mpk`, `U`) is decoded with
+//! [`decode_g1`] or [`decode_g2`]. Those check length, curve membership, the prime-order
+//! subgroup, and reject the identity. No decode in this module uses `Validate::No`.
 
 pub mod ciphertext;
 
 #[cfg(test)]
+mod golden_vectors;
+#[cfg(test)]
 mod tests;
 
-#[cfg(test)]
-mod golden_vectors;
-
-pub use ciphertext::Ciphertext;
-
-use crate::pvss::dealt_secret_key::scalar::DealtSecretKey;
-use crate::utils::random::random_scalar_from_uniform_bytes;
-use aptos_crypto::blstrs::SCALAR_NUM_BYTES;
-use blstrs::{pairing, G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
-use group::{Curve, Group};
-use serde::{Deserialize, Serialize};
+use aptos_crypto::arkworks::shamir::ShamirThresholdConfig;
+pub use ark_bls12_381::Fr as MasterScalar;
+use ark_bls12_381::{
+    g1::Config as G1Config, Bls12_381, Fr, G1Affine, G1Projective, G2Affine, G2Projective,
+};
+use ark_ec::{
+    hashing::{curve_maps::wb::WBMap, map_to_curve_hasher::MapToCurveBasedHasher, HashToCurve},
+    pairing::{Pairing, PairingOutput},
+    AffineRepr, CurveGroup, VariableBaseMSM,
+};
+use ark_ff::{field_hashers::DefaultFieldHasher, PrimeField, Zero};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+pub use ciphertext::{BidCiphertext, MAX_CIPHERTEXT_BYTES};
+use sha2_0_10_6::Sha256;
 use sha3::{Digest, Sha3_256};
-use std::fs;
-use std::ops::Mul;
-use std::path::Path;
+use std::{collections::HashSet, ops::Mul};
 
-/// Errors that can occur during IBE operations.
+/// Compressed G1 length (decryption keys and key shares).
+pub const G1_COMPRESSED_LEN: usize = 48;
+/// Compressed G2 length (`mpk`, `U`, verification keys).
+pub const G2_COMPRESSED_LEN: usize = 96;
+/// Identity length in bytes.
+pub const IDENTITY_LEN: usize = 32;
+
+/// RFC 9380 domain separation tag for `H1`. Distinct from the mempool's
+/// `APTOS_BATCH_ENCRYPTION_HASH_G2_ELEMENT` and from the retired `APTOS_IBE_IDENTITY_DST`.
+pub const IBE_H1_DST: &[u8] = b"ATOMICA_TIMELOCK_IBE_V2_H1";
+/// Prefix of the identity hash. Must equal `IDENTITY_TAG` in `ibe_config.move`.
+pub const IBE_IDENTITY_TAG: &[u8] = b"ATOMICA_TIMELOCK_IBE_V2_ID";
+/// HKDF salt for the bid key derivation.
+pub const IBE_KDF_SALT: &[u8] = b"ATOMICA_TIMELOCK_IBE_V2_KDF";
+
+/// Upper bound on the number of virtual players (total weight) accepted by reconstruction.
+///
+/// The Lagrange computation builds an FFT domain of the next power of two above the total
+/// weight. This keeps that work bounded for a caller-supplied value.
+pub const MAX_TOTAL_WEIGHT: usize = 1 << 16;
+
+/// Errors of the IBE module. No function in this module panics on malformed input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IbeError {
-    /// Validator indices and shares have different lengths
+    /// `validator_indices` and the share lists have different lengths.
     ValidatorIndicesSharesMismatch {
         indices_len: usize,
         shares_len: usize,
     },
-    /// No validators participating in reconstruction
+    /// No shares were supplied.
     EmptyShares,
-    /// Total weight doesn't match sum of individual weights
+    /// `total_weight` differs from the sum of `weights`.
     WeightSumMismatch {
         total_weight: u64,
         computed_sum: u64,
     },
-    /// Number of shares doesn't match validator's weight
+    /// A validator supplied a number of shares different from its weight.
     ShareWeightMismatch {
         validator_index: u64,
         shares_count: usize,
         expected_weight: u64,
     },
-    /// Failed to create weighted configuration
+    /// Threshold or total weight is out of range.
     InvalidWeightedConfig(String),
-    /// Invalid G1 share format (not 48 bytes or invalid point)
-    InvalidG1Share(String),
+    /// A validator index is outside the weights vector.
+    PlayerOutOfBounds { index: u64, num_players: usize },
+    /// The same validator index appears twice.
+    DuplicatePlayer(u64),
+    /// Fewer shares than the threshold weight.
+    BelowThreshold { have: usize, need: usize },
+    /// Wrong byte length for a group element or field.
+    InvalidLength {
+        what: &'static str,
+        expected: usize,
+        got: usize,
+    },
+    /// A group element failed validated decoding (not on curve, not in the subgroup, or the identity).
+    InvalidPoint(&'static str),
+    /// Hash to curve failed.
+    HashToCurve,
+    /// A ciphertext failed to parse.
+    MalformedCiphertext(String),
+    /// The one-time signature did not verify.
+    BadSignature,
+    /// AEAD authentication failed.
+    DecryptionFailed,
+    /// Randomness or encryption failure.
+    EncryptionFailed,
+    /// The master public key is not the G2 interpolation of the virtual players' verification keys.
+    MpkVerificationKeyMismatch,
 }
 
 impl std::fmt::Display for IbeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            IbeError::ValidatorIndicesSharesMismatch {
-                indices_len,
-                shares_len,
-            } => {
-                write!(
-                    f,
-                    "validator_indices ({}) and scalar_shares ({}) must have same length",
-                    indices_len, shares_len
-                )
-            },
-            IbeError::EmptyShares => write!(f, "Cannot reconstruct DK from empty shares"),
-            IbeError::WeightSumMismatch {
-                total_weight,
-                computed_sum,
-            } => write!(
-                f,
-                "total_weight ({}) must equal sum of weights ({})",
-                total_weight, computed_sum
-            ),
-            IbeError::ShareWeightMismatch {
-                validator_index,
-                shares_count,
-                expected_weight,
-            } => write!(
-                f,
-                "Validator {} has {} shares but weight is {}",
-                validator_index, shares_count, expected_weight
-            ),
-            IbeError::InvalidWeightedConfig(msg) => write!(f, "Invalid weighted config: {}", msg),
-            IbeError::InvalidG1Share(msg) => write!(f, "Invalid G1 share: {}", msg),
-        }
+        write!(f, "{:?}", self)
     }
 }
 
 impl std::error::Error for IbeError {}
 
-/// Domain separation tag for IBE identity hashing.
-/// Ensures unique hash domains for IBE vs other protocols.
-pub const IBE_IDENTITY_DST: &[u8] = b"APTOS_IBE_IDENTITY_DST";
+type G1Hasher = MapToCurveBasedHasher<G1Projective, DefaultFieldHasher<Sha256>, WBMap<G1Config>>;
 
-/// Domain separation tag for symmetric key derivation from pairing result.
-/// Prevents key confusion between IBE and other uses of the pairing output.
-pub const IBE_KEY_DERIVATION_DST: &[u8] = b"APTOS_IBE_KEY_DERIVATION_DST";
-
-/// IBE roundtrip test vector with DK share reconstruction
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct IbeRoundtripVector {
-    pub description: String,
-    pub rng_seed: u64,
-    pub threshold: u64,
-    pub total_weight: u64,
-    pub msk_hex: String,
-    pub mpk_g2_hex: String,
-    pub identity_hash_hex: String,
-    pub h_identity_g1_hex: String,
-    pub validator_indices: Vec<u64>,
-    pub validator_weights: Vec<u64>,
-    /// Nested vector of DK shares: vector<vector<G1_compressed_hex>>
-    /// Outer index: validator, inner index: virtual player share
-    pub dk_shares_g1_hex: Vec<Vec<String>>,
-    pub reconstructed_dk_g1_hex: String,
-    pub plaintext_hex: String,
-    pub ciphertext_u_g2_hex: String,
-    pub ciphertext_v_hex: String,
-}
-
-/// Golden vectors container
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct GoldenVectors {
-    pub ibe_roundtrip_vectors: Vec<IbeRoundtripVector>,
-}
-
-/// Load IBE golden vectors from the standard location.
+/// Computes the 32 byte identity `SHA3-256(tag || chain_id || epoch || timelock_id || deadline_us)`.
 ///
-/// The golden vectors are used across:
-/// - Rust unit tests
-/// - Move VM native function tests
-/// - Move language unit tests
-///
-/// Returns `None` if the file cannot be loaded.
-pub fn load_golden_vectors() -> Option<GoldenVectors> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let workspace_root = Path::new(&manifest_dir).parent()?.parent()?;
-    let golden_vectors_path = workspace_root.join("atomica/golden_vectors/ibe_golden_vectors.json");
-
-    let contents = fs::read_to_string(&golden_vectors_path).ok()?;
-    serde_json::from_str(&contents).ok()
-}
-
-/// Computes an IBE identity from a timelock ID and deadline.
-///
-/// The identity is a 32-byte hash that uniquely identifies a timelock
-/// for encryption purposes. The identity is computed as:
-///
-/// ```
-/// identity = SHA3-256(IBE_IDENTITY_DST || timelock_id || deadline_us)
-/// ```
-///
-/// This construction ensures:
-/// 1. **Uniqueness**: Each (timelock_id, deadline_us) pair maps to a unique identity
-/// 2. **Domain Separation**: Different protocols use different DSTs
-/// 3. **Collision Resistance**: SHA3-256 provides 128-bit security
-///
-/// # Arguments
-/// * `timelock_id` - Unique identifier for the timelock (assigned on registration)
-/// * `deadline_us` - Deadline in microseconds since epoch (when decryption becomes possible)
-///
-/// # Returns
-/// A 32-byte identity hash suitable for IBE encryption
-///
-/// # Example
-///
-/// ```
-/// let identity = compute_identity(1, 1704067200000000); // Deadline: 2024-01-01
-/// assert_eq!(identity.len(), 32);
-/// ```
-///
-/// # See Also
-///
-/// - [`hash_to_g1()`] - Maps identity to G1 curve point
-/// - [`derive_decryption_key()`] - Derives decryption key from identity and secret
-/// - [Timelock Registration](atomica/docs/technical/timelock-registration.md)
-pub fn compute_identity(timelock_id: u64, deadline_us: u64) -> [u8; 32] {
+/// Integers are little endian, matching the BCS encoding used by `ibe_config::compute_identity`.
+pub fn compute_identity(
+    chain_id: u8,
+    epoch: u64,
+    timelock_id: u64,
+    deadline_us: u64,
+) -> [u8; IDENTITY_LEN] {
     let mut hasher = Sha3_256::new();
-    hasher.update(IBE_IDENTITY_DST);
+    hasher.update(IBE_IDENTITY_TAG);
+    hasher.update([chain_id]);
+    hasher.update(epoch.to_le_bytes());
     hasher.update(timelock_id.to_le_bytes());
     hasher.update(deadline_us.to_le_bytes());
     hasher.finalize().into()
 }
 
-/// Hashes an identity to a G1 curve point.
-///
-/// Uses the standard hash-to-curve construction for BLS12-381 G1.
-/// The result is used in the pairing operations for encryption/decryption.
-///
-/// # Arguments
-/// * `identity` - The 32-byte identity bytes (from [`compute_identity()`])
-///
-/// # Returns
-/// A G1 projective point representing the hashed identity
-///
-/// # Algorithm
-///
-/// Uses the `hash_to_curve` method from `blstrs`:
-/// ```text
-/// Q_id = H*(identity || domain_separation_tag)
-/// ```
-/// where H* is the random oracle construction for BLS12-381 G1.
-///
-/// # See Also
-///
-/// - [`compute_identity()`] - Creates the identity bytes
-/// - [`derive_decryption_key()`] - Uses the G1 point to derive decryption keys
-/// - [Boneh-Franklin IBE](atomica/docs/definitions.md#boneh-franklin-identity-based-encryption-ibe)
-pub fn hash_to_g1(identity: &[u8]) -> G1Projective {
-    G1Projective::hash_to_curve(identity, IBE_IDENTITY_DST, b"H(id)")
+/// `H1`: hashes identity bytes to G1 (RFC 9380 SSWU, random oracle variant).
+pub fn hash_to_g1(identity: &[u8]) -> Result<G1Affine, IbeError> {
+    let hasher = G1Hasher::new(IBE_H1_DST).map_err(|_| IbeError::HashToCurve)?;
+    hasher.hash(identity).map_err(|_| IbeError::HashToCurve)
 }
 
-/// Derives the decryption key for an identity given the master secret.
-///
-/// Computes `dk = H(identity)^secret` where H maps the identity to G1.
-/// This is the "Extract" algorithm in Boneh-Franklin IBE.
-///
-/// # Arguments
-/// * `secret` - The master secret scalar (from DKG) or a threshold share
-/// * `identity` - The identity bytes (from [`compute_identity()`])
-///
-/// # Returns
-/// The decryption key as a G1 affine point
-///
-/// # Example
-///
-/// ```
-/// let secret = Scalar::from(42u64);
-/// let identity = compute_identity(1, 1704067200000000);
-/// let dk = derive_decryption_key(&secret, &identity);
-/// ```
-///
-/// # Security Notes
-///
-/// - The secret should come from DKG reconstruction or be a threshold share
-/// - For threshold decryption, each validator computes their contribution:
-///   `dk_i = H(identity)^share_i`
-/// - Contributions are combined with Lagrange coefficients to get full DK
-///
-/// # See Also
-///
-/// - [`compute_identity()`] - Creates identity from timelock parameters
-/// - [`hash_to_g1()`] - Maps identity to G1
-/// - [DKG Integration](atomica/docs/implementation-plan-unified-dkg-ibe.md)
-pub fn derive_decryption_key(secret: &Scalar, identity: &[u8]) -> G1Affine {
-    let h = hash_to_g1(identity);
-    h.mul(secret).to_affine()
+/// Validated decode of a compressed G1 point: exact length, on curve, prime-order subgroup,
+/// not the identity.
+pub fn decode_g1(bytes: &[u8]) -> Result<G1Affine, IbeError> {
+    if bytes.len() != G1_COMPRESSED_LEN {
+        return Err(IbeError::InvalidLength {
+            what: "g1",
+            expected: G1_COMPRESSED_LEN,
+            got: bytes.len(),
+        });
+    }
+    let p = G1Affine::deserialize_with_mode(bytes, Compress::Yes, Validate::Yes).map_err(|_| {
+        IbeError::InvalidPoint("g1 not on curve or not in the prime-order subgroup")
+    })?;
+    if p.is_zero() {
+        return Err(IbeError::InvalidPoint("g1 is the identity"));
+    }
+    Ok(p)
 }
 
-/// Encrypts a message using IBE.
+/// Validated decode of a compressed G2 point. Same checks as [`decode_g1`].
+pub fn decode_g2(bytes: &[u8]) -> Result<G2Affine, IbeError> {
+    if bytes.len() != G2_COMPRESSED_LEN {
+        return Err(IbeError::InvalidLength {
+            what: "g2",
+            expected: G2_COMPRESSED_LEN,
+            got: bytes.len(),
+        });
+    }
+    let p = G2Affine::deserialize_with_mode(bytes, Compress::Yes, Validate::Yes).map_err(|_| {
+        IbeError::InvalidPoint("g2 not on curve or not in the prime-order subgroup")
+    })?;
+    if p.is_zero() {
+        return Err(IbeError::InvalidPoint("g2 is the identity"));
+    }
+    Ok(p)
+}
+
+/// Compressed encoding of a G1 point.
+pub fn encode_g1(p: &G1Affine) -> [u8; G1_COMPRESSED_LEN] {
+    let mut out = [0u8; G1_COMPRESSED_LEN];
+    p.serialize_compressed(&mut out[..])
+        .expect("a G1 point always fits in 48 bytes");
+    out
+}
+
+/// Compressed encoding of a G2 point.
+pub fn encode_g2(p: &G2Affine) -> [u8; G2_COMPRESSED_LEN] {
+    let mut out = [0u8; G2_COMPRESSED_LEN];
+    p.serialize_compressed(&mut out[..])
+        .expect("a G2 point always fits in 96 bytes");
+    out
+}
+
+/// Master public key `g2^s` for a master secret (tests and tooling only: the product never
+/// holds `s`).
+pub fn master_public_key(secret: &Fr) -> G2Affine {
+    (G2Projective::from(G2Affine::generator()) * secret).into_affine()
+}
+
+/// Boneh-Franklin Extract, or a key share when `secret` is a Shamir share: `secret * H1(id)`.
+pub fn derive_decryption_key(secret: &Fr, identity: &[u8]) -> Result<G1Affine, IbeError> {
+    let q = hash_to_g1(identity)?;
+    Ok(q.mul(secret).into_affine())
+}
+
+/// Checks `e(dk, g2) = e(H1(id), mpk)` as one multi-pairing `e(dk, g2) * e(-Q, mpk) = 1`.
 ///
-/// Given the master public key and an identity, encrypts the message so that
-/// only the holder of the corresponding decryption key can decrypt it.
+/// Both points must already be validated (use [`decode_g1`] and [`decode_g2`]).
+pub fn verify_decryption_key(dk: &G1Affine, identity: &[u8], mpk: &G2Affine) -> bool {
+    let q = match hash_to_g1(identity) {
+        Ok(q) => q,
+        Err(_) => return false,
+    };
+    Bls12_381::multi_pairing([*dk, -q], [G2Affine::generator(), *mpk]).is_zero()
+}
+
+/// Checks one virtual player's key share `share = s_p * H1(id)` against its verification key
+/// `vk_p = g2^{s_p}`: `e(Q, vk_p) = e(share, g2)`, as one multi-pairing.
+pub fn verify_dk_share(share: &G1Affine, identity: &[u8], vk: &G2Affine) -> bool {
+    let q = match hash_to_g1(identity) {
+        Ok(q) => q,
+        Err(_) => return false,
+    };
+    Bls12_381::multi_pairing([q, -*share], [*vk, G2Affine::generator()]).is_zero()
+}
+
+/// Why [`verify_player_shares`] refused a share set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShareCheckFailure {
+    /// The number of shares differs from the number of verification keys of the author.
+    CountMismatch { shares: usize, keys: usize },
+    /// The identity does not hash to a curve point.
+    Identity,
+    /// Share `index` failed validated decoding.
+    InvalidShare { index: usize, error: IbeError },
+    /// Verification key `index` failed validated decoding.
+    InvalidVerificationKey { index: usize, error: IbeError },
+    /// Share `index` failed `e(H1(id), vk) = e(share, g2)`.
+    PairingMismatch { index: usize },
+}
+
+/// Boneh-Franklin share check for all virtual players of one validator.
 ///
-/// # Encryption Process
-/// 1. Hash identity to G1: `h = H(identity)`
-/// 2. Sample random scalar `r`
-/// 3. Compute `U = g2^r`
-/// 4. Compute symmetric key `k = H'(e(h, mpk)^r)`
-/// 5. XOR message with key stream derived from k
+/// `shares[j]` and `verification_keys[j]` belong to the same virtual player `j`. Every point is decoded
+/// with validation (on curve, prime-order subgroup, not the identity) and every share must satisfy
+/// `e(H1(identity), vk_j) = e(share_j, g2)`. `H1(identity)` is computed once. The result depends only on
+/// the arguments, so every validator reaches the same verdict. Never panics.
+pub fn verify_player_shares(
+    identity: &[u8],
+    shares: &[Vec<u8>],
+    verification_keys: &[Vec<u8>],
+) -> Result<(), ShareCheckFailure> {
+    if shares.is_empty() || shares.len() != verification_keys.len() {
+        return Err(ShareCheckFailure::CountMismatch {
+            shares: shares.len(),
+            keys: verification_keys.len(),
+        });
+    }
+    let q = hash_to_g1(identity).map_err(|_| ShareCheckFailure::Identity)?;
+    let g2 = G2Affine::generator();
+    for (index, (share, vk)) in shares.iter().zip(verification_keys).enumerate() {
+        let share =
+            decode_g1(share).map_err(|error| ShareCheckFailure::InvalidShare { index, error })?;
+        let vk = decode_g2(vk)
+            .map_err(|error| ShareCheckFailure::InvalidVerificationKey { index, error })?;
+        if !Bls12_381::multi_pairing([q, -share], [vk, g2]).is_zero() {
+            return Err(ShareCheckFailure::PairingMismatch { index });
+        }
+    }
+    Ok(())
+}
+
+/// KEM encapsulation with an explicit randomness scalar. Returns `(U, K)`.
 ///
-/// # Arguments
-/// * `mpk` - The master public key (G2 element)
-/// * `identity` - The identity bytes
-/// * `msg` - The plaintext message
-/// * `rng` - Random number generator
-///
-/// # Returns
-/// The ciphertext containing U and the encrypted message
-pub fn ibe_encrypt<R: rand::Rng>(
+/// `U = g2^r`, `K = e(r * Q, mpk)`. `r` must be fresh and uniform in production. The scalar is
+/// explicit so that vectors are reproducible.
+pub fn encapsulate_with_scalar(
     mpk: &G2Affine,
     identity: &[u8],
-    msg: &[u8],
-    rng: &mut R,
-) -> Ciphertext {
-    // Hash identity to G1
-    let h = hash_to_g1(identity);
-
-    // Sample random scalar r
-    let r = random_scalar(rng);
-
-    // Compute U = g2^r
-    let u = G2Projective::generator().mul(&r);
-
-    // Compute pairing e(h, mpk)^r = e(h^r, mpk) = e(h, mpk^r)
-    // We use e(h^r, mpk) for efficiency
-    let h_r = h.mul(&r).to_affine();
-    let pairing_result = pairing(&h_r, mpk);
-
-    // Derive symmetric key from pairing result
-    let key_stream = derive_key_stream(&pairing_result, msg.len());
-
-    // XOR message with key stream
-    let v: Vec<u8> = msg
-        .iter()
-        .zip(key_stream.iter())
-        .map(|(m, k)| m ^ k)
-        .collect();
-
-    Ciphertext::new(u, v)
+    r: &Fr,
+) -> Result<(G2Affine, PairingOutput<Bls12_381>), IbeError> {
+    let q = hash_to_g1(identity)?;
+    let u = (G2Projective::from(G2Affine::generator()) * r).into_affine();
+    let q_r = q.mul(r).into_affine();
+    Ok((u, Bls12_381::pairing(q_r, *mpk)))
 }
 
-/// Decrypts a ciphertext using the decryption key.
-///
-/// # Decryption Process
-/// 1. Compute `e(dk, U)` where dk is the decryption key
-/// 2. Derive symmetric key `k = H'(e(dk, U))`
-/// 3. XOR ciphertext with key stream to recover message
-///
-/// Note: `e(dk, U) = e(H(id)^s, g2^r) = e(H(id), g2)^(sr) = e(H(id), mpk)^r`
-///
-/// # Arguments
-/// * `dk` - The decryption key for the identity
-/// * `ciphertext` - The ciphertext to decrypt
-///
-/// # Returns
-/// The decrypted plaintext message
-pub fn ibe_decrypt(dk: &G1Affine, ciphertext: &Ciphertext) -> Vec<u8> {
-    // Compute pairing e(dk, U)
-    let pairing_result = pairing(dk, &ciphertext.u);
-
-    // Derive symmetric key from pairing result
-    let key_stream = derive_key_stream(&pairing_result, ciphertext.payload_len());
-
-    // XOR ciphertext with key stream to recover plaintext
-    ciphertext
-        .payload()
-        .iter()
-        .zip(key_stream.iter())
-        .map(|(c, k)| c ^ k)
-        .collect()
+/// KEM decapsulation: `K = e(dk, U)`.
+pub fn decapsulate(dk: &G1Affine, u: &G2Affine) -> PairingOutput<Bls12_381> {
+    Bls12_381::pairing(*dk, *u)
 }
 
-/// Derives a key stream from a pairing result (Gt element).
-///
-/// Uses SHA3-256 in counter mode to generate arbitrary-length key material.
-fn derive_key_stream(gt: &blstrs::Gt, len: usize) -> Vec<u8> {
-    let mut key_stream = Vec::with_capacity(len);
-    let mut counter: u32 = 0;
-
-    // Serialize Gt element for hashing
-    let gt_bytes = gt_to_bytes(gt);
-
-    while key_stream.len() < len {
-        let mut hasher = Sha3_256::new();
-        hasher.update(IBE_KEY_DERIVATION_DST);
-        hasher.update(&gt_bytes);
-        hasher.update(counter.to_le_bytes());
-        let block = hasher.finalize();
-        key_stream.extend_from_slice(&block);
-        counter += 1;
+/// Samples a nonzero scalar from 64 uniform bytes (negligible bias).
+pub fn random_scalar<R: rand::Rng>(rng: &mut R) -> Fr {
+    loop {
+        let mut bytes = [0u8; 64];
+        rng.fill(&mut bytes[..]);
+        let s = Fr::from_le_bytes_mod_order(&bytes);
+        if !s.is_zero() {
+            return s;
+        }
     }
-
-    key_stream.truncate(len);
-    key_stream
 }
 
-/// Serializes a Gt element to bytes for hashing.
+/// Weighted Lagrange interpolation at zero in G1, over validated shares.
 ///
-/// Uses BCS serialization which provides a deterministic byte representation.
-fn gt_to_bytes(gt: &blstrs::Gt) -> Vec<u8> {
-    // Gt implements serde::Serialize, so we can use BCS
-    bcs::to_bytes(gt).expect("Gt serialization should never fail")
-}
-
-/// Generates a random scalar using the provided RNG.
-///
-/// Uses the same approach as the rest of the codebase to work around
-/// rand_core version incompatibilities.
-fn random_scalar<R: rand::Rng>(rng: &mut R) -> Scalar {
-    // Generate 64 random bytes (2 * SCALAR_NUM_BYTES) and reduce modulo the field order
-    let mut bytes = [0u8; 2 * SCALAR_NUM_BYTES];
-    rng.fill(&mut bytes);
-    random_scalar_from_uniform_bytes(&bytes)
-}
-
-/// Verifies that a decryption key is valid for the given identity and MPK.
-///
-/// This is useful for validating decryption keys received from validators.
-///
-/// # Verification
-/// Checks that `e(dk, g2) = e(H(identity), mpk)`
-///
-/// # Arguments
-/// * `dk` - The decryption key to verify
-/// * `identity` - The identity bytes
-/// * `mpk` - The master public key
-///
-/// # Returns
-/// `true` if the decryption key is valid, `false` otherwise
-pub fn verify_decryption_key(dk: &G1Affine, identity: &[u8], mpk: &G2Affine) -> bool {
-    let h = hash_to_g1(identity).to_affine();
-    let g2 = G2Projective::generator().to_affine();
-
-    // Check e(dk, g2) = e(h, mpk)
-    let lhs = pairing(dk, &g2);
-    let rhs = pairing(&h, mpk);
-
-    lhs == rhs
-}
-
-// ============================================================================
-// REFERENCE IMPLEMENTATION: Scalar-Based DK Reconstruction
-// ============================================================================
-// The following is a reference implementation for understanding the cryptographic
-// flow. It is NOT used in production. The production system uses G1-based
-// reconstruction via `reconstruct_ibe_dk_from_g1_shares()`.
-//
-// Production Flow:
-// 1. Validators compute: dk_share_i = s_i * H(identity) (G1 point, 48 bytes)
-// 2. Validators submit G1 points as TimelockShare transactions
-// 3. On-chain: weighted Lagrange interpolation on G1 points
-// 4. Result: DK = Σ(λ_j * dk_share_j)
-//
-// Reference Flow (NOT USED):
-// 1. Validators submit scalar shares s_i
-// 2. Reconstruct master secret s via Lagrange interpolation
-// 3. Compute DK = H(identity)^s
-//
-// The reference implementation below shows how scalar reconstruction would work.
-// It is kept for documentation and verification purposes only.
-// ============================================================================
-
-#[doc(hidden)]
-#[deprecated(
-    since = "0.1.0",
-    note = "Reference only. Use reconstruct_ibe_dk_from_g1_shares() for production."
-)]
-pub fn _reconstruct_ibe_dk_reference(
-    validator_indices: &[u64],
-    scalar_shares: &[Vec<Scalar>],
-    weights: &[u64],
-    total_weight: u64,
-    identity: &[u8; 32],
+/// `player_ids` are virtual player ids (indices into the roots of unity domain of the next power
+/// of two above `total_weight`, the layout of the chunky DKG's `ShamirThresholdConfig`).
+pub fn reconstruct_dk(
+    player_ids: &[usize],
+    shares: &[G1Affine],
+    threshold_weight: usize,
+    total_weight: usize,
 ) -> Result<G1Affine, IbeError> {
-    use crate::pvss::dealt_secret_key_share::scalar::DealtSecretKeyShare;
-    use crate::pvss::scalar_elgamal::WeightedTranscript;
-    use crate::pvss::traits::{Reconstructable, Transcript as TranscriptTrait};
-    use crate::pvss::{Player, WeightedConfig};
+    if player_ids.len() != shares.len() {
+        return Err(IbeError::ValidatorIndicesSharesMismatch {
+            indices_len: player_ids.len(),
+            shares_len: shares.len(),
+        });
+    }
+    if shares.is_empty() {
+        return Err(IbeError::EmptyShares);
+    }
+    if total_weight == 0 || total_weight > MAX_TOTAL_WEIGHT {
+        return Err(IbeError::InvalidWeightedConfig(format!(
+            "total weight {} outside 1..={}",
+            total_weight, MAX_TOTAL_WEIGHT
+        )));
+    }
+    if threshold_weight == 0 || threshold_weight > total_weight {
+        return Err(IbeError::InvalidWeightedConfig(format!(
+            "threshold {} outside 1..={}",
+            threshold_weight, total_weight
+        )));
+    }
+    if shares.len() < threshold_weight {
+        return Err(IbeError::BelowThreshold {
+            have: shares.len(),
+            need: threshold_weight,
+        });
+    }
+    let mut seen = HashSet::with_capacity(player_ids.len());
+    for &id in player_ids {
+        if id >= total_weight {
+            return Err(IbeError::PlayerOutOfBounds {
+                index: id as u64,
+                num_players: total_weight,
+            });
+        }
+        if !seen.insert(id) {
+            return Err(IbeError::DuplicatePlayer(id as u64));
+        }
+    }
+    let config = ShamirThresholdConfig::<Fr>::new(threshold_weight, total_weight);
+    let lagrange = config.lagrange_for_subset(player_ids);
+    G1Projective::msm(shares, &lagrange)
+        .map(|p| p.into_affine())
+        .map_err(|_| IbeError::InvalidWeightedConfig("msm length mismatch".to_string()))
+}
 
-    // Validate inputs
-    if validator_indices.len() != scalar_shares.len() {
+/// Weighted Lagrange interpolation at zero in G2, over already validated points.
+///
+/// Same layout as [`reconstruct_dk`]: `player_ids` index the virtual players (flat, validator order).
+pub fn interpolate_g2_at_zero(
+    player_ids: &[usize],
+    points: &[G2Affine],
+    threshold_weight: usize,
+    total_weight: usize,
+) -> Result<G2Affine, IbeError> {
+    if player_ids.len() != points.len() || points.len() < threshold_weight {
+        return Err(IbeError::BelowThreshold {
+            have: points.len().min(player_ids.len()),
+            need: threshold_weight,
+        });
+    }
+    if total_weight == 0 || total_weight > MAX_TOTAL_WEIGHT {
+        return Err(IbeError::InvalidWeightedConfig(format!(
+            "total weight {} outside 1..={}",
+            total_weight, MAX_TOTAL_WEIGHT
+        )));
+    }
+    if threshold_weight == 0 || threshold_weight > total_weight {
+        return Err(IbeError::InvalidWeightedConfig(format!(
+            "threshold {} outside 1..={}",
+            threshold_weight, total_weight
+        )));
+    }
+    let mut seen = HashSet::with_capacity(player_ids.len());
+    for &id in player_ids {
+        if id >= total_weight {
+            return Err(IbeError::PlayerOutOfBounds {
+                index: id as u64,
+                num_players: total_weight,
+            });
+        }
+        if !seen.insert(id) {
+            return Err(IbeError::DuplicatePlayer(id as u64));
+        }
+    }
+    let config = ShamirThresholdConfig::<Fr>::new(threshold_weight, total_weight);
+    let lagrange = config.lagrange_for_subset(player_ids);
+    G2Projective::msm(points, &lagrange)
+        .map(|p| p.into_affine())
+        .map_err(|_| IbeError::InvalidWeightedConfig("msm length mismatch".to_string()))
+}
+
+/// Checks that `mpk` (`V0`) equals the G2 interpolation of threshold sets of the verification keys.
+///
+/// Three threshold sets are interpolated: the first `t` virtual players, the last `t`, and `t`
+/// players spread across the whole range. The spread set takes every `k`-th player for the largest
+/// `k` that still leaves `t` players, so it mixes validators. A subtranscript whose `V0` and `Vs`
+/// disagree fails at least one of them unless the shares lie on one polynomial of degree below `t`
+/// that passes through `V0`. The whole-polynomial question stays open for the cryptographer (see the
+/// review packet).
+pub fn check_mpk_matches_verification_keys(
+    mpk: &G2Affine,
+    verification_keys: &[G2Affine],
+    threshold_weight: usize,
+) -> Result<(), IbeError> {
+    let total = verification_keys.len();
+    if threshold_weight == 0 || threshold_weight > total {
+        return Err(IbeError::InvalidWeightedConfig(format!(
+            "threshold {} outside 1..={}",
+            threshold_weight, total
+        )));
+    }
+    let t = threshold_weight;
+    let first: Vec<usize> = (0..t).collect();
+    let last: Vec<usize> = (total - t..total).collect();
+    let stride = (total / t).max(1);
+    let mut spread: Vec<usize> = (0..total).step_by(stride).take(t).collect();
+    // Fill from the front when the stride left fewer than `t` players.
+    let mut next = 0usize;
+    while spread.len() < t {
+        if !spread.contains(&next) {
+            spread.push(next);
+        }
+        next += 1;
+    }
+    for ids in [first, last, spread] {
+        let points: Vec<G2Affine> = ids.iter().map(|&i| verification_keys[i]).collect();
+        let v0 = interpolate_g2_at_zero(&ids, &points, t, total)?;
+        if &v0 != mpk {
+            return Err(IbeError::MpkVerificationKeyMismatch);
+        }
+    }
+    Ok(())
+}
+
+/// Byte level reconstruction used by the `ibe::reconstruct_ibe_dk` native.
+///
+/// `dk_shares[i]` holds the compressed G1 shares of validator `validator_indices[i]`, one per
+/// virtual player, in order. Every share is decoded with [`decode_g1`]. The caller (the registry)
+/// verifies each share against its verification key before storing it. This function does not
+/// know the verification keys, so the rebuilt key must still pass [`verify_decryption_key`].
+pub fn reconstruct_ibe_dk_from_g1_shares(
+    validator_indices: &[u64],
+    dk_shares: &[Vec<Vec<u8>>],
+    weights: &[u64],
+    threshold: u64,
+    total_weight: u64,
+) -> Result<G1Affine, IbeError> {
+    if validator_indices.len() != dk_shares.len() {
         return Err(IbeError::ValidatorIndicesSharesMismatch {
             indices_len: validator_indices.len(),
-            shares_len: scalar_shares.len(),
+            shares_len: dk_shares.len(),
         });
     }
     if validator_indices.is_empty() {
         return Err(IbeError::EmptyShares);
     }
-    let computed_total: u64 = weights.iter().copied().sum();
-    if total_weight != computed_total {
+    let computed_sum = weights
+        .iter()
+        .try_fold(0u64, |acc, w| acc.checked_add(*w))
+        .ok_or_else(|| IbeError::InvalidWeightedConfig("weight sum overflow".to_string()))?;
+    if computed_sum != total_weight {
         return Err(IbeError::WeightSumMismatch {
             total_weight,
-            computed_sum: computed_total,
+            computed_sum,
         });
     }
+    if total_weight == 0 || total_weight > MAX_TOTAL_WEIGHT as u64 {
+        return Err(IbeError::InvalidWeightedConfig(format!(
+            "total weight {} outside 1..={}",
+            total_weight, MAX_TOTAL_WEIGHT
+        )));
+    }
+    let mut starting_index = Vec::with_capacity(weights.len());
+    let mut acc = 0u64;
+    for w in weights {
+        starting_index.push(acc);
+        acc += w;
+    }
 
-    let weights_usize: Vec<usize> = weights.iter().map(|w| *w as usize).collect();
-    let wconfig = WeightedConfig::new(validator_indices.len(), weights_usize)
-        .map_err(|e| IbeError::InvalidWeightedConfig(e.to_string()))?;
-
-    // Build share vector for reconstruction
-    let mut shares_for_recon: Vec<(Player, Vec<DealtSecretKeyShare>)> =
-        Vec::with_capacity(validator_indices.len());
-
-    for (vi, &validator_idx) in validator_indices.iter().enumerate() {
-        let weight: u64 = weights[validator_idx as usize];
-        let shares: &[Scalar] = &scalar_shares[vi];
-
-        if shares.len() != weight as usize {
+    let mut seen = HashSet::new();
+    let mut ids: Vec<usize> = Vec::new();
+    let mut points: Vec<G1Affine> = Vec::new();
+    for (validator_shares, &validator_index) in dk_shares.iter().zip(validator_indices) {
+        let vi = usize::try_from(validator_index)
+            .ok()
+            .filter(|vi| *vi < weights.len())
+            .ok_or(IbeError::PlayerOutOfBounds {
+                index: validator_index,
+                num_players: weights.len(),
+            })?;
+        if !seen.insert(vi) {
+            return Err(IbeError::DuplicatePlayer(validator_index));
+        }
+        if validator_shares.len() as u64 != weights[vi] {
             return Err(IbeError::ShareWeightMismatch {
-                validator_index: validator_idx,
-                shares_count: shares.len(),
-                expected_weight: weight,
+                validator_index,
+                shares_count: validator_shares.len(),
+                expected_weight: weights[vi],
             });
         }
-
-        let mut dealt_shares: Vec<DealtSecretKeyShare> = Vec::with_capacity(shares.len());
-        for scalar_share in shares.iter() {
-            dealt_shares.push(DealtSecretKeyShare::new(DealtSecretKey::new(*scalar_share)));
+        for (j, share) in validator_shares.iter().enumerate() {
+            points.push(decode_g1(share)?);
+            ids.push((starting_index[vi] as usize) + j);
         }
-
-        shares_for_recon.push((
-            Player {
-                id: validator_idx as usize,
-            },
-            dealt_shares,
-        ));
     }
-
-    // Reconstruct master secret
-    let reconstructed_secret: DealtSecretKey =
-        <WeightedTranscript as TranscriptTrait>::DealtSecretKey::reconstruct(
-            &wconfig,
-            &shares_for_recon,
-        );
-
-    // Derive DK: DK = H(identity)^s
-    Ok(derive_decryption_key(&reconstructed_secret.s, identity))
+    let threshold = usize::try_from(threshold)
+        .map_err(|_| IbeError::InvalidWeightedConfig("threshold too large".to_string()))?;
+    reconstruct_dk(&ids, &points, threshold, total_weight as usize)
 }
-
-/// Reconstructs an IBE decryption key from G1 DK shares.
-///
-/// This is the **production path** for IBE DK reconstruction in the timelock system.
-/// Validators submit pre-computed G1 decryption key shares (48-byte compressed points),
-/// and this function performs weighted Lagrange interpolation directly on G1 points.
-///
-/// # Production Flow
-///
-/// ```text
-/// 1. Off-chain (Validator):
-///    - Has scalar share s_i from DKG
-///    - Computes identity = SHA3-256(timelock_id || deadline_us)
-///    - Computes H(identity) = hash_to_g1(identity)
-///    - Computes dk_share_i = s_i * H(identity)  → G1 point
-///    - Submits 48-byte compressed dk_share_i as TimelockShare transaction
-///
-/// 2. On-chain (Move VM native):
-///    - Collects G1 shares from submitting validators
-///    - Computes weighted Lagrange coefficients λ_j(0)
-///    - Computes DK = Σ(λ_j * dk_share_j)  → G1 point
-///    - Stores DK on-chain for timelock
-/// ```
-///
-/// # Arguments
-///
-/// * `virtual_player_ids` - Global indices of the participating virtual players (0 to total_weight-1)
-/// * `dk_shares` - G1 DK shares (48-byte compressed), one per participating virtual player
-/// * `total_weight` - Sum of all validator weights (determines the Lagrange evaluation domain)
-///
-/// # Returns
-///
-/// The reconstructed decryption key as a G1 affine point (48 bytes when compressed).
-///
-/// # Errors
-///
-/// * `ValidatorIndicesSharesMismatch` - If IDs and shares have different lengths
-/// * `EmptyShares` - If no shares provided
-/// * `InvalidG1Share` - If any share is not 48 bytes or is not a valid G1 point
-pub fn reconstruct_ibe_dk_from_g1_shares(
-    virtual_player_ids: &[u64],
-    dk_shares: &[Vec<u8>],
-    total_weight: u64,
-) -> Result<G1Affine, IbeError> {
-    use crate::algebra::lagrange::lagrange_coefficients;
-
-    // ==========================================================================
-    // Input Validation
-    // ==========================================================================
-
-    if virtual_player_ids.len() != dk_shares.len() {
-        return Err(IbeError::ValidatorIndicesSharesMismatch {
-            indices_len: virtual_player_ids.len(),
-            shares_len: dk_shares.len(),
-        });
-    }
-
-    if virtual_player_ids.is_empty() {
-        return Err(IbeError::EmptyShares);
-    }
-
-    // ==========================================================================
-    // Lagrange Coefficients
-    // ==========================================================================
-    // The evaluation domain is based on total_weight.
-    let batch_dom =
-        crate::algebra::evaluation_domain::BatchEvaluationDomain::new(total_weight as usize);
-
-    let player_ids: Vec<usize> = virtual_player_ids.iter().map(|&idx| idx as usize).collect();
-    let lagrange_coeffs = lagrange_coefficients(&batch_dom, &player_ids, &Scalar::from(0u64));
-
-    // ==========================================================================
-    // G1 Reconstruction
-    // ==========================================================================
-    let mut reconstructed = G1Projective::identity();
-
-    for (i, dk_share_bytes) in dk_shares.iter().enumerate() {
-        // Validate share format
-        if dk_share_bytes.len() != 48 {
-            return Err(IbeError::InvalidG1Share(format!(
-                "DK share {} has {} bytes, expected 48",
-                i,
-                dk_share_bytes.len()
-            )));
-        }
-
-        // Deserialize compressed G1
-        let g1_bytes: &[u8; 48] = dk_share_bytes
-            .as_slice()
-            .try_into()
-            .expect("DK share should be exactly 48 bytes");
-        let g1_affine = G1Affine::from_compressed(g1_bytes)
-            .expect(&format!("DK share {} is not a valid G1 point", i));
-
-        // Accumulate: reconstructed += λ_i(0) × dk_share_i
-        reconstructed += G1Projective::from(g1_affine) * lagrange_coeffs[i];
-    }
-
-    Ok(reconstructed.to_affine())
-}
-
-/// Test helper function for IBE DK reconstruction from secret shares.
-///
-/// This function is used in tests to verify DK reconstruction. It takes scalar
-/// secret shares (not G1 DK shares) and reconstructs the decryption key by:
-/// 1. Converting scalar shares to G1 DK shares using the identity
-/// 2. Calling `reconstruct_ibe_dk_from_g1_shares` for the actual reconstruction
-///
-/// **Note:** This is for testing only. Production code should use
-/// `reconstruct_ibe_dk_from_g1_shares()` directly with pre-computed G1 DK shares.
-///
-/// # Arguments
-///
-/// * `validator_indices` - Indices of participating validators (0-based)
-/// * `scalar_shares` - Nested vector of scalar secret shares per validator
-/// * `weights` - Weights for all validators (not just participating)
-/// * `total_weight` - Sum of all validator weights
-/// * `identity` - 32-byte identity hash for DK derivation
-///
-/// # Returns
-///
-/// The reconstructed IBE decryption key as a G1 affine point.
-#[cfg(any(test, feature = "fuzzing"))]
-pub fn test_reconstruct_ibe_from_secret_shares(
-    validator_indices: &[u64],
-    scalar_shares: &[Vec<Scalar>],
-    weights: &[u64],
-    total_weight: u64,
-    identity: &[u8; 32],
-) -> Result<G1Affine, IbeError> {
-    if validator_indices.len() != scalar_shares.len() {
-        return Err(IbeError::ValidatorIndicesSharesMismatch {
-            indices_len: validator_indices.len(),
-            shares_len: scalar_shares.len(),
-        });
-    }
-
-    let computed_total: u64 = weights.iter().copied().sum();
-    if total_weight != computed_total {
-        return Err(IbeError::WeightSumMismatch {
-            total_weight,
-            computed_sum: computed_total,
-        });
-    }
-
-    let mut virtual_player_ids: Vec<u64> = Vec::new();
-    let mut dk_shares: Vec<Vec<u8>> = Vec::new();
-    let h_identity = hash_to_g1(identity);
-
-    for (vi, &validator_idx) in validator_indices.iter().enumerate() {
-        let weight: u64 = weights[validator_idx as usize];
-        let shares: &[Scalar] = &scalar_shares[vi];
-
-        if shares.len() != weight as usize {
-            return Err(IbeError::ShareWeightMismatch {
-                validator_index: validator_idx,
-                shares_count: shares.len(),
-                expected_weight: weight,
-            });
-        }
-
-        for (j, scalar_share) in shares.iter().enumerate() {
-            let virtual_player_idx =
-                weights[..validator_idx as usize].iter().sum::<u64>() + j as u64;
-            virtual_player_ids.push(virtual_player_idx);
-
-            let dk_share = h_identity.mul(scalar_share).to_affine();
-            dk_shares.push(dk_share.to_compressed().to_vec());
-        }
-    }
-
-    reconstruct_ibe_dk_from_g1_shares(&virtual_player_ids, &dk_shares, total_weight)
-}
-
-#[cfg(test)]
-mod timelock_tests;

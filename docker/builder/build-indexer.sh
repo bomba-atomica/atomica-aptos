@@ -1,7 +1,7 @@
 #!/bin/bash
-# Copyright (c) Aptos
-# SPDX-License-Identifier: Apache-2.0
-set -e
+# Copyright (c) Aptos Foundation
+# Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
+set -ex
 
 PROFILE=${PROFILE:-release}
 
@@ -10,8 +10,13 @@ echo "PROFILE: $PROFILE"
 
 echo "CARGO_TARGET_DIR: $CARGO_TARGET_DIR"
 
+PERF_FLAGS=()
+if [[ "$PROFILE" == "performance" ]]; then
+  PERF_FLAGS=(--config .cargo/performance.toml)
+fi
+
 # Build all the rust binaries
-cargo build --locked --profile=$PROFILE \
+cargo build --locked --profile=$PROFILE "${PERF_FLAGS[@]}" \
     -p aptos-indexer-grpc-cache-worker \
     -p aptos-indexer-grpc-file-store \
     -p aptos-indexer-grpc-data-service \

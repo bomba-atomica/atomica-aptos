@@ -1,17 +1,17 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     accept_type::AcceptType,
     metrics,
     response::{
         bcs_api_disabled, block_not_found_by_height, block_not_found_by_version,
-        block_pruned_by_height, json_api_disabled, version_not_found, version_pruned,
-        ForbiddenError, InternalError, NotFoundError, ServiceUnavailableError, StdApiError,
+        block_pruned_by_height, json_api_disabled, pruned_or_internal_error, version_not_found,
+        version_pruned, ForbiddenError, InternalError, NotFoundError, ServiceUnavailableError,
+        StdApiError,
     },
 };
-use anyhow::{anyhow, bail, ensure, format_err, Context as AnyhowContext, Result};
+use anyhow::{anyhow, ensure, format_err, Context as AnyhowContext, Result};
 use aptos_api_types::{
     transaction::ReplayProtector, AptosErrorCode, AsConverter, BcsBlock, GasEstimation, LedgerInfo,
     ResourceGroup, TransactionOnChainData, TransactionSummary,
@@ -25,7 +25,7 @@ use aptos_storage_interface::{
     state_store::state_view::db_state_view::{
         DbStateView, DbStateViewAtVersion, LatestDbStateCheckpointView,
     },
-    AptosDbError, DbReader, Order, MAX_REQUEST_LIMIT,
+    AptosDbError, DbReader, Order,
 };
 use aptos_types::{
     access_path::{AccessPath, Path},
@@ -41,7 +41,6 @@ use aptos_types::{
     },
     state_store::{
         state_key::{inner::StateKeyInner, prefix::StateKeyPrefix, StateKey},
-        state_value::StateValue,
         TStateView,
     },
     transaction::{
@@ -170,7 +169,7 @@ impl Context {
 
     pub fn feature_enabled(&self, feature: FeatureFlag) -> Result<bool> {
         let state_view = self.latest_state_view()?;
-        let features = Features::fetch_config(&state_view)
+        let features = Features::fetch_config(&state_view)?
             .ok_or_else(|| anyhow::anyhow!("Failed to fetch features from state view"))?;
         Ok(features.is_enabled(feature))
     }
@@ -260,12 +259,18 @@ impl Context {
                 E::service_unavailable_with_code_no_info(e, AptosErrorCode::InternalError)
             })?;
 
+        let encryption_key_hex = self
+            .get_encryption_key(ledger_info.ledger_info().version())
+            .unwrap_or(None)
+            .map(hex::encode);
+
         Ok(LedgerInfo::new(
             &self.chain_id(),
             &ledger_info,
             oldest_version,
             oldest_block_height,
             newest_block_event.height(),
+            encryption_key_hex,
         ))
     }
 
@@ -343,6 +348,12 @@ impl Context {
                         })?;
                     let (oldest_version, oldest_block_height) =
                         self.get_oldest_version_and_block_height()?;
+
+                    let encryption_key_hex = self
+                        .get_encryption_key(latest_version)
+                        .unwrap_or(None)
+                        .map(hex::encode);
+
                     return Ok(LedgerInfo::new_ledger_info(
                         &self.chain_id(),
                         new_block_event.epoch(),
@@ -351,6 +362,7 @@ impl Context {
                         oldest_block_height,
                         new_block_event.height(),
                         new_block_event.proposed_time(),
+                        encryption_key_hex,
                     ));
                 } else {
                     // Indexer doesn't have data yet as DB is boostrapping.
@@ -370,6 +382,16 @@ impl Context {
 
     pub fn get_latest_ledger_info_with_signatures(&self) -> Result<LedgerInfoWithSignatures> {
         Ok(self.db.get_latest_ledger_info()?)
+    }
+
+    pub fn get_encryption_key(&self, version: Version) -> Result<Option<Vec<u8>>> {
+        if !self.node_config.api.allow_encrypted_txns_submission {
+            return Ok(None);
+        }
+        use aptos_types::decryption::PerEpochEncryptionKeyResource;
+        let resource: Option<PerEpochEncryptionKeyResource> =
+            self.get_resource(AccountAddress::ONE, version)?;
+        Ok(resource.and_then(|r| r.encryption_key))
     }
 
     pub fn get_state_value(&self, state_key: &StateKey, version: u64) -> Result<Option<Vec<u8>>> {
@@ -436,38 +458,6 @@ impl Context {
             })
     }
 
-    pub fn get_state_values(
-        &self,
-        address: AccountAddress,
-        version: u64,
-    ) -> Result<HashMap<StateKey, StateValue>> {
-        let mut iter = if !db_sharding_enabled(&self.node_config) {
-            Box::new(
-                self.db
-                    .get_prefixed_state_value_iterator(
-                        &StateKeyPrefix::from(address),
-                        None,
-                        version,
-                    )?
-                    .map(|item| item.map_err(|err| anyhow!(err.to_string()))),
-            )
-        } else {
-            self.indexer_reader
-                .as_ref()
-                .ok_or_else(|| format_err!("Indexer reader doesn't exist"))?
-                .get_prefixed_state_value_iterator(&StateKeyPrefix::from(address), None, version)?
-        };
-
-        let kvs = iter
-            .by_ref()
-            .take(MAX_REQUEST_LIMIT as usize)
-            .collect::<Result<_>>()?;
-        if iter.next().transpose()?.is_some() {
-            bail!("Too many state items under account ({:?}).", address);
-        }
-        Ok(kvs)
-    }
-
     pub fn get_resources_by_pagination(
         &self,
         address: AccountAddress,
@@ -475,26 +465,15 @@ impl Context {
         version: u64,
         limit: u64,
     ) -> Result<(Vec<(StructTag, Vec<u8>)>, Option<StateKey>)> {
-        let account_iter = if !db_sharding_enabled(&self.node_config) {
-            Box::new(
-                self.db
-                    .get_prefixed_state_value_iterator(
-                        &StateKeyPrefix::from(address),
-                        prev_state_key,
-                        version,
-                    )?
-                    .map(|item| item.map_err(|err| anyhow!(err.to_string()))),
-            )
-        } else {
-            self.indexer_reader
-                .as_ref()
-                .ok_or_else(|| format_err!("Indexer reader doesn't exist"))?
-                .get_prefixed_state_value_iterator(
-                    &StateKeyPrefix::from(address),
-                    prev_state_key,
-                    version,
-                )?
-        };
+        let account_iter = self
+            .indexer_reader
+            .as_ref()
+            .ok_or_else(|| format_err!("Indexer reader doesn't exist"))?
+            .get_prefixed_state_value_iterator(
+                &StateKeyPrefix::from(address),
+                prev_state_key,
+                version,
+            )?;
         // TODO: Consider rewriting this to consider resource groups:
         // * If a resource group is found, expand
         // * Return Option<Result<(PathType, StructTag, Vec<u8>)>>
@@ -566,26 +545,15 @@ impl Context {
         version: u64,
         limit: u64,
     ) -> Result<(Vec<(ModuleId, Vec<u8>)>, Option<StateKey>)> {
-        let account_iter = if !db_sharding_enabled(&self.node_config) {
-            Box::new(
-                self.db
-                    .get_prefixed_state_value_iterator(
-                        &StateKeyPrefix::from(address),
-                        prev_state_key,
-                        version,
-                    )?
-                    .map(|item| item.map_err(|err| anyhow!(err.to_string()))),
-            )
-        } else {
-            self.indexer_reader
-                .as_ref()
-                .ok_or_else(|| format_err!("Indexer reader doesn't exist"))?
-                .get_prefixed_state_value_iterator(
-                    &StateKeyPrefix::from(address),
-                    prev_state_key,
-                    version,
-                )?
-        };
+        let account_iter = self
+            .indexer_reader
+            .as_ref()
+            .ok_or_else(|| format_err!("Indexer reader doesn't exist"))?
+            .get_prefixed_state_value_iterator(
+                &StateKeyPrefix::from(address),
+                prev_state_key,
+                version,
+            )?;
         let mut module_iter = account_iter
             .filter_map(|res| match res {
                 Ok((k, v)) => match k.inner() {
@@ -713,13 +681,7 @@ impl Context {
             Some(
                 self.get_transactions(first_version, max_txns, ledger_version)
                     .context("Failed to read raw transactions from storage")
-                    .map_err(|err| {
-                        E::internal_with_code(
-                            err,
-                            AptosErrorCode::InternalError,
-                            latest_ledger_info,
-                        )
-                    })?,
+                    .map_err(|err| pruned_or_internal_error(err, latest_ledger_info))?,
             )
         } else {
             None
@@ -898,30 +860,19 @@ impl Context {
             .saturating_sub(limit as u64)
         };
 
-        let txns_res = if !db_sharding_enabled(&self.node_config) {
-            self.db.get_account_ordered_transactions(
+        let txns_res = self
+            .indexer_reader
+            .as_ref()
+            .ok_or_else(|| anyhow!("Indexer reader is None"))
+            .map_err(|err| E::internal_with_code(err, AptosErrorCode::InternalError, ledger_info))?
+            .get_account_ordered_transactions(
                 address,
                 start_seq_number,
                 limit as u64,
                 true,
                 ledger_version,
             )
-        } else {
-            self.indexer_reader
-                .as_ref()
-                .ok_or_else(|| anyhow!("Indexer reader is None"))
-                .map_err(|err| {
-                    E::internal_with_code(err, AptosErrorCode::InternalError, ledger_info)
-                })?
-                .get_account_ordered_transactions(
-                    address,
-                    start_seq_number,
-                    limit as u64,
-                    true,
-                    ledger_version,
-                )
-                .map_err(|e| AptosDbError::Other(e.to_string()))
-        };
+            .map_err(|e| AptosDbError::Other(e.to_string()));
         let txns = txns_res
             .context("Failed to retrieve account transactions")
             .map_err(|err| {
@@ -1094,15 +1045,11 @@ impl Context {
         } else {
             (u64::MAX, Order::Descending)
         };
-        let mut res = if !db_sharding_enabled(&self.node_config) {
-            self.db
-                .get_events(event_key, start, order, limit as u64, ledger_version)?
-        } else {
-            self.indexer_reader
-                .as_ref()
-                .ok_or_else(|| anyhow!("Internal indexer reader doesn't exist"))?
-                .get_events(event_key, start, order, limit as u64, ledger_version)?
-        };
+        let mut res = self
+            .indexer_reader
+            .as_ref()
+            .ok_or_else(|| anyhow!("Internal indexer reader doesn't exist"))?
+            .get_events(event_key, start, order, limit as u64, ledger_version)?;
         if order == Order::Descending {
             res.reverse();
             Ok(res)
@@ -1503,8 +1450,10 @@ impl Context {
                 })?;
 
             let gas_schedule_params = {
-                let may_be_params =
-                    GasScheduleV2::fetch_config(&state_view).and_then(|gas_schedule| {
+                let may_be_params = GasScheduleV2::fetch_config(&state_view)
+                    .ok()
+                    .flatten()
+                    .and_then(|gas_schedule| {
                         let feature_version = gas_schedule.feature_version;
                         let gas_schedule = gas_schedule.into_btree_map();
                         AptosGasParameters::from_on_chain_gas_schedule(
@@ -1516,6 +1465,8 @@ impl Context {
                 match may_be_params {
                     Some(gas_schedule) => Ok(gas_schedule),
                     None => GasSchedule::fetch_config(&state_view)
+                        .ok()
+                        .flatten()
                         .and_then(|gas_schedule| {
                             let gas_schedule = gas_schedule.into_btree_map();
                             AptosGasParameters::from_on_chain_gas_schedule(&gas_schedule, 0).ok()
@@ -1573,6 +1524,8 @@ impl Context {
                 })?;
 
             let execution_onchain_config = OnChainExecutionConfig::fetch_config(&state_view)
+                .ok()
+                .flatten()
                 .unwrap_or_else(OnChainExecutionConfig::default_if_missing);
 
             // Update the cache
@@ -1767,8 +1720,4 @@ impl FunctionStats {
             stats.invalidate_all();
         }
     }
-}
-
-fn db_sharding_enabled(node_config: &NodeConfig) -> bool {
-    node_config.storage.rocksdb_configs.enable_storage_sharding
 }

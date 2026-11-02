@@ -1,16 +1,13 @@
 // Copyright (c) Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
-    commands::init_logger_and_metrics,
-    diff::TransactionDiffBuilder,
-    execution::execute_workload,
-    state_view::ReadSet,
-    workload::{TransactionBlock, Workload},
+    commands::init_logger_and_metrics, diff::TransactionDiffBuilder, execution::execute_workload,
+    state_view::ReadSet, workload::Workload,
 };
 use anyhow::{anyhow, bail};
 use aptos_logger::Level;
-use aptos_types::transaction::TransactionOutput;
+use aptos_types::transaction::{TransactionBlock, TransactionOutput};
 use aptos_vm::{aptos_vm::AptosVMBlockExecutor, VMBlockExecutor};
 use clap::Parser;
 use std::path::PathBuf;
@@ -109,7 +106,7 @@ impl DiffCommand {
             .begin_version()
             .expect("Begin version must be set");
 
-        let diff_builder = TransactionDiffBuilder::new(self.allow_different_gas_usage);
+        let diff_builder = TransactionDiffBuilder::new(self.allow_different_gas_usage, false);
         let mut diffs = Vec::with_capacity(outputs.len());
 
         println!(

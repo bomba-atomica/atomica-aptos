@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     function_target::{FunctionData, FunctionTarget},
@@ -32,6 +33,8 @@ pub enum VerificationFlavor {
     Regular,
     Instantiated(usize),
     Inconsistency(Box<VerificationFlavor>),
+    /// A split case variant. The usize is the case combination index.
+    Split(Box<VerificationFlavor>, usize),
 }
 
 impl std::fmt::Display for VerificationFlavor {
@@ -42,6 +45,14 @@ impl std::fmt::Display for VerificationFlavor {
                 write!(f, "instantiated_{}", index)
             },
             VerificationFlavor::Inconsistency(flavor) => write!(f, "inconsistency_{}", flavor),
+            VerificationFlavor::Split(flavor, index) => {
+                let base = flavor.to_string();
+                if base.is_empty() {
+                    write!(f, "split_{}", index)
+                } else {
+                    write!(f, "split_{}_{}", base, index)
+                }
+            },
         }
     }
 }
@@ -173,12 +184,19 @@ impl FunctionTargetsHolder {
 
     /// Adds a new function target. The target will be initialized from the Move byte code.
     pub fn add_target(&mut self, func_env: &FunctionEnv<'_>) {
-        // Skip inlined functions, they do not have associated bytecode.
-        if func_env.is_inline() {
+        // Skip inlined functions, they do not have associated bytecode. Verified
+        // inline functions are compiled and get a target like regular functions.
+        if func_env.is_inline() && !func_env.is_inline_verified() {
             return;
         }
-        let generator = StacklessBytecodeGenerator::new(func_env);
-        let data = generator.generate_function();
+        let data = if func_env.is_lemma() {
+            // Lemma functions have spec-only parameter types (e.g. `num`) that cannot
+            // go through StacklessBytecodeGenerator. Create empty data directly.
+            FunctionData::new_empty(func_env)
+        } else {
+            let generator = StacklessBytecodeGenerator::new(func_env);
+            generator.generate_function()
+        };
         self.targets
             .entry(func_env.get_qualified_id())
             .or_default()
@@ -224,7 +242,7 @@ impl FunctionTargetsHolder {
         func_env: &'env FunctionEnv<'env>,
     ) -> Vec<(FunctionVariant, FunctionTarget<'env>)> {
         assert!(
-            !func_env.is_inline(),
+            !func_env.is_inline() || func_env.is_inline_verified(),
             "attempt to get bytecode function target for inline function"
         );
         self.targets
@@ -465,7 +483,7 @@ impl FunctionTargetPipeline {
                             // check for fixedpoint in summaries
                             for fid in scc {
                                 let func_env = env.get_function(*fid);
-                                if func_env.is_inline() {
+                                if func_env.is_not_prover_target() {
                                     continue;
                                 }
                                 for (_, target) in targets.get_targets(&func_env) {
@@ -569,14 +587,11 @@ impl FunctionTargetPipeline {
         register_annotations: &impl Fn(&FunctionTarget),
         verbose: bool,
     ) -> String {
-        let mut dump = format!(
-            "{}",
-            ProcessorResultDisplay {
-                env,
-                targets,
-                processor,
-            }
-        );
+        let mut dump = format!("{}", ProcessorResultDisplay {
+            env,
+            targets,
+            processor,
+        });
         if !processor.is_single_run() {
             if !dump.is_empty() {
                 dump = format!("\n\n{}", dump);

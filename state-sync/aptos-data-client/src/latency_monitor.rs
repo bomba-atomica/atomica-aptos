@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     interface::AptosDataClientInterface,
@@ -171,7 +171,7 @@ impl LatencyMonitor {
         // Split the advertised versions into synced and unsynced versions
         let unsynced_advertised_versions = self
             .advertised_versions
-            .split_off(&(highest_synced_version + 1));
+            .split_off(&highest_synced_version.saturating_add(1));
 
         // Update the metrics for all synced versions
         for (synced_version, advertised_version_metadata) in self.advertised_versions.iter() {
@@ -240,7 +240,9 @@ impl LatencyMonitor {
     ) {
         // Check if we're still catching up to the latest version
         if !self.caught_up_to_latest {
-            if highest_synced_version + MAX_VERSION_LAG_TO_TOLERATE >= highest_advertised_version {
+            if highest_synced_version.saturating_add(MAX_VERSION_LAG_TO_TOLERATE)
+                >= highest_advertised_version
+            {
                 info!(
                     (LogSchema::new(LogEntry::LatencyMonitor)
                         .event(LogEvent::CaughtUpToLatest)
@@ -522,14 +524,11 @@ mod tests {
         // Verify the metadata of the highest advertised version
         let advertised_version_metadata =
             get_advertised_version_metadata(&mut latency_monitor, &highest_advertised_version);
-        assert_eq!(
-            advertised_version_metadata,
-            AdvertisedVersionMetadata {
-                seen_time_instant: time_service.now(),
-                seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
-                seen_after_sync: false,
-            }
-        );
+        assert_eq!(advertised_version_metadata, AdvertisedVersionMetadata {
+            seen_time_instant: time_service.now(),
+            seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
+            seen_after_sync: false,
+        });
 
         // Elapse the time
         elapse_time_ms(time_service.clone(), 1000);
@@ -547,14 +546,11 @@ mod tests {
         // Verify the metadata of the highest advertised version
         let advertised_version_metadata =
             get_advertised_version_metadata(&mut latency_monitor, &highest_advertised_version);
-        assert_eq!(
-            advertised_version_metadata,
-            AdvertisedVersionMetadata {
-                seen_time_instant: time_service.now(),
-                seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
-                seen_after_sync: false,
-            }
-        );
+        assert_eq!(advertised_version_metadata, AdvertisedVersionMetadata {
+            seen_time_instant: time_service.now(),
+            seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
+            seen_after_sync: false,
+        });
     }
 
     #[tokio::test]
@@ -620,14 +616,11 @@ mod tests {
         verify_advertised_version_timestamps_length(&mut latency_monitor, 1);
         let advertised_version_metadata =
             get_advertised_version_metadata(&mut latency_monitor, &highest_advertised_version);
-        assert_eq!(
-            advertised_version_metadata,
-            AdvertisedVersionMetadata {
-                seen_time_instant: time_service.now(),
-                seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
-                seen_after_sync: false,
-            }
-        );
+        assert_eq!(advertised_version_metadata, AdvertisedVersionMetadata {
+            seen_time_instant: time_service.now(),
+            seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
+            seen_after_sync: false,
+        });
 
         // Elapse some time
         elapse_time_ms(time_service.clone(), 1000);
@@ -647,14 +640,11 @@ mod tests {
         // Verify the metadata of the highest advertised version
         let advertised_version_metadata =
             get_advertised_version_metadata(&mut latency_monitor, &highest_advertised_version);
-        assert_eq!(
-            advertised_version_metadata,
-            AdvertisedVersionMetadata {
-                seen_time_instant: time_service.now(),
-                seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
-                seen_after_sync: true,
-            }
-        );
+        assert_eq!(advertised_version_metadata, AdvertisedVersionMetadata {
+            seen_time_instant: time_service.now(),
+            seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
+            seen_after_sync: true,
+        });
 
         // Update the advertised version timestamps again. But, this time
         // the highest synced version is greater than the highest advertised version.
@@ -671,14 +661,11 @@ mod tests {
         // Verify the metadata of the highest advertised version
         let advertised_version_metadata =
             get_advertised_version_metadata(&mut latency_monitor, &highest_advertised_version);
-        assert_eq!(
-            advertised_version_metadata,
-            AdvertisedVersionMetadata {
-                seen_time_instant: time_service.now(),
-                seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
-                seen_after_sync: true,
-            }
-        );
+        assert_eq!(advertised_version_metadata, AdvertisedVersionMetadata {
+            seen_time_instant: time_service.now(),
+            seen_timestamp_usecs: time_service.now_unix_time().as_micros() as u64,
+            seen_after_sync: true,
+        });
     }
 
     #[tokio::test]

@@ -1,9 +1,9 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::{
     db::large_db_simple_test,
+    land_blocking::set_compatibility_test_features,
     realistic_workloads::{
         individual_workload_tests, mainnet_like_simulation_test, workload_mix_test,
         workload_vs_perf_benchmark,
@@ -192,6 +192,11 @@ pub fn k8s_test_suite() -> ForgeConfig {
         .add_network_test(EmitTransaction)
         .add_network_test(FrameworkUpgrade)
         .add_network_test(PerformanceBenchmark)
+        // FrameworkUpgrade runs mixed binary versions, so keep HOTNESS_IN_EPILOGUE off (as the
+        // compat and framework-upgrade suites do) to avoid old/new nodes disagreeing on output.
+        .with_genesis_helm_config_fn(Arc::new(|helm_values| {
+            set_compatibility_test_features(helm_values);
+        }))
 }
 
 fn mempool_config_practically_non_expiring(mempool_config: &mut MempoolConfig) {
@@ -214,7 +219,7 @@ fn run_consensus_only_realistic_env_max_tps() -> ForgeConfig {
                 .txn_expiration_time_secs(5 * 60),
         )
         .add_network_test(CompositeNetworkTest::new(
-            MultiRegionNetworkEmulationTest::default_for_validator_count(num_validators),
+            MultiRegionNetworkEmulationTest::mainnet_calibrated_for_validator_count(num_validators),
             CpuChaosTest::default(),
         ))
         .with_genesis_helm_config_fn(Arc::new(|helm_values| {
@@ -636,7 +641,11 @@ pub fn mixed_emit_job() -> EmitJobRequest {
 
 // framework_usecases can have new features, so might fail publishing.
 pub fn mixed_compatible_emit_job() -> EmitJobRequest {
+    // The pre-upgrade chain's maximum_number_of_gas_units is 2_000_000 (the old MAX_GAS_AMOUNT
+    // before the 10x gas cost increase). Submitting transactions with a higher max_gas would
+    // fail with MAX_GAS_UNITS_EXCEEDS_MAX_GAS_UNITS_BOUND on nodes that haven't been upgraded yet.
     EmitJobRequest::default()
+        .max_gas_per_txn(2_000_000)
         .mode(EmitJobMode::MaxLoad {
             mempool_backlog: 10000,
         })
@@ -835,11 +844,13 @@ pub fn chaos_test_suite(duration: Duration) -> ForgeConfig {
         .add_network_test(ThreeRegionSameCloudSimulationTest)
         .add_network_test(NetworkLossTest)
         .with_success_criteria(
-            SuccessCriteria::new(if duration > Duration::from_secs(1200) {
-                100
-            } else {
-                1000
-            })
+            SuccessCriteria::new(
+                if duration > Duration::from_secs(1200) {
+                    100
+                } else {
+                    1000
+                },
+            )
             .add_no_restarts()
             .add_system_metrics_threshold(SYSTEM_12_CORES_5GB_THRESHOLD.clone()),
         )
@@ -860,11 +871,13 @@ pub fn changing_working_quorum_test_helper(
     let max_down_nodes = test.max_down_nodes;
     config
         .with_initial_validator_count(NonZeroUsize::new(num_validators).unwrap())
-        .with_initial_fullnode_count(if max_down_nodes == 0 {
-            0
-        } else {
-            std::cmp::max(2, target_tps / 1000)
-        })
+        .with_initial_fullnode_count(
+            if max_down_nodes == 0 {
+                0
+            } else {
+                std::cmp::max(2, target_tps / 1000)
+            },
+        )
         .add_network_test(test)
         .with_genesis_helm_config_fn(Arc::new(move |helm_values| {
             helm_values["chain"]["epoch_duration_secs"] = epoch_duration.into();

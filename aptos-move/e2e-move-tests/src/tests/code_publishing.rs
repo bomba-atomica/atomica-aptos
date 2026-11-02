@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{assert_abort, assert_success, assert_vm_status, tests::common, MoveHarness};
 use aptos_framework::{
@@ -14,6 +14,7 @@ use aptos_types::{
     on_chain_config::FeatureFlag,
     transaction::{ExecutionStatus, TransactionPayload, TransactionStatus},
 };
+use aptos_vm_environment::prod_configs::set_async_runtime_checks;
 use claims::assert_ok;
 use move_core_types::{
     identifier::Identifier,
@@ -24,7 +25,6 @@ use move_core_types::{
 use rstest::rstest;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-
 // Note: this module uses parameterized tests via the
 // [`rstest` crate](https://crates.io/crates/rstest)
 // to test for multiple feature combinations.
@@ -51,7 +51,7 @@ struct StateWithCoins {
 fn code_publishing_basic(enabled: Vec<FeatureFlag>, disabled: Vec<FeatureFlag>) {
     let mut h = MoveHarness::new_with_features(enabled, disabled);
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_initial"),
     ));
@@ -90,13 +90,13 @@ fn code_publishing_upgrade_success_compat() {
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
 
     // Install the initial version with compat requirements
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_initial"),
     ));
 
     // We should be able to upgrade it with the compatible version
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_upgrade_compat"),
     ));
@@ -107,13 +107,15 @@ fn code_publishing_disallow_user_native() {
     let mut h = MoveHarness::new();
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
 
-    assert_vm_status!(
-        h.publish_package_cache_building(
-            &acc,
-            &common::test_dir_path("code_publishing.data/pack_native"),
-        ),
-        StatusCode::USER_DEFINED_NATIVE_NOT_ALLOWED
+    // Disable the compiler's native check so the package builds and the
+    // publish-time VM check is exercised.
+    let txn = h.create_publish_package(
+        &acc,
+        &common::test_dir_path("code_publishing.data/pack_native"),
+        Some(aptos_framework::BuildOptions::default().with_experiment("native-check=off")),
+        |_| {},
     );
+    assert_vm_status!(h.run(txn), StatusCode::USER_DEFINED_NATIVE_NOT_ALLOWED);
 }
 
 #[test]
@@ -121,13 +123,15 @@ fn code_publishing_disallow_user_native_entry() {
     let mut h = MoveHarness::new();
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
 
-    assert_vm_status!(
-        h.publish_package_cache_building(
-            &acc,
-            &common::test_dir_path("code_publishing.data/pack_native_entry"),
-        ),
-        StatusCode::USER_DEFINED_NATIVE_NOT_ALLOWED
+    // Disable the compiler's native check so the package builds and the
+    // publish-time VM check is exercised.
+    let txn = h.create_publish_package(
+        &acc,
+        &common::test_dir_path("code_publishing.data/pack_native_entry"),
+        Some(aptos_framework::BuildOptions::default().with_experiment("native-check=off")),
+        |_| {},
     );
+    assert_vm_status!(h.run(txn), StatusCode::USER_DEFINED_NATIVE_NOT_ALLOWED);
 }
 
 #[test]
@@ -135,7 +139,7 @@ fn code_publishing_allow_system_native() {
     let mut h = MoveHarness::new();
     let acc = h.aptos_framework_account();
 
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_native_system"),
     ));
@@ -146,13 +150,15 @@ fn code_publishing_disallow_system_native_entry() {
     let mut h = MoveHarness::new();
     let acc = h.aptos_framework_account();
 
-    assert_vm_status!(
-        h.publish_package_cache_building(
-            &acc,
-            &common::test_dir_path("code_publishing.data/pack_native_system_entry"),
-        ),
-        StatusCode::USER_DEFINED_NATIVE_NOT_ALLOWED
+    // Disable the compiler's native check so the package builds and the
+    // publish-time VM check is exercised.
+    let txn = h.create_publish_package(
+        &acc,
+        &common::test_dir_path("code_publishing.data/pack_native_system_entry"),
+        Some(aptos_framework::BuildOptions::default().with_experiment("native-check=off")),
+        |_| {},
     );
+    assert_vm_status!(h.run(txn), StatusCode::USER_DEFINED_NATIVE_NOT_ALLOWED);
 }
 
 #[test]
@@ -161,13 +167,13 @@ fn code_publishing_upgrade_fail_compat() {
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
 
     // Install the initial version with compat requirements
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_initial"),
     ));
 
     // We should not be able to upgrade it with the incompatible version
-    let status = h.publish_package_cache_building(
+    let status = h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_upgrade_incompat"),
     );
@@ -180,13 +186,13 @@ fn code_publishing_upgrade_fail_immutable() {
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
 
     // Install the initial version with immutable requirements
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_initial_immutable"),
     ));
 
     // We should not be able to upgrade it with the compatible version
-    let status = h.publish_package_cache_building(
+    let status = h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_upgrade_compat"),
     );
@@ -199,13 +205,13 @@ fn code_publishing_upgrade_fail_overlapping_module() {
     let acc = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
 
     // Install the initial version
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_initial"),
     ));
 
     // Install a different package with the same module.
-    let status = h.publish_package_cache_building(
+    let status = h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_other_name"),
     );
@@ -215,7 +221,7 @@ fn code_publishing_upgrade_fail_overlapping_module() {
 /// This test verifies that the cache incoherence bug on module upgrade is fixed. This bug
 /// exposes itself by that after module upgrade the old version of the module stays
 /// active until the MoveVM terminates. In order to workaround this until there is a better
-/// fix, we flush the cache in `MoveVmExt::new_session`. One can verify the fix by commenting
+/// fix, we flush the cache in `AptosVM::new_session`. One can verify the fix by commenting
 /// the flush operation out, then this test fails.
 ///
 /// TODO: for some reason this test did not capture a serious bug in `code::check_coexistence`.
@@ -226,23 +232,26 @@ fn code_publishing_upgrade_loader_cache_consistency() {
 
     // Create a sequence of package upgrades
     let txns = vec![
-        h.create_publish_package_cache_building(
+        h.create_publish_package(
             &acc,
             &common::test_dir_path("code_publishing.data/pack_initial"),
+            None,
             |_| {},
         ),
         // Compatible with above package
-        h.create_publish_package_cache_building(
+        h.create_publish_package(
             &acc,
             &common::test_dir_path("code_publishing.data/pack_upgrade_compat"),
+            None,
             |_| {},
         ),
         // Not compatible with above package, but with first one.
         // Correct behavior: should create backward_incompatible error
         // Bug behavior: succeeds because is compared with the first module
-        h.create_publish_package_cache_building(
+        h.create_publish_package(
             &acc,
             &common::test_dir_path("code_publishing.data/pack_compat_first_not_second"),
+            None,
             |_| {},
         ),
     ];
@@ -259,7 +268,7 @@ fn code_publishing_framework_upgrade() {
 
     // We should be able to upgrade move-stdlib, as our local package has only
     // compatible changes. (We added a new function to string.move.)
-    assert_success!(h.publish_package_cache_building(
+    assert_success!(h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_stdlib"),
     ));
@@ -272,7 +281,7 @@ fn code_publishing_framework_upgrade_fail() {
 
     // We should not be able to upgrade move-stdlib because we removed a function
     // from the string module.
-    let result = h.publish_package_cache_building(
+    let result = h.publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_stdlib_incompat"),
     );
@@ -330,14 +339,16 @@ fn code_publishing_with_two_attempts_and_verify_loader_is_invalidated() {
     //
     // Depending on how the loader cache is flushed, the second attempt might even fail if the
     // entire init_module from the first attempt still lingers around and will fail if invoked.
-    let failed_module_publish = h.create_publish_package_cache_building(
+    let failed_module_publish = h.create_publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_init_module_failed"),
+        None,
         |_| {},
     );
-    let module_publish_second_attempt = h.create_publish_package_cache_building(
+    let module_publish_second_attempt = h.create_publish_package(
         &acc,
         &common::test_dir_path("code_publishing.data/pack_init_module_second_attempt"),
+        None,
         |_| {},
     );
     let results = h.run_block(vec![failed_module_publish, module_publish_second_attempt]);
@@ -603,12 +614,78 @@ fn test_init_module_should_not_publish_modules() {
     let addr = AccountAddress::from_hex_literal("0xcafe").unwrap();
     let account = h.new_account_at(addr);
 
-    let txn = h.create_publish_package_cache_building(
+    let txn = h.create_publish_package(
         &account,
         &common::test_dir_path("code_publishing.data/pack_init_module_code_publish"),
+        None,
         |_| {},
     );
     let output = h.run_block_get_output(vec![txn]).pop().unwrap();
     // The abort code corresponds to EALREADY_REQUESTED.
     assert_move_abort(output.status().clone(), 0x03_0000);
+}
+
+// This test verifies that trace replay uses the correct module snapshot during post-commit
+// processing. It creates a scenario where:
+//   1. Transaction 1 executes a function from module version 1 (records execution trace)
+//   2. Transaction 2 republishes the module as version 2, with new code.
+// When transaction 1 trace is replayed during post-commit, it should resolve modules from
+// the execution-time snapshot (version 1), not from the current global cache (version 2).
+#[test]
+fn test_trace_replay_with_module_republishing() {
+    set_async_runtime_checks(true);
+    let mut executor = FakeExecutor::from_head_genesis().set_parallel();
+    executor.disable_block_executor_fallback();
+
+    let addr = AccountAddress::from_hex_literal("0xcafe").unwrap();
+    let mut h = MoveHarness::new_with_executor(executor);
+    let acc = h.new_account_at(addr);
+
+    assert_success!(h.publish_package(&acc, &common::test_dir_path("tracing.data/p1")));
+    assert_success!(h.publish_package(&acc, &common::test_dir_path("tracing.data/p2")));
+
+    let mut txns = vec![];
+
+    // Transaction 1: call the entry function to execute and record trace.
+    let sender = h.new_account_at(AccountAddress::random());
+    txns.push(h.create_entry_function(
+        &sender,
+        MemberId::from_str(&format!("{}::m2::entrypoint", addr)).unwrap(),
+        vec![],
+        vec![],
+    ));
+
+    // Transaction 2: publish new code that multiplies instead and does more iterations.
+    let txn = h.create_publish_package(
+        &acc,
+        &common::test_dir_path("tracing.data/p1_v2"),
+        None,
+        |_| {},
+    );
+    txns.push(txn);
+
+    // Transfer transactions to provide spacing so that post-commit processing runs later.
+    for _ in 0..8 {
+        let random_account = h.new_account_at(AccountAddress::random());
+        let transfer_txn = h.create_entry_function(
+            &random_account,
+            MemberId::from_str("0x1::aptos_account::transfer").unwrap(),
+            vec![],
+            vec![
+                bcs::to_bytes(random_account.address()).unwrap(),
+                bcs::to_bytes(&1u64).unwrap(),
+            ],
+        );
+        txns.push(transfer_txn);
+    }
+
+    // Run the block - all transactions should succeed without fallback.
+    let outputs = h.run_block_get_output(txns);
+    for (idx, output) in outputs.iter().enumerate() {
+        assert_success!(
+            output.status().clone(),
+            "Transaction {} should succeed",
+            idx
+        );
+    }
 }

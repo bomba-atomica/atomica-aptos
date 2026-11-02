@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::metrics::INDEXER_DB_LATENCY;
 use anyhow::Result;
@@ -51,6 +51,8 @@ impl InternalIndexerDBService {
                 .expect("Failed to open internal indexer db"),
         );
 
+        // TODO(#20246): the restore-path config is hardcoded instead of derived from
+        // the node config.
         let internal_indexer_db_config =
             InternalIndexerDBConfig::new(true, true, true, 0, true, 10_000);
         Some(InternalIndexerDB::new(arc_db, internal_indexer_db_config))

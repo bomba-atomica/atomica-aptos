@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_gas_schedule::{AptosGasParameters, FromOnChainGasSchedule};
 use aptos_types::{
@@ -14,6 +14,8 @@ use sha3::{digest::Update, Sha3_256};
 /// returns 0 gas feature version.
 pub fn get_gas_feature_version(state_view: &impl StateView) -> u64 {
     GasScheduleV2::fetch_config(state_view)
+        .ok()
+        .flatten()
         .map(|gas_schedule| gas_schedule.feature_version)
         .unwrap_or(0)
 }
@@ -24,7 +26,10 @@ fn get_gas_config_from_storage(
     sha3_256: &mut Sha3_256,
     state_view: &impl StateView,
 ) -> (Result<AptosGasParameters, String>, u64) {
-    match GasScheduleV2::fetch_config_and_bytes(state_view) {
+    match GasScheduleV2::fetch_config_and_bytes(state_view)
+        .ok()
+        .flatten()
+    {
         Some((gas_schedule, bytes)) => {
             sha3_256.update(&bytes);
             let feature_version = gas_schedule.feature_version;
@@ -34,7 +39,10 @@ fn get_gas_config_from_storage(
                 feature_version,
             )
         },
-        None => match GasSchedule::fetch_config_and_bytes(state_view) {
+        None => match GasSchedule::fetch_config_and_bytes(state_view)
+            .ok()
+            .flatten()
+        {
             Some((gas_schedule, bytes)) => {
                 sha3_256.update(&bytes);
                 let map = gas_schedule.into_btree_map();

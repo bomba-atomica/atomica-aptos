@@ -12,14 +12,19 @@ publish = { workspace = true }
 repository = { workspace = true }
 rust-version = { workspace = true }
 
+[package.metadata.cargo-machete]
+ignored = ["tiny-bip39"]
+
 [dependencies]
 anyhow = { workspace = true }
+aptos-batch-encryption = { workspace = true }
 aptos-cached-packages = { workspace = true }
 aptos-crypto = { workspace = true }
 aptos-global-constants = { workspace = true }
 aptos-ledger = { workspace = true }
 aptos-rest-client = { workspace = true }
 aptos-types = { workspace = true }
+ark-std = { workspace = true }
 base64 = { workspace = true }
 bcs = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
@@ -38,6 +43,3 @@ once_cell = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
-
-[package.metadata.cargo-machete]
-ignored = ["tiny-bip39"]

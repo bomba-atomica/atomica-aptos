@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_cached_packages::aptos_stdlib;
 use aptos_crypto::{hash::CryptoHash, PrivateKey};
@@ -95,6 +94,7 @@ fn test_reconfiguration() {
     assert_eq!(
         ValidatorSet::fetch_config(&db_state_view)
             .unwrap()
+            .unwrap()
             .payload()
             .next()
             .unwrap()
@@ -177,7 +177,10 @@ fn test_reconfiguration() {
         .unwrap();
 
     assert_eq!(
-        AptosVersion::fetch_config(&db_state_view).unwrap().major,
+        AptosVersion::fetch_config(&db_state_view)
+            .unwrap()
+            .unwrap()
+            .major,
         42
     );
 }

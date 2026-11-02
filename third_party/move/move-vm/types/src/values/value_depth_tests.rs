@@ -1,5 +1,7 @@
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     value_serde::{MockFunctionValueExtension, ValueSerDeContext},
@@ -56,6 +58,10 @@ impl AbstractFunction for MockFunction {
 
     fn to_canonical_string(&self) -> String {
         "0x1::mock::mock".to_string()
+    }
+
+    fn ty_args_pseudo_gas_cost(&self) -> u64 {
+        0
     }
 }
 
@@ -120,7 +126,7 @@ fn test_serialization() {
     let depth_2_ok = [
         (
             Value::struct_(Struct::pack(vec![Value::u16(0)])),
-            L::Struct(Runtime(vec![L::U16])),
+            L::new_struct(Runtime(vec![L::U16])),
         ),
         (
             Value::vector_unchecked(vec![Value::vector_u8(vec![0, 1])]).unwrap(),
@@ -129,10 +135,9 @@ fn test_serialization() {
         (
             // Serialize first variant, so the depth is 2.
             Value::struct_(Struct::pack(vec![Value::u16(0), Value::bool(true)])),
-            L::Struct(RuntimeVariants(vec![
-                vec![L::Bool],
-                vec![L::Vector(Box::new(L::Vector(Box::new(L::U8))))],
-            ])),
+            L::new_struct(RuntimeVariants(vec![vec![L::Bool], vec![L::Vector(
+                Box::new(L::Vector(Box::new(L::U8))),
+            )]])),
         ),
         (
             MockFunction::closure(ClosureMask::empty(), vec![Value::u16(0)], vec![L::U16]),
@@ -145,10 +150,9 @@ fn test_serialization() {
             Value::u16(1),
             Value::vector_unchecked(vec![Value::vector_u8(vec![1, 2])]).unwrap(),
         ])),
-        L::Struct(RuntimeVariants(vec![
-            vec![L::Bool],
-            vec![L::Vector(Box::new(L::Vector(Box::new(L::U8))))],
-        ])),
+        L::new_struct(RuntimeVariants(vec![vec![L::Bool], vec![L::Vector(
+            Box::new(L::Vector(Box::new(L::U8))),
+        )]])),
     )];
 
     let ctx = |max_depth: u64| {

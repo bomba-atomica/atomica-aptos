@@ -1,6 +1,7 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! Serialization of transactions and modules.
 //!
@@ -549,7 +550,7 @@ fn serialize_function_handle(
         ));
     }
     if major_version >= VERSION_8 {
-        serialize_function_attributes(binary, &function_handle.attributes)
+        serialize_function_attributes(major_version, binary, &function_handle.attributes)
     } else if !function_handle.attributes.is_empty() {
         Err(anyhow!(
             "Function attributes not supported in bytecode version {}",
@@ -865,24 +866,123 @@ fn serialize_ability_sets(binary: &mut BinaryData, sets: &[AbilitySet]) -> Resul
 }
 
 fn serialize_function_attributes(
+    version: u32,
     binary: &mut BinaryData,
     attributes: &[FunctionAttribute],
 ) -> Result<()> {
     write_as_uleb128(binary, attributes.len() as u64, ATTRIBUTE_COUNT_MAX)?;
     for attr in attributes {
-        serialize_function_attribute(binary, attr)?;
+        serialize_function_attribute(binary, attr, version)?;
     }
     Ok(())
+}
+
+fn serialize_function_attribute_if_supported<F>(
+    bytecode_version: u32,
+    min_version: u32,
+    binary: &mut BinaryData,
+    f: F,
+    attr_name: &str,
+) -> Result<()>
+where
+    F: Fn(&mut BinaryData) -> Result<()>,
+{
+    if bytecode_version < min_version {
+        Err(anyhow!(
+            "{} attribute not supported in bytecode version {}",
+            attr_name,
+            bytecode_version
+        ))
+    } else {
+        f(binary)
+    }
 }
 
 fn serialize_function_attribute(
     binary: &mut BinaryData,
     attribute: &FunctionAttribute,
+    version: u32,
 ) -> Result<()> {
     use FunctionAttribute::*;
     match attribute {
-        Persistent => binary.push(SerializedFunctionAttribute::PERSISTENT as u8),
-        ModuleLock => binary.push(SerializedFunctionAttribute::MODULE_LOCK as u8),
+        Persistent => serialize_function_attribute_if_supported(
+            version,
+            VERSION_8,
+            binary,
+            |binary| -> Result<()> { binary.push(SerializedFunctionAttribute::PERSISTENT as u8) },
+            "persistent",
+        ),
+        ModuleLock => serialize_function_attribute_if_supported(
+            version,
+            VERSION_8,
+            binary,
+            |binary| -> Result<()> { binary.push(SerializedFunctionAttribute::MODULE_LOCK as u8) },
+            "module_lock",
+        ),
+        Pack => serialize_function_attribute_if_supported(
+            version,
+            VERSION_10,
+            binary,
+            |binary| -> Result<()> { binary.push(SerializedFunctionAttribute::PACK as u8) },
+            "pack",
+        ),
+        PackVariant(variant_index) => serialize_function_attribute_if_supported(
+            version,
+            VERSION_10,
+            binary,
+            |binary| -> Result<()> {
+                binary.push(SerializedFunctionAttribute::PACK_VARIANT as u8)?;
+                write_u16(binary, *variant_index)
+            },
+            "pack_variant",
+        ),
+        Unpack => serialize_function_attribute_if_supported(
+            version,
+            VERSION_10,
+            binary,
+            |binary| -> Result<()> { binary.push(SerializedFunctionAttribute::UNPACK as u8) },
+            "unpack",
+        ),
+        UnpackVariant(variant_index) => serialize_function_attribute_if_supported(
+            version,
+            VERSION_10,
+            binary,
+            |binary| -> Result<()> {
+                binary.push(SerializedFunctionAttribute::UNPACK_VARIANT as u8)?;
+                write_u16(binary, *variant_index)
+            },
+            "unpack_variant",
+        ),
+        TestVariant(variant_index) => serialize_function_attribute_if_supported(
+            version,
+            VERSION_10,
+            binary,
+            |binary| -> Result<()> {
+                binary.push(SerializedFunctionAttribute::TEST_VARIANT as u8)?;
+                write_u16(binary, *variant_index)
+            },
+            "test_variant",
+        ),
+        BorrowFieldImmutable(offset) => serialize_function_attribute_if_supported(
+            version,
+            VERSION_10,
+            binary,
+            |binary| -> Result<()> {
+                binary.push(SerializedFunctionAttribute::BORROW_FIELD_IMMUTABLE as u8)?;
+                write_u16(binary, *offset)
+            },
+            "borrow",
+        ),
+        BorrowFieldMutable(offset) => serialize_function_attribute_if_supported(
+            version,
+            VERSION_10,
+            binary,
+            |binary| -> Result<()> {
+                binary.push(SerializedFunctionAttribute::BORROW_FIELD_MUTABLE as u8)?;
+                write_u16(binary, *offset)
+            },
+            "borrow_mut",
+        ),
     }
 }
 
@@ -904,11 +1004,13 @@ fn serialize_access_specifier(binary: &mut BinaryData, acc: &AccessSpecifier) ->
         AccessKind::Reads => SerializedAccessKind::READ,
         AccessKind::Writes => SerializedAccessKind::WRITE,
     } as u8)?;
-    binary.push(if acc.negated {
-        SerializedBool::TRUE as u8
-    } else {
-        SerializedBool::FALSE as u8
-    })?;
+    binary.push(
+        if acc.negated {
+            SerializedBool::TRUE as u8
+        } else {
+            SerializedBool::FALSE as u8
+        },
+    )?;
     serialize_resource_specifier(binary, &acc.resource)?;
     serialize_address_specifier(binary, &acc.address)
 }
@@ -1166,6 +1268,7 @@ fn serialize_instruction_inner(
         Bytecode::Le => binary.push(Opcodes::LE as u8),
         Bytecode::Ge => binary.push(Opcodes::GE as u8),
         Bytecode::Abort => binary.push(Opcodes::ABORT as u8),
+        Bytecode::AbortMsg => binary.push(Opcodes::ABORT_MSG as u8),
         Bytecode::Nop => binary.push(Opcodes::NOP as u8),
         Bytecode::Exists(class_idx) => {
             binary.push(Opcodes::EXISTS as u8)?;

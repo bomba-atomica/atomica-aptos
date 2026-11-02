@@ -1,13 +1,14 @@
-// Copyright (c) The Diem Core Contributors
-// Copyright (c) The Move Contributors
-// SPDX-License-Identifier: Apache-2.0
+// Parts of the file are Copyright (c) The Diem Core Contributors
+// Parts of the file are Copyright (c) The Move Contributors
+// Parts of the file are Copyright (c) Aptos Foundation
+// All Aptos Foundation code and content is licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     file_format::{
-        AccessSpecifier, Bytecode, CodeOffset, CodeUnit, ConstantPoolIndex, FieldHandle,
-        FieldHandleIndex, FieldInstantiation, FieldInstantiationIndex, FunctionDefinition,
-        FunctionHandle, FunctionHandleIndex, FunctionInstantiation, FunctionInstantiationIndex,
-        IdentifierIndex, LocalIndex, ModuleHandleIndex, Signature, SignatureIndex, SignatureToken,
+        Bytecode, CodeOffset, CodeUnit, ConstantPoolIndex, FieldHandle, FieldHandleIndex,
+        FieldInstantiation, FieldInstantiationIndex, FunctionDefinition, FunctionHandle,
+        FunctionHandleIndex, FunctionInstantiation, FunctionInstantiationIndex, IdentifierIndex,
+        LocalIndex, ModuleHandleIndex, Signature, SignatureIndex, SignatureToken,
         StructDefInstantiation, StructDefInstantiationIndex, StructDefinition,
         StructDefinitionIndex, StructFieldInformation, StructHandle, StructVariantHandle,
         StructVariantHandleIndex, StructVariantInstantiation, StructVariantInstantiationIndex,
@@ -24,7 +25,6 @@ use crate::{
 use move_core_types::{ability::AbilitySet, int256::U256};
 use proptest::{
     collection::{vec, SizeRange},
-    option::of,
     prelude::*,
     sample::{select, Index as PropIndex},
 };
@@ -168,7 +168,6 @@ pub struct FunctionHandleGen {
     parameters: SignatureGen,
     return_: SignatureGen,
     type_parameters: Vec<AbilitySetGen>,
-    access_specifiers: Option<Vec<AccessSpecifier>>,
 }
 
 impl FunctionHandleGen {
@@ -176,7 +175,6 @@ impl FunctionHandleGen {
         param_count: impl Into<SizeRange>,
         return_count: impl Into<SizeRange>,
         type_parameter_count: impl Into<SizeRange>,
-        access_specifiers_count: impl Into<SizeRange>,
     ) -> impl Strategy<Value = Self> {
         let return_count = return_count.into();
         let param_count = param_count.into();
@@ -186,16 +184,14 @@ impl FunctionHandleGen {
             SignatureGen::strategy(param_count),
             SignatureGen::strategy(return_count),
             vec(AbilitySetGen::strategy(), type_parameter_count),
-            of(vec(any::<AccessSpecifier>(), access_specifiers_count)),
         )
             .prop_map(
-                |(module, name, parameters, return_, type_parameters, access_specifiers)| Self {
+                |(module, name, parameters, return_, type_parameters)| Self {
                     module,
                     name,
                     parameters,
                     return_,
                     type_parameters,
-                    access_specifiers,
                 },
             )
     }
@@ -227,7 +223,7 @@ impl FunctionHandleGen {
             parameters: params_idx,
             return_: return_idx,
             type_parameters,
-            access_specifiers: self.access_specifiers,
+            access_specifiers: None,
             attributes: vec![],
         })
     }

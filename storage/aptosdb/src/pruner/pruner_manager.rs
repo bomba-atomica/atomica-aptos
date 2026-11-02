@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::pruner::db_pruner::DBPruner;
 use aptos_storage_interface::Result;
@@ -34,7 +34,7 @@ pub trait PrunerManager: Sync {
     // in memory progress.
     fn save_min_readable_version(&self, min_readable_version: Version) -> Result<()>;
 
-    #[allow(unused)]
+    #[cfg(test)]
     fn is_pruning_pending(&self) -> bool;
 
     /// (For tests only.) Notifies the worker thread and waits for it to finish its job by polling

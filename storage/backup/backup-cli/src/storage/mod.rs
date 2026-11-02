@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 pub mod command_adapter;
 pub mod local_fs;
@@ -234,8 +233,8 @@ pub struct DBToolStorageOpt {
 
 impl DBToolStorageOpt {
     pub async fn init_storage(self) -> Result<Arc<dyn BackupStorage>> {
-        Ok(if self.local_fs_dir.is_some() {
-            Arc::new(LocalFs::new_with_opt(self.local_fs_dir.unwrap()))
+        Ok(if let Some(local_fs_dir) = self.local_fs_dir {
+            Arc::new(LocalFs::new_with_opt(local_fs_dir))
         } else {
             Arc::new(CommandAdapter::new_with_opt(self.command_adapter_config.unwrap()).await?)
         })

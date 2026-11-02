@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module defines the structs transported during the network handshake protocol v1.
 //! These should serialize as per the [AptosNet Handshake v1 Specification].
@@ -26,6 +25,7 @@ use std::{
     fmt,
     iter::{FromIterator, Iterator},
     ops::{BitAnd, BitOr},
+    sync::Arc,
 };
 use thiserror::Error;
 
@@ -57,8 +57,8 @@ pub enum ProtocolId {
     PeerMonitoringServiceRpc = 10,
     ConsensusRpcCompressed = 11,
     ConsensusDirectSendCompressed = 12,
-    NetbenchDirectSend = 13,
-    NetbenchRpc = 14,
+    NetbenchDirectSend = 13, // Currently unused
+    NetbenchRpc = 14,        // Currently unused
     DKGDirectSendCompressed = 15,
     DKGDirectSendBcs = 16,
     DKGDirectSendJson = 17,
@@ -401,9 +401,14 @@ pub enum HandshakeError {
 /// The HandshakeMsg contains a mapping from [`MessagingProtocolVersion`]
 /// suppported by the node to a bit-vector specifying application-level protocols
 /// supported over that version.
+///
+/// `supported_protocols` is wrapped in `Arc` so that constructing a `HandshakeMsg`
+/// from the shared `UpgradeContext` is a cheap reference-count bump rather than a
+/// deep `BTreeMap` clone. Serde transparently serializes/deserializes through the
+/// `Arc`, so the wire format is unchanged.
 #[derive(Clone, Deserialize, Serialize, Default)]
 pub struct HandshakeMsg {
-    pub supported_protocols: BTreeMap<MessagingProtocolVersion, ProtocolIdSet>,
+    pub supported_protocols: Arc<BTreeMap<MessagingProtocolVersion, ProtocolIdSet>>,
     pub chain_id: ChainId,
     pub network_id: NetworkId,
 }
@@ -422,7 +427,7 @@ impl HandshakeMsg {
         Self {
             chain_id: ChainId::test(),
             network_id: NetworkId::Validator,
-            supported_protocols,
+            supported_protocols: Arc::new(supported_protocols),
         }
     }
 

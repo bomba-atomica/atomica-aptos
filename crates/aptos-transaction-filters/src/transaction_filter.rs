@@ -1,11 +1,11 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use aptos_crypto::{ed25519::Ed25519PublicKey, HashValue};
 use aptos_types::transaction::{
     authenticator::{AccountAuthenticator, AnyPublicKey, TransactionAuthenticator},
     EntryFunction, MultisigTransactionPayload, Script, SignedTransaction, TransactionExecutableRef,
-    TransactionExtraConfig, TransactionPayload, TransactionPayloadInner,
+    TransactionPayload, TransactionPayloadInner,
 };
 use move_core_types::{account_address::AccountAddress, transaction_argument::TransactionArgument};
 use serde::{Deserialize, Serialize};
@@ -101,6 +101,12 @@ impl TransactionFilter {
         self.add_multiple_matchers_filter(allow, vec![transaction_matcher])
     }
 
+    /// Adds an encrypted transaction matcher to the filter
+    pub fn add_encrypted_transaction_filter(self, allow: bool) -> Self {
+        let transaction_matcher = TransactionMatcher::EncryptedTransaction;
+        self.add_multiple_matchers_filter(allow, vec![transaction_matcher])
+    }
+
     /// Adds an entry function matcher to the filter
     pub fn add_entry_function_filter(
         self,
@@ -170,6 +176,7 @@ pub enum TransactionMatcher {
     EntryFunction(AccountAddress, String, String), // Matches any transaction that calls a specific entry function in a module
     AccountAddress(AccountAddress), // Matches any transaction that involves a specific account address
     PublicKey(AnyPublicKey),        // Matches any transaction that involves a specific public key
+    EncryptedTransaction,           // Matches any encrypted transaction
 }
 
 impl TransactionMatcher {
@@ -196,6 +203,9 @@ impl TransactionMatcher {
             },
             TransactionMatcher::PublicKey(public_key) => {
                 matches_transaction_authenticator_public_key(signed_transaction, public_key)
+            },
+            TransactionMatcher::EncryptedTransaction => {
+                matches_encrypted_transaction(signed_transaction)
             },
         }
     }
@@ -305,12 +315,18 @@ fn matches_any_public_key_address(any_public_key: &AnyPublicKey, address: &Accou
         AnyPublicKey::Ed25519 { .. }
         | AnyPublicKey::Secp256k1Ecdsa { .. }
         | AnyPublicKey::Secp256r1Ecdsa { .. }
+        | AnyPublicKey::SlhDsa_Sha2_128s { .. }
         | AnyPublicKey::Keyless { .. } => false,
         AnyPublicKey::FederatedKeyless { public_key } => {
             // Check if the public key's JWK address matches the given address
             public_key.jwk_addr == *address
         },
     }
+}
+
+/// Returns true iff the transaction is an encrypted transaction
+fn matches_encrypted_transaction(signed_transaction: &SignedTransaction) -> bool {
+    signed_transaction.payload().is_encrypted_variant()
 }
 
 /// Returns true iff the transaction's entry function matches the given account address, module name, and function name
@@ -330,6 +346,7 @@ fn matches_entry_function(
                 MultisigTransactionPayload::EntryFunction(entry_function) => {
                     compare_entry_function(entry_function, address, module_name, function)
                 },
+                MultisigTransactionPayload::Script(_) => false,
             })
             .unwrap_or(false),
         TransactionPayload::EntryFunction(entry_function) => {
@@ -337,10 +354,26 @@ fn matches_entry_function(
         },
         TransactionPayload::Payload(TransactionPayloadInner::V1 { executable, .. }) => {
             match executable.as_ref() {
-                TransactionExecutableRef::Script(_) | TransactionExecutableRef::Empty => false,
+                TransactionExecutableRef::Script(_)
+                | TransactionExecutableRef::Empty
+                | TransactionExecutableRef::Encrypted => false,
                 TransactionExecutableRef::EntryFunction(entry_function) => {
                     compare_entry_function(entry_function, address, module_name, function)
                 },
+            }
+        },
+        TransactionPayload::EncryptedPayload(payload) => {
+            if let Ok(executable) = payload.executable_ref() {
+                match executable {
+                    TransactionExecutableRef::Script(_)
+                    | TransactionExecutableRef::Empty
+                    | TransactionExecutableRef::Encrypted => false,
+                    TransactionExecutableRef::EntryFunction(entry_function) => {
+                        compare_entry_function(entry_function, address, module_name, function)
+                    },
+                }
+            } else {
+                false
             }
         },
     }
@@ -361,6 +394,7 @@ fn matches_entry_function_module_address(
                 MultisigTransactionPayload::EntryFunction(entry_function) => {
                     compare_entry_function_module_address(entry_function, module_address)
                 },
+                MultisigTransactionPayload::Script(_) => false,
             })
             .unwrap_or(false),
         TransactionPayload::EntryFunction(entry_function) => {
@@ -368,10 +402,26 @@ fn matches_entry_function_module_address(
         },
         TransactionPayload::Payload(TransactionPayloadInner::V1 { executable, .. }) => {
             match executable.as_ref() {
-                TransactionExecutableRef::Script(_) | TransactionExecutableRef::Empty => false,
+                TransactionExecutableRef::Script(_)
+                | TransactionExecutableRef::Empty
+                | TransactionExecutableRef::Encrypted => false,
                 TransactionExecutableRef::EntryFunction(entry_function) => {
                     compare_entry_function_module_address(entry_function, module_address)
                 },
+            }
+        },
+        TransactionPayload::EncryptedPayload(payload) => {
+            if let Ok(executable) = payload.executable_ref() {
+                match executable {
+                    TransactionExecutableRef::Script(_)
+                    | TransactionExecutableRef::Empty
+                    | TransactionExecutableRef::Encrypted => false,
+                    TransactionExecutableRef::EntryFunction(entry_function) => {
+                        compare_entry_function_module_address(entry_function, module_address)
+                    },
+                }
+            } else {
+                false
             }
         },
     }
@@ -389,14 +439,16 @@ fn matches_multisig_address(
         | TransactionPayload::ModuleBundle(_) => false,
         TransactionPayload::Multisig(multisig) => multisig.multisig_address == *address,
         TransactionPayload::Payload(TransactionPayloadInner::V1 { extra_config, .. }) => {
-            match extra_config {
-                TransactionExtraConfig::V1 {
-                    multisig_address, ..
-                } => multisig_address
-                    .map(|multisig_address| multisig_address == *address)
-                    .unwrap_or(false),
-            }
+            extra_config
+                .multisig_address()
+                .map(|multisig_address| multisig_address == *address)
+                .unwrap_or(false)
         },
+        TransactionPayload::EncryptedPayload(payload) => payload
+            .extra_config()
+            .multisig_address()
+            .map(|multisig_address| multisig_address == *address)
+            .unwrap_or(false),
     }
 }
 
@@ -413,12 +465,26 @@ fn matches_script_argument_address(
         TransactionPayload::Script(script) => compare_script_argument_address(script, address),
         TransactionPayload::Payload(TransactionPayloadInner::V1 { executable, .. }) => {
             match executable.as_ref() {
-                TransactionExecutableRef::EntryFunction(_) | TransactionExecutableRef::Empty => {
-                    false
-                },
+                TransactionExecutableRef::EntryFunction(_)
+                | TransactionExecutableRef::Empty
+                | TransactionExecutableRef::Encrypted => false,
                 TransactionExecutableRef::Script(script) => {
                     compare_script_argument_address(script, address)
                 },
+            }
+        },
+        TransactionPayload::EncryptedPayload(payload) => {
+            if let Ok(executable) = payload.executable_ref() {
+                match executable {
+                    TransactionExecutableRef::EntryFunction(_)
+                    | TransactionExecutableRef::Empty
+                    | TransactionExecutableRef::Encrypted => false,
+                    TransactionExecutableRef::Script(script) => {
+                        compare_script_argument_address(script, address)
+                    },
+                }
+            } else {
+                false
             }
         },
     }

@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::move_vm_ext::{AptosMoveResolver, SessionExt, SessionId};
 use aptos_crypto::HashValue;
@@ -8,10 +8,8 @@ use aptos_native_interface::SafeNativeBuilder;
 use aptos_types::{
     chain_id::ChainId,
     on_chain_config::{Features, TimedFeaturesBuilder},
-    transaction::user_transaction_context::UserTransactionContext,
 };
 use aptos_vm_environment::{
-    environment::AptosEnvironment,
     natives::aptos_natives_with_builder,
     prod_configs::{aptos_default_ty_builder, aptos_prod_vm_config},
 };
@@ -37,7 +35,7 @@ impl GenesisRuntimeBuilder {
             LATEST_GAS_FEATURE_VERSION,
             &features,
             &timed_features,
-            aptos_default_ty_builder(),
+            aptos_default_ty_builder(true, true),
         );
 
         // All genesis sessions run with unmetered gas meter, and here we set
@@ -110,31 +108,5 @@ impl GenesisMoveVm {
     /// metered, there are no change set (storage) costs.
     pub fn genesis_change_set_configs(&self) -> ChangeSetConfigs {
         ChangeSetConfigs::unlimited_at_gas_feature_version(LATEST_GAS_FEATURE_VERSION)
-    }
-}
-
-pub struct MoveVmExt {
-    pub(crate) env: AptosEnvironment,
-}
-
-impl MoveVmExt {
-    pub fn new(env: &AptosEnvironment) -> Self {
-        Self { env: env.clone() }
-    }
-
-    pub fn new_session<'r, R: AptosMoveResolver>(
-        &self,
-        resolver: &'r R,
-        session_id: SessionId,
-        maybe_user_transaction_context: Option<UserTransactionContext>,
-    ) -> SessionExt<'r, R> {
-        SessionExt::new(
-            session_id,
-            self.env.chain_id(),
-            self.env.features(),
-            self.env.vm_config(),
-            maybe_user_transaction_context,
-            resolver,
-        )
     }
 }

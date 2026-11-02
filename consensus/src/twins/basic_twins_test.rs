@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     network_interface::ConsensusMsg,
@@ -156,10 +155,11 @@ fn twins_vote_dedup_test() {
     let n2_twin_id = nodes[2].id;
     let n3_twin_id = nodes[3].id;
 
-    assert!(playground.split_network(
-        vec![n1_twin_id, n3_twin_id],
-        vec![twin0_twin_id, n0_twin_id, n2_twin_id],
-    ));
+    assert!(playground.split_network(vec![n1_twin_id, n3_twin_id], vec![
+        twin0_twin_id,
+        n0_twin_id,
+        n2_twin_id
+    ],));
     runtime.spawn(playground.start());
 
     timed_block_on(&runtime, async {
@@ -231,13 +231,11 @@ fn twins_proposer_test() {
     let mut round_partitions: HashMap<u64, Vec<Vec<TwinId>>> = HashMap::new();
     // Round 1 to 10 partitions: [node0, node1, node2], [node3, twin0, twin1]
     for i in 1..10 {
-        round_partitions.insert(
-            i,
-            vec![
-                vec![n0_twin_id, n1_twin_id, n2_twin_id],
-                vec![n3_twin_id, twin0_twin_id, twin1_twin_id],
-            ],
-        );
+        round_partitions.insert(i, vec![vec![n0_twin_id, n1_twin_id, n2_twin_id], vec![
+            n3_twin_id,
+            twin0_twin_id,
+            twin1_twin_id,
+        ]]);
     }
     assert!(playground.split_network_round(&round_partitions));
     runtime.spawn(playground.start());

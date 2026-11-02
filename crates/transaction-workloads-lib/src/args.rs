@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     move_workloads::{FibonacciFunctionType, LoopType, PreBuiltPackagesImpl},
@@ -80,8 +80,6 @@ pub enum TransactionTypeArg {
     SmartTablePicture1MWith1KChangeExceedsLimit,
     DeserializeU256,
     SimpleScript,
-    APTTransferWithPermissionedSigner,
-    APTTransferWithMasterSigner,
     /// Basic market where sell and buy prices are in distinct ranges,
     /// and there are no matches.
     OrderBookNoMatches1Market,
@@ -111,6 +109,10 @@ pub enum TransactionTypeArg {
     FibonacciRecursive20,
     FibonacciTailRecursive20,
     FibonacciIterative20,
+
+    // Encrypted variants
+    EncryptedCoinTransfer,
+    EncryptedAptFaTransfer,
 }
 
 impl TransactionTypeArg {
@@ -400,12 +402,6 @@ impl TransactionTypeArg {
             },
             TransactionTypeArg::DeserializeU256 => call_custom_module(EntryPoints::DeserializeU256),
             TransactionTypeArg::SimpleScript => call_custom_module(EntryPoints::SimpleScript),
-            TransactionTypeArg::APTTransferWithPermissionedSigner => {
-                call_custom_module(EntryPoints::APTTransferWithPermissionedSigner)
-            },
-            TransactionTypeArg::APTTransferWithMasterSigner => {
-                call_custom_module(EntryPoints::APTTransferWithMasterSigner)
-            },
             TransactionTypeArg::OrderBookNoMatches1Market
             | TransactionTypeArg::OrderBookNoMatches50Markets => {
                 call_custom_module(EntryPoints::OrderBook {
@@ -509,6 +505,20 @@ impl TransactionTypeArg {
                     n: 20,
                     function_type: FibonacciFunctionType::Iterative,
                 })
+            },
+            TransactionTypeArg::EncryptedCoinTransfer => TransactionType::Encrypted {
+                inner: Box::new(TransactionTypeArg::CoinTransfer.materialize(
+                    module_working_set_size,
+                    sender_use_account_pool,
+                    workflow_progress_type,
+                )),
+            },
+            TransactionTypeArg::EncryptedAptFaTransfer => TransactionType::Encrypted {
+                inner: Box::new(TransactionTypeArg::AptFaTransfer.materialize(
+                    module_working_set_size,
+                    sender_use_account_pool,
+                    workflow_progress_type,
+                )),
             },
         }
     }

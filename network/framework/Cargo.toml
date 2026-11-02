@@ -12,6 +12,32 @@ publish = { workspace = true }
 repository = { workspace = true }
 rust-version = { workspace = true }
 
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes"]
+
+[features]
+default = []
+failpoints = ["fail/failpoints"]
+fuzzing = [
+    "aptos-bitvec/fuzzing",
+    "aptos-config/fuzzing",
+    "aptos-crypto/fuzzing",
+    "aptos-types/fuzzing",
+    "aptos-proptest-helpers",
+    "aptos-time-service/testing",
+    "aptos-types/fuzzing",
+    "aptos-memsocket/testing",
+    "aptos-netcore/fuzzing",
+    "proptest",
+    "proptest-derive",
+]
+testing = [
+    "aptos-config/testing",
+    "aptos-time-service/testing",
+    "aptos-memsocket/testing",
+    "aptos-netcore/testing",
+]
+
 [dependencies]
 anyhow = { workspace = true }
 aptos-bitvec = { workspace = true }
@@ -30,11 +56,13 @@ aptos-peer-monitoring-service-types = { workspace = true }
 aptos-proptest-helpers = { workspace = true, optional = true }
 aptos-short-hex-str = { workspace = true }
 aptos-time-service = { workspace = true }
+aptos-token-bucket = { workspace = true }
 aptos-types = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 bcs = { workspace = true }
 bytes = { workspace = true }
+fail = { workspace = true, optional = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 hex = { workspace = true }
@@ -56,7 +84,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-retry = { workspace = true }
-tokio-stream = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
@@ -67,14 +94,11 @@ aptos-netcore = { workspace = true, features = ["testing"] }
 aptos-proptest-helpers = { workspace = true }
 aptos-time-service = { workspace = true, features = ["testing"] }
 aptos-types = { workspace = true, features = ["fuzzing"] }
+criterion = { workspace = true }
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
 rand_core = { workspace = true }
 
-[features]
-default = []
-fuzzing = ["aptos-bitvec/fuzzing", "aptos-config/fuzzing", "aptos-crypto/fuzzing", "aptos-types/fuzzing", "aptos-proptest-helpers", "aptos-time-service/testing", "aptos-types/fuzzing", "aptos-memsocket/testing", "aptos-netcore/fuzzing", "proptest", "proptest-derive"]
-testing = ["aptos-config/testing", "aptos-time-service/testing", "aptos-memsocket/testing", "aptos-netcore/testing"]
-
-[package.metadata.cargo-machete]
-ignored = ["serde_bytes"]
+[[bench]]
+name = "network_cloning"
+harness = false

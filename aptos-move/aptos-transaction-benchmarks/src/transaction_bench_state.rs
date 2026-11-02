@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::transactions;
 use aptos_bitvec::BitVec;
@@ -116,6 +116,7 @@ where
         };
 
         let validator_set = ValidatorSet::fetch_config(&InMemoryStateStore::from_head_genesis())
+            .unwrap()
             .expect("Unable to retrieve the validator set from storage");
 
         Self {

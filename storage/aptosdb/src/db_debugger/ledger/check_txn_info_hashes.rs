@@ -1,5 +1,5 @@
-// Copyright © Aptos Foundation
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     db_debugger::common::DbDir, schema::transaction_accumulator::TransactionAccumulatorSchema,
@@ -50,7 +50,7 @@ impl Cmd {
                 leaf_hash,
             );
 
-            if version % 10_000 == 0 {
+            if version.is_multiple_of(10_000) {
                 println!("Good until version {}.", version);
             }
 

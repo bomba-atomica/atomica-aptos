@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use crate::{
     core_mempool::{CoreMempool, TimelineState},
@@ -136,16 +135,13 @@ impl MockSharedMempool {
             notification_receiver: reconfig_events,
         };
         reconfig_sender
-            .push(
-                (),
-                ReconfigNotification {
-                    version: 1,
-                    on_chain_configs: OnChainConfigPayload::new(
-                        1,
-                        InMemoryOnChainConfig::new(HashMap::new()),
-                    ),
-                },
-            )
+            .push((), ReconfigNotification {
+                version: 1,
+                on_chain_configs: OnChainConfigPayload::new(
+                    1,
+                    InMemoryOnChainConfig::new(HashMap::new()),
+                ),
+            })
             .unwrap();
         let peers_and_metadata = PeersAndMetadata::new(&[NetworkId::Validator]);
         let network_senders = hashmap! {NetworkId::Validator => network_sender};

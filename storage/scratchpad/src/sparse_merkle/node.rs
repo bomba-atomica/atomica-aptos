@@ -1,6 +1,5 @@
-// Copyright © Aptos Foundation
-// Parts of the project are originally copyright © Meta Platforms, Inc.
-// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) Aptos Foundation
+// Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 //! This module defines all kinds of structures in the Sparse Merkle Tree maintained in scratch pad.
 //! There are four kinds of nodes:
@@ -202,13 +201,10 @@ impl SubTree {
 
     #[cfg(test)]
     pub fn is_unknown(&self) -> bool {
-        matches!(
-            self,
-            Self::NonEmpty {
-                root: NodeHandle::Weak(_),
-                ..
-            }
-        )
+        matches!(self, Self::NonEmpty {
+            root: NodeHandle::Weak(_),
+            ..
+        })
     }
 
     #[cfg(test)]

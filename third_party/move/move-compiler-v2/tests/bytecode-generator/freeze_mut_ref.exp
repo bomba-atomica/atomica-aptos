@@ -112,31 +112,31 @@ module 0x42::freeze_mut_ref {
     struct S has drop {
     }
     public fun borrow_mut<Element>(map: &mut vector<Element>): &Element {
-        /*freeze*/0x1::vector::borrow_mut<Element>(map, 0)
+        0x1::vector::borrow_mut<Element>(map, 0)
     }
     public fun borrow_mut2<Element>(v: &mut Element): &Element {
-        /*freeze*/v
+        v
     }
     public fun borrow_mut3<Element>(v1: &mut Element, v2: &Element): &Element {
-        if (true) /*freeze*/v1 else v2
+        if (true) v1 else v2
     }
     public fun borrow_mut4<Element>(v: &mut Element): &Element {
-        /*freeze*/v
+        v
     }
     fun t0() {
-        let x = /*freeze*/&mut 0;
+        let x = &mut 0;
         x;
     }
     fun t1(s: &mut S): &S {
-        /*freeze*/s
+        s
     }
     fun t2(u1: &mut u64, u2: &mut u64): (&u64, &mut u64) {
-        (/*freeze*/u1, u2)
+        (u1, u2)
     }
     public fun t4() {
         let x;
         let y;
-        (x,y) = (/*freeze*/&mut 0, /*freeze*/&mut 0);
+        (x,y) = (&mut 0, &mut 0);
     }
     public fun t5(s: &mut G) {
         let x = 0;
@@ -152,20 +152,20 @@ module 0x42::freeze_mut_ref {
         let z;
         *{
             *f = 0;
-            z = /*freeze*/y;
+            z = y;
             g
         } = 2;
     }
     fun t6(cond: bool, s: &mut S, other: &S) {
         let x;
-        if (cond) x = /*freeze*/copy s else x = other;
+        if (cond) x = copy s else x = other;
     }
     fun t7(cond: bool, s: &mut S, other: &S) {
         let _x;
-        _x = if (cond) /*freeze*/s else other;
+        _x = if (cond) s else other;
     }
     fun t8(cond: bool, s: &mut S, other: &S) {
-        let _x = if (cond) /*freeze*/s else other;
+        let _x = if (cond) s else other;
     }
 }
 
@@ -706,7 +706,7 @@ fun freeze_mut_ref::t8($t0: bool, $t1: &mut 0x42::freeze_mut_ref::S, $t2: &0x42:
 
 
 ============ disassembled file-format ==================
-// Bytecode version v9
+// Bytecode version v10
 module 0x42::freeze_mut_ref
 struct G
   f: u64
@@ -730,21 +730,16 @@ struct S has drop
 
 // Function definition at index 2
 #[persistent] public fun borrow_mut3<T0>(l0: &mut T0, l1: &T0): &T0
-    local l2: &T0
     move_loc l1
     pop
     move_loc l0
     freeze_ref
-    st_loc l2
-    // @5
-l0: move_loc l2
     ret
+    // @5
     move_loc l0
     pop
     move_loc l1
-    // @10
-    st_loc l2
-    branch l0
+    ret
 
 // Function definition at index 3
 #[persistent] public fun borrow_mut4<T0>(l0: &mut T0): &T0
@@ -853,13 +848,13 @@ fun t6(l0: bool, l1: &mut S, l2: &S)
     pop
     freeze_ref
     pop
-l1: ret
+    ret
     // @10
 l0: move_loc l1
     pop
     move_loc l2
     pop
-    branch l1
+    ret
 
 // Function definition at index 10
 fun t7(l0: bool, l1: &mut S, l2: &S)
@@ -894,13 +889,13 @@ fun t8(l0: bool, l1: &mut S, l2: &S)
     // @5
     freeze_ref
     pop
-l1: ret
+    ret
 l0: move_loc l1
     pop
     // @10
     move_loc l2
     pop
-    branch l1
+    ret
 
 
 ============ bytecode verification succeeded ========
