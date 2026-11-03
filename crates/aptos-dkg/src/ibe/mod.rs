@@ -22,11 +22,9 @@
 pub mod ciphertext;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod golden_vectors;
-
-pub use ciphertext::{BidCiphertext, MAX_CIPHERTEXT_BYTES};
+#[cfg(test)]
+mod tests;
 
 use aptos_crypto::arkworks::shamir::ShamirThresholdConfig;
 pub use ark_bls12_381::Fr as MasterScalar;
@@ -40,6 +38,7 @@ use ark_ec::{
 };
 use ark_ff::{field_hashers::DefaultFieldHasher, PrimeField, Zero};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
+pub use ciphertext::{BidCiphertext, MAX_CIPHERTEXT_BYTES};
 use sha2_0_10_6::Sha256;
 use sha3::{Digest, Sha3_256};
 use std::{collections::HashSet, ops::Mul};

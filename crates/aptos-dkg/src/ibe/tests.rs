@@ -343,10 +343,10 @@ fn decoders_reject_malformed_points() {
     }
     // Identity.
     let mut id1 = vec![0u8; 48];
-    id1[0] = 0xc0;
+    id1[0] = 0xC0;
     assert!(matches!(decode_g1(&id1), Err(IbeError::InvalidPoint(_))));
     let mut id2 = vec![0u8; 96];
-    id2[0] = 0xc0;
+    id2[0] = 0xC0;
     assert!(matches!(decode_g2(&id2), Err(IbeError::InvalidPoint(_))));
     // Not on the curve.
     assert!(matches!(
@@ -355,7 +355,7 @@ fn decoders_reject_malformed_points() {
     ));
     // Uncompressed flag cleared.
     let mut no_flag = encode_g1(&g1);
-    no_flag[0] &= 0x7f;
+    no_flag[0] &= 0x7F;
     assert!(decode_g1(&no_flag).is_err());
     // On the curve, wrong subgroup.
     let ns1 = non_subgroup_g1();
@@ -437,7 +437,7 @@ fn reconstruction_rejects_bad_inputs_without_panicking() {
     // Malformed share bytes of each kind.
     for bad in [vec![0u8; 47], off_curve_g1(), raw_g1(&non_subgroup_g1()), {
         let mut v = vec![0u8; 48];
-        v[0] = 0xc0;
+        v[0] = 0xC0;
         v
     }] {
         let mut n = nested.clone();
@@ -504,7 +504,7 @@ fn bid_round_trip() {
     assert_eq!(BidCiphertext::from_bytes(&ct.to_bytes()).unwrap(), ct);
     assert_eq!(decrypt_bid(&s.dk, &s.id, &s.ad, &ct).unwrap(), msg);
     // Empty and large plaintexts.
-    for m in [vec![], vec![0xab; 4096]] {
+    for m in [vec![], vec![0xAB; 4096]] {
         let ct = encrypt_bid(&s.d.mpk, &s.id, &s.ad, &m, &mut rng(10)).unwrap();
         assert_eq!(decrypt_bid(&s.dk, &s.id, &s.ad, &ct).unwrap(), m);
     }
@@ -577,7 +577,7 @@ fn bid_wire_every_byte_flip_and_truncation_fails() {
     let mut trailing = wire.clone();
     trailing.push(0);
     assert!(verify_bid_ct(&trailing, &s.ad).is_err());
-    assert!(verify_bid_ct(&vec![0xffu8; MAX_CIPHERTEXT_BYTES + 1], &s.ad).is_err());
+    assert!(verify_bid_ct(&vec![0xFFu8; MAX_CIPHERTEXT_BYTES + 1], &s.ad).is_err());
     assert!(verify_bid_ct(&[], &s.ad).is_err());
 }
 
@@ -598,7 +598,7 @@ fn bid_with_malformed_or_non_subgroup_u_is_rejected_at_submission() {
     assert!(resign(ct.u).verify(&s.ad).is_ok());
 
     let mut id2 = [0u8; 96];
-    id2[0] = 0xc0;
+    id2[0] = 0xC0;
     let ns: [u8; 96] = raw_g2(&non_subgroup_g2()).try_into().unwrap();
     let mut off = ct.u;
     // Search a mutation of U that is not a curve point.
@@ -848,7 +848,7 @@ fn player_shares_negative_cases() {
         Err(ShareCheckFailure::InvalidShare { index: 0, .. })
     ));
     let mut ident = vec![0u8; G1_COMPRESSED_LEN];
-    ident[0] = 0xc0;
+    ident[0] = 0xC0;
     let mut zero = shares[0].clone();
     zero[1] = ident;
     assert!(matches!(

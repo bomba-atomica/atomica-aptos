@@ -925,7 +925,11 @@ impl
                     epoch: share.epoch.into(),
                     timelock_id: share.timelock_id.into(),
                     author: share.author.into(),
-                    shares: share.shares.into_iter().map(HexEncodedBytes::from).collect(),
+                    shares: share
+                        .shares
+                        .into_iter()
+                        .map(HexEncodedBytes::from)
+                        .collect(),
                 })
             },
             aptos_types::validator_txn::ValidatorTransaction::TimelockDKGResult(output) => {

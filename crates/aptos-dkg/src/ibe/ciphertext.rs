@@ -231,13 +231,10 @@ pub fn decrypt_bid(
     let u = decode_g2(&ct.u)?;
     let key = derive_aead_key(&decapsulate(dk, &u), &ct.u, id, &ct.vk, ad);
     <Aes128Gcm as aes_gcm::KeyInit>::new((&key).into())
-        .decrypt(
-            Nonce::from_slice(&ct.nonce),
-            Payload {
-                msg: &ct.c,
-                aad: ad,
-            },
-        )
+        .decrypt(Nonce::from_slice(&ct.nonce), Payload {
+            msg: &ct.c,
+            aad: ad,
+        })
         .map_err(|_| IbeError::DecryptionFailed)
 }
 

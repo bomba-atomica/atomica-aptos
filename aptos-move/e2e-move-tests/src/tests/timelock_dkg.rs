@@ -59,12 +59,10 @@ fn is_ready(h: &mut MoveHarness) -> bool {
 }
 
 fn enable(h: &mut MoveHarness) {
-    h.executor.exec(
-        "timelock_dkg",
-        "enable",
-        vec![],
-        vec![signer_arg(), bcs::to_bytes(&120u64).unwrap()],
-    );
+    h.executor.exec("timelock_dkg", "enable", vec![], vec![
+        signer_arg(),
+        bcs::to_bytes(&120u64).unwrap(),
+    ]);
 }
 
 fn output(epoch: u64) -> CertifiedTimelockDKGOutput {
@@ -116,17 +114,12 @@ fn result_is_discarded_without_a_session_or_with_an_uncertified_aggregate() {
     assert!(run_vtxn(&mut h, epoch).status().is_discarded());
 
     // A session is in progress. An output of a wrong epoch, and one with no signatures, are discarded.
-    h.executor.exec(
-        "timelock_dkg",
-        "start",
-        vec![],
-        vec![
-            bcs::to_bytes(&epoch).unwrap(),
-            off_config(),
-            bcs::to_bytes(&Vec::<u8>::new()).unwrap(),
-            bcs::to_bytes(&Vec::<u8>::new()).unwrap(),
-        ],
-    );
+    h.executor.exec("timelock_dkg", "start", vec![], vec![
+        bcs::to_bytes(&epoch).unwrap(),
+        off_config(),
+        bcs::to_bytes(&Vec::<u8>::new()).unwrap(),
+        bcs::to_bytes(&Vec::<u8>::new()).unwrap(),
+    ]);
     assert!(run_vtxn(&mut h, epoch + 1).status().is_discarded());
     assert!(run_vtxn(&mut h, epoch).status().is_discarded());
     assert!(!is_ready(&mut h));
@@ -156,29 +149,22 @@ fn finish_with_result(h: &mut MoveHarness, epoch: u64) {
 }
 
 fn start_session(h: &mut MoveHarness, epoch: u64) {
-    h.executor.exec(
-        "timelock_dkg",
-        "start",
-        vec![],
-        vec![
-            bcs::to_bytes(&epoch).unwrap(),
-            off_config(),
-            bcs::to_bytes(&Vec::<u8>::new()).unwrap(),
-            bcs::to_bytes(&Vec::<u8>::new()).unwrap(),
-        ],
-    );
+    h.executor.exec("timelock_dkg", "start", vec![], vec![
+        bcs::to_bytes(&epoch).unwrap(),
+        off_config(),
+        bcs::to_bytes(&Vec::<u8>::new()).unwrap(),
+        bcs::to_bytes(&Vec::<u8>::new()).unwrap(),
+    ]);
 }
 
 /// Moves block time forward by a few seconds, so `reconfiguration::reconfigure` sees time pass,
 /// then runs the finish step of the reconfiguration.
 fn end_epoch(h: &mut MoveHarness) {
     h.executor.new_block();
-    h.executor.exec(
-        "reconfiguration_with_dkg",
-        "finish",
-        vec![],
-        vec![signer_arg()],
-    );
+    h.executor
+        .exec("reconfiguration_with_dkg", "finish", vec![], vec![
+            signer_arg(),
+        ]);
 }
 
 #[test]

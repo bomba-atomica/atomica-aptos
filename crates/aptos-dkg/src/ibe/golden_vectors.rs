@@ -152,7 +152,7 @@ fn off_curve_g1() -> Vec<u8> {
 
 fn identity_g1_encoding() -> Vec<u8> {
     let mut v = vec![0u8; G1_COMPRESSED_LEN];
-    v[0] = 0xc0;
+    v[0] = 0xC0;
     v
 }
 

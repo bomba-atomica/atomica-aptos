@@ -6,9 +6,7 @@ use crate::{
         DepositEvent, NewBlockEvent, NewEpochEvent, WithdrawEvent, NEW_EPOCH_EVENT_MOVE_TYPE_TAG,
         NEW_EPOCH_EVENT_V2_MOVE_TYPE_TAG,
     },
-    dkg::{
-        chunky_dkg::ChunkyDKGStartEvent, timelock_dkg::TimelockDKGStartEvent, DKGStartEvent,
-    },
+    dkg::{chunky_dkg::ChunkyDKGStartEvent, timelock_dkg::TimelockDKGStartEvent, DKGStartEvent},
     event::EventKey,
     jwks::ObservedJWKsUpdated,
     transaction::Version,

@@ -51,15 +51,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4.2.2
 
-      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -c rustfmt
-          rustup default "$RUST_TOOLCHAIN"
+      # rustfmt.toml uses nightly-only options, so formatting must run on nightly
+      # (same as upstream scripts/rust_lint.sh). Clippy and builds stay on the pin.
+      - name: Install nightly rustfmt
+        run: rustup toolchain install nightly --profile minimal -c rustfmt
 
       - name: Check formatting
         run: |
           echo "Checking code formatting..."
-          cargo fmt -- --check
+          cargo +nightly fmt -- --check
 
   clippy:
     name: Clippy Lints
