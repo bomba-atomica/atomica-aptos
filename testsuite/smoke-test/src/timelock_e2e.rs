@@ -114,19 +114,15 @@ async fn chain_now_us(client: &Client) -> u64 {
 
 async fn timelock_status(client: &Client, id: u64) -> Result<(u8, u8)> {
     let status = as_u64(
-        &view(
-            client,
-            "0x1::ibe_config::get_status",
-            vec![json!(id.to_string())],
-        )
+        &view(client, "0x1::ibe_config::get_status", vec![json!(
+            id.to_string()
+        )])
         .await?[0],
     );
     let reason = as_u64(
-        &view(
-            client,
-            "0x1::ibe_config::get_expiry_reason",
-            vec![json!(id.to_string())],
-        )
+        &view(client, "0x1::ibe_config::get_expiry_reason", vec![json!(
+            id.to_string()
+        )])
         .await?[0],
     );
     Ok((status as u8, reason as u8))
@@ -134,11 +130,9 @@ async fn timelock_status(client: &Client, id: u64) -> Result<(u8, u8)> {
 
 /// `(deadline_us, identity, revealed, share_count)`.
 async fn timelock_row(client: &Client, id: u64) -> Result<(u64, Vec<u8>, bool, u64)> {
-    let v = view(
-        client,
-        "0x1::ibe_config::get_timelock",
-        vec![json!(id.to_string())],
-    )
+    let v = view(client, "0x1::ibe_config::get_timelock", vec![json!(
+        id.to_string()
+    )])
     .await?;
     Ok((
         as_u64(&v[0]),
@@ -474,11 +468,9 @@ async fn timelock_e2e() {
         .expect("register timelock 1");
     let (row_deadline, identity_bytes, _, _) = timelock_row(&client, t1).await.unwrap();
     let t1_epoch = as_u64(
-        &view(
-            &client,
-            "0x1::ibe_config::get_timelock_epoch",
-            vec![json!(t1.to_string())],
-        )
+        &view(&client, "0x1::ibe_config::get_timelock_epoch", vec![json!(
+            t1.to_string()
+        )])
         .await
         .unwrap()[0],
     );
@@ -529,11 +521,9 @@ async fn timelock_e2e() {
             if share_count > 0 || is_revealed {
                 sealed_ok = false;
             }
-            if view(
-                &client,
-                "0x1::ibe_config::get_decryption_key",
-                vec![json!(t1.to_string())],
-            )
+            if view(&client, "0x1::ibe_config::get_decryption_key", vec![json!(
+                t1.to_string()
+            )])
             .await
             .is_ok()
             {
@@ -590,11 +580,9 @@ async fn timelock_e2e() {
 
     if revealed {
         let dk_bytes = as_bytes(
-            &view(
-                &client,
-                "0x1::ibe_config::get_decryption_key",
-                vec![json!(t1.to_string())],
-            )
+            &view(&client, "0x1::ibe_config::get_decryption_key", vec![json!(
+                t1.to_string()
+            )])
             .await
             .unwrap()[0],
         );
@@ -657,11 +645,9 @@ async fn timelock_e2e() {
         .await
         .expect("epoch 4");
     let after = timelock_status(&client, t2).await.unwrap();
-    let key_after = view(
-        &client,
-        "0x1::ibe_config::get_decryption_key",
-        vec![json!(t2.to_string())],
-    )
+    let key_after = view(&client, "0x1::ibe_config::get_decryption_key", vec![json!(
+        t2.to_string()
+    )])
     .await;
     results.check(
         "epoch-change-before-reveal-expires-timelock-epoch-ended",
@@ -731,11 +717,9 @@ script {
     );
     if ready5 && revealed {
         let dk_bytes = as_bytes(
-            &view(
-                &client,
-                "0x1::ibe_config::get_decryption_key",
-                vec![json!(t1.to_string())],
-            )
+            &view(&client, "0x1::ibe_config::get_decryption_key", vec![json!(
+                t1.to_string()
+            )])
             .await
             .unwrap()[0],
         );
@@ -765,11 +749,9 @@ script {
         }
         let ok3 = revealed3 && {
             let dk3 = decode_g1(&as_bytes(
-                &view(
-                    &client,
-                    "0x1::ibe_config::get_decryption_key",
-                    vec![json!(t3.to_string())],
-                )
+                &view(&client, "0x1::ibe_config::get_decryption_key", vec![json!(
+                    t3.to_string()
+                )])
                 .await
                 .unwrap()[0],
             ))

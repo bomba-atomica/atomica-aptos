@@ -239,9 +239,9 @@ mod tests {
 
     #[test]
     fn registry_table_handle_is_the_first_address_of_the_resource() {
-        let mut resource = vec![0xabu8; 32];
+        let mut resource = vec![0xABu8; 32];
         resource.extend_from_slice(&[1, 2, 3]);
-        assert_eq!(timelock_registry_table_handle(&resource), Some([0xab; 32]));
+        assert_eq!(timelock_registry_table_handle(&resource), Some([0xAB; 32]));
         assert_eq!(timelock_registry_table_handle(&resource[..31]), None);
     }
 
