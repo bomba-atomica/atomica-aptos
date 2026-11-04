@@ -609,18 +609,14 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
     /// Starts the share-submitting service of the epoch, if the node serves the timelock.
     fn start_timelock_share_service(&mut self, chain_id: u8, epoch: u64) {
         let guard = self.timelock_service.read();
-        let Some(state) = guard.as_ref() else {
-            return;
-        };
-        let TimelockServiceState::Ready { shares, .. } = state.as_ref() else {
-            return;
-        };
-        let core = timelock_share_service::ShareServiceCore::new(
+        let Some(core) = timelock_share_service::ShareServiceCore::for_state(
+            guard.as_deref(),
             epoch,
             chain_id,
             self.my_addr,
-            shares.shares().to_vec(),
-        );
+        ) else {
+            return;
+        };
         let view = timelock_share_service::DbTimelockChainView::new(self.db_reader.clone());
         self.timelock_share_task = Some(tokio::spawn(timelock_share_service::run(
             core,
