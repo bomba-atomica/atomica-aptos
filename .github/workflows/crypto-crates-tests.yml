@@ -92,5 +92,9 @@ jobs:
       - name: Run aptos-types tests
         run: .github/scripts/run-tests-guarded.sh aptos-types 10 -- cargo test -p aptos-types --verbose
 
+      # Runs even when an earlier crate step fails, so a flake there (such as
+      # the randomized aptos-types rounding test) cannot hide these tests.
+      # The job still fails if any step failed.
       - name: Run timelock share service tests
+        if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh timelock-share-service 8 -- cargo test -p aptos-dkg-runtime --lib timelock_share_service --verbose
