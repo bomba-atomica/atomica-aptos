@@ -91,3 +91,6 @@ jobs:
 
       - name: Run aptos-types tests
         run: .github/scripts/run-tests-guarded.sh aptos-types 10 -- cargo test -p aptos-types --verbose
+
+      - name: Run timelock share service tests
+        run: .github/scripts/run-tests-guarded.sh timelock-share-service 8 -- cargo test -p aptos-dkg-runtime --lib timelock_share_service --verbose

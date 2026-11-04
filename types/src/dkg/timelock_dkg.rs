@@ -521,6 +521,12 @@ impl TimelockOwnShares {
     pub fn shares(&self) -> &[MasterScalar] {
         &self.shares
     }
+
+    /// Shares that were not checked against verification keys. Tests only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn for_testing(shares: Vec<MasterScalar>) -> Self {
+        Self { shares }
+    }
 }
 
 impl std::fmt::Debug for TimelockOwnShares {
