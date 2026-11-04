@@ -80,6 +80,8 @@ impl Dealing {
 
 struct Env {
     h: MoveHarness,
+    /// Validators in validator-index order.
+    validators: Vec<AccountAddress>,
     author: AccountAddress,
     epoch: u64,
     chain_id: u8,
@@ -90,8 +92,23 @@ impl Env {
     /// Epoch config from `dealing` (threshold in weight units), one registered timelock with a deadline
     /// of 60 minutes. Block time stays at its start value.
     fn new(dealing: &Dealing, threshold: u64) -> Self {
+        Self::with_harness(MoveHarness::new(), dealing, threshold)
+    }
+
+    /// As [`Env::new`] with one genesis validator per weight of `dealing`, so every validator index of the
+    /// epoch config has a validator that can submit.
+    fn with_validator_per_weight(dealing: &Dealing, threshold: u64) -> Self {
+        let e = Self::with_harness(
+            MoveHarness::new_with_validators(dealing.weights.len() as u64),
+            dealing,
+            threshold,
+        );
+        assert_eq!(e.validators.len(), dealing.weights.len());
+        e
+    }
+
+    fn with_harness(mut h: MoveHarness, dealing: &Dealing, threshold: u64) -> Self {
         aptos_logger::Logger::init_for_testing();
-        let mut h = MoveHarness::new();
         let validators = ValidatorSet::fetch_config(&h.executor.get_state_view())
             .expect("validator set read")
             .expect("validator set")
@@ -129,6 +146,7 @@ impl Env {
         assert_eq!(status, TransactionStatus::Keep(ExecutionStatus::Success));
         Self {
             h,
+            validators,
             author,
             epoch,
             chain_id,
@@ -144,13 +162,32 @@ impl Env {
         self.h.executor.new_block_with_timestamp(time_us);
     }
 
-    /// Runs one `TimelockShare` and applies its write set.
+    /// Runs one `TimelockShare` of the default author (validator 0) and applies its write set.
     fn submit(&mut self, epoch: u64, shares: Vec<Vec<u8>>) -> TransactionOutput {
+        self.submit_by(self.author, epoch, shares)
+    }
+
+    /// Runs one `TimelockShare` of the validator at `validator_index` and applies its write set.
+    fn submit_as(
+        &mut self,
+        validator_index: usize,
+        epoch: u64,
+        shares: Vec<Vec<u8>>,
+    ) -> TransactionOutput {
+        self.submit_by(self.validators[validator_index], epoch, shares)
+    }
+
+    fn submit_by(
+        &mut self,
+        author: AccountAddress,
+        epoch: u64,
+        shares: Vec<Vec<u8>>,
+    ) -> TransactionOutput {
         let txn =
             Transaction::ValidatorTransaction(ValidatorTransaction::TimelockShare(TimelockShare {
                 epoch,
                 timelock_id: self.timelock_id,
-                author: self.author,
+                author,
                 shares,
             }));
         let mut outputs = self
@@ -424,5 +461,53 @@ fn rebuilt_key_that_fails_the_mpk_check_expires_and_is_not_stored() {
         vec![bcs::to_bytes(&e.timelock_id).unwrap()],
     );
     assert!(key.values.is_err(), "no decryption key is stored");
+    set_timelock_share_verifier(None);
+}
+
+/// Submits the shares of `order` (validator indices) one by one. Only the last submission reaches the
+/// threshold, and it must reveal the key of `d`.
+fn reveal_in_order(d: &Dealing, threshold: u64, order: &[usize]) {
+    let mut e = Env::with_validator_per_weight(d, threshold);
+    e.advance_to(DEADLINE);
+    let id = e.identity();
+    let (last, first) = order.split_last().unwrap();
+    for &v in first {
+        let out = e.submit_as(v, e.epoch, d.shares_for(v, &id));
+        assert!(kept_ok(&out), "validator {v}: {:?}", out.status());
+        assert!(!e.is_revealed(), "validator {v}: below the threshold");
+    }
+    let out = e.submit_as(*last, e.epoch, d.shares_for(*last, &id));
+    assert!(kept_ok(&out), "validator {last}: {:?}", out.status());
+    assert!(
+        event_named(&out, "TimelockExpiredEvent").is_empty(),
+        "no key-check-failed expiry"
+    );
+    assert!(e.is_revealed());
+    let dk: Vec<u8> = e.view("get_decryption_key", 0);
+    let expected = encode_g1(&derive_decryption_key(&d.secret, &id).unwrap()).to_vec();
+    assert_eq!(dk, expected);
+    assert_eq!(event_named(&out, "TimelockRevealEvent").len(), 1);
+}
+
+/// Regression: the reconstruction inputs once carried only the submitters' weights, so a reveal below
+/// full weight failed as `Expired(key-check-failed)`. Weights 1,1,1,1, threshold 3, validators 2, 0, 3
+/// submit (validator 1 never does).
+#[test]
+fn equal_weights_reveal_below_full_weight_out_of_index_order() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    install_boneh_franklin_share_verifier();
+    let d = Dealing::new(&[1, 1, 1, 1], 3, 21);
+    reveal_in_order(&d, 3, &[2, 0, 3]);
+    set_timelock_share_verifier(None);
+}
+
+/// Unequal weights 2,1,1 with threshold 3: validator 2 (weight 1) submits before validator 0 (weight 2),
+/// validator 1 never does. Player ids must come from the weights of all validators.
+#[test]
+fn unequal_weights_reveal_out_of_index_order() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    install_boneh_franklin_share_verifier();
+    let d = Dealing::new(&[2, 1, 1], 3, 22);
+    reveal_in_order(&d, 3, &[2, 0]);
     set_timelock_share_verifier(None);
 }

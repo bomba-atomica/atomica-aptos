@@ -23,7 +23,9 @@ module aptos_std::ibe {
     ///
     /// * `validator_indices` - validator indices (0-based, from the DKG).
     /// * `dk_shares` - `dk_shares[i]` holds the shares of validator `validator_indices[i]`.
-    /// * `weights` - weights of the submitting validators, aligned with `validator_indices`.
+    /// * `weights` - weights of every validator of the epoch, indexed by validator index (the full
+    ///   per-validator list, not only the submitters). Validator `i` owns the virtual players that
+    ///   start at `weights[0] + ... + weights[i - 1]`, and the weights must sum to `total_weight`.
     /// * `threshold` - minimum weight required for reconstruction.
     /// * `total_weight` - sum of all validator weights.
     /// * `identity` - 32-byte identity (see `ibe_config::compute_identity`).
