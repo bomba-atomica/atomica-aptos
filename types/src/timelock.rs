@@ -34,6 +34,58 @@ pub struct RegistryTimelock {
     pub status: RegistryTimelockStatus,
 }
 
+/// BCS mirror of the Move enum `0x1::ibe_config::TimelockStatus`. The variant order is the wire format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TimelockStatusResource {
+    Pending,
+    Revealed,
+    Expired { reason: u8 },
+}
+
+/// BCS mirror of the Move struct `0x1::ibe_config::TimelockInfo`, as stored in the registry table. The field
+/// order is the wire format. The node reads it from committed chain state to find the timelocks it serves.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimelockInfoResource {
+    pub timelock_id: u64,
+    pub epoch: u64,
+    pub deadline_us: u64,
+    pub reveal_expiry_us: u64,
+    pub identity: Vec<u8>,
+    pub decryption_key: Vec<u8>,
+    pub status: TimelockStatusResource,
+    pub share_count: u64,
+    pub reveal_threshold: u64,
+    pub validator_indices: Vec<u64>,
+    pub submitted_shares: Vec<Vec<Vec<u8>>>,
+    pub validator_weights: Vec<u64>,
+    pub submitters: Vec<move_core_types::account_address::AccountAddress>,
+}
+
+impl TimelockInfoResource {
+    /// The registry row the node rule ([`DerivableTimelock::authorize`]) takes.
+    pub fn to_registry_timelock(&self) -> RegistryTimelock {
+        RegistryTimelock {
+            timelock_id: self.timelock_id,
+            epoch: self.epoch,
+            deadline_us: self.deadline_us,
+            reveal_expiry_us: self.reveal_expiry_us,
+            identity: self.identity.clone(),
+            status: match self.status {
+                TimelockStatusResource::Pending => RegistryTimelockStatus::Pending,
+                TimelockStatusResource::Revealed => RegistryTimelockStatus::Revealed,
+                TimelockStatusResource::Expired { .. } => RegistryTimelockStatus::Expired,
+            },
+        }
+    }
+}
+
+/// The table handle of `TimelockRegistry.timelocks`. The resource is `{ timelocks: Table, pending:
+/// BigOrderedMap, next_timelock_id }` and `Table` is a struct with one `address` field, so the handle is the
+/// first 32 bytes of the BCS encoding. The rest of the resource is not read.
+pub fn timelock_registry_table_handle(resource_bytes: &[u8]) -> Option<[u8; 32]> {
+    resource_bytes.get(..32)?.try_into().ok()
+}
+
 /// Why the node refuses to derive shares for a timelock.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DerivationRefusal {
@@ -143,6 +195,54 @@ mod tests {
             identity: compute_identity(CHAIN, epoch, id, deadline).to_vec(),
             status: RegistryTimelockStatus::Pending,
         }
+    }
+
+    #[test]
+    fn registry_row_mirror_matches_the_move_layout() {
+        // `0x1::ibe_config::TimelockStatus` is an enum: Pending 0, Revealed 1, Expired { reason } 2.
+        assert_eq!(
+            bcs::to_bytes(&TimelockStatusResource::Pending).unwrap(),
+            vec![0]
+        );
+        assert_eq!(
+            bcs::to_bytes(&TimelockStatusResource::Revealed).unwrap(),
+            vec![1]
+        );
+        assert_eq!(
+            bcs::to_bytes(&TimelockStatusResource::Expired { reason: 3 }).unwrap(),
+            vec![2, 3]
+        );
+        let info = TimelockInfoResource {
+            timelock_id: 4,
+            epoch: 3,
+            deadline_us: 1_000,
+            reveal_expiry_us: 2_000,
+            identity: vec![7; 32],
+            decryption_key: vec![],
+            status: TimelockStatusResource::Pending,
+            share_count: 1,
+            reveal_threshold: 3,
+            validator_indices: vec![0],
+            submitted_shares: vec![vec![vec![9; 48]]],
+            validator_weights: vec![1],
+            submitters: vec![move_core_types::account_address::AccountAddress::ONE],
+        };
+        let bytes = bcs::to_bytes(&info).unwrap();
+        assert_eq!(
+            bcs::from_bytes::<TimelockInfoResource>(&bytes).unwrap(),
+            info
+        );
+        let row = info.to_registry_timelock();
+        assert_eq!(row.status, RegistryTimelockStatus::Pending);
+        assert_eq!((row.timelock_id, row.epoch, row.deadline_us), (4, 3, 1_000));
+    }
+
+    #[test]
+    fn registry_table_handle_is_the_first_address_of_the_resource() {
+        let mut resource = vec![0xABu8; 32];
+        resource.extend_from_slice(&[1, 2, 3]);
+        assert_eq!(timelock_registry_table_handle(&resource), Some([0xAB; 32]));
+        assert_eq!(timelock_registry_table_handle(&resource[..31]), None);
     }
 
     #[test]

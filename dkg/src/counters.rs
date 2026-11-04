@@ -204,3 +204,12 @@ pub fn observe_chunky_dkg_stage(
             .observe(elapsed.as_secs_f64());
     }
 }
+
+/// Count of `TimelockShare` transactions this node put into the validator transaction pool.
+pub static TIMELOCK_SHARES_SUBMITTED: Lazy<IntCounter> = Lazy::new(|| {
+    register_int_counter!(
+        "aptos_timelock_shares_submitted",
+        "Count of TimelockShare validator transactions this node put into the pool"
+    )
+    .unwrap()
+});

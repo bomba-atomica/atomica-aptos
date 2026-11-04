@@ -1466,6 +1466,7 @@ dependencies = [
  "aptos-runtimes",
  "aptos-safety-rules",
  "aptos-short-hex-str",
+ "aptos-storage-interface",
  "aptos-time-service",
  "aptos-types",
  "aptos-validator-transaction-pool",

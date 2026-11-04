@@ -8,7 +8,7 @@ use crate::{
     dkg_manager::DKGManager,
     network::{IncomingRpcRequest, NetworkReceivers, NetworkSender},
     network_interface::DKGNetworkClient,
-    DKGMessage,
+    timelock_share_service, DKGMessage,
 };
 use anyhow::{anyhow, Result};
 use aptos_bounded_executor::BoundedExecutor;
@@ -24,6 +24,7 @@ use aptos_logger::{error, info, warn};
 use aptos_network::{application::interface::NetworkClient, protocols::network::Event};
 use aptos_reliable_broadcast::ReliableBroadcast;
 use aptos_safety_rules::{safety_rules_manager::storage, PersistentSafetyStorage};
+use aptos_storage_interface::DbReader;
 use aptos_types::{
     account_address::AccountAddress,
     account_config::ChainIdResource,
@@ -52,8 +53,9 @@ const DKG_START_EVENT_TYPE_TAG: &str = "0x1::dkg::DKGStartEvent";
 const CHUNKY_DKG_START_EVENT_TYPE_TAG: &str = "0x1::chunky_dkg::ChunkyDKGStartEvent";
 const TIMELOCK_DKG_START_EVENT_TYPE_TAG: &str = "0x1::timelock_dkg::TimelockDKGStartEvent";
 
-/// The timelock service state of the current epoch. A later share-submitting service reads it. It holds
-/// no persisted secret: shares are derived again at every epoch start.
+/// The timelock service state of the current epoch. The share-submitting service of the epoch is built from
+/// it ([`timelock_share_service`]). It holds no persisted secret: shares are derived again at every epoch
+/// start.
 pub type TimelockServiceHandle = Arc<RwLock<Option<Arc<TimelockServiceState>>>>;
 
 pub struct EpochManager<P: OnChainConfigProvider> {
@@ -72,6 +74,9 @@ pub struct EpochManager<P: OnChainConfigProvider> {
     dkg_start_event_tx: Option<aptos_channel::Sender<(), DKGStartEvent>>,
 
     vtxn_pool: VTxnPoolState,
+    // Committed chain state, for the timelock share service.
+    db_reader: Arc<dyn DbReader>,
+    timelock_share_task: Option<tokio::task::JoinHandle<()>>,
 
     chunky_dkg_rpc_msg_tx:
         Option<aptos_channel::Sender<AccountAddress, (AccountAddress, IncomingRpcRequest)>>,
@@ -109,6 +114,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         self_sender: aptos_channels::Sender<Event<DKGMessage>>,
         network_sender: DKGNetworkClient<NetworkClient<DKGMessage>>,
         vtxn_pool: VTxnPoolState,
+        db_reader: Arc<dyn DbReader>,
         rb_config: ReliableBroadcastConfig,
         randomness_override_seq_num: u64,
         chunky_dkg_override_seq_num: u64,
@@ -124,6 +130,8 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             self_sender,
             network_sender,
             vtxn_pool,
+            db_reader,
+            timelock_share_task: None,
             chunky_dkg_manager_close_tx: None,
             chunky_dkg_rpc_msg_tx: None,
             chunky_dkg_start_event_tx: None,
@@ -563,6 +571,7 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
             my_index,
             ChunkyDecryptPrivKey::from(&dealer_sk),
         );
+        self.start_timelock_share_service(chain_id.id(), epoch_state.epoch);
 
         let (start_event_tx, start_event_rx) = aptos_channel::new(QueueStyle::KLAST, 1, None);
         self.timelock_dkg_start_event_tx = Some(start_event_tx);
@@ -595,6 +604,30 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         });
         tokio::spawn(manager.run(in_progress, start_event_rx, rpc_msg_rx, close_rx));
         Ok(())
+    }
+
+    /// Starts the share-submitting service of the epoch, if the node serves the timelock.
+    fn start_timelock_share_service(&mut self, chain_id: u8, epoch: u64) {
+        let guard = self.timelock_service.read();
+        let Some(state) = guard.as_ref() else {
+            return;
+        };
+        let TimelockServiceState::Ready { shares, .. } = state.as_ref() else {
+            return;
+        };
+        let core = timelock_share_service::ShareServiceCore::new(
+            epoch,
+            chain_id,
+            self.my_addr,
+            shares.shares().to_vec(),
+        );
+        let view = timelock_share_service::DbTimelockChainView::new(self.db_reader.clone());
+        self.timelock_share_task = Some(tokio::spawn(timelock_share_service::run(
+            core,
+            view,
+            self.vtxn_pool.clone(),
+        )));
+        info!(epoch = epoch, "[TimelockShare] share service started.");
     }
 
     fn derive_timelock_service(
@@ -667,6 +700,9 @@ impl<P: OnChainConfigProvider> EpochManager<P> {
         }
         self.timelock_dkg_rpc_msg_tx = None;
         self.timelock_dkg_start_event_tx = None;
+        if let Some(task) = self.timelock_share_task.take() {
+            task.abort();
+        }
         *self.timelock_service.write() = None;
     }
 
