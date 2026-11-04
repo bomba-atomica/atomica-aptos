@@ -448,6 +448,8 @@ pub struct GenesisConfiguration {
     pub keyless_groth16_vk: Option<Groth16VerificationKey>,
     /// See `aptos_vm_genesis::GenesisConfiguration::initialize_decryption_at_genesis`.
     pub initialize_decryption_at_genesis: bool,
+    /// See `aptos_vm_genesis::GenesisConfiguration::timelock_dkg_enabled`.
+    pub timelock_dkg_enabled: bool,
 }
 
 pub type InitConfigFn = Arc<dyn Fn(usize, &mut NodeConfig, &mut NodeConfig) + Send + Sync>;
@@ -673,6 +675,7 @@ impl Builder {
             initial_jwks: vec![],
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
+            timelock_dkg_enabled: false,
         };
         if let Some(init_genesis_config) = &self.init_genesis_config {
             (init_genesis_config)(&mut genesis_config);

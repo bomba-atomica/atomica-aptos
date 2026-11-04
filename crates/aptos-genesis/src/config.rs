@@ -100,6 +100,10 @@ pub struct Layout {
     /// An optional initial features override.
     #[serde(default)]
     pub initial_features_override: Option<Features>,
+    /// Turns the timelock DKG on at genesis, so epoch 2 has a timelock key. It also needs the chunky
+    /// DKG and validator transactions on. Default `false`.
+    #[serde(default)]
+    pub timelock_dkg_enabled: bool,
 }
 
 impl Layout {
@@ -145,6 +149,7 @@ impl Default for Layout {
             randomness_config_override: None,
             chunky_dkg_config_override: None,
             initial_features_override: None,
+            timelock_dkg_enabled: false,
         }
     }
 }

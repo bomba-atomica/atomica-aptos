@@ -20,6 +20,9 @@
 //!
 //! Every assertion is recorded with `check` and the run prints one `E2E-ASSERT` line per assertion. The test
 //! continues after a failed assertion where it can, and fails at the end.
+//!
+//! The `timelock_genesis_flag_*` tests check the genesis layout flag `timelock_dkg_enabled` instead: with
+//! it set, epoch 2 has a timelock key with no governance step. Without it, epoch 2 has none.
 
 use crate::{
     smoke_test_environment::SwarmBuilder, txn_emitter::generate_traffic,
@@ -263,8 +266,11 @@ script {
 }
 "#;
 
-/// Four validators, the mempool chunky DKG on from genesis and the timelock DKG off.
-async fn start_network() -> (
+/// Four validators and the mempool chunky DKG on from genesis. The timelock DKG is on from genesis only
+/// when `timelock_dkg_enabled` is set (the genesis layout flag `timelock_dkg_enabled`).
+async fn start_network(
+    timelock_dkg_enabled: bool,
+) -> (
     LocalSwarm,
     CliTestFramework,
     tokio::task::JoinHandle<Result<()>>,
@@ -295,6 +301,7 @@ async fn start_network() -> (
             let mut features = Features::default();
             features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
             conf.initial_features_override = Some(features);
+            conf.timelock_dkg_enabled = timelock_dkg_enabled;
         }))
         .build_with_cli(0)
         .await
@@ -327,7 +334,7 @@ async fn timelock_testnet_for_script() {
     let Ok(info_path) = std::env::var("TIMELOCK_TESTNET_INFO") else {
         return;
     };
-    let (mut swarm, mut cli, _faucet) = start_network().await;
+    let (mut swarm, mut cli, _faucet) = start_network(false).await;
     enable_timelock_dkg(&mut swarm, &mut cli).await;
     // The governance script advanced the root account's sequence number behind the harness's back.
     swarm
@@ -366,7 +373,7 @@ async fn timelock_testnet_for_script() {
 #[tokio::test]
 async fn timelock_e2e() {
     let mut results = Results::default();
-    let (mut swarm, mut cli, _faucet) = start_network().await;
+    let (mut swarm, mut cli, _faucet) = start_network(false).await;
     let root_idx = enable_timelock_dkg(&mut swarm, &mut cli).await;
 
     let chain_id = swarm.chain_id();
@@ -774,4 +781,73 @@ script {
     );
 
     results.finish();
+}
+
+/// `(ibe_config::is_ready, ibe_config::get_mpk, timelock_dkg::is_enabled, epoch)` once every node is in
+/// epoch 2. Epoch 2 is the first epoch a genesis-enabled timelock DKG can have a key for.
+async fn timelock_state_at_epoch_2(timelock_dkg_enabled: bool) -> (bool, Vec<u8>, bool, u64) {
+    let (swarm, _cli, _faucet) = start_network(timelock_dkg_enabled).await;
+    swarm
+        .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(300))
+        .await
+        .expect("epoch 2");
+    let client = swarm.validators().next().unwrap().rest_client();
+    let epoch = client
+        .get_ledger_information()
+        .await
+        .unwrap()
+        .into_inner()
+        .epoch;
+    let ready = view(&client, "0x1::ibe_config::is_ready", vec![])
+        .await
+        .unwrap()[0]
+        .as_bool()
+        .expect("is_ready bool");
+    let mpk = as_bytes(
+        &view(&client, "0x1::ibe_config::get_mpk", vec![])
+            .await
+            .unwrap()[0],
+    );
+    let enabled = view(&client, "0x1::timelock_dkg::is_enabled", vec![])
+        .await
+        .unwrap()[0]
+        .as_bool()
+        .expect("is_enabled bool");
+    info!("timelock_dkg_enabled={timelock_dkg_enabled}: epoch={epoch} is_ready={ready} mpk={} bytes is_enabled={enabled}", mpk.len());
+    (ready, mpk, enabled, epoch)
+}
+
+/// The genesis layout flag `timelock_dkg_enabled` turns the timelock DKG on at genesis: the first
+/// reconfiguration runs a timelock DKG session and epoch 2 has a 96-byte master public key.
+#[tokio::test]
+async fn timelock_genesis_flag_set_gives_key_at_epoch_2() {
+    let (ready, mpk, enabled, epoch) = timelock_state_at_epoch_2(true).await;
+    assert!(
+        enabled,
+        "timelock_dkg::is_enabled is false with the genesis flag set"
+    );
+    assert!(
+        ready,
+        "ibe_config::is_ready is false at epoch {epoch} with the genesis flag set"
+    );
+    assert_eq!(mpk.len(), 96, "ibe_config::get_mpk length at epoch {epoch}");
+}
+
+/// Without the flag the timelock DKG stays off: epoch 2 has no timelock key.
+#[tokio::test]
+async fn timelock_genesis_flag_unset_keeps_key_absent() {
+    let (ready, mpk, enabled, epoch) = timelock_state_at_epoch_2(false).await;
+    assert!(
+        !enabled,
+        "timelock_dkg::is_enabled is true without the genesis flag"
+    );
+    assert!(
+        !ready,
+        "ibe_config::is_ready is true at epoch {epoch} without the genesis flag"
+    );
+    assert!(
+        mpk.is_empty(),
+        "ibe_config::get_mpk is {} bytes without the genesis flag",
+        mpk.len()
+    );
 }

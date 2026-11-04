@@ -1,0 +1,99 @@
+name: Cached Framework Packages
+
+# Rebuilds the cached framework bundle (aptos-move/framework/cached-packages/src: head.mrb and the SDK
+# builder files) from the Move sources and fails when the committed copy differs. Swarm and smoke tests
+# run genesis from the committed head.mrb, so a stale copy silently tests old framework code.
+#
+# The regenerated files are uploaded as the `cached-packages` artifact on every run. To refresh them
+# without a local release build: run this workflow on the branch, then
+# `gh run download <run-id> -n cached-packages -D aptos-move/framework/cached-packages/src` and commit.
+
+on:
+  push:
+    branches:
+      - dev-atomica
+    paths:
+      - "**/*.move"
+      - "**/Move.toml"
+      - "aptos-move/framework/**"
+      - ".github/workflows/cached-packages.yml"
+  pull_request:
+    branches:
+      - dev-atomica
+    paths:
+      - "**/*.move"
+      - "**/Move.toml"
+      - "aptos-move/framework/**"
+      - ".github/workflows/cached-packages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: "1.94.1"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_BUILD_JOBS: 2
+  CARGO_INCREMENTAL: 0
+  RUST_MIN_STACK: 104857600
+  # The `ci` profile inherits release. LTO does not change the generated bundle, so turn it off to keep
+  # build time and memory down.
+  CARGO_PROFILE_CI_LTO: "off"
+  CARGO_PROFILE_CI_CODEGEN_UNITS: "16"
+
+jobs:
+  cached-packages:
+    name: Cached framework packages are fresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustup toolchain install nightly --profile minimal -c rustfmt
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker system prune -af
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake clang libssl-dev pkg-config libpq-dev lld libudev-dev libdw-dev
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2.7.8
+        with:
+          shared-key: "atomica-cached-packages"
+          cache-on-failure: true
+          workspaces: "."
+
+      - name: Regenerate cached packages
+        run: scripts/cargo_build_aptos_cached_packages.sh
+
+      - name: Upload regenerated cached packages
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: cached-packages
+          path: aptos-move/framework/cached-packages/src/
+          if-no-files-found: error
+
+      - name: Fail if the committed cached packages are stale
+        run: |
+          if [ -n "$(git status --porcelain -uno aptos-move/framework/cached-packages)" ]; then
+            git status --short aptos-move/framework/cached-packages
+            echo "::error::Cached framework packages are out of date. Download the cached-packages artifact of this run and commit it."
+            exit 1
+          fi
+          echo "Committed cached framework packages match the Move sources."

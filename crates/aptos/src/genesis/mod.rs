@@ -264,6 +264,7 @@ pub fn fetch_mainnet_genesis_info(git_options: GitOptions) -> CliTypedResult<Mai
             initial_jwks: vec![],
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
+            timelock_dkg_enabled: false,
         },
     )?)
 }
@@ -311,6 +312,7 @@ pub fn fetch_genesis_info(git_options: GitOptions) -> CliTypedResult<GenesisInfo
             initial_jwks: layout.initial_jwks.clone(),
             keyless_groth16_vk: layout.keyless_groth16_vk_override.clone(),
             initialize_decryption_at_genesis: true,
+            timelock_dkg_enabled: layout.timelock_dkg_enabled,
         },
     )?)
 }

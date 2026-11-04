@@ -130,6 +130,11 @@ pub struct GenesisConfiguration {
     /// legacy `V2` until the first `reconfiguration_with_dkg` lazily creates
     /// the resource and flips it to `V3` — exercising the V2->V3 cutover.
     pub initialize_decryption_at_genesis: bool,
+    /// Whether genesis turns the timelock DKG on (`genesis::enable_timelock_dkg`). Then the first
+    /// reconfiguration runs a timelock DKG session and epoch 2 has a timelock key. The timelock DKG
+    /// also needs the chunky DKG and validator transactions on. Default `false`: the timelock DKG
+    /// starts off and only governance can turn it on.
+    pub timelock_dkg_enabled: bool,
 }
 
 pub static GENESIS_KEYPAIR: Lazy<(Ed25519PrivateKey, Ed25519PublicKey)> = Lazy::new(|| {
@@ -366,6 +371,9 @@ pub fn encode_genesis_change_set(
         chunky_dkg_config,
     );
     initialize_chunky_dkg(&mut session, &module_storage, &mut traversal_context);
+    if genesis_config.timelock_dkg_enabled {
+        enable_timelock_dkg(&mut session, &module_storage, &mut traversal_context);
+    }
     initialize_epoch_timeout_config(&mut session, &module_storage, &mut traversal_context);
     if genesis_config.initialize_decryption_at_genesis {
         initialize_decryption(&mut session, &module_storage, &mut traversal_context);
@@ -807,6 +815,22 @@ fn initialize_chunky_dkg(
         traversal_context,
         CHUNKY_DKG_MODULE_NAME,
         "initialize",
+        vec![],
+        serialize_values(&vec![MoveValue::Signer(CORE_CODE_ADDRESS)]),
+    );
+}
+
+fn enable_timelock_dkg(
+    session: &mut SessionExt<impl AptosMoveResolver>,
+    module_storage: &impl AptosModuleStorage,
+    traversal_context: &mut TraversalContext,
+) {
+    exec_function(
+        session,
+        module_storage,
+        traversal_context,
+        GENESIS_MODULE_NAME,
+        "enable_timelock_dkg",
         vec![],
         serialize_values(&vec![MoveValue::Signer(CORE_CODE_ADDRESS)]),
     );
@@ -1514,6 +1538,7 @@ pub fn generate_test_genesis(
             initial_jwks: vec![],
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
+            timelock_dkg_enabled: false,
         },
         &OnChainConsensusConfig::default_for_genesis(),
         &OnChainExecutionConfig::default_for_genesis(),
@@ -1568,6 +1593,7 @@ fn mainnet_genesis_config() -> GenesisConfiguration {
         initial_jwks: vec![],
         keyless_groth16_vk: None,
         initialize_decryption_at_genesis: true,
+        timelock_dkg_enabled: false,
     }
 }
 
