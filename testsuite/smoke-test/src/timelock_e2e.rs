@@ -786,7 +786,7 @@ script {
 /// `(ibe_config::is_ready, ibe_config::get_mpk, timelock_dkg::is_enabled, epoch)` once every node is in
 /// epoch 2. Epoch 2 is the first epoch a genesis-enabled timelock DKG can have a key for.
 async fn timelock_state_at_epoch_2(timelock_dkg_enabled: bool) -> (bool, Vec<u8>, bool, u64) {
-    let (mut swarm, _cli, _faucet) = start_network(timelock_dkg_enabled).await;
+    let (swarm, _cli, _faucet) = start_network(timelock_dkg_enabled).await;
     swarm
         .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(300))
         .await
