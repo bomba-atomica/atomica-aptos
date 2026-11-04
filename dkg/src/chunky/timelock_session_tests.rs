@@ -187,11 +187,12 @@ fn derived_mpk(f: &Fixture) -> Vec<u8> {
         .mpk
 }
 
+/// `expected` is the on-chain `ExpectedPublicParametersHash`, `None` when governance has not set it.
 fn check(
     f: &Fixture,
     output: &CertifiedTimelockDKGOutput,
     epoch: u64,
-    local: Option<HashValue>,
+    expected: Option<HashValue>,
 ) -> Result<(), ResultRejection> {
     check_timelock_dkg_result(
         output,
@@ -199,7 +200,7 @@ fn check(
         &f.timelock.session_metadata,
         ChainId::test(),
         &f.timelock.epoch_state.verifier,
-        local,
+        expected.as_ref().map(|h| h.as_ref().as_slice()),
     )
     .map(|_| ())
 }
@@ -366,7 +367,7 @@ fn handler_check_rejects_each_fault() {
     let mpk = derived_mpk(f);
     let good = output_for(agg, cert.clone(), mpk.clone(), local_hash());
     assert_eq!(check(f, &good, EPOCH, Some(local_hash())), Ok(()));
-    // A node without the blob (a fullnode) trusts consensus for the hash only.
+    // No expected hash on chain: the hash is not checked at execution.
     assert_eq!(check(f, &good, EPOCH, None), Ok(()));
 
     // Epoch not current.
@@ -391,7 +392,7 @@ fn handler_check_rejects_each_fault() {
         Err(ResultRejection::ClaimedMpkMismatch)
     );
 
-    // Blob hash differs from this node's blob.
+    // Blob hash differs from the on-chain expected hash.
     let other_hash = HashValue::sha3_256_of(b"another blob");
     let wrong_hash = output_for(agg, cert.clone(), mpk.clone(), other_hash);
     assert_eq!(
@@ -420,6 +421,77 @@ fn handler_check_rejects_each_fault() {
     assert_eq!(
         check(f, &stale_out, EPOCH, Some(local_hash())),
         Err(ResultRejection::EpochNotCurrent)
+    );
+}
+
+#[test]
+fn two_executors_with_different_local_blobs_give_identical_output() {
+    // Execution of TimelockDKGResult reads chain state only (bomba-atomica/atomica#158). Two validators hold
+    // different local parameters blobs. The dealers used a third. With the same chain state, both executors
+    // reach the same verdict and derive the same config, whatever their local file holds.
+    let f = &*FIXTURE;
+    let agg = &f.timelock_agg;
+    let cert = sign(&f.timelock, ChunkyDKGSessionKind::Timelock, agg, &[
+        0usize, 1, 2,
+    ]);
+    let blob_a = timelock_public_parameters_hash(b"executor A blob");
+    let blob_b = local_hash();
+    assert_ne!(blob_a, blob_b);
+    let dealers_hash = timelock_public_parameters_hash(b"dealers blob");
+    let output = output_for(agg, cert, derived_mpk(f), dealers_hash);
+
+    let chain_states = [None, Some(dealers_hash), Some(blob_a)];
+    for expected in chain_states {
+        let execute = |_local_blob: HashValue| {
+            check_timelock_dkg_result(
+                &output,
+                EPOCH,
+                &f.timelock.session_metadata,
+                ChainId::test(),
+                &f.timelock.epoch_state.verifier,
+                expected.as_ref().map(|h| h.as_ref().as_slice()),
+            )
+            .map(|c| (c.derived, c.subtranscript_hash))
+        };
+        let a = execute(blob_a);
+        let b = execute(blob_b);
+        assert_eq!(a, b, "executors disagree with expected hash {:?}", expected);
+    }
+    // No expected hash on chain: accepted, although neither local blob matches the dealers' hash.
+    assert_eq!(check(f, &output, EPOCH, None), Ok(()));
+}
+
+#[test]
+fn on_chain_expected_hash_mismatch_is_rejected() {
+    let f = &*FIXTURE;
+    let agg = &f.timelock_agg;
+    let cert = sign(&f.timelock, ChunkyDKGSessionKind::Timelock, agg, &[
+        0usize, 1, 2,
+    ]);
+    let dealers_hash = timelock_public_parameters_hash(b"dealers blob");
+    let output = output_for(agg, cert, derived_mpk(f), dealers_hash);
+    assert_eq!(check(f, &output, EPOCH, Some(dealers_hash)), Ok(()));
+    assert_eq!(
+        check(
+            f,
+            &output,
+            EPOCH,
+            Some(timelock_public_parameters_hash(b"governance blob"))
+        ),
+        Err(ResultRejection::ParametersHashMismatch)
+    );
+    // An expected hash of the wrong length never matches.
+    assert_eq!(
+        check_timelock_dkg_result(
+            &output,
+            EPOCH,
+            &f.timelock.session_metadata,
+            ChainId::test(),
+            &f.timelock.epoch_state.verifier,
+            Some(&dealers_hash.as_ref()[..31]),
+        )
+        .map(|_| ()),
+        Err(ResultRejection::ParametersHashMismatch)
     );
 }
 
@@ -1015,7 +1087,7 @@ async fn two_managers_in_one_epoch_produce_separate_results() {
         &f.timelock.session_metadata,
         ChainId::test(),
         &f.timelock.epoch_state.verifier,
-        Some(local_hash()),
+        Some(local_hash().as_ref()),
     )
     .is_ok());
     // The mempool result is untouched: its encryption key comes from the digest key, not the timelock secret.

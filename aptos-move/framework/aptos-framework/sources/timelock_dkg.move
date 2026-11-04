@@ -33,6 +33,10 @@ module aptos_framework::timelock_dkg {
     const ETIMELOCK_DKG_NOT_IN_PROGRESS: u64 = 1;
     const ETIMELOCK_DKG_NOT_ENABLED: u64 = 2;
     const EINVALID_RESULT: u64 = 3;
+    const EINVALID_PARAMETERS_HASH: u64 = 4;
+
+    /// Length of a SHA3-256 hash of the timelock `PublicParameters` blob.
+    const PARAMETERS_HASH_LENGTH: u64 = 32;
 
     /// Default wait for the timelock session before the epoch changes without it.
     const DEFAULT_GRACE_PERIOD_SECS: u64 = 120;
@@ -76,6 +80,49 @@ module aptos_framework::timelock_dkg {
         last_completed: Option<TimelockDKGSessionState>,
         in_progress: Option<TimelockDKGSessionState>,
         pending_config: Option<PendingTimelockConfig>
+    }
+
+    /// The hash of the timelock `PublicParameters` blob that a `TimelockDKGResult` must carry. Set by
+    /// governance. The handler reads it from chain state, never from a node-local file, so every node
+    /// executes the result the same way. When it is absent the handler does not check the hash, and each
+    /// node still refuses to serve the timelock when its blob differs from `TimelockEpochConfig`.
+    struct ExpectedPublicParametersHash has key, drop {
+        hash: vector<u8>
+    }
+
+    /// Requires every later `TimelockDKGResult` to carry `hash`. Replaces an earlier value.
+    public fun set_expected_public_parameters_hash(
+        aptos_framework: &signer, hash: vector<u8>
+    ) acquires ExpectedPublicParametersHash {
+        system_addresses::assert_aptos_framework(aptos_framework);
+        assert!(
+            hash.length() == PARAMETERS_HASH_LENGTH,
+            error::invalid_argument(EINVALID_PARAMETERS_HASH)
+        );
+        if (exists<ExpectedPublicParametersHash>(@aptos_framework)) {
+            ExpectedPublicParametersHash[@aptos_framework].hash = hash;
+        } else {
+            move_to(aptos_framework, ExpectedPublicParametersHash { hash });
+        }
+    }
+
+    /// Stops the hash check of `TimelockDKGResult`. Idempotent.
+    public fun clear_expected_public_parameters_hash(
+        aptos_framework: &signer
+    ) acquires ExpectedPublicParametersHash {
+        system_addresses::assert_aptos_framework(aptos_framework);
+        if (exists<ExpectedPublicParametersHash>(@aptos_framework)) {
+            move_from<ExpectedPublicParametersHash>(@aptos_framework);
+        }
+    }
+
+    #[view]
+    public fun expected_public_parameters_hash(): Option<vector<u8>> acquires ExpectedPublicParametersHash {
+        if (exists<ExpectedPublicParametersHash>(@aptos_framework)) {
+            option::some(ExpectedPublicParametersHash[@aptos_framework].hash)
+        } else {
+            option::none()
+        }
     }
 
     /// Creates the state, disabled. Idempotent.

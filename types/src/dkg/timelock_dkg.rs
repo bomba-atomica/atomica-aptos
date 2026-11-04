@@ -215,6 +215,18 @@ impl OnChainConfig for TimelockDKGState {
     const TYPE_IDENTIFIER: &'static str = "TimelockDKGState";
 }
 
+/// Reflection of Move type `0x1::timelock_dkg::ExpectedPublicParametersHash`: the blob hash a
+/// `TimelockDKGResult` must carry, set by governance.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ExpectedTimelockParametersHash {
+    pub hash: Vec<u8>,
+}
+
+impl OnChainConfig for ExpectedTimelockParametersHash {
+    const MODULE_IDENTIFIER: &'static str = "timelock_dkg";
+    const TYPE_IDENTIFIER: &'static str = "ExpectedPublicParametersHash";
+}
+
 /// Reflection of `0x1::timelock_dkg::TimelockDKGStartEvent`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimelockDKGStartEvent {
@@ -239,6 +251,7 @@ pub static TIMELOCK_DKG_START_EVENT_MOVE_TYPE_TAG: Lazy<TypeTag> =
 pub struct TimelockPublicParameters {
     pub pp: Arc<ChunkyDKGPublicParameters>,
     /// SHA3-256 of the blob bytes. Stored on chain as `TimelockEpochConfig.public_parameters_hash`.
+    /// Execution never reads it.
     pub blob_hash: HashValue,
 }
 
@@ -611,15 +624,17 @@ pub struct CheckedTimelockResult {
 
 /// All checks of a certified timelock DKG result against chain state. No VM, no I/O.
 ///
-/// `local_params_hash` is the hash of this node's validated timelock parameters blob, `None` on a node
-/// without it (a fullnode). Like the mempool handler, such a node trusts consensus for that one check.
+/// Every argument comes from the transaction or from chain state, so every node gets the same answer.
+/// `expected_params_hash` is `ExpectedPublicParametersHash.hash` of `0x1::timelock_dkg`, `None` when
+/// governance has not set it. The node-local blob is never an input: a node checks its own blob against
+/// `TimelockEpochConfig` before it serves the timelock (`derive_timelock_service_state`).
 pub fn check_timelock_dkg_result(
     output: &CertifiedTimelockDKGOutput,
     current_epoch: u64,
     session_metadata: &ChunkyDKGSessionMetadata,
     chain_id: ChainId,
     verifier: &ValidatorVerifier,
-    local_params_hash: Option<HashValue>,
+    expected_params_hash: Option<&[u8]>,
 ) -> Result<CheckedTimelockResult, ResultRejection> {
     let certified = &output.certified_transcript;
     if certified.metadata.epoch != current_epoch || session_metadata.dealer_epoch != current_epoch {
@@ -651,8 +666,8 @@ pub fn check_timelock_dkg_result(
         .map_err(|e| ResultRejection::KeyDerivationFailed(e.to_string()))?;
     check_claimed_mpk(&derived, &output.mpk).map_err(|_| ResultRejection::ClaimedMpkMismatch)?;
 
-    if let Some(local) = local_params_hash
-        && local != output.public_parameters_hash
+    if let Some(expected) = expected_params_hash
+        && expected != output.public_parameters_hash.as_ref()
     {
         return Err(ResultRejection::ParametersHashMismatch);
     }
