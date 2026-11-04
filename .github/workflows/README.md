@@ -189,7 +189,7 @@ step summary. Self-test: `.github/scripts/tests/selftest.sh` (also run in
 | Workflow | Covers | Trigger |
 | --- | --- | --- |
 | `lint-format.yml` | rustfmt and clippy | push and PR on Rust paths |
-| `crypto-crates-tests.yml` | aptos-dkg, aptos-crypto, aptos-types | push and PR |
+| `crypto-crates-tests.yml` | aptos-dkg, aptos-crypto, aptos-types, aptos-dkg-runtime timelock share service | push and PR |
 | `node-framework-tests.yml` | aptos-node and aptos-framework (Move unit tests) | push and PR on Rust and Move paths |
 | `timelock-tests.yml` | `atomica/proto-fptx-timelock` (reference only, superseded for the product path) | push and PR on its folder |
 | `debug-tests.yml` | smoke tests | push and PR on Rust paths |

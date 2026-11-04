@@ -20,6 +20,7 @@ use aptos_storage_interface::{
     state_store::state_view::db_state_view::LatestDbStateCheckpointView, DbReader,
 };
 use aptos_types::{
+    dkg::timelock_dkg::TimelockServiceState,
     on_chain_config::{ConfigurationResource, CurrentTimeMicroseconds, OnChainConfig},
     state_store::{state_key::StateKey, table::TableHandle, TStateView},
     timelock::{
@@ -128,6 +129,28 @@ impl ShareServiceCore {
         }
     }
 
+    /// The service of `epoch`, or `None` when the node does not serve the timelock: the state is missing, is
+    /// not `Ready`, or belongs to another epoch.
+    pub fn for_state(
+        state: Option<&TimelockServiceState>,
+        epoch: u64,
+        chain_id: u8,
+        my_addr: AccountAddress,
+    ) -> Option<Self> {
+        match state? {
+            TimelockServiceState::Ready {
+                epoch: ready_epoch,
+                shares,
+            } if *ready_epoch == epoch => Some(Self::new(
+                epoch,
+                chain_id,
+                my_addr,
+                shares.shares().to_vec(),
+            )),
+            _ => None,
+        }
+    }
+
     /// Number of share transactions currently in the pool.
     pub fn pooled(&self) -> usize {
         self.guards.len()
@@ -161,14 +184,9 @@ impl ShareServiceCore {
                 }
                 continue;
             }
-            if self.guards.contains_key(&id) {
-                continue;
-            }
-            if share_service_held() {
-                continue;
-            }
             // The node rule: pending, this epoch, committed deadline passed, window open, identity as
-            // computed from (chain, epoch, id, deadline).
+            // computed from (chain, epoch, id, deadline). It is checked on every pass, so a pooled share is
+            // withdrawn once the reveal window closes, before the registry marks the timelock expired.
             let derivable = match DerivableTimelock::authorize(
                 &info.to_registry_timelock(),
                 self.chain_id,
@@ -176,8 +194,17 @@ impl ShareServiceCore {
                 now_us,
             ) {
                 Ok(d) => d,
-                Err(_) => continue,
+                Err(_) => {
+                    self.guards.remove(&id);
+                    continue;
+                },
             };
+            if self.guards.contains_key(&id) {
+                continue;
+            }
+            if share_service_held() {
+                continue;
+            }
             let shares = match derivable.derive_shares(&self.shares) {
                 Ok(s) => s,
                 Err(e) => {
@@ -332,13 +359,91 @@ mod tests {
         (view, core, VTxnPoolState::default(), secrets)
     }
 
+    // One test per gate of the node rule. In each, the gate being false submits nothing, and the same
+    // timelock with every gate true submits exactly one share.
+
     #[test]
-    fn serves_a_timelock_only_after_the_committed_deadline() {
+    fn gate_ready_the_service_starts_only_for_a_ready_state_of_this_epoch() {
+        use aptos_types::dkg::timelock_dkg::{TimelockOwnShares, TimelockServiceRefusal};
+        let _serial = serial();
+        let (view, _, pool, secrets) = setup(2_000);
+        view.rows.borrow_mut().insert(0, row(0, 1_000));
+        let me = AccountAddress::from_hex_literal("0xa11ce").unwrap();
+        let refused = TimelockServiceState::Refused {
+            epoch: EPOCH,
+            reason: TimelockServiceRefusal::NoKeyThisEpoch,
+        };
+        let ready = |epoch| TimelockServiceState::Ready {
+            epoch,
+            shares: TimelockOwnShares::for_testing(secrets.clone()),
+        };
+        assert!(ShareServiceCore::for_state(None, EPOCH, CHAIN, me).is_none());
+        assert!(ShareServiceCore::for_state(Some(&refused), EPOCH, CHAIN, me).is_none());
+        let stale = ready(EPOCH - 1);
+        assert!(ShareServiceCore::for_state(Some(&stale), EPOCH, CHAIN, me).is_none());
+        let ready = ready(EPOCH);
+        let mut core = ShareServiceCore::for_state(Some(&ready), EPOCH, CHAIN, me).unwrap();
+        core.tick(&view, &pool).unwrap();
+        assert_eq!(pooled_share(&pool).len(), 1, "ready");
+    }
+
+    #[test]
+    fn gate_pending_does_not_submit_for_a_revealed_or_expired_timelock() {
+        let _serial = serial();
+        let (view, mut core, pool, _) = setup(2_000);
+        let mut revealed = row(0, 1_000);
+        revealed.status = TimelockStatusResource::Revealed;
+        let mut expired = row(1, 1_000);
+        expired.status = TimelockStatusResource::Expired { reason: 0 };
+        view.rows.borrow_mut().insert(0, revealed);
+        view.rows.borrow_mut().insert(1, expired);
+        view.rows.borrow_mut().insert(2, row(2, 1_000));
+        core.tick(&view, &pool).unwrap();
+        let shares = pooled_share(&pool);
+        assert_eq!(shares.len(), 1);
+        assert_eq!(shares[0].timelock_id, 2, "only the pending timelock");
+    }
+
+    #[test]
+    fn gate_epoch_does_not_submit_for_a_timelock_from_another_epoch() {
+        let _serial = serial();
+        let (view, mut core, pool, _) = setup(2_000);
+        let mut next_epoch = row(0, 1_000);
+        next_epoch.epoch = EPOCH + 1;
+        next_epoch.identity = compute_identity(CHAIN, EPOCH + 1, 0, 1_000).to_vec();
+        let mut previous_epoch = row(1, 1_000);
+        previous_epoch.epoch = EPOCH - 1;
+        previous_epoch.identity = compute_identity(CHAIN, EPOCH - 1, 1, 1_000).to_vec();
+        view.rows.borrow_mut().insert(0, next_epoch);
+        view.rows.borrow_mut().insert(1, previous_epoch);
+        view.rows.borrow_mut().insert(2, row(2, 1_000));
+        // The committed state is already in the next epoch: this epoch's timelock is not served either.
+        *view.epoch.borrow_mut() = EPOCH + 1;
+        core.tick(&view, &pool).unwrap();
+        assert!(
+            pooled_share(&pool).is_empty(),
+            "chain moved to the next epoch"
+        );
+        *view.epoch.borrow_mut() = EPOCH;
+        core.tick(&view, &pool).unwrap();
+        let shares = pooled_share(&pool);
+        assert_eq!(shares.len(), 1);
+        assert_eq!(shares[0].timelock_id, 2, "only the timelock of this epoch");
+    }
+
+    #[test]
+    fn gate_deadline_serves_a_timelock_only_after_the_committed_deadline() {
         let _serial = serial();
         let (view, mut core, pool, secrets) = setup(500);
         view.rows.borrow_mut().insert(0, row(0, 1_000));
         core.tick(&view, &pool).unwrap();
         assert!(pooled_share(&pool).is_empty(), "before the deadline");
+        *view.now_us.borrow_mut() = 999;
+        core.tick(&view, &pool).unwrap();
+        assert!(
+            pooled_share(&pool).is_empty(),
+            "one microsecond before the deadline"
+        );
         *view.now_us.borrow_mut() = 1_000;
         core.tick(&view, &pool).unwrap();
         let shares = pooled_share(&pool);
@@ -354,15 +459,31 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_forged_identity_and_other_epochs() {
+    fn gate_window_does_not_submit_after_the_reveal_window_and_withdraws_a_pooled_share() {
+        let _serial = serial();
+        let expiry = row(0, 1_000).reveal_expiry_us;
+        let (view, mut core, pool, _) = setup(expiry);
+        view.rows.borrow_mut().insert(0, row(0, 1_000));
+        core.tick(&view, &pool).unwrap();
+        assert!(pooled_share(&pool).is_empty(), "window closed");
+        // A share pooled while the window was open leaves the pool when it closes, even while the
+        // registry still reads pending.
+        *view.now_us.borrow_mut() = expiry - 1;
+        core.tick(&view, &pool).unwrap();
+        assert_eq!(core.pooled(), 1, "window open");
+        *view.now_us.borrow_mut() = expiry;
+        core.tick(&view, &pool).unwrap();
+        assert_eq!(core.pooled(), 0);
+        assert!(pooled_share(&pool).is_empty());
+    }
+
+    #[test]
+    fn refuses_a_forged_identity() {
         let _serial = serial();
         let (view, mut core, pool, _) = setup(5_000);
         let mut forged = row(0, 1_000);
         forged.identity = vec![9u8; 32];
-        let mut other_epoch = row(1, 1_000);
-        other_epoch.epoch = EPOCH + 1;
         view.rows.borrow_mut().insert(0, forged);
-        view.rows.borrow_mut().insert(1, other_epoch);
         core.tick(&view, &pool).unwrap();
         assert!(pooled_share(&pool).is_empty());
     }
