@@ -25,6 +25,13 @@ NUM_VALIDATORS="${1:-4}"
 CHAIN_ID="${2:-4}"
 BASE_IP="${3:-172.19.0.10}"
 STAKE_AMOUNT="100000000000000"  # 1M APT in octas
+# Set TIMELOCK_DKG_ENABLED=true to turn the timelock DKG on at genesis (layout flag
+# timelock_dkg_enabled). It also needs the chunky DKG and validator transactions on.
+TIMELOCK_DKG_ENABLED="${TIMELOCK_DKG_ENABLED:-false}"
+case "$TIMELOCK_DKG_ENABLED" in
+    true|false) ;;
+    *) echo "TIMELOCK_DKG_ENABLED must be true or false, got '$TIMELOCK_DKG_ENABLED'" >&2; exit 1 ;;
+esac
 
 WORKSPACE="${WORKSPACE:-/workspace}"
 cd "$WORKSPACE"
@@ -81,6 +88,7 @@ required_proposer_stake: 100000000000000
 rewards_apy_percentage: 10
 voting_duration_secs: 43200
 voting_power_increase_limit: 20
+timelock_dkg_enabled: ${TIMELOCK_DKG_ENABLED}
 EOF
 
 # Step 4: Set validator configurations

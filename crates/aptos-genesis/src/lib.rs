@@ -83,6 +83,8 @@ pub struct GenesisInfo {
     pub keyless_groth16_vk: Option<Groth16VerificationKey>,
     /// See `aptos_vm_genesis::GenesisConfiguration::initialize_decryption_at_genesis`.
     pub initialize_decryption_at_genesis: bool,
+    /// See `aptos_vm_genesis::GenesisConfiguration::timelock_dkg_enabled`.
+    pub timelock_dkg_enabled: bool,
 }
 
 impl GenesisInfo {
@@ -126,6 +128,7 @@ impl GenesisInfo {
             initial_jwks: genesis_config.initial_jwks.clone(),
             keyless_groth16_vk: genesis_config.keyless_groth16_vk.clone(),
             initialize_decryption_at_genesis: genesis_config.initialize_decryption_at_genesis,
+            timelock_dkg_enabled: genesis_config.timelock_dkg_enabled,
         })
     }
 
@@ -165,6 +168,7 @@ impl GenesisInfo {
                 initial_jwks: self.initial_jwks.clone(),
                 keyless_groth16_vk: self.keyless_groth16_vk.clone(),
                 initialize_decryption_at_genesis: self.initialize_decryption_at_genesis,
+                timelock_dkg_enabled: self.timelock_dkg_enabled,
             },
             &self.consensus_config,
             &self.execution_config,
