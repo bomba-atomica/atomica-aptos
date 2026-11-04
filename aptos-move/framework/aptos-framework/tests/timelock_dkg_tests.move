@@ -158,4 +158,36 @@ module aptos_framework::timelock_dkg_tests {
         assert!(timelock_dkg::incomplete_session().is_none(), 1);
         let _ = vector::length(&vks(0));
     }
+
+    #[test]
+    fun expected_parameters_hash_is_absent_until_governance_sets_it() {
+        let framework = setup();
+        assert!(timelock_dkg::expected_public_parameters_hash().is_none(), 1);
+        let hash = x"0101010101010101010101010101010101010101010101010101010101010101";
+        timelock_dkg::set_expected_public_parameters_hash(&framework, hash);
+        assert!(timelock_dkg::expected_public_parameters_hash() == std::option::some(hash), 2);
+        let other = x"0202020202020202020202020202020202020202020202020202020202020202";
+        timelock_dkg::set_expected_public_parameters_hash(&framework, other);
+        assert!(timelock_dkg::expected_public_parameters_hash() == std::option::some(other), 3);
+        timelock_dkg::clear_expected_public_parameters_hash(&framework);
+        assert!(timelock_dkg::expected_public_parameters_hash().is_none(), 4);
+        timelock_dkg::clear_expected_public_parameters_hash(&framework);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 0x10004, location = aptos_framework::timelock_dkg)]
+    fun expected_parameters_hash_must_be_32_bytes() {
+        let framework = setup();
+        timelock_dkg::set_expected_public_parameters_hash(&framework, x"01");
+    }
+
+    #[test]
+    #[expected_failure(abort_code = 0x50003, location = aptos_framework::system_addresses)]
+    fun only_the_framework_sets_the_expected_parameters_hash() {
+        setup();
+        let other = account::create_signer_for_test(@0x123);
+        timelock_dkg::set_expected_public_parameters_hash(
+            &other, x"0101010101010101010101010101010101010101010101010101010101010101"
+        );
+    }
 }
