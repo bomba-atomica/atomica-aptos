@@ -12,7 +12,8 @@
 //! - Nothing FPTX is derived. The handler rederives `mpk` from the subtranscript, compares it with the claimed
 //!   value, checks that `V0` equals the G2 interpolation of threshold sets of the verification keys, and
 //!   hands every derived value to `reconfiguration_with_dkg::finish_with_timelock_dkg_result`.
-//! - The blob hash the dealers used is compared with the local timelock parameters, when this node has them.
+//! - The blob hash the dealers used is compared with `timelock_dkg::ExpectedPublicParametersHash`, when
+//!   governance has set it. Execution reads chain state only, never the node-local parameters blob.
 //!
 //! [`check_timelock_dkg_result`] is a pure function of its arguments so the checks can be tested without a chain.
 
@@ -30,8 +31,8 @@ use aptos_logger::{info, warn};
 use aptos_types::{
     account_config::ChainIdResource,
     dkg::timelock_dkg::{
-        check_timelock_dkg_result, CertifiedTimelockDKGOutput, ResultRejection, TimelockDKGState,
-        TIMELOCK_PUBLIC_PARAMETERS,
+        check_timelock_dkg_result, CertifiedTimelockDKGOutput, ExpectedTimelockParametersHash,
+        ResultRejection, TimelockDKGState,
     },
     move_utils::as_move_value::AsMoveValue,
     on_chain_config::{ConfigurationResource, OnChainConfig, ValidatorSet},
@@ -169,14 +170,21 @@ impl AptosVM {
             .chain_id();
 
         let verifier = ValidatorVerifier::from(&validator_set);
-        let local_params_hash = TIMELOCK_PUBLIC_PARAMETERS.as_ref().map(|p| p.blob_hash);
+        // Chain state only: a node-local file here would let nodes disagree on the same transaction.
+        let expected_params_hash =
+            ExpectedTimelockParametersHash::fetch_config(resolver).map_err(|e| {
+                ExecutionFailure::Unexpected(VMStatus::error(
+                    StatusCode::STORAGE_ERROR,
+                    Some(format!("cannot read ExpectedPublicParametersHash: {e}")),
+                ))
+            })?;
         let checked = check_timelock_dkg_result(
             &output,
             config_resource.epoch(),
             &in_progress.metadata,
             chain_id,
             &verifier,
-            local_params_hash,
+            expected_params_hash.as_ref().map(|e| e.hash.as_slice()),
         )
         .map_err(|r| ExecutionFailure::Expected(r.into()))?;
 

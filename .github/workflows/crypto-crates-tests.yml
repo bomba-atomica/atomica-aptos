@@ -98,3 +98,9 @@ jobs:
       - name: Run timelock share service tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh timelock-share-service 8 -- cargo test -p aptos-dkg-runtime --lib timelock_share_service --verbose
+
+      # The timelock DKG session and the TimelockDKGResult handler checks, including
+      # the rule that execution reads chain state only (atomica issue 158).
+      - name: Run timelock DKG session tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh timelock-session 16 -- cargo test -p aptos-dkg-runtime --lib chunky::timelock_session_tests --verbose
