@@ -241,6 +241,16 @@ impl LocalSwarm {
                 };
                 validator_config.set_data_dir(validator.base_dir());
                 *validator.config_mut() = validator_config.clone();
+                if chain_id != ChainId::test() {
+                    // Off the test chain the config optimizer turns on validator-PFN connections
+                    // unless the YAML sets them, and every validator would then listen on the
+                    // default public port 6182. The value is `false` already, but the diff against
+                    // a default base drops it. A base of `true` makes the saved YAML say `false`.
+                    validator_override_config
+                        .base_config_mut()
+                        .base
+                        .enable_validator_pfn_connections = true;
+                }
                 // Since the validator's config has changed we need to save it
                 validator_override_config.save_config(validator.config_path())?;
 
