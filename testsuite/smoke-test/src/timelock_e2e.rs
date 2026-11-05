@@ -851,3 +851,118 @@ async fn timelock_genesis_flag_unset_keeps_key_absent() {
         mpk.len()
     );
 }
+
+/// Chain id of the swarm that runs the timelock DKG with the shipped parameters. Not the test chain (4),
+/// so no node may fall back to the built-in test parameters.
+const NON_TEST_CHAIN_ID: u8 = 77;
+
+/// Builds the shipped timelock parameters blob from `atomica/timelock-params/`, checks it against the
+/// committed SHA3-256, and returns the blob with its hash.
+fn shipped_timelock_parameters() -> (Vec<u8>, aptos_crypto::HashValue) {
+    use aptos_types::dkg::timelock_dkg::{
+        build_timelock_public_parameters_blob, timelock_public_parameters_hash,
+    };
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../atomica/timelock-params");
+    let key = std::fs::read(dir.join("range-proof-prover-key.bin"))
+        .expect("read atomica/timelock-params/range-proof-prover-key.bin");
+    let blob = build_timelock_public_parameters_blob(&key).expect("build the shipped blob");
+    let hash = timelock_public_parameters_hash(&blob);
+    let committed = std::fs::read_to_string(dir.join("timelock-public-parameters.sha3-256"))
+        .expect("read atomica/timelock-params/timelock-public-parameters.sha3-256");
+    assert_eq!(
+        hash.to_hex(),
+        committed.trim(),
+        "the blob built from the shipped key differs from the committed hash"
+    );
+    (blob, hash)
+}
+
+/// A four-validator swarm on chain id 77 completes a timelock DKG with the shipped timelock parameters:
+/// epoch 2 has a 96-byte master public key, and the `TimelockEpochConfig` records the SHA3-256 of the
+/// shipped blob. The mempool chunky DKG runs too. On chain 77 it has no test fallback either, so the
+/// nodes get its test parameters as blob files.
+#[tokio::test]
+async fn timelock_dkg_on_non_test_chain_with_shipped_parameters() {
+    use aptos_types::{
+        chain_id::ChainId,
+        dkg::chunky_dkg::{TEST_DIGEST_KEY, TEST_PUBLIC_PARAMETERS},
+    };
+
+    let (blob, blob_hash) = shipped_timelock_parameters();
+    let blob_dir = tempfile::TempDir::new().expect("temp dir");
+    let timelock_path = blob_dir.path().join("timelock-public-parameters.bcs");
+    std::fs::write(&timelock_path, &blob).expect("write timelock blob");
+    let mempool_pp_path = blob_dir.path().join("mempool-public-parameters.bcs");
+    std::fs::write(
+        &mempool_pp_path,
+        bcs::to_bytes(TEST_PUBLIC_PARAMETERS.as_ref()).expect("serialize mempool parameters"),
+    )
+    .expect("write mempool parameters");
+    let digest_key_path = blob_dir.path().join("digest-key.bin");
+    aptos_batch_encryption::shared::digest_key_file::write_digest_key(
+        &digest_key_path,
+        TEST_DIGEST_KEY.as_ref().clone(),
+    )
+    .expect("write digest key");
+
+    let chain_id = ChainId::new(NON_TEST_CHAIN_ID);
+    let swarm = SwarmBuilder::new_local(4)
+        .with_aptos()
+        .with_init_config(Arc::new(move |_, config, _| {
+            config.consensus.timelock_public_parameters_blob_path = Some(timelock_path.clone());
+            config.consensus.public_parameters_blob_path = Some(mempool_pp_path.clone());
+            config.consensus.digest_key_blob_path = Some(digest_key_path.clone());
+        }))
+        .with_init_genesis_config(Arc::new(move |conf| {
+            conf.chain_id = chain_id;
+            conf.epoch_duration_secs = EPOCH_DURATION_SECS;
+            conf.consensus_config.enable_validator_txns();
+            conf.randomness_config_override = Some(OnChainRandomnessConfig::default_enabled());
+            conf.chunky_dkg_config_override = Some(OnChainChunkyDKGConfig::default_enabled());
+            let mut features = Features::default();
+            features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
+            conf.initial_features_override = Some(features);
+            conf.timelock_dkg_enabled = true;
+        }))
+        .build()
+        .await;
+    assert_eq!(swarm.chain_id(), chain_id, "swarm chain id");
+
+    swarm
+        .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(300))
+        .await
+        .expect("epoch 2");
+    let client = swarm.validators().next().unwrap().rest_client();
+    let ledger = client.get_ledger_information().await.unwrap().into_inner();
+    assert_eq!(ledger.chain_id, NON_TEST_CHAIN_ID, "ledger chain id");
+    let ready = view(&client, "0x1::ibe_config::is_ready", vec![])
+        .await
+        .unwrap()[0]
+        .as_bool()
+        .expect("is_ready bool");
+    assert!(
+        ready,
+        "ibe_config::is_ready is false at epoch {}",
+        ledger.epoch
+    );
+    let mpk = as_bytes(
+        &view(&client, "0x1::ibe_config::get_mpk", vec![])
+            .await
+            .unwrap()[0],
+    );
+    assert_eq!(mpk.len(), 96, "ibe_config::get_mpk length");
+    let config = get_on_chain_resource::<TimelockEpochConfigResource>(&client).await;
+    assert_eq!(
+        config.public_parameters_hash,
+        blob_hash.to_vec(),
+        "TimelockEpochConfig.public_parameters_hash is not the hash of the shipped blob"
+    );
+    info!(
+        "timelock DKG on chain {}: epoch {} mpk {} bytes, parameters hash {}",
+        NON_TEST_CHAIN_ID,
+        ledger.epoch,
+        mpk.len(),
+        blob_hash
+    );
+}

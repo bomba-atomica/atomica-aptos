@@ -197,6 +197,8 @@ execution:
   blockstm_v2_enabled: true
 
 consensus:
+  # Built into the validator image from atomica/timelock-params (see atomica/docker/Dockerfile).
+  timelock_public_parameters_blob_path: "/opt/aptos/etc/timelock-public-parameters.bcs"
   safety_rules:
     service:
       type: "local"
