@@ -34,8 +34,10 @@ async fn randomness_correctness() {
     let rest_client = swarm.validators().next().unwrap().rest_client();
 
     info!("Wait for epoch 2. Epoch 1 does not have randomness.");
+    // The first epoch change waits for the first chunky DKG of a fresh swarm. In CI that DKG took
+    // about 47 s, past the 40 s that later epochs need. So the first wait gets 60 s.
     swarm
-        .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(epoch_duration_secs * 2))
+        .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(60))
         .await
         .expect("Epoch 2 taking too long to arrive!");
 
