@@ -23,6 +23,10 @@
 //!
 //! The `timelock_genesis_flag_*` tests check the genesis layout flag `timelock_dkg_enabled` instead: with
 //! it set, epoch 2 has a timelock key with no governance step. Without it, epoch 2 has none.
+//!
+//! `timelock_reveal_on_live_swarm` is the short reveal that CI runs on every push (four validators, a short
+//! epoch, the timelock DKG on from genesis): register, wait past the deadline, `Revealed`, the key check and
+//! the decryption of one V2 bid.
 
 use crate::{
     smoke_test_environment::SwarmBuilder, txn_emitter::generate_traffic,
@@ -43,7 +47,8 @@ use aptos_types::{
     decryption::PerEpochEncryptionKeyResource,
     dkg::timelock_dkg::TimelockEpochConfigResource,
     on_chain_config::{FeatureFlag, Features, OnChainChunkyDKGConfig, OnChainRandomnessConfig},
-    transaction::{EntryFunction, TransactionPayload},
+    transaction::{EntryFunction, Transaction, TransactionPayload},
+    validator_txn::ValidatorTransaction,
 };
 use move_core_types::{
     account_address::AccountAddress, identifier::Identifier, language_storage::ModuleId,
@@ -58,6 +63,15 @@ const EPOCH_DURATION_SECS: u64 = 1800;
 /// How far ahead of the chain clock the deadline of the first timelock is set.
 const DEADLINE_AHEAD_US: u64 = 75_000_000;
 const AUCTION_ID: u64 = 5;
+/// Epoch length of `timelock_reveal_on_live_swarm`. Registration needs `deadline <= epoch_end - 15 minutes`
+/// (`ibe_config::EPOCH_END_GUARD_US`), so 20 minutes is about the shortest epoch that still leaves 5 minutes
+/// to register. The test never waits for an epoch to end: the first reconfiguration of a fresh swarm runs at
+/// once (genesis time is 0), and its timelock DKG gives epoch 2 the key.
+const SHORT_EPOCH_DURATION_SECS: u64 = 1200;
+/// How far ahead of the chain clock `timelock_reveal_on_live_swarm` sets the deadline.
+const REVEAL_DEADLINE_AHEAD_US: u64 = 30_000_000;
+/// Counter of the `TimelockShare` transactions a node put into its validator transaction pool.
+const SHARES_SUBMITTED_METRIC: &str = "aptos_timelock_shares_submitted";
 
 #[derive(Default)]
 struct Results {
@@ -270,6 +284,7 @@ script {
 /// when `timelock_dkg_enabled` is set (the genesis layout flag `timelock_dkg_enabled`).
 async fn start_network(
     timelock_dkg_enabled: bool,
+    epoch_duration_secs: u64,
 ) -> (
     LocalSwarm,
     CliTestFramework,
@@ -294,7 +309,7 @@ async fn start_network(
                 .max_connection_deadline_secs = 3;
         }))
         .with_init_genesis_config(Arc::new(move |conf| {
-            conf.epoch_duration_secs = EPOCH_DURATION_SECS;
+            conf.epoch_duration_secs = epoch_duration_secs;
             conf.consensus_config.enable_validator_txns();
             conf.randomness_config_override = Some(OnChainRandomnessConfig::default_enabled());
             conf.chunky_dkg_config_override = Some(OnChainChunkyDKGConfig::default_enabled());
@@ -334,7 +349,7 @@ async fn timelock_testnet_for_script() {
     let Ok(info_path) = std::env::var("TIMELOCK_TESTNET_INFO") else {
         return;
     };
-    let (mut swarm, mut cli, _faucet) = start_network(false).await;
+    let (mut swarm, mut cli, _faucet) = start_network(false, EPOCH_DURATION_SECS).await;
     enable_timelock_dkg(&mut swarm, &mut cli).await;
     // The governance script advanced the root account's sequence number behind the harness's back.
     swarm
@@ -373,7 +388,7 @@ async fn timelock_testnet_for_script() {
 #[tokio::test]
 async fn timelock_e2e() {
     let mut results = Results::default();
-    let (mut swarm, mut cli, _faucet) = start_network(false).await;
+    let (mut swarm, mut cli, _faucet) = start_network(false, EPOCH_DURATION_SECS).await;
     let root_idx = enable_timelock_dkg(&mut swarm, &mut cli).await;
 
     let chain_id = swarm.chain_id();
@@ -783,10 +798,221 @@ script {
     results.finish();
 }
 
+/// `aptos_timelock_shares_submitted` of every validator, in validator order. A counter that was never
+/// incremented is not exported yet and reads as 0.
+async fn shares_submitted(swarm: &LocalSwarm) -> Vec<i64> {
+    let mut out = vec![];
+    for validator in swarm.validators() {
+        let count = validator
+            .get_metric_i64(SHARES_SUBMITTED_METRIC)
+            .await
+            .expect("read validator metrics");
+        out.push(count.unwrap_or(0));
+    }
+    out
+}
+
+/// Authors of the successful `TimelockShare` validator transactions for `timelock_id` in the ledger.
+async fn timelock_share_authors(client: &Client, timelock_id: u64) -> Vec<AccountAddress> {
+    let mut out = vec![];
+    let mut start = 0u64;
+    let last = client
+        .get_ledger_information()
+        .await
+        .unwrap()
+        .into_inner()
+        .version;
+    while start <= last {
+        let txns = client
+            .get_transactions_bcs(Some(start), Some(100))
+            .await
+            .unwrap()
+            .into_inner();
+        if txns.is_empty() {
+            break;
+        }
+        start += txns.len() as u64;
+        for txn in &txns {
+            if let Transaction::ValidatorTransaction(ValidatorTransaction::TimelockShare(share)) =
+                &txn.transaction
+            {
+                if share.timelock_id == timelock_id && txn.info.status().is_success() {
+                    out.push(share.author);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The live reveal on four validators with a short epoch. The genesis flag turns the timelock DKG on, so
+/// epoch 2 has a timelock key with no governance step. The test registers a timelock, encrypts one V2 bid to
+/// it and waits past the deadline. It checks that nothing is released before the deadline, that every
+/// validator puts a `TimelockShare` into its pool after it, that the status turns `Revealed`, and that the
+/// revealed key passes `verify_decryption_key` and decrypts the bid.
+#[tokio::test]
+async fn timelock_reveal_on_live_swarm() {
+    let (swarm, _cli, _faucet) = start_network(true, SHORT_EPOCH_DURATION_SECS).await;
+    // The first chunky DKG of a fresh swarm takes up to about 47 s in CI, so give epoch 2 a wide budget.
+    swarm
+        .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(300))
+        .await
+        .expect("epoch 2");
+    let chain_id = swarm.chain_id();
+    let client = swarm.validators().next().unwrap().rest_client();
+    let validator_addrs: Vec<AccountAddress> = swarm.validators().map(|v| v.peer_id()).collect();
+    assert_eq!(validator_addrs.len(), 4, "validators in the swarm");
+
+    let ready = view(&client, "0x1::ibe_config::is_ready", vec![])
+        .await
+        .unwrap()[0]
+        .as_bool()
+        .expect("is_ready bool");
+    assert!(ready, "ibe_config::is_ready is false in epoch 2");
+    let config: TimelockEpochConfigResource = get_on_chain_resource(&client).await;
+    assert_eq!(
+        config.weights.len(),
+        4,
+        "validators in the timelock DKG of epoch {}",
+        config.epoch
+    );
+    let mpk = decode_g2(&config.mpk).expect("timelock mpk is a valid G2 point");
+
+    let mut registrar = swarm
+        .aptos_public_info()
+        .create_and_fund_user_account(1_000_000_000)
+        .await
+        .expect("registrar");
+    let deadline_us = chain_now_us(&client).await + REVEAL_DEADLINE_AHEAD_US;
+    let id = register_timelock(&client, chain_id, &mut registrar, deadline_us)
+        .await
+        .expect("register timelock");
+    let (row_deadline, identity_bytes, _, _) = timelock_row(&client, id).await.unwrap();
+    let identity: [u8; IDENTITY_LEN] = identity_bytes.try_into().expect("identity length");
+    assert_eq!(row_deadline, deadline_us, "registered deadline");
+    assert_eq!(
+        identity,
+        aptos_dkg::ibe::compute_identity(chain_id.id(), config.epoch, id, deadline_us),
+        "identity of timelock {id}"
+    );
+
+    // One real V2 bid, encrypted client side to the timelock's own master public key.
+    let ad = bid_ad(
+        chain_id.id(),
+        config.epoch,
+        id,
+        &registrar.address(),
+        deadline_us,
+    );
+    let bid = plaintext(1_234, 7);
+    let mut rng = StdRng::seed_from_u64(0x159);
+    let ct = encrypt_bid(&mpk, &identity, &ad, &bid, &mut rng).expect("encrypt bid");
+    ct.verify(&ad).expect("the bid passes the submission check");
+
+    // Sealed until the deadline. Every read of a sample happens before the clock read, and a sample counts
+    // only while the chain clock is 2 s or more before the deadline, so no validator can be past it yet.
+    let mut sealed_samples = 0;
+    let mut revealed = false;
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(240) {
+        let submitted = shares_submitted(&swarm).await;
+        let (_, _, is_revealed, share_weight) = timelock_row(&client, id).await.unwrap();
+        let key_readable = view(&client, "0x1::ibe_config::get_decryption_key", vec![json!(
+            id.to_string()
+        )])
+        .await
+        .is_ok();
+        let now = chain_now_us(&client).await;
+        if now + 2_000_000 < deadline_us {
+            assert!(
+                share_weight == 0 && !is_revealed && !key_readable,
+                "timelock {id} released before its deadline: share weight {share_weight}, revealed {is_revealed}, key readable {key_readable}"
+            );
+            assert!(
+                submitted.iter().all(|n| *n == 0),
+                "a validator put a timelock share into its pool before the deadline: {submitted:?}"
+            );
+            sealed_samples += 1;
+        }
+        if is_revealed {
+            revealed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert!(
+        sealed_samples > 3,
+        "only {sealed_samples} samples before the deadline"
+    );
+    assert!(
+        revealed,
+        "timelock {id} not revealed within 240 s of its registration"
+    );
+
+    let status = timelock_status(&client, id).await.unwrap();
+    assert_eq!(
+        status,
+        (1, 0),
+        "status of timelock {id} (1, 0 = Revealed, no expiry reason)"
+    );
+    let dk_bytes = as_bytes(
+        &view(&client, "0x1::ibe_config::get_decryption_key", vec![json!(
+            id.to_string()
+        )])
+        .await
+        .unwrap()[0],
+    );
+    let dk = decode_g1(&dk_bytes).expect("revealed key is a valid G1 point");
+    assert!(
+        verify_decryption_key(&dk, &identity, &mpk),
+        "the revealed key fails e(dk, g2) = e(H1(id), mpk)"
+    );
+    let opened = decrypt_bid(&dk, &identity, &ad, &ct).expect("the bid decrypts");
+    assert_eq!(opened, bid, "decrypted bid");
+
+    // Shares: the registry holds at least the threshold weight, every committed share comes from a distinct
+    // validator, and every validator put its share into its pool after the deadline. Shares that arrive
+    // after the reveal are discarded, so the ledger holds only those up to the threshold.
+    let (_, _, _, share_weight) = timelock_row(&client, id).await.unwrap();
+    assert!(
+        share_weight >= config.reconstruct_threshold_weight,
+        "share weight {share_weight} below the threshold {}",
+        config.reconstruct_threshold_weight
+    );
+    let authors = timelock_share_authors(&client, id).await;
+    let distinct: std::collections::BTreeSet<_> = authors.iter().collect();
+    assert!(
+        !authors.is_empty()
+            && distinct.len() == authors.len()
+            && authors.iter().all(|a| validator_addrs.contains(a)),
+        "committed TimelockShare authors {authors:?}, validators {validator_addrs:?}"
+    );
+    let mut submitted = shares_submitted(&swarm).await;
+    let wait = std::time::Instant::now();
+    while submitted.iter().any(|n| *n < 1) && wait.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        submitted = shares_submitted(&swarm).await;
+    }
+    assert!(
+        submitted.iter().all(|n| *n >= 1),
+        "not every validator put a timelock share into its pool: {submitted:?}"
+    );
+    println!(
+        "TIMELOCK-REVEAL-LIVE PASS: chain {} epoch {} timelock {id}: 4 validators, threshold weight {} of {}, \
+         shares put into the pool per validator {submitted:?}, {} committed TimelockShare transactions from {authors:?}, \
+         status Revealed, verify_decryption_key true, V2 bid decrypted",
+        chain_id.id(),
+        config.epoch,
+        config.reconstruct_threshold_weight,
+        config.total_weight,
+        authors.len()
+    );
+}
+
 /// `(ibe_config::is_ready, ibe_config::get_mpk, timelock_dkg::is_enabled, epoch)` once every node is in
 /// epoch 2. Epoch 2 is the first epoch a genesis-enabled timelock DKG can have a key for.
 async fn timelock_state_at_epoch_2(timelock_dkg_enabled: bool) -> (bool, Vec<u8>, bool, u64) {
-    let (swarm, _cli, _faucet) = start_network(timelock_dkg_enabled).await;
+    let (swarm, _cli, _faucet) = start_network(timelock_dkg_enabled, EPOCH_DURATION_SECS).await;
     swarm
         .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(300))
         .await

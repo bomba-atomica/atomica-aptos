@@ -192,7 +192,7 @@ step summary. Self-test: `.github/scripts/tests/selftest.sh` (also run in
 | `crypto-crates-tests.yml` | aptos-dkg, aptos-crypto, aptos-types, aptos-dkg-runtime timelock share service | push and PR |
 | `node-framework-tests.yml` | aptos-node and aptos-framework (Move unit tests) | push and PR on Rust and Move paths |
 | `timelock-tests.yml` | `atomica/proto-fptx-timelock` (reference only, superseded for the product path) | push and PR on its folder |
-| `debug-tests.yml` | smoke tests | push and PR on Rust paths |
+| `debug-tests.yml` | smoke tests, including the live timelock reveal (`timelock_reveal_on_live_swarm`) | every push to main and dev-atomica, PR on Rust paths |
 | `build-aptos-binary.yml` | node, CLI, faucet, framework bundle | push on Rust paths, manual |
 | `build-validator-image.yml` | validator image | release, manual |
 | `test-docker-image.yml` | image build and testnet run | PR and push |

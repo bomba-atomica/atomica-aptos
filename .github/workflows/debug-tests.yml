@@ -1,15 +1,12 @@
 name: Debug Smoke Tests
 
 on:
+  # Every push to main and dev-atomica, with no path filter: the timelock reveal also depends on Move
+  # sources and head.mrb, which the pull request filter below does not list.
   push:
     branches:
       - main
       - dev-atomica
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - ".github/workflows/**"
-      - "atomica/timelock-params/**"
   pull_request:
     branches:
       - main
@@ -129,6 +126,14 @@ jobs:
       - name: Run timelock DKG on a non-test chain id
         if: always()
         run: .github/scripts/run-tests-guarded.sh timelock_non_test_chain 1 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_dkg_on_non_test_chain_with_shipped_parameters -- --nocapture --test-threads=1
+        timeout-minutes: 60
+
+      # The live timelock reveal: 4 validators, a 20 minute epoch, the timelock DKG on from genesis. It
+      # registers a timelock, waits past the deadline, asserts Revealed and verify_decryption_key, and
+      # decrypts one V2 bid. Minimum 1 so it must execute.
+      - name: Run timelock reveal on a live swarm
+        if: always()
+        run: .github/scripts/run-tests-guarded.sh timelock_reveal_live 1 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_reveal_on_live_swarm -- --nocapture --test-threads=1
         timeout-minutes: 60
 
       # Swarm logs are kept when a test panics. Print the DKG and error lines
