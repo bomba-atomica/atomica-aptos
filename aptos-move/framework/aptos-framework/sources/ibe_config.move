@@ -920,11 +920,11 @@ module aptos_framework::ibe_config {
     }
 
     #[test_only]
-    /// Runs the finalize logic with a chosen key-check result, because the pairing native is not available to
-    /// Move unit tests.
-    public fun finalize_for_testing(timelock_id: u64, dk: vector<u8>, key_ok: bool): bool
-    acquires TimelockRegistry {
-        finalize_internal(timelock_id, dk, key_ok)
+    /// Runs `finalize_timelock_reveal`, so the key goes through the real pairing check
+    /// `ibe::verify_decryption_key`. The native works in Move unit tests (`tests/ibe_native_test.move`).
+    public fun finalize_for_testing(timelock_id: u64, dk: vector<u8>): bool
+    acquires TimelockRegistry, TimelockEpochConfig {
+        finalize_timelock_reveal(timelock_id, dk)
     }
 
     #[test_only]

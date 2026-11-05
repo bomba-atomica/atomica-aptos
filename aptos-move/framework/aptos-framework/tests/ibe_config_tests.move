@@ -1,10 +1,14 @@
 #[test_only]
-/// Registry rules of `ibe_config` that do not depend on the Rust natives.
+/// Registry rules of `ibe_config`.
 ///
-/// The pairing check inside `finalize_timelock_reveal` is a native. These tests drive the same
-/// state machine through `finalize_for_testing(.., key_ok)`.
+/// `finalize_for_testing` runs the real pairing check of `finalize_timelock_reveal`. `setup_ready` sets
+/// the master public key `s * g2` for a known test secret `s`, and `dk_of` derives the real key
+/// `s * H1(identity)` of a registered timelock with `crypto_algebra`.
 module aptos_framework::ibe_config_tests {
+    use std::features;
     use std::vector;
+    use aptos_std::bls12381_algebra::{Fr, G1, G2, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
+    use aptos_std::crypto_algebra::{Self, Element};
     use aptos_framework::account;
     use aptos_framework::event;
     use aptos_framework::ibe_config;
@@ -14,18 +18,40 @@ module aptos_framework::ibe_config_tests {
 
     const MIN: u64 = 60_000_000;
     const EPOCH_INTERVAL: u64 = 7_200_000_000; // 2 hours
+    const H1_DST: vector<u8> = b"ATOMICA_TIMELOCK_IBE_V2_H1";
+    /// Master secret of the test key pair. Test only: it is public.
+    const TEST_MASTER_SECRET: u64 = 0xA70A;
 
     fun setup(): signer {
         let framework = account::create_signer_for_test(@0x1);
+        features::change_feature_flags_for_testing(
+            &framework, vector[features::get_bls12_381_strutures_feature()], vector[]
+        );
         ibe_config::initialize_for_testing(&framework);
         framework
     }
 
-    /// Epoch 0 config with weights [2, 1, 2], threshold 3, and time 0 as the epoch start.
+    fun master_secret(): Element<Fr> {
+        crypto_algebra::from_u64<Fr>(TEST_MASTER_SECRET)
+    }
+
+    /// `s * g2` for the test secret `s`.
+    fun test_mpk(): vector<u8> {
+        let mpk = crypto_algebra::scalar_mul(&crypto_algebra::one<G2>(), &master_secret());
+        crypto_algebra::serialize<G2, FormatG2Compr>(&mpk)
+    }
+
+    /// The real decryption key of timelock `id` under `test_mpk`: `s * H1(identity)`.
+    fun dk_of(id: u64): vector<u8> {
+        let q = crypto_algebra::hash_to<G1, HashG1XmdSha256SswuRo>(&H1_DST, &ibe_config::get_identity(id));
+        crypto_algebra::serialize<G1, FormatG1Compr>(&crypto_algebra::scalar_mul(&q, &master_secret()))
+    }
+
+    /// Epoch 0 config with `test_mpk`, weights [2, 1, 2], threshold 3, and time 0 as the epoch start.
     fun setup_ready(): signer {
         let framework = setup();
         ibe_config::set_epoch_config_for_testing(
-            &framework, 0, fixtures::timelock_basic_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL
+            &framework, 0, test_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL
         );
         framework
     }
@@ -59,7 +85,7 @@ module aptos_framework::ibe_config_tests {
     fun ready_after_config() {
         setup_ready();
         assert!(ibe_config::is_ready(), 1);
-        assert!(ibe_config::get_mpk() == fixtures::timelock_basic_mpk(), 2);
+        assert!(ibe_config::get_mpk() == test_mpk(), 2);
         let (epoch, threshold, total) = ibe_config::get_epoch_config();
         assert!(epoch == 0 && threshold == 3 && total == 5, 3);
     }
@@ -216,8 +242,8 @@ module aptos_framework::ibe_config_tests {
         timestamp::update_global_time_for_test(60 * MIN);
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
         ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
-        let dk = fixtures::timelock_basic_reconstructed_dk();
-        assert!(ibe_config::finalize_for_testing(id, dk, true), 1);
+        let dk = dk_of(id);
+        assert!(ibe_config::finalize_for_testing(id, dk), 1);
         assert!(ibe_config::get_status(id) == 1, 2);
         assert!(ibe_config::is_revealed(id), 3);
         assert!(!ibe_config::is_expired(id), 4);
@@ -277,9 +303,9 @@ module aptos_framework::ibe_config_tests {
         timestamp::update_global_time_for_test(60 * MIN);
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
         ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
-        let dk = fixtures::timelock_basic_reconstructed_dk();
-        ibe_config::finalize_for_testing(id, dk, true);
-        ibe_config::finalize_for_testing(id, dk, true);
+        let dk = dk_of(id);
+        ibe_config::finalize_for_testing(id, dk);
+        ibe_config::finalize_for_testing(id, dk);
     }
 
     #[test(user = @0xA)]
@@ -290,7 +316,7 @@ module aptos_framework::ibe_config_tests {
         timestamp::update_global_time_for_test(60 * MIN);
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
         ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
-        ibe_config::finalize_for_testing(id, fixtures::timelock_basic_reconstructed_dk(), true);
+        ibe_config::finalize_for_testing(id, dk_of(id));
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 2, @0xB2, 0);
     }
 
@@ -301,7 +327,7 @@ module aptos_framework::ibe_config_tests {
         let id = register(user, 60 * MIN);
         timestamp::update_global_time_for_test(60 * MIN);
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
-        ibe_config::finalize_for_testing(id, fixtures::timelock_basic_reconstructed_dk(), true);
+        ibe_config::finalize_for_testing(id, dk_of(id));
     }
 
     #[test(user = @0xA)]
@@ -319,13 +345,27 @@ module aptos_framework::ibe_config_tests {
         timestamp::update_global_time_for_test(60 * MIN);
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
         ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
-        assert!(!ibe_config::finalize_for_testing(id, x"00", false), 1);
+        assert!(!ibe_config::finalize_for_testing(id, x"00"), 1);
         assert!(ibe_config::get_status(id) == 2, 2);
         assert!(ibe_config::get_expiry_reason(id) == 3, 3);
         assert!(ibe_config::is_expired(id), 4);
         assert!(!ibe_config::is_revealed(id), 5);
         let (_, _, _, count) = ibe_config::get_timelock(id);
         assert!(count == 0, 6);
+    }
+
+    /// A valid G1 point that is the key of another timelock fails the real pairing check.
+    #[test(user = @0xA)]
+    fun finalize_runs_the_real_pairing_check(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        let other = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
+        assert!(!ibe_config::finalize_for_testing(id, dk_of(other)), 1);
+        assert!(ibe_config::get_status(id) == 2, 2);
+        assert!(ibe_config::get_expiry_reason(id) == 3, 3);
     }
 
     #[test(user = @0xA)]
@@ -336,8 +376,8 @@ module aptos_framework::ibe_config_tests {
         timestamp::update_global_time_for_test(60 * MIN);
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
         ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
-        ibe_config::finalize_for_testing(id, x"00", false);
-        ibe_config::finalize_for_testing(id, fixtures::timelock_basic_reconstructed_dk(), true);
+        ibe_config::finalize_for_testing(id, x"00");
+        ibe_config::finalize_for_testing(id, dk_of(id));
     }
 
     // ---- expiry ----
@@ -391,7 +431,7 @@ module aptos_framework::ibe_config_tests {
         timestamp::update_global_time_for_test(60 * MIN);
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
         ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
-        ibe_config::finalize_for_testing(id, fixtures::timelock_basic_reconstructed_dk(), true);
+        ibe_config::finalize_for_testing(id, dk_of(id));
         timestamp::update_global_time_for_test(100 * MIN);
         ibe_config::on_new_block_for_testing();
         assert!(ibe_config::get_status(id) == 1, 1);
@@ -462,7 +502,7 @@ module aptos_framework::ibe_config_tests {
         assert!(!ibe_config::is_reconstructable(id), 3);
         ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
         assert!(ibe_config::is_reconstructable(id), 4);
-        ibe_config::finalize_for_testing(id, fixtures::timelock_basic_reconstructed_dk(), true);
+        ibe_config::finalize_for_testing(id, dk_of(id));
         assert!(!ibe_config::is_reconstructable(id), 5);
     }
 
@@ -497,7 +537,7 @@ module aptos_framework::ibe_config_tests {
         timestamp::update_global_time_for_test(60 * MIN);
         ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
         ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
-        ibe_config::finalize_for_testing(id, fixtures::timelock_basic_reconstructed_dk(), true);
+        ibe_config::finalize_for_testing(id, dk_of(id));
         ibe_config::fail_key_check_for_testing(id);
     }
 
@@ -516,7 +556,7 @@ module aptos_framework::ibe_config_tests {
         ibe_config::fail_key_check_for_testing(key_failed);
         ibe_config::submit_dk_shares_for_testing(revealed, shares(2), 0, @0xB0, 0);
         ibe_config::submit_dk_shares_for_testing(revealed, shares(1), 1, @0xB1, 0);
-        ibe_config::finalize_for_testing(revealed, fixtures::timelock_basic_reconstructed_dk(), true);
+        ibe_config::finalize_for_testing(revealed, dk_of(revealed));
         timestamp::update_global_time_for_test(71 * MIN);
         ibe_config::on_new_block_for_testing();
         assert!(ibe_config::get_expiry_reason(window) == 2, 1);
