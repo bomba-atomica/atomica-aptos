@@ -245,6 +245,30 @@ module aptos_framework::ibe_config_tests {
         assert!(total_weight == 5, 5);
     }
 
+    /// Submissions out of validator-index order keep their submission order in `indices`, while
+    /// `weights` stays the full per-validator list in validator order.
+    #[test(user = @0xA)]
+    fun reconstruction_inputs_out_of_index_order_carry_all_weights(user: &signer) {
+        let framework = setup();
+        ibe_config::set_epoch_config_for_testing(
+            &framework, 0, fixtures::timelock_basic_mpk(), 3, vector[1, 1, 1, 1], EPOCH_INTERVAL
+        );
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 2, @0xB2, 0);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 0, @0xB0, 0);
+        assert!(!ibe_config::is_reconstructable(id), 1);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 3, @0xB3, 0);
+        assert!(ibe_config::is_reconstructable(id), 2);
+        let (indices, dk_shares, weights, threshold, total_weight, _identity) =
+            ibe_config::get_reconstruction_inputs(id);
+        assert!(indices == vector[2, 0, 3], 3);
+        assert!(dk_shares.length() == 3, 4);
+        assert!(weights == vector[1, 1, 1, 1], 5);
+        assert!(threshold == 3, 6);
+        assert!(total_weight == 4, 7);
+    }
+
     #[test(user = @0xA)]
     #[expected_failure(abort_code = 11, location = aptos_framework::ibe_config)]
     fun second_reveal_aborts(user: &signer) {
