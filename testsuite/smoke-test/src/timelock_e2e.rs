@@ -70,8 +70,9 @@ const AUCTION_ID: u64 = 5;
 const SHORT_EPOCH_DURATION_SECS: u64 = 1200;
 /// How far ahead of the chain clock `timelock_reveal_on_live_swarm` sets the deadline.
 const REVEAL_DEADLINE_AHEAD_US: u64 = 30_000_000;
-/// Counter of the `TimelockShare` transactions a node put into its validator transaction pool.
-const SHARES_SUBMITTED_METRIC: &str = "aptos_timelock_shares_submitted";
+/// Counter of the `TimelockShare` transactions a node put into its validator transaction pool. The
+/// inspection service keys every metric as `name{labels}`, so a counter without labels ends in `{}`.
+const SHARES_SUBMITTED_METRIC: &str = "aptos_timelock_shares_submitted{}";
 
 #[derive(Default)]
 struct Results {
