@@ -57,6 +57,7 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 aptos-backup-cli = { workspace = true }
+aptos-batch-encryption = { workspace = true }
 aptos-db-indexer = { workspace = true, features = ["fuzzing"] }
 aptos-genesis = { workspace = true }
 aptos-infallible = { workspace = true }

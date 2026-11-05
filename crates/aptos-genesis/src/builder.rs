@@ -450,6 +450,8 @@ pub struct GenesisConfiguration {
     pub initialize_decryption_at_genesis: bool,
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_dkg_enabled`.
     pub timelock_dkg_enabled: bool,
+    /// Chain id of the genesis. Defaults to the test chain (4).
+    pub chain_id: ChainId,
 }
 
 pub type InitConfigFn = Arc<dyn Fn(usize, &mut NodeConfig, &mut NodeConfig) + Send + Sync>;
@@ -676,6 +678,7 @@ impl Builder {
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
             timelock_dkg_enabled: false,
+            chain_id: ChainId::test(),
         };
         if let Some(init_genesis_config) = &self.init_genesis_config {
             (init_genesis_config)(&mut genesis_config);
@@ -683,7 +686,7 @@ impl Builder {
 
         // Build genesis & waypoint
         let mut genesis_info = GenesisInfo::new(
-            ChainId::test(),
+            genesis_config.chain_id,
             root_key,
             configs,
             self.framework.clone(),

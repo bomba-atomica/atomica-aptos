@@ -113,8 +113,10 @@ pub struct ConsensusConfig {
     /// Path to the timelock public parameters blob (BCS-serialized PublicParameters of the timelock
     /// chunky DKG session). Loaded with full validation: every point checked, `G_2` equal to the standard
     /// BLS12-381 G2 generator. Its SHA3-256 must equal `TimelockEpochConfig.public_parameters_hash`, or the
-    /// node does not serve the timelock. Not required: a node without it cannot take part in the timelock
-    /// session, and the epoch change does not depend on it. Test chains fall back to test parameters.
+    /// node does not serve the timelock. Required for validators on a non-test chain: without it the node
+    /// refuses to start. A fullnode may run without it. Test chains (chain id 4) fall back to test
+    /// parameters when it is not set. A configured path that is missing or empty stops the node on every
+    /// chain. The shipped blob is built from `atomica/timelock-params/`.
     pub timelock_public_parameters_blob_path: Option<PathBuf>,
     pub num_bounded_executor_tasks: u64,
     pub enable_pre_commit: bool,

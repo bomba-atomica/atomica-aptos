@@ -61,6 +61,22 @@ RUN /usr/local/bin/aptos-node --version && \
     /usr/local/bin/aptos --version && \
     /usr/local/bin/aptos-faucet-service --help
 
+# Timelock PublicParameters blob. Built from the shipped range proof key with the aptos binary of this
+# image, then checked against the committed SHA-256 and SHA3-256 (the on-chain public_parameters_hash).
+# The node configs set consensus.timelock_public_parameters_blob_path to this fixed path.
+COPY atomica/timelock-params/range-proof-prover-key.bin \
+     atomica/timelock-params/timelock-public-parameters.sha256 \
+     atomica/timelock-params/timelock-public-parameters.sha3-256 \
+     /opt/aptos/timelock-params/
+RUN mkdir -p /opt/aptos/etc && \
+    /usr/local/bin/aptos node build-timelock-public-parameters \
+        --range-proof-key /opt/aptos/timelock-params/range-proof-prover-key.bin \
+        --output /opt/aptos/etc/timelock-public-parameters.bcs && \
+    cd /opt/aptos/etc && sha256sum -c /opt/aptos/timelock-params/timelock-public-parameters.sha256 && \
+    /usr/local/bin/aptos node validate-timelock-public-parameters \
+        /opt/aptos/etc/timelock-public-parameters.bcs \
+        --expected-hash "$(cat /opt/aptos/timelock-params/timelock-public-parameters.sha3-256)"
+
 # Create necessary directories and set permissions
 RUN mkdir -p /opt/aptos/var /opt/aptos/data /opt/aptos/etc && \
     chown -R aptos:aptos /opt/aptos

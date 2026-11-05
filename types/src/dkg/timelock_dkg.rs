@@ -48,7 +48,7 @@ use move_core_types::{
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
 
@@ -332,7 +332,7 @@ pub fn set_timelock_public_parameters_path(path: PathBuf) {
 }
 
 /// Where the timelock parameters come from on this node.
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum TimelockParametersSource {
     WillLoadFromFile {
         path: PathBuf,
@@ -340,25 +340,124 @@ pub enum TimelockParametersSource {
     },
     /// Built-in test parameters (test chain only).
     TestKeyFallback,
-    /// No parameters: this node cannot take part in the timelock session.
+    /// No parameters. Only a fullnode on a non-test chain gets this: it takes no part in the timelock
+    /// session.
     NotAvailable,
 }
 
-pub fn initialize_timelock_public_parameters(chain_id: ChainId) -> TimelockParametersSource {
-    if let Some(path) = TIMELOCK_PUBLIC_PARAMETERS_PATH.get() {
-        match std::fs::metadata(path) {
-            Ok(meta) => TimelockParametersSource::WillLoadFromFile {
-                path: path.clone(),
-                file_size: meta.len(),
-            },
-            Err(_) => TimelockParametersSource::NotAvailable,
-        }
-    } else if chain_id == ChainId::test() {
-        let _ = TIMELOCK_PUBLIC_PARAMETERS_TEST_FALLBACK.set(());
-        TimelockParametersSource::TestKeyFallback
-    } else {
-        TimelockParametersSource::NotAvailable
+/// Decides where the timelock parameters of a node come from. Reads only the file metadata.
+///
+/// Returns an error, so that the node refuses to start, when:
+/// - a path is configured and the file is missing, unreadable, not a regular file or empty,
+/// - no path is configured, the chain is not the test chain (chain id 4) and the node is a validator.
+///
+/// A silent `NotAvailable` on a validator would disable the timelock session with no error. A fullnode
+/// takes no part in the session, so it may run without the blob.
+pub fn timelock_parameters_source(
+    path: Option<&Path>,
+    chain_id: ChainId,
+    is_validator: bool,
+) -> Result<TimelockParametersSource> {
+    if let Some(path) = path {
+        let meta = std::fs::metadata(path).with_context(|| {
+            format!(
+                "consensus.timelock_public_parameters_blob_path {} cannot be read",
+                path.display()
+            )
+        })?;
+        ensure!(
+            meta.is_file() && meta.len() > 0,
+            "consensus.timelock_public_parameters_blob_path {} is not a non-empty file",
+            path.display()
+        );
+        return Ok(TimelockParametersSource::WillLoadFromFile {
+            path: path.to_path_buf(),
+            file_size: meta.len(),
+        });
     }
+    if chain_id == ChainId::test() {
+        return Ok(TimelockParametersSource::TestKeyFallback);
+    }
+    ensure!(
+        !is_validator,
+        "chain id {} is not the test chain and consensus.timelock_public_parameters_blob_path is not set: \
+         a validator cannot take part in the timelock session without the timelock PublicParameters blob",
+        chain_id
+    );
+    Ok(TimelockParametersSource::NotAvailable)
+}
+
+/// Decides where this node's timelock parameters come from, from the path set with
+/// [`set_timelock_public_parameters_path`]. On the test chain without a path it turns on the built-in
+/// test parameters. Errors as [`timelock_parameters_source`]: the node must not start.
+pub fn initialize_timelock_public_parameters(
+    chain_id: ChainId,
+    is_validator: bool,
+) -> Result<TimelockParametersSource> {
+    let source = timelock_parameters_source(
+        TIMELOCK_PUBLIC_PARAMETERS_PATH.get().map(PathBuf::as_path),
+        chain_id,
+        is_validator,
+    )?;
+    if source == TimelockParametersSource::TestKeyFallback {
+        let _ = TIMELOCK_PUBLIC_PARAMETERS_TEST_FALLBACK.set(());
+    }
+    Ok(source)
+}
+
+/// `max_num_shares` of the shipped timelock parameters: the rounding upper bound of the total weight,
+/// sized like the test parameters for up to 20 validators.
+pub const TIMELOCK_PP_MAX_NUM_SHARES: usize = 72;
+/// `max_aggregation` of the shipped timelock parameters: the most dealings one aggregate can sum.
+pub const TIMELOCK_PP_MAX_AGGREGATION: usize = 20;
+
+/// Generates the secret-dependent part of the timelock parameters: the DeKART range proof prover key,
+/// compressed arkworks encoding.
+///
+/// The setup samples a trapdoor from `rng` and drops it. Whoever knows the trapdoor can forge range
+/// proofs, so production keys must come from a secure random source (`OsRng`), never from a seed.
+pub fn generate_timelock_range_proof_key<R: rand::RngCore + rand::CryptoRng>(
+    rng: &mut R,
+) -> Result<Vec<u8>> {
+    use ark_serialize::CanonicalSerialize;
+    let pp = ChunkyDKGPublicParameters::new_for_testing(
+        TIMELOCK_PP_MAX_NUM_SHARES,
+        aptos_dkg::pvss::chunky::DEFAULT_ELL_FOR_DEPLOYMENT,
+        TIMELOCK_PP_MAX_AGGREGATION,
+        aptos_batch_encryption::group::G2Affine::generator(),
+        rng,
+    );
+    let mut key = Vec::new();
+    pp.pk_range_proof
+        .serialize_compressed(&mut key)
+        .context("range proof prover key does not serialize")?;
+    Ok(key)
+}
+
+/// Builds the timelock `PublicParameters` blob from a range proof prover key made by
+/// [`generate_timelock_range_proof_key`].
+///
+/// Every other part (ElGamal bases, standard G2 base, dlog table) is deterministic, so the same key
+/// always gives the same blob bytes. The key is decoded with full point validation, and the blob is
+/// checked with [`load_timelock_public_parameters`] before it is returned.
+pub fn build_timelock_public_parameters_blob(range_proof_key: &[u8]) -> Result<Vec<u8>> {
+    use ark_serialize::{CanonicalDeserialize, Compress, Validate};
+    use rand::{rngs::StdRng, SeedableRng};
+    let key =
+        CanonicalDeserialize::deserialize_with_mode(range_proof_key, Compress::Yes, Validate::Yes)
+            .context("range proof prover key does not decode")?;
+    // The seeded range proof key built here is replaced below. Only the deterministic parts are kept.
+    let mut pp = ChunkyDKGPublicParameters::new_for_testing(
+        TIMELOCK_PP_MAX_NUM_SHARES,
+        aptos_dkg::pvss::chunky::DEFAULT_ELL_FOR_DEPLOYMENT,
+        TIMELOCK_PP_MAX_AGGREGATION,
+        aptos_batch_encryption::group::G2Affine::generator(),
+        &mut StdRng::seed_from_u64(0),
+    );
+    pp.pk_range_proof = key;
+    let blob = bcs::to_bytes(&pp).context("timelock PublicParameters do not serialize")?;
+    load_timelock_public_parameters(&blob)?;
+    Ok(blob)
 }
 
 /// Test parameters of the timelock session. Own randomness (own seed), not the mempool test parameters.
@@ -367,9 +466,9 @@ pub static TEST_TIMELOCK_PUBLIC_PARAMETERS: Lazy<Arc<TimelockPublicParameters>> 
     use rand::{rngs::StdRng, SeedableRng};
     let mut rng = StdRng::seed_from_u64(TEST_TIMELOCK_PUBLIC_PARAMETERS_SEED);
     let pp = ChunkyDKGPublicParameters::new_for_testing(
-        72,
+        TIMELOCK_PP_MAX_NUM_SHARES,
         aptos_dkg::pvss::chunky::DEFAULT_ELL_FOR_DEPLOYMENT,
-        20,
+        TIMELOCK_PP_MAX_AGGREGATION,
         G2Affine::generator(),
         &mut rng,
     );
@@ -810,5 +909,79 @@ pub fn derive_timelock_service_state(
     ) {
         Ok(shares) => TimelockServiceState::Ready { epoch, shares },
         Err(e) => refuse(TimelockServiceRefusal::KeyDerivation(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn existing_file() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")
+    }
+
+    #[test]
+    fn startup_fails_on_non_test_chain_without_blob() {
+        let err = timelock_parameters_source(None, ChainId::new(77), true)
+            .expect_err("a validator on chain 77 without the blob must not start");
+        assert!(err
+            .to_string()
+            .contains("timelock_public_parameters_blob_path"));
+        // The init function the node calls at startup, with no path set in this process.
+        assert!(initialize_timelock_public_parameters(ChainId::new(77), true).is_err());
+        assert!(initialize_timelock_public_parameters(ChainId::mainnet(), true).is_err());
+    }
+
+    #[test]
+    fn fullnode_on_non_test_chain_without_blob_starts_without_timelock() {
+        assert_eq!(
+            timelock_parameters_source(None, ChainId::new(77), false).unwrap(),
+            TimelockParametersSource::NotAvailable
+        );
+    }
+
+    #[test]
+    fn test_chain_without_blob_uses_test_parameters() {
+        for is_validator in [true, false] {
+            assert_eq!(
+                timelock_parameters_source(None, ChainId::test(), is_validator).unwrap(),
+                TimelockParametersSource::TestKeyFallback
+            );
+        }
+    }
+
+    #[test]
+    fn configured_blob_path_must_exist() {
+        let missing = existing_file().with_file_name("no-such-timelock-parameters.bcs");
+        for chain_id in [ChainId::test(), ChainId::new(77)] {
+            for is_validator in [true, false] {
+                assert!(
+                    timelock_parameters_source(Some(&missing), chain_id, is_validator).is_err()
+                );
+            }
+        }
+        // A directory is not a blob.
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        assert!(timelock_parameters_source(Some(&dir), ChainId::new(77), true).is_err());
+    }
+
+    #[test]
+    fn configured_blob_path_takes_precedence() {
+        let file = existing_file();
+        let size = std::fs::metadata(&file).unwrap().len();
+        for chain_id in [ChainId::test(), ChainId::new(77)] {
+            assert_eq!(
+                timelock_parameters_source(Some(&file), chain_id, true).unwrap(),
+                TimelockParametersSource::WillLoadFromFile {
+                    path: file.clone(),
+                    file_size: size,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn range_proof_key_that_does_not_decode_is_refused() {
+        assert!(build_timelock_public_parameters_blob(&[0u8; 64]).is_err());
     }
 }

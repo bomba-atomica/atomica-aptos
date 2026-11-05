@@ -92,7 +92,7 @@ impl ChunkyTestSetup {
     /// The timelock session of the same epoch: same dealers, same keys, same validator set and the same
     /// session metadata as `self`, but the timelock session id, parameters and signing domain.
     pub fn timelock_twin(&self) -> Self {
-        let _ = initialize_timelock_public_parameters(ChainId::test());
+        let _ = initialize_timelock_public_parameters(ChainId::test(), true);
         let dkg_config = ChunkyDKGSession::new_timelock(&self.session_metadata, ChainId::test())
             .expect("test timelock parameters");
         Self {

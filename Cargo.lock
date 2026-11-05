@@ -18533,6 +18533,7 @@ dependencies = [
  "aptos",
  "aptos-api-types",
  "aptos-backup-cli",
+ "aptos-batch-encryption",
  "aptos-bitvec",
  "aptos-cached-packages",
  "aptos-config",

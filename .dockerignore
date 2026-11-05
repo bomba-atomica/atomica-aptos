@@ -7,6 +7,7 @@
 # explicitly include stuff we actually need via negation
 
 !atomica/docker/binaries/
+!atomica/timelock-params/
 !docker/build-rust-all.sh
 !docker/builder/*.sh
 !docker/tools/boto.cfg

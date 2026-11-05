@@ -9,6 +9,7 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - ".github/workflows/**"
+      - "atomica/timelock-params/**"
   pull_request:
     branches:
       - main
@@ -17,6 +18,7 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - ".github/workflows/**"
+      - "atomica/timelock-params/**"
   workflow_dispatch:
 
 permissions:
@@ -120,6 +122,13 @@ jobs:
       - name: Run timelock genesis flag tests
         if: always()
         run: .github/scripts/run-tests-guarded.sh timelock_genesis_flag 2 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_genesis_flag -- --nocapture --test-threads=1
+        timeout-minutes: 60
+
+      # A 4-validator swarm on chain id 77 (not the test chain) with the shipped timelock parameters
+      # (atomica/timelock-params) completes a timelock DKG. Minimum 1 so it must execute.
+      - name: Run timelock DKG on a non-test chain id
+        if: always()
+        run: .github/scripts/run-tests-guarded.sh timelock_non_test_chain 1 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_dkg_on_non_test_chain_with_shipped_parameters -- --nocapture --test-threads=1
         timeout-minutes: 60
 
       # Swarm logs are kept when a test panics. Print the DKG and error lines

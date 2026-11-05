@@ -84,6 +84,7 @@ pub enum NodeTool {
     ValidateDigestKey(ValidateDigestKey),
     ValidatePublicParameters(ValidatePublicParameters),
     ValidateTimelockPublicParameters(ValidateTimelockPublicParameters),
+    BuildTimelockPublicParameters(BuildTimelockPublicParameters),
 }
 
 impl NodeTool {
@@ -114,6 +115,7 @@ impl NodeTool {
             ValidateDigestKey(tool) => tool.execute_serialized().await,
             ValidatePublicParameters(tool) => tool.execute_serialized().await,
             ValidateTimelockPublicParameters(tool) => tool.execute_serialized().await,
+            BuildTimelockPublicParameters(tool) => tool.execute_serialized().await,
         }
     }
 }
@@ -1685,6 +1687,82 @@ impl CliCommand<TimelockParametersValidationResult> for ValidateTimelockPublicPa
             file_size_bytes: report.blob_bytes as u64,
             sha3_256: report.sha3_256,
             hash_matches_expected: report.hash_matches_expected,
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub struct TimelockParametersBuildResult {
+    pub file_size_bytes: u64,
+    /// SHA3-256 of the blob, the value stored on chain as `public_parameters_hash`.
+    pub sha3_256: String,
+}
+
+/// Build the timelock PublicParameters blob from a range proof prover key
+///
+/// The only secret-dependent part of the parameters is the DeKART range proof prover key. Everything else
+/// is deterministic, so the same key always gives the same blob bytes. The shipped key is
+/// `atomica/timelock-params/range-proof-prover-key.bin`. With `--generate-range-proof-key` a fresh key is
+/// made from the OS random source first and written to `--range-proof-key` (an existing file is never
+/// overwritten). The blob is fully validated before it is written.
+#[derive(Parser)]
+pub struct BuildTimelockPublicParameters {
+    /// Path to the range proof prover key (compressed arkworks encoding)
+    #[clap(long, value_parser)]
+    pub range_proof_key: PathBuf,
+
+    /// Where to write the BCS-serialized timelock PublicParameters blob
+    #[clap(long, value_parser)]
+    pub output: PathBuf,
+
+    /// Generate a fresh range proof prover key with the OS random source and write it to
+    /// `--range-proof-key` first
+    #[clap(long)]
+    pub generate_range_proof_key: bool,
+}
+
+#[async_trait]
+impl CliCommand<TimelockParametersBuildResult> for BuildTimelockPublicParameters {
+    fn command_name(&self) -> &'static str {
+        "BuildTimelockPublicParameters"
+    }
+
+    async fn execute(self) -> CliTypedResult<TimelockParametersBuildResult> {
+        use aptos_types::dkg::timelock_dkg::{
+            build_timelock_public_parameters_blob, generate_timelock_range_proof_key,
+            timelock_public_parameters_hash,
+        };
+
+        if self.generate_range_proof_key {
+            if self.range_proof_key.exists() {
+                return Err(CliError::CommandArgumentError(format!(
+                    "{} exists; refusing to overwrite a range proof key",
+                    self.range_proof_key.display()
+                )));
+            }
+            let key = generate_timelock_range_proof_key(&mut rand::rngs::OsRng)
+                .map_err(|e| CliError::UnexpectedError(format!("{e:#}")))?;
+            std::fs::write(&self.range_proof_key, key).map_err(|e| {
+                CliError::IO(
+                    format!("Failed to write {}", self.range_proof_key.display()),
+                    e,
+                )
+            })?;
+        }
+        let key = std::fs::read(&self.range_proof_key).map_err(|e| {
+            CliError::IO(
+                format!("Failed to read {}", self.range_proof_key.display()),
+                e,
+            )
+        })?;
+        let blob = build_timelock_public_parameters_blob(&key).map_err(|e| {
+            CliError::UnexpectedError(format!("Cannot build timelock PublicParameters: {e:#}"))
+        })?;
+        std::fs::write(&self.output, &blob)
+            .map_err(|e| CliError::IO(format!("Failed to write {}", self.output.display()), e))?;
+        Ok(TimelockParametersBuildResult {
+            file_size_bytes: blob.len() as u64,
+            sha3_256: timelock_public_parameters_hash(&blob).to_hex(),
         })
     }
 }

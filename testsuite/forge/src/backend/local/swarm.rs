@@ -145,6 +145,15 @@ impl LocalSwarm {
             SwarmDirectory::Temporary(TempDir::new()?)
         };
 
+        // The genesis config hook may set a chain id other than the test chain. Record it for the swarm.
+        let chain_id = Arc::new(Mutex::new(ChainId::test()));
+        let recorded_chain_id = chain_id.clone();
+        let init_genesis_config: InitGenesisConfigFn = Arc::new(move |genesis_config| {
+            if let Some(init_genesis_config) = &init_genesis_config {
+                (init_genesis_config)(genesis_config);
+            }
+            *recorded_chain_id.lock() = genesis_config.chain_id;
+        });
         let (root_key, genesis, genesis_waypoint, validators) =
             aptos_genesis::builder::Builder::new(
                 &dir_actual,
@@ -178,8 +187,9 @@ impl LocalSwarm {
                 }
             })))
             .with_init_genesis_stake(init_genesis_stake)
-            .with_init_genesis_config(init_genesis_config)
+            .with_init_genesis_config(Some(init_genesis_config))
             .build(rng)?;
+        let chain_id = *chain_id.lock();
 
         // Get the initial version to start the nodes with, either the one provided or fallback to
         // using the latest version
@@ -274,7 +284,7 @@ impl LocalSwarm {
             public_networks,
             dir: dir_actual,
             root_account,
-            chain_id: ChainId::test(),
+            chain_id,
             root_key,
             cpu_affinities,
             mem_binds,

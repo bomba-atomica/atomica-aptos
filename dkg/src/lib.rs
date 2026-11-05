@@ -153,10 +153,14 @@ pub fn initialize_public_parameters_with_counters(blob_path: Option<&PathBuf>, c
 /// Sets the timelock PublicParameters path and loads the blob eagerly, with full validation, in a
 /// background thread. A blob that fails validation is refused and logged: the node then cannot take part in
 /// the timelock session, which never blocks the epoch change.
+///
+/// Returns an error when the node must not start: a configured blob is missing, or a validator on a
+/// non-test chain has no blob configured (see `timelock_parameters_source`).
 pub fn initialize_timelock_public_parameters_with_counters(
     blob_path: Option<&PathBuf>,
     chain_id: ChainId,
-) {
+    is_validator: bool,
+) -> anyhow::Result<()> {
     use aptos_types::dkg::timelock_dkg::{
         initialize_timelock_public_parameters, set_timelock_public_parameters_path,
         TimelockParametersSource, TIMELOCK_PUBLIC_PARAMETERS,
@@ -164,7 +168,7 @@ pub fn initialize_timelock_public_parameters_with_counters(
     if let Some(path) = blob_path {
         set_timelock_public_parameters_path(path.clone());
     }
-    match initialize_timelock_public_parameters(chain_id) {
+    match initialize_timelock_public_parameters(chain_id, is_validator)? {
         TimelockParametersSource::WillLoadFromFile { .. }
         | TimelockParametersSource::TestKeyFallback => {
             std::thread::spawn(|| {
@@ -182,6 +186,7 @@ pub fn initialize_timelock_public_parameters_with_counters(
             counters::TIMELOCK_PARAMETERS_VALID.set(0);
         },
     }
+    Ok(())
 }
 
 fn hash_file_blake3(path: &Path) -> io::Result<blake3::Hash> {
