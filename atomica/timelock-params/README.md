@@ -1,14 +1,16 @@
 # Timelock parameters
 
-The shipped `PublicParameters` of the timelock chunky DKG session. Every validator on a chain other than
-the test chain (chain id 4) must load this blob, or the node refuses to start
-(`types/src/dkg/timelock_dkg.rs`, `timelock_parameters_source`).
+The shipped `PublicParameters` of the timelock chunky DKG session. A validator on a chain other than the
+test chain (chain id 4) needs this blob. When the configured blob is missing or empty, or no path is set,
+the node refuses to start (`types/src/dkg/timelock_dkg.rs`, `timelock_parameters_source`). The startup
+check reads only the file metadata. A blob that is present but corrupt does not stop the node: the
+background load refuses it, and the node then takes no part in the timelock session.
 
 ## Files
 
 - `range-proof-prover-key.bin`: the DeKART range proof prover key (compressed arkworks encoding). It is
-  the only secret-dependent part of the parameters. It was generated once with the OS random source, and
-  its trapdoor was dropped.
+  the only secret-dependent part of the parameters. A single party generated it once with `OsRng` and
+  says the trapdoor was dropped. Nobody else can check that claim.
 - `timelock-public-parameters.sha256`: SHA-256 of the full blob, in `sha256sum` format.
 - `timelock-public-parameters.sha3-256`: SHA3-256 of the full blob. This is the value a node puts in
   `TimelockDKGResult.public_parameters_hash` and the value governance pins with
