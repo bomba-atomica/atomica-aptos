@@ -134,7 +134,9 @@ jobs:
           echo "Memory before build:"
           free -h
 
-          cargo build --release --bin aptos-node
+          # `-p aptos-node` resolves features for aptos-node alone. A bare `--bin aptos-node`
+          # selects every default member, and the aptos CLI there turns on Move test natives.
+          cargo build --release -p aptos-node --bin aptos-node
 
           echo "Memory after build:"
           free -h
