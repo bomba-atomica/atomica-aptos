@@ -129,12 +129,12 @@ jobs:
 
       - name: Build aptos-node from source
         run: |
-          echo "Building aptos-node with testing features from CURRENT SOURCE CODE..."
+          echo "Building aptos-node (release, no testing feature) from CURRENT SOURCE CODE..."
           echo "This ensures we test the actual code changes, not pre-built binaries."
           echo "Memory before build:"
           free -h
 
-          cargo build --release --bin aptos-node --features testing
+          cargo build --release --bin aptos-node
 
           echo "Memory after build:"
           free -h
@@ -226,6 +226,14 @@ jobs:
 
       - name: Verify Docker image
         run: |
+          echo "Image labels:"
+          docker inspect --format '{{ json .Config.Labels }}' test-validator:latest
+          FEATURES=$(docker inspect --format '{{ index .Config.Labels "io.atomica.aptos-node.cargo-features" }}' test-validator:latest)
+          if [ "$FEATURES" != "default" ]; then
+            echo "::error::label io.atomica.aptos-node.cargo-features is '$FEATURES', expected 'default' (non-testing build)"
+            exit 1
+          fi
+
           echo "Testing aptos-node binary in container:"
           docker run --rm test-validator:latest --version
 

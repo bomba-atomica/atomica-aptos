@@ -10,12 +10,8 @@ use clap::Parser;
 aptos_jemalloc::setup_jemalloc!();
 
 fn main() {
-    // Atomica: the `testing` feature intentionally includes Move test natives.
-    #[cfg(not(feature = "testing"))]
-    {
-        // Check that we are not including any Move test natives
-        aptos_vm::natives::assert_no_test_natives(ERROR_MSG_BAD_FEATURE_FLAGS);
-    }
+    // Check that we are not including any Move test natives
+    aptos_vm::natives::assert_no_test_natives(ERROR_MSG_BAD_FEATURE_FLAGS);
 
     // Start the node
     AptosNodeArgs::parse().run()

@@ -4,9 +4,8 @@
 #![allow(unexpected_cfgs)]
 #![forbid(unsafe_code)]
 
-// Atomica: the `testing` feature is allowed (local networks and docker tests).
-#[cfg(feature = "fuzzing")]
-compile_error!("Fuzzing features shouldn't be compiled for production aptos-node");
+#[cfg(any(feature = "testing", feature = "fuzzing"))]
+compile_error!("Testing features shouldn't be compiled for production aptos-node");
 
 mod consensus;
 mod logger;

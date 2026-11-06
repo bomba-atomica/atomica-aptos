@@ -114,12 +114,14 @@ jobs:
 
       - name: Build aptos-node
         run: |
-          echo "Building aptos-node with testing features..."
+          # Release build: no `testing` feature. aptos-node refuses to compile with it
+          # (compile_error in aptos-node/src/lib.rs) and asserts no Move test natives at startup.
+          echo "Building aptos-node (release, no testing feature)..."
           echo "Memory before build:"
           free -h
 
           # Build with optimized settings for CI
-          cargo build --release --bin aptos-node --features testing
+          cargo build --release --bin aptos-node
 
           echo "Memory after build:"
           free -h
@@ -212,8 +214,10 @@ jobs:
           path: artifacts/
           retention-days: 90
 
+      # Only dev-atomica publishes a release. A workflow_dispatch on another branch
+      # builds and uploads the workflow artifact only.
       - name: Create GitHub Release
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/dev-atomica'
         uses: softprops/action-gh-release@v2.2.1
         with:
           tag_name: binary-${{ steps.git-commit.outputs.sha }}
