@@ -16,6 +16,8 @@ on:
         default: false
 
 env:
+  # Release plumbing: builds and publishes the validator image, runs no tests.
+  CI_CLASS: ignore
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/validator
 
@@ -37,14 +39,16 @@ jobs:
         id: release-info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+          if [ -n "$INPUT_TAG" ]; then
             # Manual workflow_dispatch with explicit release tag
-            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+            RELEASE_TAG="$INPUT_TAG"
             echo "Using manual release tag: $RELEASE_TAG"
           elif [ "${{ github.event_name }}" = "release" ]; then
             # Triggered by release event
-            RELEASE_TAG="${{ github.event.release.tag_name }}"
+            RELEASE_TAG="$EVENT_TAG"
             echo "Using release event tag: $RELEASE_TAG"
           else
             # Workflow dispatch without tag - fetch latest
@@ -67,10 +71,42 @@ jobs:
           # Extract git SHA from tag (remove 'binary-' prefix)
           GIT_SHA="${RELEASE_TAG#binary-}"
 
+          # Resolve the binary's full commit. The image revision label must name it,
+          # not the commit this workflow runs from.
+          GIT_SHA_FULL=$(git rev-parse --verify --quiet "${GIT_SHA}^{commit}" || true)
+          if [ -z "$GIT_SHA_FULL" ]; then
+            echo "Error: binary commit $GIT_SHA does not resolve to one commit in this repository"
+            exit 1
+          fi
+
+          # Binaries before the first release build without the `testing` feature (7153ddc5cd)
+          # carry Move test natives, but the Dockerfile labels the image test-natives=false.
+          FIRST_RELEASE_BUILD=7153ddc5cdba1d7aa357bfe8cb285fdcbe629179
+          if ! git merge-base --is-ancestor "$FIRST_RELEASE_BUILD" "$GIT_SHA_FULL"; then
+            echo "Error: $RELEASE_TAG was built before $FIRST_RELEASE_BUILD and may contain Move test natives"
+            echo "Cut a new binary release from dev-atomica and build the image from that."
+            exit 1
+          fi
+
+          # Tag `latest` only for a full release. On workflow_dispatch there is no release
+          # payload, so read the flag from the release itself.
+          if [ "${{ github.event_name }}" = "release" ]; then
+            PRERELEASE="${{ github.event.release.prerelease }}"
+          else
+            PRERELEASE=$(gh api "repos/${{ github.repository }}/releases/tags/${RELEASE_TAG}" --jq .prerelease)
+          fi
+          if [ "$PRERELEASE" != "true" ] && [ "$PRERELEASE" != "false" ]; then
+            echo "Error: could not determine whether $RELEASE_TAG is a pre-release (got '$PRERELEASE')"
+            exit 1
+          fi
+
           echo "tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
           echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
+          echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
+          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
           echo "Release tag: $RELEASE_TAG"
-          echo "Git SHA: $GIT_SHA"
+          echo "Git SHA: $GIT_SHA (full: $GIT_SHA_FULL)"
+          echo "Pre-release: $PRERELEASE"
 
       - name: Get Dockerfile hash
         id: dockerfile-hash
@@ -179,7 +215,10 @@ jobs:
             type=raw,value=${{ steps.release-info.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}
             type=raw,value=${{ steps.release-info.outputs.sha }}
             type=raw,value=${{ steps.release-info.outputs.tag }}
-            type=raw,value=latest,enable=${{ github.event.release.prerelease == false }}
+            type=raw,value=latest,enable=${{ steps.release-info.outputs.prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.release-info.outputs.sha_full }}
+            org.opencontainers.image.version=${{ steps.release-info.outputs.tag }}
 
       - name: Check if image exists
         id: check-image
@@ -242,3 +281,35 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/aptos-node "$IMAGE" --version
           echo "Testing aptos CLI binary:"
           docker run --rm --entrypoint /usr/local/bin/aptos "$IMAGE" --version
+
+      - name: Verify image revision label and latest tag
+        # Runs whether or not this run built the image, so a reused image is checked too.
+        env:
+          EXPECTED_REVISION: ${{ steps.release-info.outputs.sha_full }}
+          PRERELEASE: ${{ steps.release-info.outputs.prerelease }}
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release-info.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
+          docker pull "$IMAGE"
+          REVISION=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE")
+          echo "Revision label: $REVISION"
+          if [ "$REVISION" != "$EXPECTED_REVISION" ]; then
+            echo "Error: revision label is '$REVISION', expected the binary commit $EXPECTED_REVISION"
+            echo "If this image was built before the label fix, rerun with force_rebuild=true."
+            exit 1
+          fi
+
+          if [ "$PRERELEASE" = "true" ]; then
+            IMAGE_DIGEST=$(docker buildx imagetools inspect "$IMAGE" --format '{{ json .Manifest }}' | jq -r .digest)
+            LATEST_DIGEST=$(docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" \
+              --format '{{ json .Manifest }}' 2>/dev/null | jq -r .digest || true)
+            echo "Image digest: $IMAGE_DIGEST"
+            echo "latest digest: ${LATEST_DIGEST:-<none>}"
+            if [ -z "$IMAGE_DIGEST" ] || [ "$IMAGE_DIGEST" = "null" ]; then
+              echo "Error: could not read the image digest"
+              exit 1
+            fi
+            if [ "$LATEST_DIGEST" = "$IMAGE_DIGEST" ]; then
+              echo "Error: latest points at this pre-release image"
+              exit 1
+            fi
+          fi

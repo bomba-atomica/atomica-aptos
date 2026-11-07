@@ -17,6 +17,8 @@ on:
         default: "HEAD"
 
 env:
+  # Release plumbing: builds and publishes binaries, runs no tests.
+  CI_CLASS: ignore
   RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -43,18 +45,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check out the requested ref
+        if: github.event.inputs.git_ref != '' && github.event.inputs.git_ref != 'HEAD'
+        env:
+          GIT_REF: ${{ github.event.inputs.git_ref }}
+        run: |
+          # The release is named after this commit, so build exactly this commit.
+          git checkout --detach "$GIT_REF^{commit}"
+          # Only dev-atomica publishes releases. Do not publish a commit that is not on it.
+          if [ "${{ github.ref }}" = "refs/heads/dev-atomica" ] && \
+             ! git merge-base --is-ancestor HEAD origin/dev-atomica; then
+            echo "Error: $GIT_REF is not on dev-atomica, refusing to publish a release for it"
+            exit 1
+          fi
+
       - name: Get git commit
         id: git-commit
         run: |
-          if [ -n "${{ github.event.inputs.git_ref }}" ]; then
-            echo "Using input ref: ${{ github.event.inputs.git_ref }}"
-            GIT_SHA=$(git rev-parse --short "${{ github.event.inputs.git_ref }}" || true)
-            GIT_SHA_FULL=$(git rev-parse "${{ github.event.inputs.git_ref }}" || true)
-          else
-            echo "Using HEAD"
-            GIT_SHA=$(git rev-parse --short HEAD || true)
-            GIT_SHA_FULL=$(git rev-parse HEAD || true)
-          fi
+          GIT_SHA=$(git rev-parse --short HEAD || true)
+          GIT_SHA_FULL=$(git rev-parse HEAD || true)
 
           if [ -z "$GIT_SHA" ]; then
             echo "Error: Failed to get git SHA"
@@ -63,6 +72,7 @@ jobs:
 
           echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
           echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
+          echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "Git commit: $GIT_SHA (full: $GIT_SHA_FULL)"
 
       - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
@@ -223,6 +233,7 @@ jobs:
         uses: softprops/action-gh-release@v2.2.1
         with:
           tag_name: binary-${{ steps.git-commit.outputs.sha }}
+          target_commitish: ${{ steps.git-commit.outputs.sha_full }}
           name: Aptos Binaries ${{ steps.git-commit.outputs.sha }}
           body: |
             Aptos binaries built from commit ${{ steps.git-commit.outputs.sha_full }}
@@ -230,7 +241,7 @@ jobs:
             **Build Information:**
             - Commit: ${{ steps.git-commit.outputs.sha_full }}
             - Branch: ${{ github.ref_name }}
-            - Built: ${{ github.event.repository.updated_at }}
+            - Built: ${{ steps.git-commit.outputs.built }}
 
             **Files:**
             - `aptos-${{ steps.git-commit.outputs.sha }}` - Aptos CLI binary
