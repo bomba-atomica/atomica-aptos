@@ -56,7 +56,8 @@ RUN mkdir -p /opt/aptos/framework
 COPY atomica/docker/binaries/framework-*.mrb /opt/aptos/framework/
 RUN mv /opt/aptos/framework/framework-*.mrb /opt/aptos/framework/head.mrb
 
-# Verify the binaries work
+# Verify the binaries work. aptos-node runs assert_no_test_natives before it parses its
+# arguments, so `--version` also fails on a node built with Move test natives.
 RUN /usr/local/bin/aptos-node --version && \
     /usr/local/bin/aptos --version && \
     /usr/local/bin/aptos-faucet-service --help
@@ -82,6 +83,10 @@ RUN mkdir -p /opt/aptos/var /opt/aptos/data /opt/aptos/etc && \
     chown -R aptos:aptos /opt/aptos
 
 # Add build metadata
+# The node is the release build: no `testing` cargo feature. aptos-node refuses to compile
+# with it (compile_error in aptos-node/src/lib.rs), and the check above rejects test natives.
+LABEL io.atomica.aptos-node.cargo-features="default" \
+      io.atomica.aptos-node.test-natives="false"
 ARG BUILD_DATE
 ENV BUILD_DATE=${BUILD_DATE}
 ENV GIT_SHA=${GIT_SHA}
