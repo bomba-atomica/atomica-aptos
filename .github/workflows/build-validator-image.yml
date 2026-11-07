@@ -16,6 +16,8 @@ on:
         default: false
 
 env:
+  # Release plumbing: builds and publishes the validator image, runs no tests.
+  CI_CLASS: ignore
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}/validator
 
@@ -37,14 +39,16 @@ jobs:
         id: release-info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ github.event.inputs.release_tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+          if [ -n "$INPUT_TAG" ]; then
             # Manual workflow_dispatch with explicit release tag
-            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+            RELEASE_TAG="$INPUT_TAG"
             echo "Using manual release tag: $RELEASE_TAG"
           elif [ "${{ github.event_name }}" = "release" ]; then
             # Triggered by release event
-            RELEASE_TAG="${{ github.event.release.tag_name }}"
+            RELEASE_TAG="$EVENT_TAG"
             echo "Using release event tag: $RELEASE_TAG"
           else
             # Workflow dispatch without tag - fetch latest
@@ -233,7 +237,6 @@ jobs:
           fi
 
       - name: Build and push Docker image
-        id: build
         if: steps.check-image.outputs.exists == 'false'
         uses: docker/build-push-action@v5.4.0
         with:
@@ -280,11 +283,10 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/aptos "$IMAGE" --version
 
       - name: Verify image revision label and latest tag
-        if: steps.check-image.outputs.exists == 'false'
+        # Runs whether or not this run built the image, so a reused image is checked too.
         env:
           EXPECTED_REVISION: ${{ steps.release-info.outputs.sha_full }}
           PRERELEASE: ${{ steps.release-info.outputs.prerelease }}
-          PUSHED_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release-info.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
           docker pull "$IMAGE"
@@ -292,15 +294,21 @@ jobs:
           echo "Revision label: $REVISION"
           if [ "$REVISION" != "$EXPECTED_REVISION" ]; then
             echo "Error: revision label is '$REVISION', expected the binary commit $EXPECTED_REVISION"
+            echo "If this image was built before the label fix, rerun with force_rebuild=true."
             exit 1
           fi
 
           if [ "$PRERELEASE" = "true" ]; then
+            IMAGE_DIGEST=$(docker buildx imagetools inspect "$IMAGE" --format '{{ json .Manifest }}' | jq -r .digest)
             LATEST_DIGEST=$(docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" \
               --format '{{ json .Manifest }}' 2>/dev/null | jq -r .digest || true)
-            echo "Pushed digest: $PUSHED_DIGEST"
+            echo "Image digest: $IMAGE_DIGEST"
             echo "latest digest: ${LATEST_DIGEST:-<none>}"
-            if [ -n "$PUSHED_DIGEST" ] && [ "$LATEST_DIGEST" = "$PUSHED_DIGEST" ]; then
+            if [ -z "$IMAGE_DIGEST" ] || [ "$IMAGE_DIGEST" = "null" ]; then
+              echo "Error: could not read the image digest"
+              exit 1
+            fi
+            if [ "$LATEST_DIGEST" = "$IMAGE_DIGEST" ]; then
               echo "Error: latest points at this pre-release image"
               exit 1
             fi

@@ -17,6 +17,8 @@ on:
         default: "HEAD"
 
 env:
+  # Release plumbing: builds and publishes binaries, runs no tests.
+  CI_CLASS: ignore
   RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -231,6 +233,7 @@ jobs:
         uses: softprops/action-gh-release@v2.2.1
         with:
           tag_name: binary-${{ steps.git-commit.outputs.sha }}
+          target_commitish: ${{ steps.git-commit.outputs.sha_full }}
           name: Aptos Binaries ${{ steps.git-commit.outputs.sha }}
           body: |
             Aptos binaries built from commit ${{ steps.git-commit.outputs.sha_full }}
