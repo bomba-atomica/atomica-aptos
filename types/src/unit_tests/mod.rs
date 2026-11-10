@@ -2,6 +2,7 @@
 // Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 mod access_path_test;
+mod atomica_outcome_proof_vectors_test;
 mod block_metadata_test;
 mod code_debug_fmt_test;
 mod contract_event_test;
