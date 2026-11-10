@@ -41,7 +41,7 @@ async fn trusted_epoch_state(base: &str, waypoint: &Waypoint, epoch: u64) -> Epo
     let (status, resp) = get(
         base,
         &format!(
-            "v1/atomica/epoch_change_proof?start_epoch=0&end_epoch={}",
+            "atomica/epoch_change_proof?start_epoch=0&end_epoch={}",
             epoch
         ),
     )
@@ -78,10 +78,11 @@ async fn test_outcome_proofs_across_epoch_change() {
         .waypoint
         .genesis_waypoint();
     let mut info = swarm.aptos_public_info();
+    // The forge REST URL already ends in `/v1`.
     let base = info.url().to_string();
 
     // The node serves the waypoint every validator was configured with.
-    let (status, resp) = get(&base, "v1/atomica/genesis_waypoint").await;
+    let (status, resp) = get(&base, "atomica/genesis_waypoint").await;
     assert_eq!(status, reqwest::StatusCode::OK, "{}", resp);
     let waypoint = Waypoint::from_str(resp["waypoint"].as_str().unwrap()).unwrap();
     assert_eq!(waypoint, config_waypoint);
@@ -117,11 +118,8 @@ async fn test_outcome_proofs_across_epoch_change() {
 
     let mut verified = 0;
     for index in 0u64.. {
-        let (status, resp) = get(
-            &base,
-            &format!("v1/atomica/event_proof/{}/{}", version, index),
-        )
-        .await;
+        let (status, resp) =
+            get(&base, &format!("atomica/event_proof/{}/{}", version, index)).await;
         if status == reqwest::StatusCode::BAD_REQUEST {
             break;
         }
@@ -158,6 +156,6 @@ async fn test_outcome_proofs_across_epoch_change() {
     );
 
     // A version past the ledger is not found.
-    let (status, _) = get(&base, "v1/atomica/event_proof/18446744073709551615/0").await;
+    let (status, _) = get(&base, "atomica/event_proof/18446744073709551615/0").await;
     assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
 }
