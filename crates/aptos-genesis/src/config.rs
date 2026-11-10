@@ -104,6 +104,9 @@ pub struct Layout {
     /// DKG and validator transactions on. Default `false`.
     #[serde(default)]
     pub timelock_dkg_enabled: bool,
+    /// Turns Ethereum header attestation on at genesis for this EIP-155 chain id. Default off.
+    #[serde(default)]
+    pub eth_chain_id: Option<u64>,
 }
 
 impl Layout {
@@ -150,6 +153,7 @@ impl Default for Layout {
             chunky_dkg_config_override: None,
             initial_features_override: None,
             timelock_dkg_enabled: false,
+            eth_chain_id: None,
         }
     }
 }

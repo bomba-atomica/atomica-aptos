@@ -25,6 +25,7 @@ mod enum_upgrade_fv;
 mod enum_variant_count;
 mod enum_variant_tag_serialization;
 mod error_map;
+mod eth_header;
 mod fee_payer;
 mod friends;
 mod function_caches;

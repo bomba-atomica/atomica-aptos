@@ -1528,6 +1528,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "aptos-eth-header-consensus"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aptos-bounded-executor",
+ "aptos-channels",
+ "aptos-config",
+ "aptos-consensus-types",
+ "aptos-crypto",
+ "aptos-enum-conversion-derive",
+ "aptos-event-notifications",
+ "aptos-infallible",
+ "aptos-logger",
+ "aptos-metrics-core",
+ "aptos-network",
+ "aptos-reliable-broadcast",
+ "aptos-runtimes",
+ "aptos-safety-rules",
+ "aptos-time-service",
+ "aptos-types",
+ "aptos-validator-transaction-pool",
+ "async-trait",
+ "bytes",
+ "futures",
+ "futures-channel",
+ "futures-util",
+ "hex",
+ "move-core-types",
+ "once_cell",
+ "reqwest 0.11.23",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-retry",
+]
+
+[[package]]
 name = "aptos-event-notifications"
 version = "0.1.0"
 dependencies = [
@@ -3644,6 +3681,7 @@ dependencies = [
  "aptos-db",
  "aptos-db-indexer",
  "aptos-dkg-runtime",
+ "aptos-eth-header-consensus",
  "aptos-event-notifications",
  "aptos-executor",
  "aptos-framework",

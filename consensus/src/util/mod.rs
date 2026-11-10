@@ -27,6 +27,9 @@ pub fn is_vtxn_expected(
         ValidatorTransaction::TimelockShare(_) => chunky_dkg_config.chunky_dkg_enabled(),
         // The second session runs beside the mempool session, so it needs chunky DKG enabled too.
         ValidatorTransaction::TimelockDKGResult(_) => chunky_dkg_config.chunky_dkg_enabled(),
+        // Admitted whenever validator transactions are on. The VM discards the certificate while
+        // `EthereumHeaderConfig` is absent, and checks the epoch, chain id and quorum signature.
+        ValidatorTransaction::ObservedEthHeader(_) => true,
     }
 }
 

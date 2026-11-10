@@ -75,6 +75,7 @@ members = [
     "crates/aptos-dkg",
     "crates/aptos-drop-helper",
     "crates/aptos-enum-conversion-derive",
+    "crates/aptos-eth-header-consensus",
     "crates/aptos-faucet/cli",
     "crates/aptos-faucet/core",
     "crates/aptos-faucet/metrics-server",
@@ -352,6 +353,7 @@ aptos-dkg = { path = "crates/aptos-dkg" }
 aptos-dkg-runtime = { path = "dkg" }
 aptos-drop-helper = { path = "crates/aptos-drop-helper" }
 aptos-enum-conversion-derive = { path = "crates/aptos-enum-conversion-derive" }
+aptos-eth-header-consensus = { path = "crates/aptos-eth-header-consensus" }
 aptos-event-notifications = { path = "state-sync/inter-component/event-notifications" }
 aptos-executor = { path = "execution/executor" }
 aptos-executor-service = { path = "execution/executor-service" }

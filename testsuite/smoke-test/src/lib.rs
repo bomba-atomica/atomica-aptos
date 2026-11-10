@@ -22,6 +22,8 @@ mod consensus_observer;
 #[cfg(test)]
 mod decryption;
 #[cfg(test)]
+mod eth_header_e2e;
+#[cfg(test)]
 mod execution;
 #[cfg(test)]
 mod full_nodes;

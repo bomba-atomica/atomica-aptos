@@ -817,6 +817,7 @@ pub enum ValidatorTransaction {
     ChunkyDKGResult(ChunkyDKGResultTransaction),
     TimelockShare(TimelockShareTransaction),
     TimelockDKGResult(TimelockDKGResultTransaction),
+    ObservedEthHeader(EthHeaderTransaction),
 }
 
 impl ValidatorTransaction {
@@ -831,6 +832,9 @@ impl ValidatorTransaction {
             ValidatorTransaction::TimelockDKGResult(_) => {
                 "validator_transaction__timelock_dkg_result"
             },
+            ValidatorTransaction::ObservedEthHeader(_) => {
+                "validator_transaction__observed_eth_header"
+            },
         }
     }
 
@@ -841,6 +845,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::ChunkyDKGResult(t) => &t.info,
             ValidatorTransaction::TimelockShare(t) => &t.info,
             ValidatorTransaction::TimelockDKGResult(t) => &t.info,
+            ValidatorTransaction::ObservedEthHeader(t) => &t.info,
         }
     }
 
@@ -851,6 +856,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::ChunkyDKGResult(t) => &mut t.info,
             ValidatorTransaction::TimelockShare(t) => &mut t.info,
             ValidatorTransaction::TimelockDKGResult(t) => &mut t.info,
+            ValidatorTransaction::ObservedEthHeader(t) => &mut t.info,
         }
     }
 
@@ -861,6 +867,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::ChunkyDKGResult(t) => t.timestamp,
             ValidatorTransaction::TimelockShare(t) => t.timestamp,
             ValidatorTransaction::TimelockDKGResult(t) => t.timestamp,
+            ValidatorTransaction::ObservedEthHeader(t) => t.timestamp,
         }
     }
 
@@ -871,6 +878,7 @@ impl ValidatorTransaction {
             ValidatorTransaction::ChunkyDKGResult(t) => &t.events,
             ValidatorTransaction::TimelockShare(t) => &t.events,
             ValidatorTransaction::TimelockDKGResult(t) => &t.events,
+            ValidatorTransaction::ObservedEthHeader(t) => &t.events,
         }
     }
 }
@@ -942,6 +950,20 @@ impl
                     public_parameters_hash: HexEncodedBytes::from(
                         output.public_parameters_hash.to_vec(),
                     ),
+                })
+            },
+            aptos_types::validator_txn::ValidatorTransaction::ObservedEthHeader(certified) => {
+                let observation = certified.observation;
+                Self::ObservedEthHeader(EthHeaderTransaction {
+                    info,
+                    events,
+                    timestamp: U64::from(timestamp),
+                    epoch: observation.epoch.into(),
+                    eth_chain_id: observation.eth_chain_id.into(),
+                    block_number: observation.block_number.into(),
+                    block_hash: HexEncodedBytes::from(observation.block_hash.to_vec()),
+                    state_root: HexEncodedBytes::from(observation.state_root.to_vec()),
+                    multi_sig: certified.multi_sig.into(),
                 })
             },
         }
@@ -1064,6 +1086,22 @@ pub struct TimelockShareTransaction {
     pub timelock_id: U64,
     pub author: Address,
     pub shares: Vec<HexEncodedBytes>,
+}
+
+/// API form of `aptos_types::eth_header::QuorumCertifiedEthHeader`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct EthHeaderTransaction {
+    #[serde(flatten)]
+    #[oai(flatten)]
+    pub info: TransactionInfo,
+    pub events: Vec<Event>,
+    pub timestamp: U64,
+    pub epoch: U64,
+    pub eth_chain_id: U64,
+    pub block_number: U64,
+    pub block_hash: HexEncodedBytes,
+    pub state_root: HexEncodedBytes,
+    pub multi_sig: ExportedAggregateSignature,
 }
 
 /// API form of `aptos_types::dkg::timelock_dkg::CertifiedTimelockDKGOutput`.

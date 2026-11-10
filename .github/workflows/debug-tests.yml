@@ -136,6 +136,13 @@ jobs:
         run: .github/scripts/run-tests-guarded.sh timelock_reveal_live 1 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_reveal_on_live_swarm -- --nocapture --test-threads=1
         timeout-minutes: 60
 
+      # Ethereum header attestation (atomica issue 196): 4 validators observe a stub Ethereum RPC and
+      # certify its header on chain. Minimum 1 so it must execute.
+      - name: Run Ethereum header attestation on a live swarm
+        if: always()
+        run: .github/scripts/run-tests-guarded.sh eth_header_live 1 -- cargo test --release -p smoke-test --lib eth_header_e2e::certified_header_on_live_swarm -- --nocapture --test-threads=1
+        timeout-minutes: 60
+
       # Swarm logs are kept when a test panics. Print the DKG and error lines
       # so a failure can be diagnosed from the job log.
       - name: Print swarm node log excerpts
@@ -145,6 +152,6 @@ jobs:
             [ -d "$d" ] || continue
             for f in $(find "$d" -name log -type f | sort | head -8); do
               echo "=== $f ($(wc -l < "$f") lines)"
-              grep -iE "dkg|timelock|ibe|chunky|ERROR|panic" "$f" | tail -25 | cut -c1-400
+              grep -iE "dkg|timelock|ibe|chunky|ethereum|eth_header|ERROR|panic" "$f" | tail -25 | cut -c1-400
             done
           done

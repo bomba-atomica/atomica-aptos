@@ -10,8 +10,8 @@ use crate::{
         node_startup_config::NodeStartupConfig, persistable_config::PersistableConfig,
         transaction_filters_config::TransactionFiltersConfig,
         transaction_tracing_config::TransactionTracingConfig, utils::RootPath, AdminServiceConfig,
-        ApiConfig, BaseConfig, ConsensusConfig, Error, ExecutionConfig, IndexerGrpcConfig,
-        InspectionServiceConfig, LoggerConfig, MempoolConfig, NetworkConfig,
+        ApiConfig, BaseConfig, ConsensusConfig, Error, EthHeaderObserverConfig, ExecutionConfig,
+        IndexerGrpcConfig, InspectionServiceConfig, LoggerConfig, MempoolConfig, NetworkConfig,
         PeerMonitoringServiceConfig, SafetyRulesTestConfig, StateSyncConfig, StorageConfig,
         TelemetryServiceConfig,
     },
@@ -50,6 +50,8 @@ pub struct NodeConfig {
     pub dag_consensus: DagConsensusConfig,
     #[serde(default)]
     pub dkg: DKGConfig,
+    #[serde(default)]
+    pub eth_header_observer: EthHeaderObserverConfig,
     #[serde(default)]
     pub execution: ExecutionConfig,
     #[serde(default)]

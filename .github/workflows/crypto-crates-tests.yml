@@ -36,7 +36,8 @@ jobs:
   crypto-crates:
     name: Crypto Crates Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The Ethereum header steps build e2e-move-tests and the framework Move unit tests.
+    timeout-minutes: 150
 
     steps:
       - name: Checkout repository
@@ -104,3 +105,19 @@ jobs:
       - name: Run timelock DKG session tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh timelock-session 16 -- cargo test -p aptos-dkg-runtime --lib chunky::timelock_session_tests --verbose
+
+      # Ethereum header attestation (atomica issue 196): certifier and RPC parsing tests.
+      - name: Run Ethereum header consensus tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh eth-header-consensus 8 -- cargo test -p aptos-eth-header-consensus --verbose
+
+      # The ObservedEthHeader handler against the real framework: quorum accepted, and under-quorum,
+      # wrong-epoch, wrong-chain-id, forged-signature, conflicting-root and disabled certificates discarded.
+      - name: Run ObservedEthHeader VM tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh eth-header-vm 7 -- cargo test -p e2e-move-tests --lib eth_header::
+
+      # One Rust test that runs the ethereum_headers Move unit tests and fails below 8 Move tests.
+      - name: Run ethereum_headers Move unit tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh ethereum-headers-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ethereum_headers

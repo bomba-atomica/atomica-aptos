@@ -205,6 +205,7 @@ pub struct AptosHandle {
     _consensus_publisher_runtime: Option<Runtime>,
     _consensus_runtime: Option<Runtime>,
     _dkg_runtime: Option<Runtime>,
+    _eth_header_runtime: Option<Runtime>,
     _indexer_grpc_runtime: Option<Runtime>,
     _indexer_table_info_runtime: Option<Runtime>,
     _inspection_service_runtime: Runtime,
@@ -790,6 +791,8 @@ pub fn setup_environment_and_start_node(
         dkg_subscriptions,
         jwk_consensus_subscriptions,
     ) = state_sync::create_event_subscription_service(&node_config, &db_rw);
+    let eth_header_subscriptions =
+        consensus::create_eth_header_subscriptions(&node_config, &mut event_subscription_service);
 
     // Set up the networks and gather the application network handles
     let peers_and_metadata = network::create_peers_and_metadata(&node_config);
@@ -799,6 +802,7 @@ pub fn setup_environment_and_start_node(
         consensus_observer_network_interfaces,
         dkg_network_interfaces,
         jwk_consensus_network_interfaces,
+        eth_header_network_interfaces,
         mempool_network_interfaces,
         peer_monitoring_service_network_interfaces,
         storage_service_network_interfaces,
@@ -879,6 +883,14 @@ pub fn setup_environment_and_start_node(
         &vtxn_pool,
     );
 
+    // Create the Ethereum header consensus runtime (fork only)
+    let eth_header_runtime = consensus::create_eth_header_consensus_runtime(
+        &node_config,
+        eth_header_subscriptions,
+        eth_header_network_interfaces,
+        &vtxn_pool,
+    );
+
     // Wait until state sync has been initialized
     debug!("Waiting until state sync is initialized!");
     state_sync_runtime.block_until_initialized();
@@ -916,6 +928,7 @@ pub fn setup_environment_and_start_node(
         _consensus_publisher_runtime: consensus_publisher_runtime,
         _consensus_runtime: consensus_runtime,
         _dkg_runtime: dkg_runtime,
+        _eth_header_runtime: eth_header_runtime,
         _indexer_grpc_runtime: indexer_grpc_runtime,
         _indexer_table_info_runtime: indexer_table_info_runtime,
         _inspection_service_runtime: inspection_service_runtime,

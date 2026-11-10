@@ -11,6 +11,7 @@ use aptos_consensus::{
     network_interface::ConsensusMsg,
 };
 use aptos_dkg_runtime::DKGMessage;
+use aptos_eth_header_consensus::types::EthHeaderMsg;
 use aptos_event_notifications::EventSubscriptionService;
 use aptos_jwk_consensus::types::JWKConsensusMsg;
 use aptos_logger::debug;
@@ -98,6 +99,23 @@ pub fn jwk_consensus_network_configuration(node_config: &NodeConfig) -> NetworkA
         direct_send_protocols,
         rpc_protocols,
         aptos_channel::Config::new(node_config.jwk_consensus.max_network_channel_size)
+            .queue_style(QueueStyle::FIFO),
+    );
+    NetworkApplicationConfig::new(network_client_config, network_service_config)
+}
+
+/// Returns the network application config for Ethereum header consensus (fork only)
+pub fn eth_header_network_configuration(node_config: &NodeConfig) -> NetworkApplicationConfig {
+    let direct_send_protocols: Vec<ProtocolId> =
+        aptos_eth_header_consensus::network_interface::DIRECT_SEND.into();
+    let rpc_protocols: Vec<ProtocolId> = aptos_eth_header_consensus::network_interface::RPC.into();
+
+    let network_client_config =
+        NetworkClientConfig::new(direct_send_protocols.clone(), rpc_protocols.clone());
+    let network_service_config = NetworkServiceConfig::new(
+        direct_send_protocols,
+        rpc_protocols,
+        aptos_channel::Config::new(node_config.eth_header_observer.max_network_channel_size)
             .queue_style(QueueStyle::FIFO),
     );
     NetworkApplicationConfig::new(network_client_config, network_service_config)
@@ -225,6 +243,7 @@ pub fn setup_networks_and_get_interfaces(
     Option<ApplicationNetworkInterfaces<ConsensusObserverMessage>>,
     Option<ApplicationNetworkInterfaces<DKGMessage>>,
     Option<ApplicationNetworkInterfaces<JWKConsensusMsg>>,
+    Option<ApplicationNetworkInterfaces<EthHeaderMsg>>,
     ApplicationNetworkInterfaces<MempoolSyncMsg>,
     ApplicationNetworkInterfaces<PeerMonitoringServiceMessage>,
     ApplicationNetworkInterfaces<StorageServiceMessage>,
@@ -241,6 +260,7 @@ pub fn setup_networks_and_get_interfaces(
     > = None;
     let mut dkg_network_handle = None;
     let mut jwk_consensus_network_handle = None;
+    let mut eth_header_network_handle = None;
     let mut mempool_network_handles = vec![];
     let mut peer_monitoring_service_network_handles = vec![];
     let mut storage_service_network_handles = vec![];
@@ -304,6 +324,19 @@ pub fn setup_networks_and_get_interfaces(
                     true,
                 );
                 jwk_consensus_network_handle = Some(network_handle);
+            }
+
+            if eth_header_network_handle.is_some() {
+                panic!("There can be at most one validator network!");
+            } else {
+                let network_handle = register_client_and_service_with_network(
+                    &mut network_builder,
+                    network_id,
+                    &network_config,
+                    eth_header_network_configuration(node_config),
+                    true,
+                );
+                eth_header_network_handle = Some(network_handle);
             }
         }
 
@@ -377,6 +410,7 @@ pub fn setup_networks_and_get_interfaces(
         consensus_observer_interfaces,
         dkg_interfaces,
         jwk_consensus_interfaces,
+        eth_header_interfaces,
         mempool_interfaces,
         peer_monitoring_service_interfaces,
         storage_service_interfaces,
@@ -386,6 +420,7 @@ pub fn setup_networks_and_get_interfaces(
         consensus_observer_network_handles,
         dkg_network_handle,
         jwk_consensus_network_handle,
+        eth_header_network_handle,
         mempool_network_handles,
         peer_monitoring_service_network_handles,
         storage_service_network_handles,
@@ -398,6 +433,7 @@ pub fn setup_networks_and_get_interfaces(
         consensus_observer_interfaces,
         dkg_interfaces,
         jwk_consensus_interfaces,
+        eth_header_interfaces,
         mempool_interfaces,
         peer_monitoring_service_interfaces,
         storage_service_interfaces,
@@ -449,6 +485,7 @@ fn transform_network_handles_into_interfaces(
     >,
     dkg_network_handle: Option<ApplicationNetworkHandle<DKGMessage>>,
     jwk_consensus_network_handle: Option<ApplicationNetworkHandle<JWKConsensusMsg>>,
+    eth_header_network_handle: Option<ApplicationNetworkHandle<EthHeaderMsg>>,
     mempool_network_handles: Vec<ApplicationNetworkHandle<MempoolSyncMsg>>,
     peer_monitoring_service_network_handles: Vec<
         ApplicationNetworkHandle<PeerMonitoringServiceMessage>,
@@ -460,6 +497,7 @@ fn transform_network_handles_into_interfaces(
     Option<ApplicationNetworkInterfaces<ConsensusObserverMessage>>,
     Option<ApplicationNetworkInterfaces<DKGMessage>>,
     Option<ApplicationNetworkInterfaces<JWKConsensusMsg>>,
+    Option<ApplicationNetworkInterfaces<EthHeaderMsg>>,
     ApplicationNetworkInterfaces<MempoolSyncMsg>,
     ApplicationNetworkInterfaces<PeerMonitoringServiceMessage>,
     ApplicationNetworkInterfaces<StorageServiceMessage>,
@@ -497,6 +535,14 @@ fn transform_network_handles_into_interfaces(
         )
     });
 
+    let eth_header_interfaces = eth_header_network_handle.map(|handle| {
+        create_network_interfaces(
+            vec![handle],
+            eth_header_network_configuration(node_config),
+            peers_and_metadata.clone(),
+        )
+    });
+
     let mempool_interfaces = create_network_interfaces(
         mempool_network_handles,
         mempool_network_configuration(node_config),
@@ -520,6 +566,7 @@ fn transform_network_handles_into_interfaces(
         consensus_observer_interfaces,
         dkg_interfaces,
         jwk_consensus_interfaces,
+        eth_header_interfaces,
         mempool_interfaces,
         peer_monitoring_service_interfaces,
         storage_service_interfaces,
