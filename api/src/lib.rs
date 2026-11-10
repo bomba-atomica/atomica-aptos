@@ -5,6 +5,7 @@ use poem_openapi::Tags;
 
 mod accept_type;
 mod accounts;
+pub mod atomica_proofs;
 mod basic;
 mod bcs_payload;
 mod blocks;
@@ -33,6 +34,9 @@ mod view_function;
 pub enum ApiTags {
     /// Access to accounts, resources, and modules
     Accounts,
+
+    /// Atomica proofs that an external chain verifies against the validator quorum
+    Atomica,
     /// Access to blocks
     Blocks,
 

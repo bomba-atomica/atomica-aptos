@@ -16,7 +16,7 @@ use aptos_config::{
     },
     keys::ConfigKey,
 };
-use aptos_crypto::{ed25519::Ed25519PrivateKey, hash::HashValue, SigningKey};
+use aptos_crypto::{ed25519::Ed25519PrivateKey, hash::HashValue, PrivateKey, SigningKey};
 use aptos_db::AptosDB;
 use aptos_executor::{block_executor::BlockExecutor, db_bootstrapper};
 use aptos_executor_types::BlockExecutorTrait;
@@ -33,7 +33,7 @@ use aptos_sdk::{
     },
 };
 use aptos_storage_interface::{
-    state_store::state_view::db_state_view::DbStateView, DbReaderWriter,
+    state_store::state_view::db_state_view::DbStateView, DbReader, DbReaderWriter,
 };
 use aptos_temppath::TempPath;
 use aptos_types::{
@@ -50,6 +50,8 @@ use aptos_types::{
         signature_verified_transaction::into_signature_verified_block, AuxiliaryInfo,
         AuxiliaryInfoTrait, Transaction, TransactionPayload, TransactionStatus, Version,
     },
+    validator_signer::ValidatorSigner,
+    validator_verifier::ValidatorVerifier,
 };
 use aptos_vm::aptos_vm::AptosVMBlockExecutor;
 use aptos_vm_validator::vm_validator::PooledVMValidator;
@@ -148,6 +150,7 @@ pub fn new_test_context_inner(
     let (root_key, genesis, genesis_waypoint, validators) = builder.build(&mut rng).unwrap();
     let (validator_identity, _, _, _) = validators[0].get_key_objects(None).unwrap();
     let validator_owner = validator_identity.account_address.unwrap();
+    let consensus_key = validator_identity.consensus_private_key.unwrap();
     let (sender, recver) = channel::<(Instant, Version)>((Instant::now(), 0 as Version));
     let (db, db_rw) = if use_db_with_indexer {
         let mut aptos_db = AptosDB::new_for_test(&tmp_dir);
@@ -191,6 +194,7 @@ pub fn new_test_context_inner(
     )
     .unwrap();
     assert!(ret.is_some());
+    let consensus_signer = ConsensusSigner::from_genesis(&db, consensus_key);
 
     let mempool = MockSharedMempool::new_in_runtime(&db_rw, PooledVMValidator::new(db.clone(), 1));
 
@@ -219,7 +223,7 @@ pub fn new_test_context_inner(
             .expect("Failed to attach poem to runtime");
     let api_specific_config = ApiSpecificConfig::V1(poem_address);
 
-    TestContext::new(
+    let mut test_context = TestContext::new(
         context,
         rng,
         root_key,
@@ -231,7 +235,46 @@ pub fn new_test_context_inner(
         api_specific_config,
         use_txn_payload_v2_format,
         use_orderless_transactions,
-    )
+    );
+    test_context.consensus_signer = Some(consensus_signer);
+    test_context
+}
+
+/// Signs committed LedgerInfos with the genesis validator's consensus key, so that the stored
+/// LedgerInfoWithSignatures verify against the validator set like those of a live chain.
+#[derive(Clone)]
+struct ConsensusSigner {
+    signer: Arc<ValidatorSigner>,
+    verifier: Arc<ValidatorVerifier>,
+}
+
+impl ConsensusSigner {
+    fn from_genesis(db: &AptosDB, consensus_key: aptos_crypto::bls12381::PrivateKey) -> Self {
+        let genesis = db.get_epoch_ending_ledger_infos(0, 1).unwrap();
+        let epoch_state = genesis.ledger_info_with_sigs[0]
+            .ledger_info()
+            .next_epoch_state()
+            .cloned()
+            .unwrap();
+        let public_key = consensus_key.public_key();
+        let author = epoch_state
+            .verifier
+            .get_ordered_account_addresses_iter()
+            .find(|addr| epoch_state.verifier.get_public_key(addr) == Some(public_key.clone()))
+            .unwrap();
+        Self {
+            signer: Arc::new(ValidatorSigner::new(author, Arc::new(consensus_key))),
+            verifier: epoch_state.verifier.clone(),
+        }
+    }
+
+    fn sign(&self, ledger_info: &LedgerInfo) -> AggregateSignature {
+        let signature = self.signer.sign(ledger_info).unwrap();
+        let author = self.signer.author();
+        self.verifier
+            .aggregate_signatures(std::iter::once((&author, &signature)))
+            .unwrap()
+    }
 }
 
 #[derive(Clone)]
@@ -250,6 +293,7 @@ pub struct TestContext {
     pub api_specific_config: ApiSpecificConfig,
     pub use_txn_payload_v2_format: bool,
     pub use_orderless_transactions: bool,
+    consensus_signer: Option<ConsensusSigner>,
 }
 
 impl TestContext {
@@ -281,6 +325,7 @@ impl TestContext {
             api_specific_config,
             use_txn_payload_v2_format,
             use_orderless_transactions,
+            consensus_signer: None,
         }
     }
 
@@ -1441,7 +1486,11 @@ impl TestContext {
             ),
             HashValue::zero(),
         );
-        LedgerInfoWithSignatures::new(info, AggregateSignature::empty())
+        let signatures = self
+            .consensus_signer
+            .as_ref()
+            .map_or_else(AggregateSignature::empty, |signer| signer.sign(&info));
+        LedgerInfoWithSignatures::new(info, signatures)
     }
 
     pub fn get_expiration_time(&self) -> u64 {
