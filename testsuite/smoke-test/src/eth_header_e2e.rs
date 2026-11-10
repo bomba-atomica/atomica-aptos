@@ -10,7 +10,7 @@
 use crate::smoke_test_environment::SwarmBuilder;
 use anyhow::{anyhow, Result};
 use aptos_api_types::ViewRequest;
-use aptos_forge::{NodeExt, Swarm, SwarmExt};
+use aptos_forge::NodeExt;
 use aptos_logger::info;
 use aptos_rest_client::Client;
 use hyper::{

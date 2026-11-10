@@ -115,7 +115,7 @@ jobs:
       # wrong-epoch, wrong-chain-id, forged-signature, conflicting-root and disabled certificates discarded.
       - name: Run ObservedEthHeader VM tests
         if: ${{ !cancelled() }}
-        run: .github/scripts/run-tests-guarded.sh eth-header-vm 7 -- cargo test -p e2e-move-tests --lib eth_header::
+        run: '.github/scripts/run-tests-guarded.sh eth-header-vm 7 -- cargo test -p e2e-move-tests --lib eth_header::'
 
       # One Rust test that runs the ethereum_headers Move unit tests and fails below 8 Move tests.
       - name: Run ethereum_headers Move unit tests
