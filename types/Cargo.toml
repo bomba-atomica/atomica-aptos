@@ -96,6 +96,7 @@ triomphe = { workspace = true }
 ahash = { workspace = true }
 aptos-crypto = { workspace = true, features = ["fuzzing", "testing"] }
 aptos-proptest-helpers = { workspace = true }
+ark-bls12-381 = { workspace = true }
 async-trait = { workspace = true }
 ciborium = { workspace = true }
 claims = { workspace = true }
@@ -110,6 +111,7 @@ proptest = { workspace = true }
 proptest-derive = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
+sha2_0_10_6 = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
 

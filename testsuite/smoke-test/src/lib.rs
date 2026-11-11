@@ -10,6 +10,8 @@ mod aptos;
 #[cfg(test)]
 mod aptos_cli;
 #[cfg(test)]
+mod atomica_proofs;
+#[cfg(test)]
 mod chunky_dkg;
 #[cfg(test)]
 mod client;

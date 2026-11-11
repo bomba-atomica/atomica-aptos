@@ -136,6 +136,14 @@ jobs:
         run: .github/scripts/run-tests-guarded.sh timelock_reveal_live 1 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_reveal_on_live_swarm -- --nocapture --test-threads=1
         timeout-minutes: 60
 
+      # The Atomica proof endpoints on a 4-validator swarm (atomica issue 201): it forces a
+      # reconfiguration, then verifies the epoch change chain and an event proof fetched over REST
+      # from the genesis waypoint. Minimum 1 so it must execute.
+      - name: Run atomica proofs across an epoch change
+        if: always()
+        run: .github/scripts/run-tests-guarded.sh atomica_proofs 1 -- cargo test --release -p smoke-test --lib atomica_proofs::test_outcome_proofs_across_epoch_change -- --nocapture --test-threads=1
+        timeout-minutes: 60
+
       # Swarm logs are kept when a test panics. Print the DKG and error lines
       # so a failure can be diagnosed from the job log.
       - name: Print swarm node log excerpts

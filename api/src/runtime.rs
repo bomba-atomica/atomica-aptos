@@ -3,6 +3,7 @@
 
 use crate::{
     accounts::AccountsApi,
+    atomica_proofs::AtomicaProofsApi,
     basic::BasicApi,
     blocks::BlocksApi,
     check_size::PostSizeLimit,
@@ -112,6 +113,7 @@ pub fn get_api_service(
 ) -> OpenApiService<
     (
         AccountsApi,
+        AtomicaProofsApi,
         BasicApi,
         BlocksApi,
         EventsApi,
@@ -125,6 +127,9 @@ pub fn get_api_service(
     // These APIs get merged.
     let apis = (
         AccountsApi {
+            context: context.clone(),
+        },
+        AtomicaProofsApi {
             context: context.clone(),
         },
         BasicApi {
