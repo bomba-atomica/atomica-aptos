@@ -36,8 +36,9 @@ jobs:
   crypto-crates:
     name: Crypto Crates Tests
     runs-on: ubuntu-latest
-    # The Ethereum header steps build e2e-move-tests and the framework Move unit tests.
-    timeout-minutes: 150
+    # The aptos-api step builds most of the node (VM, storage, executor), and the Ethereum header
+    # steps build e2e-move-tests and the framework Move unit tests, so a cold cache needs this long.
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository
@@ -105,6 +106,19 @@ jobs:
       - name: Run timelock DKG session tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh timelock-session 16 -- cargo test -p aptos-dkg-runtime --lib chunky::timelock_session_tests --verbose
+
+      # The Aptos outcome proof golden vectors (atomica issue 201): every accept and reject case
+      # verified with production aptos-types code, and regeneration reproduces the checked-in bytes.
+      - name: Run Aptos outcome proof vector tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh atomica-outcome-proof-vectors 6 -- cargo test -p aptos-types --lib atomica_outcome_proof_vectors --verbose
+
+      # The Atomica proof endpoints (atomica issue 201) on an in-process test node: event proof,
+      # epoch change proof from the genesis waypoint, 404 for unknown and pruned versions, 400 for
+      # a bad event index.
+      - name: Run aptos-api atomica_proofs tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh aptos-api-atomica-proofs 3 -- cargo test -p aptos-api --lib atomica_proofs --verbose
 
       # Ethereum header attestation (atomica issue 196): certifier and RPC parsing tests.
       - name: Run Ethereum header consensus tests
