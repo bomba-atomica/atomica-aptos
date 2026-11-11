@@ -25,6 +25,20 @@ fn configure_extended_checks_for_unit_test() {
 }
 
 fn run_tests_for_pkg(path_to_pkg: impl Into<String>, use_latest_language: bool) {
+    run_tests_for_pkg_with_filter(
+        path_to_pkg,
+        use_latest_language,
+        std::env::var("TEST_FILTER").ok(),
+        &mut std::io::stdout(),
+    );
+}
+
+fn run_tests_for_pkg_with_filter(
+    path_to_pkg: impl Into<String>,
+    use_latest_language: bool,
+    filter: Option<String>,
+    output: &mut (impl std::io::Write + Send),
+) {
     let pkg_path = path_in_crate(path_to_pkg);
     let compiler_config = CompilerConfig {
         known_attributes: extended_checks::get_all_attribute_names().clone(),
@@ -46,7 +60,7 @@ fn run_tests_for_pkg(path_to_pkg: impl Into<String>, use_latest_language: bool) 
     }
 
     let utc = UnitTestingConfig {
-        filter: std::env::var("TEST_FILTER").ok(),
+        filter,
         report_statistics: matches!(std::env::var("REPORT_STATS"), Ok(s) if s.as_str() == "1"),
         ..Default::default()
     };
@@ -60,7 +74,7 @@ fn run_tests_for_pkg(path_to_pkg: impl Into<String>, use_latest_language: bool) 
         /* gas limit */ Some(100_000),
         /* cost_table */ None,
         /* compute_coverage */ false,
-        &mut std::io::stdout(),
+        output,
         true,
     );
     match ok {
@@ -123,4 +137,39 @@ fn move_trading_unit_tests() {
 #[test]
 fn move_experimental_unit_tests() {
     run_tests_for_pkg("aptos-experimental", true);
+}
+
+/// The Move unit tests of `ethereum_headers` and `ethereum_header_config` (fork only). Runs
+/// with `cargo test -p aptos-framework --test move_unit_test -- ethereum_headers` and fails when the filter
+/// matches no Move test, so the Rust test never passes with zero Move tests.
+#[test]
+fn ethereum_headers_move_unit_tests() {
+    /// Copies the Move test report to stdout as it is written, so a failure still shows it.
+    struct Tee(Vec<u8>);
+    impl std::io::Write for Tee {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            print!("{}", String::from_utf8_lossy(buf));
+            self.0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut tee = Tee(Vec::new());
+    run_tests_for_pkg_with_filter(
+        "aptos-framework",
+        false,
+        Some("ethereum_headers_tests".to_string()),
+        &mut tee,
+    );
+    let out = String::from_utf8(tee.0).unwrap();
+    let passed: u64 = out
+        .split("passed: ")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .and_then(|n| n.trim().parse().ok())
+        .expect("Move test summary line");
+    assert!(passed >= 8, "only {passed} ethereum_headers Move tests ran");
 }

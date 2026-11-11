@@ -23,8 +23,12 @@ use aptos_consensus::{
 };
 use aptos_consensus_notifications::ConsensusNotifier;
 use aptos_dkg_runtime::{start_dkg_runtime, DKGMessage};
+use aptos_eth_header_consensus::{
+    start_eth_header_consensus_runtime, types::EthHeaderMsg, HEADER_CERTIFIED_EVENT,
+};
 use aptos_event_notifications::{
-    DbBackedOnChainConfig, EventNotificationListener, ReconfigNotificationListener,
+    DbBackedOnChainConfig, EventNotificationListener, EventSubscriptionService,
+    ReconfigNotificationListener,
 };
 use aptos_jwk_consensus::{start_jwk_consensus_runtime, types::JWKConsensusMsg};
 use aptos_mempool::QuorumStoreRequest;
@@ -139,6 +143,52 @@ pub fn create_jwk_consensus_runtime(
         },
         _ => None,
     }
+}
+
+/// Subscriptions of Ethereum header consensus (fork only): reconfigurations and `HeaderCertified` events.
+/// Validators only.
+pub fn create_eth_header_subscriptions(
+    node_config: &NodeConfig,
+    event_subscription_service: &mut EventSubscriptionService,
+) -> Option<(
+    ReconfigNotificationListener<DbBackedOnChainConfig>,
+    EventNotificationListener,
+)> {
+    if !node_config.base.role.is_validator() {
+        return None;
+    }
+    let reconfig_events = event_subscription_service
+        .subscribe_to_reconfigurations()
+        .expect("Ethereum header consensus must subscribe to reconfigurations");
+    let certified_events = event_subscription_service
+        .subscribe_to_events(vec![], vec![HEADER_CERTIFIED_EVENT.to_string()])
+        .expect("Ethereum header consensus must subscribe to HeaderCertified events");
+    Some((reconfig_events, certified_events))
+}
+
+/// Creates and starts the Ethereum header consensus runtime on validators (fork only)
+pub fn create_eth_header_consensus_runtime(
+    node_config: &NodeConfig,
+    eth_header_subscriptions: Option<(
+        ReconfigNotificationListener<DbBackedOnChainConfig>,
+        EventNotificationListener,
+    )>,
+    eth_header_network_interfaces: Option<ApplicationNetworkInterfaces<EthHeaderMsg>>,
+    vtxn_pool: &VTxnPoolState,
+) -> Option<Runtime> {
+    let interfaces = eth_header_network_interfaces?;
+    let (reconfig_events, certified_events) = eth_header_subscriptions?;
+    let my_addr = node_config.validator_network.as_ref()?.peer_id();
+    Some(start_eth_header_consensus_runtime(
+        my_addr,
+        node_config.eth_header_observer.clone(),
+        &node_config.consensus.safety_rules,
+        interfaces.network_client,
+        interfaces.network_service_events,
+        reconfig_events,
+        certified_events,
+        vtxn_pool.clone(),
+    ))
 }
 
 /// Creates and starts the consensus observer and publisher (if enabled)

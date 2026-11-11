@@ -73,6 +73,15 @@ pub const GET_SHARE_VERIFICATION_KEYS_FUNCTION: &IdentStr =
 pub const REPORT_REJECTED_SHARE_FUNCTION: &IdentStr = ident_str!("report_rejected_share");
 pub const GET_MPK_FUNCTION: &IdentStr = ident_str!("get_mpk");
 
+pub static ETHEREUM_HEADERS_MODULE: Lazy<ModuleId> = Lazy::new(|| {
+    ModuleId::new(
+        account_config::CORE_CODE_ADDRESS,
+        ident_str!("ethereum_headers").to_owned(),
+    )
+});
+
+pub const STORE_CERTIFIED_HEADER: &IdentStr = ident_str!("store_certified_header");
+
 pub static JWKS_MODULE: Lazy<ModuleId> = Lazy::new(|| {
     ModuleId::new(
         account_config::CORE_CODE_ADDRESS,

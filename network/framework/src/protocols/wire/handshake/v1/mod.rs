@@ -73,6 +73,8 @@ pub enum ProtocolId {
     JWKConsensusRpcJson = 26,
     ConsensusObserver = 27,
     ConsensusObserverRpc = 28,
+    /// Fork only: Ethereum header attestation (`aptos-eth-header-consensus`).
+    EthHeaderConsensusRpcBcs = 29,
 }
 
 /// The encoding types for Protocols
@@ -115,6 +117,7 @@ impl ProtocolId {
             JWKConsensusRpcJson => "JWKConsensusRpcJson",
             ConsensusObserver => "ConsensusObserver",
             ConsensusObserverRpc => "ConsensusObserverRpc",
+            EthHeaderConsensusRpcBcs => "EthHeaderConsensusRpcBcs",
         }
     }
 
@@ -150,6 +153,7 @@ impl ProtocolId {
             ProtocolId::JWKConsensusRpcJson,
             ProtocolId::ConsensusObserver,
             ProtocolId::ConsensusObserverRpc,
+            ProtocolId::EthHeaderConsensusRpcBcs,
         ]
     }
 

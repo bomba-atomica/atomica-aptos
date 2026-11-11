@@ -450,6 +450,8 @@ pub struct GenesisConfiguration {
     pub initialize_decryption_at_genesis: bool,
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_dkg_enabled`.
     pub timelock_dkg_enabled: bool,
+    /// See `aptos_vm_genesis::GenesisConfiguration::eth_chain_id`.
+    pub eth_chain_id: Option<u64>,
     /// Chain id of the genesis. Defaults to the test chain (4).
     pub chain_id: ChainId,
 }
@@ -678,6 +680,7 @@ impl Builder {
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
             timelock_dkg_enabled: false,
+            eth_chain_id: None,
             chain_id: ChainId::test(),
         };
         if let Some(init_genesis_config) = &self.init_genesis_config {

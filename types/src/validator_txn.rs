@@ -8,6 +8,7 @@ use crate::{
         chunky_dkg::CertifiedChunkyDKGOutput, timelock_dkg::CertifiedTimelockDKGOutput,
         DKGTranscript,
     },
+    eth_header::QuorumCertifiedEthHeader,
     jwks,
     validator_verifier::ValidatorVerifier,
 };
@@ -27,6 +28,8 @@ pub enum ValidatorTransaction {
     TimelockShare(TimelockShare),
     /// Appended at tag 4: the certified result of the timelock chunky DKG session. Never reorder.
     TimelockDKGResult(CertifiedTimelockDKGOutput),
+    /// Appended at tag 5: an Ethereum header certified by 2/3+ of the voting power. Never reorder.
+    ObservedEthHeader(QuorumCertifiedEthHeader),
 }
 
 /// Upper bound on the number of shares in one `TimelockShare` (one per virtual player of the author).
@@ -98,6 +101,9 @@ impl ValidatorTransaction {
             ValidatorTransaction::TimelockDKGResult(_) => {
                 "validator_transaction__timelock_dkg_result"
             },
+            ValidatorTransaction::ObservedEthHeader(_) => {
+                "validator_transaction__observed_eth_header"
+            },
         }
     }
 
@@ -124,6 +130,9 @@ impl ValidatorTransaction {
                     .ok_or_else(|| anyhow::anyhow!("TimelockShare author is not a validator"))?;
                 Ok(())
             },
+            // The certificate is checked by the VM handler against the epoch, the configured Ethereum chain
+            // and the validator set of the chain state.
+            ValidatorTransaction::ObservedEthHeader(_) => Ok(()),
         }
     }
 }
@@ -145,6 +154,8 @@ pub enum Topic {
         epoch: u64,
         timelock_id: u64,
     },
+    /// The certified Ethereum header of this validator. A newer certificate replaces the pooled one.
+    ETH_HEADER,
 }
 
 #[cfg(test)]
@@ -192,6 +203,94 @@ mod tests {
         assert_eq!(bytes.len(), 50 + 3 * (1 + TIMELOCK_SHARE_LEN));
         assert_eq!(txn.size_in_bytes(), bytes.len());
         assert_eq!(txn.type_name(), "validator_transaction__timelock_share");
+    }
+
+    /// One fixed value of every variant, in tag order.
+    fn one_of_each() -> Vec<ValidatorTransaction> {
+        use crate::{
+            aggregate_signature::AggregateSignature,
+            dkg::{chunky_dkg::CertifiedAggregatedChunkySubtranscript, DKGTranscriptMetadata},
+            eth_header::EthHeaderObservation,
+            jwks::{ProviderJWKs, QuorumCertifiedUpdate},
+        };
+        use aptos_crypto::HashValue;
+        let subtranscript = || CertifiedAggregatedChunkySubtranscript {
+            metadata: DKGTranscriptMetadata {
+                epoch: 7,
+                author: AccountAddress::ZERO,
+            },
+            transcript_bytes: vec![1],
+            signature: AggregateSignature::empty(),
+        };
+        vec![
+            ValidatorTransaction::dummy(vec![1]),
+            ValidatorTransaction::ObservedJWKUpdate(QuorumCertifiedUpdate {
+                update: ProviderJWKs {
+                    issuer: b"iss".to_vec(),
+                    version: 1,
+                    jwks: vec![],
+                },
+                multi_sig: AggregateSignature::empty(),
+            }),
+            ValidatorTransaction::ChunkyDKGResult(CertifiedChunkyDKGOutput {
+                certified_transcript: subtranscript(),
+                encryption_key: vec![2],
+            }),
+            ValidatorTransaction::TimelockShare(TimelockShare {
+                epoch: 7,
+                timelock_id: 9,
+                author: AccountAddress::ZERO,
+                shares: vec![vec![5u8; 2]],
+            }),
+            ValidatorTransaction::TimelockDKGResult(CertifiedTimelockDKGOutput {
+                certified_transcript: subtranscript(),
+                mpk: vec![3],
+                public_parameters_hash: HashValue::zero(),
+            }),
+            ValidatorTransaction::ObservedEthHeader(QuorumCertifiedEthHeader {
+                observation: EthHeaderObservation {
+                    epoch: 7,
+                    eth_chain_id: 1,
+                    block_number: 2,
+                    block_hash: [3u8; 32],
+                    state_root: [4u8; 32],
+                },
+                multi_sig: AggregateSignature::empty(),
+            }),
+        ]
+    }
+
+    /// Golden BCS bytes of [`one_of_each`]. Tags 0-4 must never change: they are on chain already.
+    const GOLDEN: [&str; 6] = [
+        "00e70300000000000000000000000000000000000000000000000000000000000000000000000000000101",
+        "01036973730100000000000000000000",
+        "0207000000000000000000000000000000000000000000000000000000000000000000000000000000010100000102",
+        "0307000000000000000900000000000000000000000000000000000000000000000000000000000000000000000000000001020505",
+        "04070000000000000000000000000000000000000000000000000000000000000000000000000000000101000001030000000000000000000000000000000000000000000000000000000000000000",
+        "05070000000000000001000000000000000200000000000000030303030303030303030303030303030303030303030303030303030303030304040404040404040404040404040404040404040404040404040404040404040000",
+    ];
+
+    #[test]
+    fn validator_txn_tags_match_golden_bytes() {
+        for (tag, (txn, golden)) in one_of_each().iter().zip(GOLDEN).enumerate() {
+            let bytes = bcs::to_bytes(txn).unwrap();
+            assert_eq!(bytes[0] as usize, tag, "{}", txn.type_name());
+            assert_eq!(hex::encode(&bytes), golden, "{}", txn.type_name());
+            assert_eq!(
+                &bcs::from_bytes::<ValidatorTransaction>(&bytes).unwrap(),
+                txn
+            );
+        }
+    }
+
+    #[test]
+    fn observed_eth_header_is_tag_5() {
+        let txn = one_of_each().pop().unwrap();
+        assert_eq!(bcs::to_bytes(&txn).unwrap()[0], 5);
+        assert_eq!(
+            txn.type_name(),
+            "validator_transaction__observed_eth_header"
+        );
     }
 
     #[test]

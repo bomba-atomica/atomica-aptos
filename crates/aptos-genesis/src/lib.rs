@@ -85,6 +85,8 @@ pub struct GenesisInfo {
     pub initialize_decryption_at_genesis: bool,
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_dkg_enabled`.
     pub timelock_dkg_enabled: bool,
+    /// See `aptos_vm_genesis::GenesisConfiguration::eth_chain_id`.
+    pub eth_chain_id: Option<u64>,
 }
 
 impl GenesisInfo {
@@ -129,6 +131,7 @@ impl GenesisInfo {
             keyless_groth16_vk: genesis_config.keyless_groth16_vk.clone(),
             initialize_decryption_at_genesis: genesis_config.initialize_decryption_at_genesis,
             timelock_dkg_enabled: genesis_config.timelock_dkg_enabled,
+            eth_chain_id: genesis_config.eth_chain_id,
         })
     }
 
@@ -169,6 +172,7 @@ impl GenesisInfo {
                 keyless_groth16_vk: self.keyless_groth16_vk.clone(),
                 initialize_decryption_at_genesis: self.initialize_decryption_at_genesis,
                 timelock_dkg_enabled: self.timelock_dkg_enabled,
+                eth_chain_id: self.eth_chain_id,
             },
             &self.consensus_config,
             &self.execution_config,

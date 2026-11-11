@@ -16,6 +16,7 @@ pub mod dkg;
 pub mod epoch_change;
 pub mod epoch_state;
 pub mod error;
+pub mod eth_header;
 pub mod event;
 pub mod executable;
 pub mod fee_statement;

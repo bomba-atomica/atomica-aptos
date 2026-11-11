@@ -135,6 +135,10 @@ pub struct GenesisConfiguration {
     /// also needs the chunky DKG and validator transactions on. Default `false`: the timelock DKG
     /// starts off and only governance can turn it on.
     pub timelock_dkg_enabled: bool,
+    /// When set, genesis turns Ethereum header attestation on for this EIP-155 chain id
+    /// (`ethereum_header_config::set`). Default `None`: attestation starts off and only governance can
+    /// turn it on.
+    pub eth_chain_id: Option<u64>,
 }
 
 pub static GENESIS_KEYPAIR: Lazy<(Ed25519PrivateKey, Ed25519PublicKey)> = Lazy::new(|| {
@@ -373,6 +377,20 @@ pub fn encode_genesis_change_set(
     initialize_chunky_dkg(&mut session, &module_storage, &mut traversal_context);
     if genesis_config.timelock_dkg_enabled {
         enable_timelock_dkg(&mut session, &module_storage, &mut traversal_context);
+    }
+    if let Some(eth_chain_id) = genesis_config.eth_chain_id {
+        exec_function(
+            &mut session,
+            &module_storage,
+            &mut traversal_context,
+            "ethereum_header_config",
+            "set",
+            vec![],
+            serialize_values(&vec![
+                MoveValue::Signer(CORE_CODE_ADDRESS),
+                MoveValue::U64(eth_chain_id),
+            ]),
+        );
     }
     initialize_epoch_timeout_config(&mut session, &module_storage, &mut traversal_context);
     if genesis_config.initialize_decryption_at_genesis {
@@ -1539,6 +1557,7 @@ pub fn generate_test_genesis(
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
             timelock_dkg_enabled: false,
+            eth_chain_id: None,
         },
         &OnChainConsensusConfig::default_for_genesis(),
         &OnChainExecutionConfig::default_for_genesis(),
@@ -1594,6 +1613,7 @@ fn mainnet_genesis_config() -> GenesisConfiguration {
         keyless_groth16_vk: None,
         initialize_decryption_at_genesis: true,
         timelock_dkg_enabled: false,
+        eth_chain_id: None,
     }
 }
 

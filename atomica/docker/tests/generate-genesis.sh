@@ -33,6 +33,28 @@ case "$TIMELOCK_DKG_ENABLED" in
     *) echo "TIMELOCK_DKG_ENABLED must be true or false, got '$TIMELOCK_DKG_ENABLED'" >&2; exit 1 ;;
 esac
 
+# Set ETH_CHAIN_ID to an EIP-155 chain id to turn Ethereum header attestation on at genesis (layout
+# field eth_chain_id). Validators also need eth_header_observer enabled in their node config.
+ETH_CHAIN_ID="${ETH_CHAIN_ID:-}"
+case "$ETH_CHAIN_ID" in
+    ""|*[!0-9]*) [ -z "$ETH_CHAIN_ID" ] || { echo "ETH_CHAIN_ID must be a decimal chain id, got '$ETH_CHAIN_ID'" >&2; exit 1; } ;;
+esac
+# With ETH_CHAIN_ID set, every validator observes ETH_RPC_URL (required) at ETH_BLOCK_TAG (default
+# finalized; an anvil devnet without finality uses latest).
+ETH_CHAIN_ID_LINE=""
+ETH_OBSERVER_CONFIG=""
+if [ -n "$ETH_CHAIN_ID" ]; then
+    if [ -z "${ETH_RPC_URL:-}" ]; then
+        echo "ETH_RPC_URL is required when ETH_CHAIN_ID is set" >&2
+        exit 1
+    fi
+    ETH_CHAIN_ID_LINE="eth_chain_id: ${ETH_CHAIN_ID}"
+    ETH_OBSERVER_CONFIG="eth_header_observer:
+  enabled: true
+  rpc_url: \"${ETH_RPC_URL}\"
+  block_tag: \"${ETH_BLOCK_TAG:-finalized}\""
+fi
+
 WORKSPACE="${WORKSPACE:-/workspace}"
 cd "$WORKSPACE"
 
@@ -89,6 +111,7 @@ rewards_apy_percentage: 10
 voting_duration_secs: 43200
 voting_power_increase_limit: 20
 timelock_dkg_enabled: ${TIMELOCK_DKG_ENABLED}
+${ETH_CHAIN_ID_LINE}
 EOF
 
 # Step 4: Set validator configurations
@@ -228,6 +251,8 @@ storage:
     refresh_interval_versions: 100000
     delete_on_restart: true
     compute_root_hash: true
+
+${ETH_OBSERVER_CONFIG}
 EOF
 
     debug "Created config for $username"

@@ -154,6 +154,7 @@ impl MainnetGenesisInfo {
                 initialize_decryption_at_genesis: true,
                 // Mainnet genesis does not set up the DKG, so the timelock DKG stays off.
                 timelock_dkg_enabled: false,
+                eth_chain_id: None,
             },
         )
     }

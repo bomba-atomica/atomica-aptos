@@ -1109,6 +1109,10 @@ fn convert_validator_transaction(
                 // Not indexed, like TimelockShare. The transaction is kept with its events.
                 None
             },
+            ApiValidatorTransactionEnum::ObservedEthHeader(_) => {
+                // Not indexed, like TimelockShare. The transaction is kept with its events.
+                None
+            },
             ApiValidatorTransactionEnum::TimelockShare(_) => {
                 // The indexer protobuf has no timelock share type yet. The transaction is kept
                 // with its events, and the share payload is not indexed.

@@ -36,9 +36,9 @@ jobs:
   crypto-crates:
     name: Crypto Crates Tests
     runs-on: ubuntu-latest
-    # The aptos-api step builds most of the node (VM, storage, executor), so a cold cache needs
-    # more than the 60 minutes the crypto crates alone took.
-    timeout-minutes: 120
+    # The aptos-api step builds most of the node (VM, storage, executor), and the Ethereum header
+    # steps build e2e-move-tests and the framework Move unit tests, so a cold cache needs this long.
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository
@@ -119,3 +119,19 @@ jobs:
       - name: Run aptos-api atomica_proofs tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh aptos-api-atomica-proofs 3 -- cargo test -p aptos-api --lib atomica_proofs --verbose
+
+      # Ethereum header attestation (atomica issue 196): certifier and RPC parsing tests.
+      - name: Run Ethereum header consensus tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh eth-header-consensus 8 -- cargo test -p aptos-eth-header-consensus --verbose
+
+      # The ObservedEthHeader handler against the real framework: quorum accepted, and under-quorum,
+      # wrong-epoch, wrong-chain-id, forged-signature, conflicting-root and disabled certificates discarded.
+      - name: Run ObservedEthHeader VM tests
+        if: ${{ !cancelled() }}
+        run: '.github/scripts/run-tests-guarded.sh eth-header-vm 7 -- cargo test -p e2e-move-tests --lib eth_header::'
+
+      # One Rust test that runs the ethereum_headers Move unit tests and fails below 8 Move tests.
+      - name: Run ethereum_headers Move unit tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh ethereum-headers-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ethereum_headers

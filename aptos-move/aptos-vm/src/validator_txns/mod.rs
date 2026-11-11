@@ -46,6 +46,13 @@ impl AptosVM {
                 session_id,
                 output,
             ),
+            ValidatorTransaction::ObservedEthHeader(certified) => self.process_eth_header(
+                resolver,
+                module_storage,
+                log_context,
+                session_id,
+                certified,
+            ),
             ValidatorTransaction::TimelockShare(timelock_share) => self.process_timelock_share(
                 resolver,
                 module_storage,
@@ -59,6 +66,7 @@ impl AptosVM {
 
 mod chunky_dkg;
 mod dkg;
+mod eth_header;
 mod jwk;
 mod timelock;
 mod timelock_dkg;
