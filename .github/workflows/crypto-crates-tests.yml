@@ -91,6 +91,7 @@ jobs:
       - name: Run aptos-crypto tests
         run: .github/scripts/run-tests-guarded.sh aptos-crypto 10 -- cargo test -p aptos-crypto --verbose
 
+      # SCOUT(#230) TEST: the BCS mirror test of `TimelockInfoResource` (types/src/timelock.rs) runs in the step below and must pass unchanged.
       - name: Run aptos-types tests
         run: .github/scripts/run-tests-guarded.sh aptos-types 10 -- cargo test -p aptos-types --verbose
 
@@ -103,6 +104,7 @@ jobs:
 
       # The timelock DKG session and the TimelockDKGResult handler checks, including
       # the rule that execution reads chain state only (atomica issue 158).
+      # SCOUT(#223) EDIT: raise the guard minimum of the step below from 16 to 18 (two new session tests).
       - name: Run timelock DKG session tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh timelock-session 16 -- cargo test -p aptos-dkg-runtime --lib chunky::timelock_session_tests --verbose
@@ -135,3 +137,34 @@ jobs:
       - name: Run ethereum_headers Move unit tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh ethereum-headers-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ethereum_headers
+        #
+        # SCOUT(#223) ADD: guarded step for the vm-genesis tests. No workflow runs this crate today. Issue 231 needs the same step: add it once.
+        # - name: Run aptos-vm-genesis tests
+        #   if: ${{ !cancelled() }}
+        #   run: .github/scripts/run-tests-guarded.sh aptos-vm-genesis 1 -- cargo test -p aptos-vm-genesis
+        # SCOUT(#231) ADD: the aptos-vm-genesis step above also runs the epoch boundary check test.
+        #
+        # SCOUT(#225) ADD: guarded step for the ibe_config Move unit tests. Issues 226 and 230 need the same step: the first to merge adds it.
+        # - name: Run ibe_config Move unit tests
+        #   if: ${{ !cancelled() }}
+        #   run: .github/scripts/run-tests-guarded.sh ibe-config-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ibe_config
+        # SCOUT(#226) ADD: the ibe_config Move unit test step above (shared with issue 225).
+        # SCOUT(#230) ADD: the ibe_config Move unit test step above (shared with issue 225).
+        #
+        # SCOUT(#231) ADD: guarded step for the timelock_dkg Move unit tests.
+        # - name: Run timelock_dkg Move unit tests
+        #   if: ${{ !cancelled() }}
+        #   run: .github/scripts/run-tests-guarded.sh timelock-dkg-move 1 -- cargo test -p aptos-framework --test move_unit_test -- timelock_dkg
+        #
+        # SCOUT(#227) ADD: guarded steps for the ibe gas VM tests and the ibe Move unit tests. No workflow runs `ibe_gas::` today. A filter that ends in `::` must be quoted in YAML.
+        # - name: Run ibe gas VM tests
+        #   if: ${{ !cancelled() }}
+        #   run: '.github/scripts/run-tests-guarded.sh ibe-gas 3 -- cargo test -p e2e-move-tests --lib ibe_gas::'
+        # - name: Run ibe Move unit tests
+        #   if: ${{ !cancelled() }}
+        #   run: .github/scripts/run-tests-guarded.sh ibe-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ibe
+        #
+        # SCOUT(#229) ADD: guarded step for the TimelockShare VM tests, which run only in the non-required Timelock Tests workflow today.
+        # - name: Run TimelockShare VM tests
+        #   if: ${{ !cancelled() }}
+        #   run: '.github/scripts/run-tests-guarded.sh timelock-share-vm 9 -- cargo test --locked -p e2e-move-tests --lib timelock_share:: -- --test-threads=1'

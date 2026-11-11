@@ -242,3 +242,16 @@ pub fn decrypt_bid(
 pub fn verify_bid_ct(ct: &[u8], ad: &[u8]) -> Result<(), IbeError> {
     BidCiphertext::from_bytes(ct)?.verify(ad)
 }
+
+// SCOUT(#227) ADD: byte-level entry of the `decrypt_bid_internal` native: decode `dk` with `decode_g1`, check the 32-byte identity, parse `ct` with `BidCiphertext::from_bytes`, then call `decrypt_bid`.
+// SCOUT(#228) EDIT: the product auction reaches this function through `aptos_std::ibe::decrypt_bid` when it opens bids on chain.
+// Native entry: parse `dk`, `identity` and serialized `ct`, then open the bid against `ad`.
+// Scout stub: it returns `IbeError::DecryptionFailed` for every input. Nothing calls it.
+pub fn decrypt_bid_ct(
+    _dk: &[u8],
+    _identity: &[u8],
+    _ad: &[u8],
+    _ct: &[u8],
+) -> Result<Vec<u8>, IbeError> {
+    Err(IbeError::DecryptionFailed)
+}

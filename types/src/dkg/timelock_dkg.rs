@@ -178,6 +178,7 @@ impl TimelockDKGSessionState {
     }
 }
 
+// SCOUT(#231) EDIT: BCS mirror of `timelock_dkg::PendingTimelockConfig`. Keep `epoch_interval_us` and put the UTC boundaries in a new resource, so neither this layout nor `TimelockEpochConfig` moves.
 /// Reflection of Move type `0x1::timelock_dkg::PendingTimelockConfig`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PendingTimelockConfig {
@@ -215,6 +216,7 @@ impl OnChainConfig for TimelockDKGState {
     const TYPE_IDENTIFIER: &'static str = "TimelockDKGState";
 }
 
+// SCOUT(#223) DOC: the doc below says the hash is set by governance; genesis sets it too.
 /// Reflection of Move type `0x1::timelock_dkg::ExpectedPublicParametersHash`: the blob hash a
 /// `TimelockDKGResult` must carry, set by governance.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -699,6 +701,7 @@ pub fn check_claimed_mpk(
 // Acceptance of a certified result (the check of the `TimelockDKGResult` handler)
 // ---------------------------------------------------------------------------------------------
 
+// SCOUT(#223) EDIT: add `ParametersHashMissing`: no expected hash on chain and the chain id is not `ChainId::test()`. The only exhaustive match on this enum is in the VM handler.
 /// Why a certified timelock DKG result is refused. The transaction is discarded and nothing changes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResultRejection {
@@ -721,6 +724,7 @@ pub struct CheckedTimelockResult {
     pub subtranscript_hash: HashValue,
 }
 
+// SCOUT(#223) DOC: the doc below changes: `None` rejects the result on every chain except the test chain.
 /// All checks of a certified timelock DKG result against chain state. No VM, no I/O.
 ///
 /// Every argument comes from the transaction or from chain state, so every node gets the same answer.
@@ -765,6 +769,7 @@ pub fn check_timelock_dkg_result(
         .map_err(|e| ResultRejection::KeyDerivationFailed(e.to_string()))?;
     check_claimed_mpk(&derived, &output.mpk).map_err(|_| ResultRejection::ClaimedMpkMismatch)?;
 
+    // SCOUT(#223) EDIT: return `ParametersHashMissing` when `expected_params_hash` is `None` and `chain_id != ChainId::test()`. This check runs after the signature check, so a unit test on chain id 77 needs a certificate signed for chain 77, or the check moves to the top.
     if let Some(expected) = expected_params_hash
         && expected != output.public_parameters_hash.as_ref()
     {
@@ -783,6 +788,7 @@ pub fn check_timelock_dkg_result(
 // Node side: the timelock service of one epoch
 // ---------------------------------------------------------------------------------------------
 
+// SCOUT(#231) EDIT: BCS mirror of `ibe_config::TimelockEpochConfig`. A field the epoch alignment adds, drops or renames changes here in the same commit, or every node fails to read the config.
 /// Reflection of Move type `0x1::ibe_config::TimelockEpochConfig`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelockEpochConfigResource {

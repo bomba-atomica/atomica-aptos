@@ -29,7 +29,7 @@ Kept from `dev-atomica`:
 
 - The deadline registry in `aptos-move/framework/aptos-framework/sources/ibe_config.move` (`TimelockRegistry`, `TimelockInfo`, `register_timelock`, `submit_dk_shares`, `finalize_timelock_reveal`, `on_new_block`).
 - The timelock validator transaction (`ValidatorTransaction::TimelockShare` in `types/src/validator_txn.rs` lines 19 to 33, handler in `aptos-move/aptos-vm/src/validator_txns/timelock.rs`).
-- The Move API names in `ibe_config.move` and `aptos-stdlib/sources/cryptography/ibe.move`, and the `ibe::reconstruct_ibe_dk` native (`aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`).
+- The Move API names in `ibe_config.move` and `aptos-stdlib/sources/cryptography/ibe.move`, and the `ibe::reconstruct_ibe_dk` native (`aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`). <!-- SCOUT(#240) DOC: the reconstruct native goes. The path given here is also stale: the natives live in aptos-move/framework/natives/src/timelock.rs. -->
 - Boneh-Franklin: `hash_to_g1`, `derive_decryption_key`, `ibe_encrypt`, `ibe_decrypt`, `verify_decryption_key` and `reconstruct_ibe_dk_from_g1_shares` in `crates/aptos-dkg/src/ibe/mod.rs` (lines 292, 328, 353, 401, 474, 624). These are ported from `blstrs` to arkworks. The port is checked against golden vectors.
 
 Replaced:
@@ -81,7 +81,7 @@ Status of the implementation, 2026-10-31. **The two-manager wiring and the recon
 - Replay defence: the certificate of the timelock session is a signature over `TimelockSubtranscriptSigningMessage`, a separate hash domain, so a certified mempool aggregate never verifies as a `TimelockDKGResult`.
 - The validator transaction is `TimelockDKGResult` at tag 4. Its pool topic is `Topic::TimelockDKG`. The new `DKGMessage::TimelockRequest` variant is appended, so mempool messages keep their encoding.
 - `timelock_dkg.move` holds `TimelockDKGState` (with an `enabled` switch, off by default). `finish_with_timelock_dkg_result` stores the derived config. `timelock_dkg::on_new_epoch` writes `TimelockEpochConfig` after the epoch change.
-- The handler (`check_timelock_dkg_result`) rederives `mpk` and the verification keys, checks `V0` against interpolated keys, compares the claimed `mpk`, and compares the blob hash with the governance-set `timelock_dkg::ExpectedPublicParametersHash` when it exists. Execution never reads the node-local blob (atomica issue 158).
+- The handler (`check_timelock_dkg_result`) rederives `mpk` and the verification keys, checks `V0` against interpolated keys, compares the claimed `mpk`, and compares the blob hash with the governance-set `timelock_dkg::ExpectedPublicParametersHash` when it exists. Execution never reads the node-local blob (atomica issue 158). <!-- SCOUT(#223) DOC: `when it exists` becomes: an absent hash rejects the result, except on chain id 4. Genesis can pin the hash. -->
 
 ### From the DKG output to Boneh-Franklin keys
 
@@ -100,7 +100,7 @@ Rules:
 - After `decrypt_own_share`, the node checks `vk_j == g2 * share_j` for each of its virtual players. This is the same check FPTX setup runs (`fptx_weighted.rs`, the `VKMSKMismatchError` loop). On mismatch the node does not serve the timelock for that epoch. It logs and raises an alert.
 - Shares are derived again at every epoch start from the on-chain subtranscript and the consensus key, the way the mempool does it (`epoch_manager.rs` lines 1169 to 1227). No new secret is persisted by the node.
 - When the DKG result is accepted, the handler also checks that `V0` equals the Lagrange interpolation in G2 of any threshold set of virtual public key shares. A subtranscript whose `V0` and `Vs` disagree is rejected. Whether upstream transcript verification already implies this is a question for the cryptographer. The check is cheap, so it is required here.
-- The Shamir polynomial degree comes from the DKG. The registry threshold is therefore the DKG's `reconstruct_threshold_in_weights`, stored in `TimelockEpochConfig`. It replaces today's fixed two-thirds-plus-one of total weight (`ibe_config.move` constants `DEFAULT_REVEAL_THRESHOLD_NUMERATOR` and `DENOMINATOR`, used in `submit_dk_shares`).
+- The Shamir polynomial degree comes from the DKG. The registry threshold is therefore the DKG's `reconstruct_threshold_in_weights`, stored in `TimelockEpochConfig`. It replaces today's fixed two-thirds-plus-one of total weight (`ibe_config.move` constants `DEFAULT_REVEAL_THRESHOLD_NUMERATOR` and `DENOMINATOR`, used in `submit_dk_shares`). <!-- SCOUT(#242) DOC: this spec never states the secrecy bound. It is 1/2 of stake by default, from the chunky DKG config the timelock session shares with the mempool session. The PRD sentence on bid secrecy depends on it. -->
 
 ### Separation from the mempool
 
@@ -148,13 +148,13 @@ A rejected share is not stored and does not take the validator's one slot. The h
 Implementation notes (`node-share-verification`):
 
 - `aptos_dkg::ibe::verify_player_shares` computes `H1(id)` once, decodes every share and key with validation, and runs one multi-pairing per share. No batching, so the verdict is the same on every validator.
-- `BonehFranklinShareVerifier` in `aptos-vm` wraps it. `aptos-node` installs it before any block executes. With none installed every share is discarded (code `0x30401`).
+- `BonehFranklinShareVerifier` in `aptos-vm` wraps it. `aptos-node` installs it before any block executes. With none installed every share is discarded (code `0x30401`). <!-- SCOUT(#229) DOC: no wrapper, no install call and no code 0x30401 after the change. -->
 - The node derivation rule is `aptos_types::timelock::DerivableTimelock::authorize`: Pending, current epoch, committed block timestamp at or after `deadline_us` and before the reveal expiry, and a registry identity equal to `compute_identity(chain, epoch, id, deadline)`. Shares are derived only from that value. No wall clock is an input.
 - Measured cost (release build, one core, local machine, `cargo test -p aptos-dkg --release --lib ibe::tests::measure_share_check_cost -- --ignored --nocapture`): about 2.3 ms per share, including validated decoding of the share and of the key (3.2 ms for a single share, 18 ms for weight 8, 74 ms for weight 32, 285 ms for weight 128 per author). A block that carries one `TimelockShare` per validator of total virtual weight W costs about `2.3 ms * W` of verification. Debug builds are roughly an order of magnitude slower. This is not a CI result.
 
 ### Reconstruction and key check (fixes gap 1)
 
-- When verified weight reaches `TimelockEpochConfig.reconstruct_threshold_weight`, the handler combines the stored shares by weighted Lagrange interpolation in G1. This is the existing `reconstruct_ibe_dk_from_g1_shares` logic (`ibe/mod.rs` line 624), ported to arkworks, and kept behind the `ibe::reconstruct_ibe_dk` native.
+- When verified weight reaches `TimelockEpochConfig.reconstruct_threshold_weight`, the handler combines the stored shares by weighted Lagrange interpolation in G1. This is the existing `reconstruct_ibe_dk_from_g1_shares` logic (`ibe/mod.rs` line 624), ported to arkworks, and kept behind the `ibe::reconstruct_ibe_dk` native. <!-- SCOUT(#240) DOC: `kept behind the ibe::reconstruct_ibe_dk native` is no longer true. The issue names lines 32 and 268 only. -->
 - The handler then checks `e(dk, g2) = e(Q, mpk)` (the port of `verify_decryption_key`, `ibe/mod.rs` line 474). Today this function is only called from tests.
 - `finalize_timelock_reveal` takes the checked key and repeats the same pairing check through a new native `ibe::verify_decryption_key`. This costs two pairings once per reveal. It is defense in depth, so that a handler bug cannot store an unchecked key.
 - If the check passes, the status becomes `Revealed`. If it fails, every share was individually valid against the verification keys. The failure then means the `Vs` and `V0` of the DKG output disagree, or a code bug. The handler sets nothing except the status `Expired(key-check-failed)`, emits an event, and the node raises an alert. Bids become refundable. The DKG-result check in section 4 makes this case unreachable for an accepted DKG output. The branch is kept as a backstop.
@@ -181,6 +181,8 @@ ct_id = H( vk, AD )                                // upstream pattern, ids.rs l
 
 `sk` is erased after signing. `r` is fresh for every bid, so every bid has its own AES key and a repeated nonce is not a concern.
 
+<!-- SCOUT(#227) DOC: section 6 states that the chain can decrypt a bid: `ibe::decrypt_bid` runs the step below on chain and returns none for a failed tag. -->
+<!-- SCOUT(#228) DOC: the product auction opens bids with `ibe::decrypt_bid`; the bid plaintext is the 8-byte little-endian price. -->
 Decryption, after the reveal, with the revealed key `dk`: `K = e(dk, U)`, derive `key` the same way, then AES-GCM decrypt with `aad = AD` read from the contract's stored bid record. A failed tag means the bid is invalid.
 
 ### Submission check
@@ -206,6 +208,7 @@ This mirrors `Ciphertext::verify` upstream (`crates/aptos-batch-encryption/src/s
 
 ### Kept
 
+<!-- SCOUT(#230) DOC: the submitter list survives expiry, `TimelockExpiredEvent` carries it and `get_submitters` returns it. -->
 Timelock id (monotonic, `next_timelock_id`), `deadline_us`, the identity, share bookkeeping (`validator_indices`, `submitted_shares`, `validator_weights`, `submitters`), the decryption key, the registration, reveal and expiry events, and `E_SHARE_ALREADY_SUBMITTED`.
 
 ### Added to `TimelockInfo`
@@ -223,11 +226,11 @@ Written once per epoch by `finish_with_timelock_dkg_result`. Fields: `epoch`, `m
 
 1. One reveal per timelock. `status` moves one way, from `Pending` to `Revealed` or `Expired`. It never reopens. There is no retry after `Revealed` or `Expired`.
 2. A key is unique per identity, so there is no round state, no digest, and no "two keys under one secret" case. Re-releasing the same key is idempotent.
-3. `reveal_expiry_us = min(deadline_us + 10 minutes, epoch_end_us)`. After it, a pending timelock becomes `Expired(reveal-window-elapsed)`.
+3. `reveal_expiry_us = min(deadline_us + 10 minutes, epoch_end_us)`. After it, a pending timelock becomes `Expired(reveal-window-elapsed)`. <!-- SCOUT(#226) DOC: add the read rule: from the first block at or past `reveal_expiry_us` every read is Expired(reveal-window-elapsed), before the queue writes the status. -->
 4. Retry rules. A validator submits at most one accepted share set per timelock. A rejected share does not consume the slot, so the validator may send a corrected one until the expiry. The handler tries to finalize in the same transaction that makes verified weight reach the threshold. A failed final check is not retried (section 5).
-5. Registration aborts unless `ibe_config::is_ready()` holds for the current epoch, `deadline_us > now`, and `deadline_us <= epoch_end_us - 15 minutes` (rule 2 of section 8).
+5. Registration aborts unless `ibe_config::is_ready()` holds for the current epoch, `deadline_us > now`, and `deadline_us <= epoch_end_us - 15 minutes` (rule 2 of section 8). <!-- SCOUT(#225) DOC: registration also aborts with `E_NOT_REGISTRAR` unless the signer is the stored registrar. -->
 6. `on_new_block` marks due timelocks `Expired` and emits one event each. It processes at most a bounded number per block in order of `(reveal_expiry_us, timelock_id)`, so a registration flood cannot make one block unbounded. The current loop walks every pending id each block. The bound is an initial value to tune by measurement.
-7. Spam. `register_timelock` is a public entry with no fee or cap today (`ibe_config.move` lines 176 to 215). A deposit or cap is a product and economic decision outside this spec. It is listed as an open item for the auction contract owner.
+7. Spam. `register_timelock` is a public entry with no fee or cap today (`ibe_config.move` lines 176 to 215). A deposit or cap is a product and economic decision outside this spec. It is listed as an open item for the auction contract owner. <!-- SCOUT(#225) DOC: record the registrar rule here. The line reference (176 to 215) is stale. --> <!-- SCOUT(#243) DOC: the registrar is the auction package's named object address, one timelock per window id. -->
 8. Refund path. The registry exposes `get_status(timelock_id)` and the expiry reason. The auction contract must accept a refund claim for any `Expired` timelock before this ships.
 
 ## 8. Epoch bounds and the no-straddle rule
@@ -241,13 +244,13 @@ Written once per epoch by `finish_with_timelock_dkg_result`. Fields: `epoch`, `m
 ### Rules
 
 1. Registration records `epoch` in `TimelockInfo`.
-2. Registration aborts with `E_DEADLINE_AFTER_EPOCH_END` unless `deadline_us <= epoch_end_us - 15 minutes`, where `epoch_end_us = last_reconfiguration_time + epoch_interval`. The 15 minutes also cover the 10 minute reveal window of section 7, rule 3.
+2. Registration aborts with `E_DEADLINE_AFTER_EPOCH_END` unless `deadline_us <= epoch_end_us - 15 minutes`, where `epoch_end_us = last_reconfiguration_time + epoch_interval`. The 15 minutes also cover the 10 minute reveal window of section 7, rule 3. <!-- SCOUT(#231) DOC: `epoch_end_us` becomes the next configured UTC boundary. State the alignment rule: every boundary is at least 25 minutes from 07:45 and 16:15 UTC. -->
 3. Bids are encrypted to the registered epoch's `mpk`. `AD` holds `epoch`. A bid whose `AD.epoch` is not the timelock's epoch aborts.
 4. The handler accepts a share only while `current_epoch == info.epoch` and `share.epoch == info.epoch`. `TimelockShare` gains an `epoch` field.
 5. When `on_new_epoch` runs, every `Pending` timelock of the old epoch becomes `Expired(epoch-ended)`, and its stored shares are dropped. No key for the old epoch is produced after that. The new validator set holds no old shares, so this is the only safe outcome.
 6. A reveal never straddles an epoch. A reveal is complete only if it is finalized in a block whose epoch equals `info.epoch`. Shares of two epochs are never combined, because the stored share list belongs to one `TimelockInfo` and one epoch.
 7. Node rule for deriving a share: only for a timelock with `status = Pending`, `info.epoch = current_epoch`, and a committed block timestamp at or after `deadline_us`, read from chain state. Not from the local clock, and not from a request.
-8. Auctions longer than one epoch are not supported. At a 2 hour epoch the longest bid window is under 105 minutes. A longer product needs a multi-epoch design and its own spec.
+8. Auctions longer than one epoch are not supported. At a 2 hour epoch the longest bid window is under 105 minutes. A longer product needs a multi-epoch design and its own spec. <!-- SCOUT(#231) DOC: restate the longest bid window for the chosen epoch length (12 hours assumed). -->
 9. Governance can force an early reconfiguration. The guard is best effort. A forced reconfiguration expires pending timelocks under rule 5. The auction contract must handle `epoch-ended` with a refund path before this ships.
 
 ## 9. What happens to the Option C FPTX decisions
@@ -265,6 +268,7 @@ Written once per epoch by `finish_with_timelock_dkg_result`. Fields: `epoch`, `m
 | `verify_ct` from `aptos-batch-encryption` | Replaced | `ibe::verify_bid_ct` in section 6 |
 | `verify_decryption_key_share`, `verify_decryption_key` from `aptos-batch-encryption` | Replaced | The Boneh-Franklin checks in section 5 |
 
+<!-- SCOUT(#240) DOC: point at the last fork commit that held the prototype. -->
 The prototype `atomica/proto-fptx-timelock/` is kept as a reference. It is not part of the product path. Its README says so.
 
 ## 10. Test plan for the implementation tasks

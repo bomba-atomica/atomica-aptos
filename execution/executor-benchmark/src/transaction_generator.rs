@@ -240,6 +240,7 @@ impl BenchmarkTimestamp {
 
         let epoch_interval = block_resource.epoch_interval();
         let last_reconfig_time = config.last_reconfiguration_time_micros();
+        // SCOUT(#231) EDIT: not named in the issue. The executor benchmark derives the epoch change time from the interval.
         let epoch_change_timestamp = (last_reconfig_time + epoch_interval + 1)
             .max(MIN_BLOCK_TIMESTAMP_USECS.load(Ordering::SeqCst));
 

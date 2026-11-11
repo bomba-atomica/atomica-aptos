@@ -412,6 +412,7 @@ impl Session {
                     "BlockResource not found at 0x1 -- is the chain properly initialized?"
                 )
             })?;
+        // SCOUT(#231) EDIT: not named in the issue. The simulation session computes the epoch boundary as `last_reconfiguration_time + epoch_interval`.
         let epoch_interval_usecs = block_resource.epoch_interval();
 
         // The block prologue triggers reconfiguration when:

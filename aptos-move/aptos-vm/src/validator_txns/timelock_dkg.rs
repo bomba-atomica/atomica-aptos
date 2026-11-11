@@ -17,6 +17,7 @@
 //!
 //! [`check_timelock_dkg_result`] is a pure function of its arguments so the checks can be tested without a chain.
 
+// SCOUT(#223) DOC: the module doc above says the hash is compared when governance has set it. It becomes: an absent hash rejects the result, except on chain id 4.
 use crate::{
     aptos_vm::get_system_transaction_output,
     errors::expect_only_successful_execution,
@@ -60,6 +61,7 @@ enum ExpectedFailure {
     TranscriptDeserializationFailed = 0x10504,
     KeyDerivationFailed = 0x10505,
     ClaimedMpkMismatch = 0x10506,
+    // SCOUT(#223) EDIT: add `ParametersHashMissing = 0x10508`, the next free `invalid_argument` code of this handler.
     ParametersHashMismatch = 0x10507,
 
     // Move equivalent: `errors::invalid_state(*)`
@@ -83,6 +85,7 @@ impl From<ResultRejection> for ExpectedFailure {
             ResultRejection::MultiSigVerificationFailed => Self::MultiSigVerificationFailed,
             ResultRejection::KeyDerivationFailed(_) => Self::KeyDerivationFailed,
             ResultRejection::ClaimedMpkMismatch => Self::ClaimedMpkMismatch,
+            // SCOUT(#223) EDIT: map `ResultRejection::ParametersHashMissing`. This match is exhaustive: the new variant does not compile until this arm exists.
             ResultRejection::ParametersHashMismatch => Self::ParametersHashMismatch,
         }
     }
@@ -171,6 +174,7 @@ impl AptosVM {
 
         let verifier = ValidatorVerifier::from(&validator_set);
         // Chain state only: a node-local file here would let nodes disagree on the same transaction.
+        // SCOUT(#223) EDIT: `None` is now a rejection inside `check_timelock_dkg_result` on every chain id but 4. The discarded transaction stays in each validator's pool until the session is cleared at the epoch change.
         let expected_params_hash =
             ExpectedTimelockParametersHash::fetch_config(resolver).map_err(|e| {
                 ExecutionFailure::Unexpected(VMStatus::error(
@@ -191,6 +195,7 @@ impl AptosVM {
         let mut gas_meter = UnmeteredGasMeter;
         let mut session = self.new_session(resolver, session_id, None);
 
+        // SCOUT(#231) EDIT: with UTC-anchored epochs the handler passes what `ibe_config` needs for the next boundary, not `block::get_epoch_interval_secs`.
         // The epoch length at the time of the result. `ibe_config` derives the epoch end from it.
         let traversal_storage = TraversalStorage::new();
         let interval_values = session

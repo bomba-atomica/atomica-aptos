@@ -139,6 +139,12 @@ fn move_experimental_unit_tests() {
     run_tests_for_pkg("aptos-experimental", true);
 }
 
+// SCOUT(#225) EDIT: the Tee writer and the `passed: N` parse of the test below are local to it. Lift them into a shared helper before a second filtered test copies them.
+// SCOUT(#225) TEST: ibe_config_move_unit_tests: runs the Move tests of `ibe_config_tests` and fails below the number the file holds (46 today). Issues 226 and 230 need the same Rust test: the first to merge adds it, the others raise the floor.
+// SCOUT(#226) TEST: the same Rust test as issue 225 (ibe_config_move_unit_tests), with the floor raised by six.
+// SCOUT(#230) TEST: the same Rust test as issue 225 (ibe_config_move_unit_tests), with the floor raised by four.
+// SCOUT(#231) TEST: timelock_dkg_move_unit_tests: runs the Move tests of `timelock_dkg_tests` (12 today).
+// SCOUT(#227) TEST: a filtered Rust test for the Move tests of `ibe_native_test` and `ibe_golden_vector_tests`. One filter string cannot select both without `ibe_config_tests`, and the cargo filter `ibe` would also run ibe_config_move_unit_tests, so pick the names with care.
 /// The Move unit tests of `ethereum_headers` and `ethereum_header_config` (fork only). Runs
 /// with `cargo test -p aptos-framework --test move_unit_test -- ethereum_headers` and fails when the filter
 /// matches no Move test, so the Rust test never passes with zero Move tests.

@@ -26,6 +26,7 @@
 //!
 //! A discarded transaction leaves no state, so a rejected share never takes the author's slot.
 
+// SCOUT(#229) DOC: step 3 of the module doc above loses the verifier trait, the install call and the fail-closed sentence. The handler calls `aptos_dkg::ibe::verify_player_shares` directly.
 use crate::{
     aptos_vm::get_system_transaction_output,
     errors::expect_only_successful_execution,
@@ -75,6 +76,7 @@ enum ExpectedFailure {
     ShareCheckFailed = 0x10404,
     /// The Move registry refused the shares. The abort code is logged.
     RegistryAbort = 0x10405,
+    // SCOUT(#229) REMOVE: failure code `ShareVerifierUnavailable` (0x30401).
     /// No verifier is installed. Fail closed.
     ShareVerifierUnavailable = 0x30401,
     MissingResourceConfiguration = 0x30402,
@@ -85,6 +87,7 @@ enum ExecutionFailure {
     Unexpected(VMStatus),
 }
 
+// SCOUT(#229) REMOVE: `ShareCheckRequest`. The issue does not name it; it only feeds the trait and is re-exported from `validator_txns/mod.rs`.
 /// What a verifier needs to check the shares of one author for one timelock. All fields come from chain
 /// state or from the transaction. The identity and the master public key are the registry's.
 #[derive(Debug)]
@@ -106,9 +109,11 @@ pub struct ShareCheckRequest<'a> {
     pub shares: &'a [Vec<u8>],
 }
 
+// SCOUT(#229) REMOVE: `ShareCheckError`. The issue does not name it; it goes with the trait.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareCheckError(pub String);
 
+// SCOUT(#229) REMOVE: trait `TimelockShareVerifier`.
 /// The interface the share verification feature fills in.
 ///
 /// An implementation must return `Ok(())` only when, for every virtual player `p` of `author`,
@@ -120,6 +125,7 @@ pub trait TimelockShareVerifier: Send + Sync {
     fn verify_shares(&self, request: &ShareCheckRequest<'_>) -> Result<(), ShareCheckError>;
 }
 
+// SCOUT(#229) REMOVE: `BonehFranklinShareVerifier`. Its one-line body moves into the handler.
 /// The Boneh-Franklin share check of spec section 5: for every virtual player `p` of the author,
 /// `e(H1(identity), vk_p) = e(share_p, g2)`, over validated points. Stateless and a pure function of the
 /// request, which the handler fills from chain state, so all validators agree.
@@ -133,11 +139,13 @@ impl TimelockShareVerifier for BonehFranklinShareVerifier {
     }
 }
 
+// SCOUT(#229) REMOVE: `install_boneh_franklin_share_verifier`.
 /// Installs [`BonehFranklinShareVerifier`]. The node calls this before it executes blocks.
 pub fn install_boneh_franklin_share_verifier() {
     set_timelock_share_verifier(Some(Arc::new(BonehFranklinShareVerifier)));
 }
 
+// SCOUT(#229) REMOVE: the process global, with `set_timelock_share_verifier` and `current_share_verifier` below and the `std::sync::{Arc, RwLock}` import.
 static SHARE_VERIFIER: RwLock<Option<Arc<dyn TimelockShareVerifier>>> = RwLock::new(None);
 
 /// Installs (or, with `None`, removes) the share verifier. With none installed the handler rejects every
@@ -364,6 +372,7 @@ impl AptosVM {
                 ExpectedFailure::InvalidShareEncoding,
             ));
         }
+        // SCOUT(#229) REMOVE: the verifier lookup and the `ShareVerifierUnavailable` discard.
         // Fail closed before spending any VM or pairing work.
         let verifier = current_share_verifier().ok_or(ExecutionFailure::Expected(
             ExpectedFailure::ShareVerifierUnavailable,
@@ -436,6 +445,7 @@ impl AptosVM {
             )?,
             0,
         )?;
+        // SCOUT(#229) EDIT: call `ibe::verify_player_shares(&identity, &shares, &verification_keys)` here. A failure still drops the session and reports the rejected share.
         let request = ShareCheckRequest {
             epoch,
             timelock_id,
@@ -464,6 +474,7 @@ impl AptosVM {
             );
         }
 
+        // SCOUT(#226) EDIT: no change. `submit_dk_shares` in step 3 already aborts at or past `reveal_expiry_us` (code 15), so step 4 runs only while the stored and the effective status agree.
         // 4. Reveal, once verified weight reached the threshold.
         let reconstructable: bool = decode_return(
             &call_ibe_config(
@@ -634,6 +645,7 @@ mod tests {
         assert_eq!(validate_share_encoding(&[good, identity]), Err(1));
     }
 
+    // SCOUT(#229) REMOVE: `AcceptAll` and the test `no_verifier_means_fail_closed` below.
     struct AcceptAll;
     impl TimelockShareVerifier for AcceptAll {
         fn verify_shares(&self, _: &ShareCheckRequest<'_>) -> Result<(), ShareCheckError> {
@@ -660,6 +672,7 @@ mod tests {
             ExpectedFailure::TimelockEpochMismatch as u64,
             ExpectedFailure::ShareCheckFailed as u64,
             ExpectedFailure::RegistryAbort as u64,
+            // SCOUT(#229) EDIT: drop this entry; the 0x3040x range then holds one code.
             ExpectedFailure::ShareVerifierUnavailable as u64,
             ExpectedFailure::MissingResourceConfiguration as u64,
         ] {
@@ -667,6 +680,7 @@ mod tests {
         }
     }
 
+    // SCOUT(#229) EDIT: the tests below go through `BonehFranklinShareVerifier` and `ShareCheckRequest`. Rewrite them on `ibe::verify_player_shares` or drop them: the `player_shares_*` tests of aptos-dkg cover the same cases. No CI job runs the unit tests of this file today.
     // ---- Boneh-Franklin verifier on a request ----
 
     fn dealing(seed: u64) -> (Vec<aptos_dkg::ibe::MasterScalar>, Vec<Vec<u8>>) {

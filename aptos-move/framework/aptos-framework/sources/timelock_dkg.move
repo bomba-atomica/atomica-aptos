@@ -55,6 +55,8 @@ module aptos_framework::timelock_dkg {
         start_time_us: u64
     }
 
+    // SCOUT(#231) ADD: `#[event] struct TimelockKeyMissingEvent has drop, store { epoch: u64 }`, emitted in the reconfiguration transaction by `on_new_epoch` when the feature is on and no `TimelockEpochConfig` was written for the new epoch. A new event type is new framework code, so it is not declared here.
+
     struct TimelockDKGSessionState has copy, store, drop {
         metadata: TimelockDKGSessionMetadata,
         start_time_us: u64,
@@ -82,6 +84,7 @@ module aptos_framework::timelock_dkg {
         pending_config: Option<PendingTimelockConfig>
     }
 
+    // SCOUT(#223) DOC: the doc below changes: an absent hash rejects the result on every chain except chain id 4, and genesis can set the hash.
     /// The hash of the timelock `PublicParameters` blob that a `TimelockDKGResult` must carry. Set by
     /// governance. The handler reads it from chain state, never from a node-local file, so every node
     /// executes the result the same way. When it is absent the handler does not check the hash, and each
@@ -106,6 +109,7 @@ module aptos_framework::timelock_dkg {
         }
     }
 
+    // SCOUT(#223) EDIT: not named in the issue. After the change, clearing the hash on a chain other than chain id 4 stops every later timelock key. Fix this doc or remove the function.
     /// Stops the hash check of `TimelockDKGResult`. Idempotent.
     public fun clear_expected_public_parameters_hash(
         aptos_framework: &signer
@@ -173,6 +177,7 @@ module aptos_framework::timelock_dkg {
         }
     }
 
+    // SCOUT(#231) EDIT: owner question 4: only `try_start_with_chunky_dkg` calls this. A reconfiguration through `try_start` gives an epoch with no key, which the new event then reports.
     /// Marks the session in progress and notifies the validators. Idempotent for `dealer_epoch`.
     /// Does nothing while the feature is off.
     public(friend) fun start(
@@ -252,6 +257,7 @@ module aptos_framework::timelock_dkg {
         }
     }
 
+    // SCOUT(#231) EDIT: emit `TimelockKeyMissingEvent { epoch }` on every path below that writes no config while the feature is on. The function does not read `state.enabled` today, so the feature-off case needs a new check.
     /// Runs after the epoch change. Writes the `TimelockEpochConfig` of the new epoch when the session of
     /// the last epoch completed. Drops a pending config that is not for the new epoch. When nothing is
     /// written, the old config stays and `ibe_config::is_ready()` is false for the new epoch.
@@ -259,13 +265,17 @@ module aptos_framework::timelock_dkg {
         system_addresses::assert_aptos_framework(aptos_framework);
         if (!exists<TimelockDKGState>(@aptos_framework)) { return };
         let state = &mut TimelockDKGState[@aptos_framework];
+        // SCOUT(#231) EDIT: emit here when `state.enabled`: no session completed for the new epoch.
         if (state.pending_config.is_none()) { return };
         let current_epoch = reconfiguration::current_epoch();
         // A config for a later epoch waits for that epoch. A config for an earlier epoch is stale.
+        // SCOUT(#231) EDIT: emit here too: a config that waits for a later epoch leaves this epoch without a key.
         if (state.pending_config.borrow().target_epoch > current_epoch) { return };
         let pending = state.pending_config.extract();
+        // SCOUT(#231) EDIT: emit here: a stale config was dropped.
         if (pending.target_epoch != current_epoch) { return };
         // Never abort the epoch change: skip a config that `ibe_config` would refuse.
+        // SCOUT(#231) EDIT: emit here: `ibe_config` refuses the config. The epoch change must still not abort.
         if (!ibe_config::is_initialized()
             || !ibe_config::is_valid_epoch_config(
                 &pending.mpk,

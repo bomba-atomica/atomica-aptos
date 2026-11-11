@@ -90,6 +90,11 @@ module aptos_framework::timelock_dkg_tests {
         assert!(ibe_config::get_mpk() == fixtures::timelock_basic_mpk(), 7);
     }
 
+    // SCOUT(#231) EDIT: also assert exactly one TimelockKeyMissingEvent with the new epoch.
+    // SCOUT(#231) TEST: no_key_missing_event_when_the_session_completed
+    // SCOUT(#231) TEST: no_key_missing_event_while_the_feature_is_off
+    // SCOUT(#231) TEST: key_missing_event_for_a_config_of_another_epoch_and_for_a_refused_config (the epoch change does not abort)
+    // SCOUT(#231) TEST: block_prologue_starts_the_reconfiguration_at_the_first_block_at_or_past_the_utc_boundary (also when the last epoch started late). This one needs the block prologue, so it may belong in a new block test file.
     #[test]
     fun missing_result_leaves_the_new_epoch_without_a_key() {
         let framework = setup();
@@ -101,6 +106,7 @@ module aptos_framework::timelock_dkg_tests {
         assert!(!ibe_config::is_ready(), 1);
     }
 
+    // SCOUT(#231) EDIT: assert the missing-key event here too (stale config).
     #[test]
     fun stale_result_is_dropped_and_old_config_is_not_ready() {
         let framework = setup();
@@ -116,6 +122,7 @@ module aptos_framework::timelock_dkg_tests {
         assert!(!ibe_config::is_ready(), 2);
     }
 
+    // SCOUT(#225) EDIT: this test registers with a plain account. Make it the registrar so the abort stays E_IBE_NOT_READY (2) and does not become E_NOT_REGISTRAR.
     #[test]
     #[expected_failure(abort_code = 2, location = aptos_framework::ibe_config)]
     fun register_timelock_aborts_when_the_session_failed() {
@@ -159,6 +166,7 @@ module aptos_framework::timelock_dkg_tests {
         let _ = vector::length(&vks(0));
     }
 
+    // SCOUT(#223) EDIT: the name and the clear step describe an optional check. After the change an absent hash rejects every result off the test chain.
     #[test]
     fun expected_parameters_hash_is_absent_until_governance_sets_it() {
         let framework = setup();

@@ -1,5 +1,6 @@
 name: Timelock Tests
 
+# SCOUT(#240) REMOVE: the header paragraph about the `timelock` prototype job (through "Remove that job when the prototype folder is deleted").
 # Two jobs:
 #
 # - `timelock`: the standalone FPTX timelock prototype (atomica/proto-fptx-timelock).
@@ -19,6 +20,7 @@ on:
     branches:
       - dev-atomica
     paths:
+      # SCOUT(#240) REMOVE: push path filter of the prototype.
       - "atomica/proto-fptx-timelock/**"
       - "aptos-move/framework/aptos-framework/sources/ibe_config.move"
       - "aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move"
@@ -33,6 +35,7 @@ on:
     branches:
       - dev-atomica
     paths:
+      # SCOUT(#240) REMOVE: pull request path filter of the prototype.
       - "atomica/proto-fptx-timelock/**"
       - "aptos-move/framework/aptos-framework/sources/ibe_config.move"
       - "aptos-move/framework/aptos-stdlib/sources/cryptography/ibe.move"
@@ -59,6 +62,7 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # SCOUT(#240) REMOVE: the whole `timelock` job (format check and tests of the prototype crate).
   timelock:
     name: Timelock crate tests
     runs-on: ubuntu-latest
@@ -124,6 +128,8 @@ jobs:
           add-job-id-key: false
           save-if: true
 
+      # SCOUT(#229) EDIT: the floor of 9 stays (one test removed, one added). Once Crypto Crates Tests runs these tests, this job repeats them.
+      # SCOUT(#225) EDIT: these tests register a timelock through the harness; they run only here until issue 229 moves them into the required check.
       # 9 tests on 2026-11-04 (7 handler tests, plus the two multi-validator reveals below full
       # weight: equal weights 1,1,1,1 in order 2,0,3 and unequal weights 2,1,1 in order 2,0), so 9 is the floor.
       - name: Run timelock_share VM tests (zero-test guard, minimum 9)

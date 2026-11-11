@@ -160,6 +160,7 @@ async fn timelock_row(client: &Client, id: u64) -> Result<(u64, Vec<u8>, bool, u
     ))
 }
 
+// SCOUT(#225) EDIT: every caller must sign with the registrar account. Today each test registers with a fresh funded account.
 async fn register_timelock(
     client: &Client,
     chain_id: aptos_types::chain_id::ChainId,
@@ -269,6 +270,7 @@ async fn emit_encrypted_traffic(swarm: &mut impl Swarm, secs: u64) -> u64 {
     stats.committed
 }
 
+// SCOUT(#225) EDIT: timelock_e2e and timelock_testnet_for_script turn the DKG on with this governance script, so it must also call ibe_config::set_timelock_registrar. Neither test runs in CI.
 const ENABLE_TIMELOCK_DKG_SCRIPT: &str = r#"
 script {
     use aptos_framework::aptos_governance;
@@ -317,6 +319,8 @@ async fn start_network(
             let mut features = Features::default();
             features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
             conf.initial_features_override = Some(features);
+            // SCOUT(#225) EDIT: set `conf.timelock_registrar` to the account the tests register with.
+            // SCOUT(#231) EDIT: set the epoch boundary values so the 20 and 30 minute test epochs still change.
             conf.timelock_dkg_enabled = timelock_dkg_enabled;
         }))
         .build_with_cli(0)
@@ -486,6 +490,7 @@ async fn timelock_e2e() {
 
     let now = chain_now_us(&client).await;
     let deadline_us = now + DEADLINE_AHEAD_US;
+    // SCOUT(#225) EDIT: `registrar` must be the on-chain registrar (three registrations in this test).
     let t1 = register_timelock(&client, chain_id, &mut registrar, deadline_us)
         .await
         .expect("register timelock 1");
@@ -885,6 +890,7 @@ async fn timelock_reveal_on_live_swarm() {
         .await
         .expect("registrar");
     let deadline_us = chain_now_us(&client).await + REVEAL_DEADLINE_AHEAD_US;
+    // SCOUT(#225) EDIT: first assert that a registration from another funded account fails with the E_NOT_REGISTRAR abort code, then register with the registrar.
     let id = register_timelock(&client, chain_id, &mut registrar, deadline_us)
         .await
         .expect("register timelock");
@@ -1044,6 +1050,7 @@ async fn timelock_state_at_epoch_2(timelock_dkg_enabled: bool) -> (bool, Vec<u8>
     (ready, mpk, enabled, epoch)
 }
 
+// SCOUT(#231) EDIT: also assert that no TimelockKeyMissingEvent exists for epoch 2.
 /// The genesis layout flag `timelock_dkg_enabled` turns the timelock DKG on at genesis: the first
 /// reconfiguration runs a timelock DKG session and epoch 2 has a 96-byte master public key.
 #[tokio::test]
@@ -1060,6 +1067,7 @@ async fn timelock_genesis_flag_set_gives_key_at_epoch_2() {
     assert_eq!(mpk.len(), 96, "ibe_config::get_mpk length at epoch {epoch}");
 }
 
+// SCOUT(#231) EDIT: also assert that no TimelockKeyMissingEvent exists with the flag unset.
 /// Without the flag the timelock DKG stays off: epoch 2 has no timelock key.
 #[tokio::test]
 async fn timelock_genesis_flag_unset_keeps_key_absent() {
@@ -1150,6 +1158,7 @@ async fn timelock_dkg_on_non_test_chain_with_shipped_parameters() {
             let mut features = Features::default();
             features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
             conf.initial_features_override = Some(features);
+            // SCOUT(#223) EDIT: set the layout hash to `blob_hash`. Without it this chain id 77 swarm gets no timelock key after the change.
             conf.timelock_dkg_enabled = true;
         }))
         .build()
@@ -1179,6 +1188,7 @@ async fn timelock_dkg_on_non_test_chain_with_shipped_parameters() {
             .unwrap()[0],
     );
     assert_eq!(mpk.len(), 96, "ibe_config::get_mpk length");
+    // SCOUT(#223) EDIT: also assert that the view 0x1::timelock_dkg::expected_public_parameters_hash returns the shipped hash.
     let config = get_on_chain_resource::<TimelockEpochConfigResource>(&client).await;
     assert_eq!(
         config.public_parameters_hash,

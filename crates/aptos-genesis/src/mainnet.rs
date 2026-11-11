@@ -152,6 +152,9 @@ impl MainnetGenesisInfo {
                 initial_jwks: vec![],
                 keyless_groth16_vk: None,
                 initialize_decryption_at_genesis: true,
+                // SCOUT(#223) EDIT: carry `timelock_public_parameters_hash` here.
+                // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+                // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
                 // Mainnet genesis does not set up the DKG, so the timelock DKG stays off.
                 timelock_dkg_enabled: false,
                 eth_chain_id: None,

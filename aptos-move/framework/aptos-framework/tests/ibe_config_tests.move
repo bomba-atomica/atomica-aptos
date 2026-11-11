@@ -66,6 +66,7 @@ module aptos_framework::ibe_config_tests {
         out
     }
 
+    // SCOUT(#225) EDIT: 37 tests register through this helper as @0xA and no registrar is set. Setup must make @0xA the registrar, or each of them aborts with E_NOT_REGISTRAR.
     fun register(user: &signer, deadline_us: u64): u64 {
         let id = ibe_config::get_next_timelock_id();
         ibe_config::register_timelock(user, deadline_us);
@@ -106,6 +107,11 @@ module aptos_framework::ibe_config_tests {
         );
     }
 
+    // SCOUT(#225) TEST: register_aborts_with_not_registrar_while_no_registrar_is_set
+    // SCOUT(#225) TEST: register_aborts_for_another_signer_and_succeeds_for_the_registrar
+    // SCOUT(#225) TEST: register_with_id_returns_the_next_id_and_the_event_carries_it
+    // SCOUT(#225) TEST: set_registrar_is_framework_only_and_a_second_call_replaces_the_address
+    // SCOUT(#225) EDIT: the order of the checks decides this abort code: with the registrar check first, a non-registrar sees E_NOT_REGISTRAR and not E_IBE_NOT_READY (2).
     #[test(user = @0xA)]
     #[expected_failure(abort_code = 2, location = aptos_framework::ibe_config)]
     fun register_aborts_when_not_ready(user: &signer) {
@@ -158,6 +164,8 @@ module aptos_framework::ibe_config_tests {
         register(user, 10 * MIN);
     }
 
+    // SCOUT(#231) EDIT: EPOCH_INTERVAL with time 0 as the epoch start models the interval rule. The boundary rule needs a UTC-anchored setup for this test and the next one.
+    // SCOUT(#231) TEST: register_accepts_0745_and_1615_utc_deadlines_in_the_epoch_that_holds_them (reveal_expiry_us equals the deadline plus 10 minutes).
     #[test(user = @0xA)]
     fun register_accepts_deadline_exactly_at_epoch_end_minus_guard(user: &signer) {
         setup_ready();
@@ -338,6 +346,7 @@ module aptos_framework::ibe_config_tests {
         ibe_config::get_decryption_key(id);
     }
 
+    // SCOUT(#230) EDIT: also assert get_submitters and the event list for the key-check-failed expiry (reason 3).
     #[test(user = @0xA)]
     fun failed_key_check_expires_and_never_reopens(user: &signer) {
         setup_ready();
@@ -382,6 +391,12 @@ module aptos_framework::ibe_config_tests {
 
     // ---- expiry ----
 
+    // SCOUT(#226) TEST: status_reads_expired_at_reveal_expiry_without_running_the_queue
+    // SCOUT(#226) TEST: status_reads_pending_one_microsecond_before_reveal_expiry
+    // SCOUT(#226) TEST: undrained_51st_timelock_reads_expired_with_reason_2
+    // SCOUT(#226) TEST: revealed_timelock_never_reads_expired_after_reveal_expiry
+    // SCOUT(#226) TEST: earlier_epoch_pending_reads_epoch_ended_even_past_reveal_expiry
+    // SCOUT(#226) TEST: is_reconstructable_is_false_at_reveal_expiry_with_threshold_weight
     #[test(user = @0xA)]
     fun deadline_passed_differs_from_expired(user: &signer) {
         setup_ready();
@@ -393,6 +408,12 @@ module aptos_framework::ibe_config_tests {
         assert!(ibe_config::get_status(id) == 0, 4);
     }
 
+    // SCOUT(#226) EDIT: the read at 70 * MIN - 1 stays 0. The read at 70 * MIN is 2 even before on_new_block_for_testing runs, so the queue call no longer proves anything through get_status.
+    // SCOUT(#230) EDIT: add get_submitters and event assertions (reason 2). The share count assertion stays.
+    // SCOUT(#230) TEST: expired_by_reveal_window_keeps_and_emits_two_submitters_in_submission_order
+    // SCOUT(#230) TEST: expired_by_epoch_end_keeps_and_emits_submitters
+    // SCOUT(#230) TEST: expired_by_key_check_keeps_and_emits_submitters
+    // SCOUT(#230) TEST: expired_with_no_accepted_share_has_an_empty_list_and_an_empty_event_list
     #[test(user = @0xA)]
     fun reveal_window_expiry_marks_expired_and_drops_shares(user: &signer) {
         setup_ready();
@@ -415,6 +436,7 @@ module aptos_framework::ibe_config_tests {
         assert!(count == 0, 5);
     }
 
+    // SCOUT(#226) EDIT: pins abort 15 from the stored status. It becomes 11 if assert_can_submit starts to read effective_status.
     #[test(user = @0xA)]
     #[expected_failure(abort_code = 15, location = aptos_framework::ibe_config)]
     fun submit_after_reveal_window_aborts(user: &signer) {
@@ -450,6 +472,7 @@ module aptos_framework::ibe_config_tests {
         ibe_config::on_new_block_for_testing();
         // 50 per block: ids 0..49 expired, 50..59 pending.
         assert!(ibe_config::get_status(49) == 2, 1);
+        // SCOUT(#226) EDIT: this expectation flips: id 50 is not drained yet and now reads 2. Assert the stored state another way (share count or event count) to keep testing the batch bound of 50.
         assert!(ibe_config::get_status(50) == 0, 2);
         ibe_config::on_new_block_for_testing();
         assert!(ibe_config::get_status(59) == 2, 3);
@@ -457,6 +480,7 @@ module aptos_framework::ibe_config_tests {
 
     // ---- epoch change ----
 
+    // SCOUT(#230) EDIT: also assert get_submitters after the queue drains (reason 1).
     #[test(user = @0xA)]
     fun epoch_change_expires_pending_with_epoch_ended(user: &signer) {
         setup_ready();

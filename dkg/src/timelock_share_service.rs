@@ -175,6 +175,8 @@ impl ShareServiceCore {
             let Some(info) = view.timelock(id)? else {
                 continue;
             };
+            // SCOUT(#230) EDIT: no change: this reads `submitters` only while the stored status is Pending, so a list kept after expiry does not change the service.
+            // SCOUT(#226) EDIT: no change: the service reads the stored status and has its own reveal-window gate in `DerivableTimelock::authorize`.
             let finished = info.status != TimelockStatusResource::Pending
                 || info.submitters.contains(&self.my_addr);
             if finished || info.epoch != self.epoch {

@@ -71,7 +71,7 @@ The public key of the IBE system, generated via DKG and published on-chain. All 
 The secret key from which all decryption keys are derived. Never reconstructed or stored on any single machine.
 
 - **Distribution**: Split into shares via DKG
-- **Threshold**: Requires 2/3+ of validator shares to reconstruct
+- **Threshold**: Requires 2/3+ of validator shares to reconstruct <!-- SCOUT(#242) DOC: reconstruction needs 2/3 of stake. Secrecy holds only against at most 1/2 of stake (fork default); this file does not say so. -->
 
 ### Decryption Key (DK)
 

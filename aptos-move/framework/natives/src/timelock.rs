@@ -18,6 +18,9 @@
 //!
 //! No FPTX or `aptos-batch-encryption` function is used or exposed here.
 
+// SCOUT(#227) DOC: the gas table in the module doc above gains a `decrypt_bid_internal` row.
+// SCOUT(#240) DOC: the gas table row of `reconstruct_ibe_dk_internal` goes.
+// SCOUT(#240) EDIT: `IbeError` and `MAX_TOTAL_WEIGHT` are imported only for the reconstruction native.
 use aptos_dkg::ibe::{self, IbeError, MAX_TOTAL_WEIGHT};
 use aptos_gas_schedule::gas_params::natives::aptos_framework::*;
 use aptos_native_interface::{
@@ -30,12 +33,14 @@ use move_vm_types::{loaded_data::runtime_types::Type, values::Value};
 use smallvec::{smallvec, SmallVec};
 use std::collections::VecDeque;
 
+// SCOUT(#240) REMOVE: both abort codes of the reconstruction native.
 /// The type argument of `reconstruct_ibe_dk_internal` is not `bls12381_algebra::G1`.
 pub const E_NOT_BLS12381_G1: u64 = 1;
 /// Malformed input to `reconstruct_ibe_dk_internal` (shape, bounds, weights, or a share that is
 /// not a valid prime-order non-identity G1 point).
 pub const E_INVALID_RECONSTRUCTION_INPUT: u64 = 2;
 
+// SCOUT(#240) REMOVE: not named in the issue: `FR_MULS_PER_G1_SCALAR_MUL`, `abort_reconstruction`, `invalid` and `log2_ceil` serve only the reconstruction native. Left behind, they fail Clippy Lints as dead code.
 /// Field multiplications priced as one G1 scalar multiplication (92764630 / 18450, rounded up).
 const FR_MULS_PER_G1_SCALAR_MUL: u64 = 5030;
 
@@ -54,6 +59,7 @@ fn log2_ceil(n: usize) -> u64 {
 /***************************************************************************************************
  * native fun reconstruct_ibe_dk_internal<G1>
  **************************************************************************************************/
+// SCOUT(#240) REMOVE: `native_reconstruct_ibe_dk` and its banner comment.
 fn native_reconstruct_ibe_dk(
     context: &mut SafeNativeContext,
     ty_args: &[Type],
@@ -195,11 +201,17 @@ fn native_verify_bid_ct(
     )])
 }
 
+// SCOUT(#227) ADD: `fn native_decrypt_bid(context, ty_args, args)` for `ibe::decrypt_bid_internal(dk, identity, ad, ct)`. It pops four byte vectors, charges gas before any decoding, calls `aptos_dkg::ibe::decrypt_bid_ct` and returns the plaintext or a failure flag. It never aborts on bad input. No Rust stub here: this crate is consensus code, and the stub would be dead until the Move declaration lands in the same commit.
+// SCOUT(#227) EDIT: `Option` is an enum in this move-stdlib (`public enum Option`), so a native cannot cheaply return one. Return `(bool, vector<u8>)` and let `ibe::decrypt_bid` build the `Option` in Move.
+// SCOUT(#227) EDIT: gas comes from existing parameters only: validated G1 and G2 decode, strict Ed25519 with per-byte hashing, one pairing, and a per-byte charge over `ct` and `ad`. No existing parameter prices HKDF or AES-GCM, so the per-byte parameter must be chosen and named.
+// SCOUT(#228) EDIT: the product `auction::open_bids` pays this charge once per bid; the 100-bid gas test bounds the batch size it may pass.
+// SCOUT(#227) ADD: register `("decrypt_bid_internal", native_decrypt_bid)` in the table below, in the same commit as the Move native declaration.
 pub fn make_all(
     builder: &SafeNativeBuilder,
 ) -> impl Iterator<Item = (String, NativeFunction)> + '_ {
     let natives = [
         (
+            // SCOUT(#240) REMOVE: this table entry. The `as RawSafeNative` cast moves to the first remaining entry.
             "reconstruct_ibe_dk_internal",
             native_reconstruct_ibe_dk as RawSafeNative,
         ),

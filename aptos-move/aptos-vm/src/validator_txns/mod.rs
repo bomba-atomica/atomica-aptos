@@ -71,6 +71,7 @@ mod jwk;
 mod timelock;
 mod timelock_dkg;
 
+// SCOUT(#229) REMOVE: all six re-exports. The issue names the two lines; `ShareCheckError`, `ShareCheckRequest` and `TimelockShareVerifier` go with them.
 pub use timelock::{
     install_boneh_franklin_share_verifier, set_timelock_share_verifier, BonehFranklinShareVerifier,
     ShareCheckError, ShareCheckRequest, TimelockShareVerifier,

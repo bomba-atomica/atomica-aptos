@@ -135,6 +135,8 @@ module aptos_framework::genesis {
         block::initialize(&aptos_framework_account, epoch_interval_microsecs);
         state_storage::initialize(&aptos_framework_account);
         nonce_validation::initialize(&aptos_framework_account);
+        // SCOUT(#225) ADD: genesis step that calls `ibe_config::set_timelock_registrar` when the layout sets `timelock_registrar`. The VM calls genesis steps by name (vm-genesis), so this is a new private function like `enable_timelock_dkg`.
+        // SCOUT(#231) ADD: genesis step that stores the UTC epoch boundaries from the layout.
         // Timelock registry. Empty until the timelock DKG writes the first epoch config.
         ibe_config::initialize(&aptos_framework_account);
         timelock_dkg::initialize(&aptos_framework_account);
@@ -418,6 +420,7 @@ module aptos_framework::genesis {
         stake::join_validator_set_internal(operator, pool_address);
     }
 
+    // SCOUT(#223) EDIT: genesis also calls `timelock_dkg::set_expected_public_parameters_hash` when the layout carries `timelock_public_parameters_hash`. vm-genesis calls this function by name with one signer argument, so a new argument changes both sides.
     /// Turns the timelock DKG on at genesis, with the default grace period. The first reconfiguration then
     /// runs a timelock DKG session, so epoch 2 has a timelock key. The VM calls this only when the genesis
     /// layout sets `timelock_dkg_enabled`.
