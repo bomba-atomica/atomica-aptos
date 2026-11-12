@@ -163,8 +163,10 @@ jobs:
         # - name: Run ibe Move unit tests
         #   if: ${{ !cancelled() }}
         #   run: .github/scripts/run-tests-guarded.sh ibe-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ibe
-        #
-        # SCOUT(#229) ADD: guarded step for the TimelockShare VM tests, which run only in the non-required Timelock Tests workflow today.
-        # - name: Run TimelockShare VM tests
-        #   if: ${{ !cancelled() }}
-        #   run: '.github/scripts/run-tests-guarded.sh timelock-share-vm 9 -- cargo test --locked -p e2e-move-tests --lib timelock_share:: -- --test-threads=1'
+
+      # The TimelockShare handler through AptosVM against the real framework (atomica issue 229): valid
+      # shares stored and revealed, bad shares rejected with an event, malformed points discarded, and the
+      # same block giving equal outputs in two fresh harnesses. A filter that ends in `::` must be quoted.
+      - name: Run TimelockShare VM tests
+        if: ${{ !cancelled() }}
+        run: '.github/scripts/run-tests-guarded.sh timelock-share-vm 9 -- cargo test --locked -p e2e-move-tests --lib timelock_share:: -- --test-threads=1'

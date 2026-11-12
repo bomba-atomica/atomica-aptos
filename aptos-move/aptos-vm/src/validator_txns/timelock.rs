@@ -12,13 +12,13 @@
 //! 2. `ibe_config::submit_dk_shares` stores the shares. Its Move checks are cheap: current epoch, the
 //!    timelock's epoch, pending status, deadline passed in the committed block time, reveal window, one
 //!    slot per validator, exact share count. Any Move abort discards the transaction.
-//! 3. The share check. A [`TimelockShareVerifier`] must accept the shares against the verification keys
-//!    of the author's virtual players, which the handler reads from `TimelockEpochConfig` through
-//!    `ibe_config::get_share_verification_keys`. [`BonehFranklinShareVerifier`] is the real verifier and the
-//!    node installs it at startup ([`install_boneh_franklin_share_verifier`]). **With no verifier installed
-//!    every share is rejected (fail closed).** When the check fails the session is dropped, so the shares
-//!    are not stored and the author's slot stays free. A fresh session then only emits
-//!    `TimelockShareRejectedEvent` naming the author, and the transaction is kept.
+//! 3. The share check. The handler calls `aptos_dkg::ibe::verify_player_shares` directly: for every
+//!    virtual player `p` of the author, `e(H1(identity), vk_p) = e(share_p, g2)`. The verification keys
+//!    come from `TimelockEpochConfig` through `ibe_config::get_share_verification_keys`. The check is a
+//!    pure function of chain state and the transaction, so every process that executes the block gets the
+//!    same output with no setup. When the check fails the session is dropped, so the shares are not stored
+//!    and the author's slot stays free. A fresh session then only emits `TimelockShareRejectedEvent`
+//!    naming the author, and the transaction is kept.
 //! 4. If verified weight reached the threshold, the key is rebuilt in Rust and checked with
 //!    `e(dk, g2) = e(H1(id), mpk)`. Only a key that passes goes to `finalize_timelock_reveal`, which checks
 //!    it again in a native. A key that fails sets `Expired(key-check-failed)` through
@@ -26,7 +26,6 @@
 //!
 //! A discarded transaction leaves no state, so a rejected share never takes the author's slot.
 
-// SCOUT(#229) DOC: step 3 of the module doc above loses the verifier trait, the install call and the fail-closed sentence. The handler calls `aptos_dkg::ibe::verify_player_shares` directly.
 use crate::{
     aptos_vm::get_system_transaction_output,
     errors::expect_only_successful_execution,
@@ -62,7 +61,6 @@ use move_vm_runtime::{
 };
 use move_vm_types::gas::UnmeteredGasMeter;
 use serde::de::DeserializeOwned;
-use std::sync::{Arc, RwLock};
 
 // Codes of discarded transactions. Move equivalents: `errors::invalid_argument(*)` is 0x1, and
 // `errors::invalid_state(*)` is 0x3, in the high bits of the category.
@@ -76,91 +74,12 @@ enum ExpectedFailure {
     ShareCheckFailed = 0x10404,
     /// The Move registry refused the shares. The abort code is logged.
     RegistryAbort = 0x10405,
-    // SCOUT(#229) REMOVE: failure code `ShareVerifierUnavailable` (0x30401).
-    /// No verifier is installed. Fail closed.
-    ShareVerifierUnavailable = 0x30401,
     MissingResourceConfiguration = 0x30402,
 }
 
 enum ExecutionFailure {
     Expected(ExpectedFailure),
     Unexpected(VMStatus),
-}
-
-// SCOUT(#229) REMOVE: `ShareCheckRequest`. The issue does not name it; it only feeds the trait and is re-exported from `validator_txns/mod.rs`.
-/// What a verifier needs to check the shares of one author for one timelock. All fields come from chain
-/// state or from the transaction. The identity and the master public key are the registry's.
-#[derive(Debug)]
-pub struct ShareCheckRequest<'a> {
-    pub epoch: u64,
-    pub timelock_id: u64,
-    /// The validator that submitted the shares. The verifier maps it to the validator index and to the
-    /// verification keys of its virtual players.
-    pub author: AccountAddress,
-    /// `ibe_config::get_identity(timelock_id)`: the 32 byte identity `id` with `Q = H1(id)`.
-    pub identity: &'a [u8],
-    /// The master public key of the epoch (compressed G2, 96 bytes).
-    pub mpk: &'a [u8],
-    /// The verification keys `g2^{s_p}` (compressed G2) of the author's virtual players, in player order,
-    /// read from `TimelockEpochConfig` on chain.
-    pub verification_keys: &'a [Vec<u8>],
-    /// One compressed G1 share per virtual player of the author, in player order. Each already passed
-    /// validated decoding (`aptos_dkg::ibe::decode_g1`).
-    pub shares: &'a [Vec<u8>],
-}
-
-// SCOUT(#229) REMOVE: `ShareCheckError`. The issue does not name it; it goes with the trait.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShareCheckError(pub String);
-
-// SCOUT(#229) REMOVE: trait `TimelockShareVerifier`.
-/// The interface the share verification feature fills in.
-///
-/// An implementation must return `Ok(())` only when, for every virtual player `p` of `author`,
-/// `e(H1(identity), vk_p) = e(share_p, g2)`. `vk_p` must come from the epoch's timelock DKG output, and the
-/// result must be a deterministic function of chain state and the request, because every validator runs
-/// this inside block execution. It must not read local files, clocks or node-local caches that can differ
-/// between validators.
-pub trait TimelockShareVerifier: Send + Sync {
-    fn verify_shares(&self, request: &ShareCheckRequest<'_>) -> Result<(), ShareCheckError>;
-}
-
-// SCOUT(#229) REMOVE: `BonehFranklinShareVerifier`. Its one-line body moves into the handler.
-/// The Boneh-Franklin share check of spec section 5: for every virtual player `p` of the author,
-/// `e(H1(identity), vk_p) = e(share_p, g2)`, over validated points. Stateless and a pure function of the
-/// request, which the handler fills from chain state, so all validators agree.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct BonehFranklinShareVerifier;
-
-impl TimelockShareVerifier for BonehFranklinShareVerifier {
-    fn verify_shares(&self, request: &ShareCheckRequest<'_>) -> Result<(), ShareCheckError> {
-        ibe::verify_player_shares(request.identity, request.shares, request.verification_keys)
-            .map_err(|e| ShareCheckError(format!("{:?}", e)))
-    }
-}
-
-// SCOUT(#229) REMOVE: `install_boneh_franklin_share_verifier`.
-/// Installs [`BonehFranklinShareVerifier`]. The node calls this before it executes blocks.
-pub fn install_boneh_franklin_share_verifier() {
-    set_timelock_share_verifier(Some(Arc::new(BonehFranklinShareVerifier)));
-}
-
-// SCOUT(#229) REMOVE: the process global, with `set_timelock_share_verifier` and `current_share_verifier` below and the `std::sync::{Arc, RwLock}` import.
-static SHARE_VERIFIER: RwLock<Option<Arc<dyn TimelockShareVerifier>>> = RwLock::new(None);
-
-/// Installs (or, with `None`, removes) the share verifier. With none installed the handler rejects every
-/// share. The node installs the verifier before it executes blocks.
-pub fn set_timelock_share_verifier(verifier: Option<Arc<dyn TimelockShareVerifier>>) {
-    *SHARE_VERIFIER
-        .write()
-        .expect("timelock share verifier lock poisoned") = verifier;
-}
-
-fn current_share_verifier() -> Option<Arc<dyn TimelockShareVerifier>> {
-    SHARE_VERIFIER
-        .read()
-        .expect("timelock share verifier lock poisoned")
-        .clone()
 }
 
 /// Validated decoding of every share. Returns the index of the first bad share.
@@ -372,12 +291,6 @@ impl AptosVM {
                 ExpectedFailure::InvalidShareEncoding,
             ));
         }
-        // SCOUT(#229) REMOVE: the verifier lookup and the `ShareVerifierUnavailable` discard.
-        // Fail closed before spending any VM or pairing work.
-        let verifier = current_share_verifier().ok_or(ExecutionFailure::Expected(
-            ExpectedFailure::ShareVerifierUnavailable,
-        ))?;
-
         let mut session = self.new_session(resolver, session_id.clone(), None);
 
         // 2. Store the shares. The Move registry enforces epoch, status, time window, slot and count.
@@ -445,20 +358,12 @@ impl AptosVM {
             )?,
             0,
         )?;
-        // SCOUT(#229) EDIT: call `ibe::verify_player_shares(&identity, &shares, &verification_keys)` here. A failure still drops the session and reports the rejected share.
-        let request = ShareCheckRequest {
-            epoch,
-            timelock_id,
-            author,
-            identity: &identity,
-            mpk: &mpk,
-            verification_keys: &verification_keys,
-            shares: &shares,
-        };
-        if let Err(e) = verifier.verify_shares(&request) {
+        // Spec section 5: for every virtual player `p` of the author, `e(H1(identity), vk_p) =
+        // e(share_p, g2)`. A pure function of chain state and the transaction.
+        if let Err(e) = ibe::verify_player_shares(&identity, &shares, &verification_keys) {
             warn!(
-                "Timelock share check failed: author {}, timelock {}: {}",
-                author, timelock_id, e.0
+                "Timelock share check failed: author {}, timelock {}: {:?}",
+                author, timelock_id, e
             );
             // Drop the session: the shares are not stored and the slot stays free. A fresh session
             // only records the rejection in an event that names the author.
@@ -645,24 +550,6 @@ mod tests {
         assert_eq!(validate_share_encoding(&[good, identity]), Err(1));
     }
 
-    // SCOUT(#229) REMOVE: `AcceptAll` and the test `no_verifier_means_fail_closed` below.
-    struct AcceptAll;
-    impl TimelockShareVerifier for AcceptAll {
-        fn verify_shares(&self, _: &ShareCheckRequest<'_>) -> Result<(), ShareCheckError> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn no_verifier_means_fail_closed() {
-        set_timelock_share_verifier(None);
-        assert!(current_share_verifier().is_none());
-        set_timelock_share_verifier(Some(Arc::new(AcceptAll)));
-        assert!(current_share_verifier().is_some());
-        set_timelock_share_verifier(None);
-        assert!(current_share_verifier().is_none());
-    }
-
     #[test]
     fn failure_codes_do_not_collide_with_chunky_dkg() {
         // chunky_dkg.rs uses 0x10201..0x10205 and 0x30201..0x30204.
@@ -672,16 +559,13 @@ mod tests {
             ExpectedFailure::TimelockEpochMismatch as u64,
             ExpectedFailure::ShareCheckFailed as u64,
             ExpectedFailure::RegistryAbort as u64,
-            // SCOUT(#229) EDIT: drop this entry; the 0x3040x range then holds one code.
-            ExpectedFailure::ShareVerifierUnavailable as u64,
             ExpectedFailure::MissingResourceConfiguration as u64,
         ] {
-            assert!((0x10401..=0x10405).contains(&code) || (0x30401..=0x30402).contains(&code));
+            assert!((0x10401..=0x10405).contains(&code) || code == 0x30402);
         }
     }
 
-    // SCOUT(#229) EDIT: the tests below go through `BonehFranklinShareVerifier` and `ShareCheckRequest`. Rewrite them on `ibe::verify_player_shares` or drop them: the `player_shares_*` tests of aptos-dkg cover the same cases. No CI job runs the unit tests of this file today.
-    // ---- Boneh-Franklin verifier on a request ----
+    // ---- The share check the handler runs: `ibe::verify_player_shares` ----
 
     fn dealing(seed: u64) -> (Vec<aptos_dkg::ibe::MasterScalar>, Vec<Vec<u8>>) {
         let mut rng = StdRng::seed_from_u64(seed);
@@ -700,20 +584,12 @@ mod tests {
             .collect()
     }
 
-    fn check(identity: &[u8], shares: &[Vec<u8>], vks: &[Vec<u8>]) -> Result<(), ShareCheckError> {
-        BonehFranklinShareVerifier.verify_shares(&ShareCheckRequest {
-            epoch: 3,
-            timelock_id: 11,
-            author: AccountAddress::ONE,
-            identity,
-            mpk: &[],
-            verification_keys: vks,
-            shares,
-        })
+    fn check(identity: &[u8], shares: &[Vec<u8>], vks: &[Vec<u8>]) -> Result<(), ()> {
+        ibe::verify_player_shares(identity, shares, vks).map_err(|_| ())
     }
 
     #[test]
-    fn boneh_franklin_verifier_accepts_valid_and_refuses_each_negative() {
+    fn share_check_accepts_valid_and_refuses_each_negative() {
         let (secrets, vks) = dealing(7);
         let good = shares(&secrets, &id());
         assert_eq!(check(&id(), &good, &vks), Ok(()));

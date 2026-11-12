@@ -1,13 +1,10 @@
 // Copyright (c) Aptos Foundation
 // Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
-//! Handler level tests of the `TimelockShare` validator transaction with the Boneh-Franklin share
-//! verifier installed. A `TimelockShare` goes through `AptosVM` block execution against the real framework:
-//! registry, epoch config with verification keys, committed block time.
-//!
-//! The verifier is a process wide static, so the tests of this module take one lock.
+//! Handler level tests of the `TimelockShare` validator transaction. A `TimelockShare` goes through
+//! `AptosVM` block execution against the real framework: registry, epoch config with verification keys,
+//! committed block time. The handler checks the shares itself, so no test needs a setup call.
 
-// SCOUT(#229) EDIT: the module doc above and the LOCK mutex below exist only for the process global. Every install and uninstall call in this file goes, 17 calls in all.
 use crate::MoveHarness;
 use aptos_crypto::arkworks::shamir::ShamirThresholdConfig;
 use aptos_dkg::ibe::{
@@ -22,15 +19,8 @@ use aptos_types::{
     transaction::{ExecutionStatus, Transaction, TransactionOutput, TransactionStatus},
     validator_txn::{TimelockShare, ValidatorTransaction},
 };
-// SCOUT(#229) REMOVE: this import.
-use aptos_vm::validator_txns::{
-    install_boneh_franklin_share_verifier, set_timelock_share_verifier,
-};
 use move_core_types::value::MoveValue;
 use rand::{rngs::StdRng, SeedableRng};
-use std::sync::Mutex;
-
-static LOCK: Mutex<()> = Mutex::new(());
 
 const MIN: u64 = 60_000_000;
 const EPOCH_INTERVAL: u64 = 7_200_000_000;
@@ -260,24 +250,8 @@ fn partial() -> (Dealing, u64) {
     (Dealing::new(&[2, 2], 3, 11), 3)
 }
 
-// SCOUT(#229) REMOVE: this test. The outcome no longer exists.
-#[test]
-fn no_verifier_installed_fails_closed() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (d, t) = partial();
-    let mut e = Env::new(&d, t);
-    e.advance_to(DEADLINE);
-    set_timelock_share_verifier(None);
-    let shares = d.shares_for(0, &e.identity());
-    let out = e.submit(e.epoch, shares);
-    assert!(discarded(&out));
-    assert_eq!(e.share_count(), 0);
-}
-
 #[test]
 fn valid_shares_are_stored_without_revealing_below_threshold() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_boneh_franklin_share_verifier();
     let (d, t) = partial();
     let mut e = Env::new(&d, t);
     e.advance_to(DEADLINE);
@@ -290,14 +264,10 @@ fn valid_shares_are_stored_without_revealing_below_threshold() {
     let again = e.submit(e.epoch, shares);
     assert!(discarded(&again));
     assert_eq!(e.share_count(), 2);
-    set_timelock_share_verifier(None);
 }
 
-// SCOUT(#229) EDIT: passes with no verifier setup call anywhere in the file.
 #[test]
 fn valid_shares_reach_threshold_and_reveal_the_checked_key() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_boneh_franklin_share_verifier();
     // One validator of weight 3 holds the threshold of 2 alone.
     let d = Dealing::new(&[3], 2, 12);
     let mut e = Env::new(&d, 2);
@@ -310,16 +280,12 @@ fn valid_shares_reach_threshold_and_reveal_the_checked_key() {
     let expected = encode_g1(&derive_decryption_key(&d.secret, &id).unwrap()).to_vec();
     assert_eq!(dk, expected);
     assert_eq!(event_named(&out, "TimelockRevealEvent").len(), 1);
-    set_timelock_share_verifier(None);
 }
 
-// SCOUT(#229) EDIT: passes with no verifier setup call: one TimelockShareRejectedEvent, nothing stored.
 /// Every bad share set is refused, nothing is stored, the author's slot stays free, and one event names
 /// the author. A good set from the same author is accepted right after.
 #[test]
 fn bad_shares_are_rejected_keep_the_slot_free_and_emit_an_event() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_boneh_franklin_share_verifier();
     let (d, t) = partial();
     let mut e = Env::new(&d, t);
     e.advance_to(DEADLINE);
@@ -358,13 +324,10 @@ fn bad_shares_are_rejected_keep_the_slot_free_and_emit_an_event() {
     assert!(kept_ok(&out));
     assert!(event_named(&out, "TimelockShareRejectedEvent").is_empty());
     assert_eq!(e.share_count(), 2);
-    set_timelock_share_verifier(None);
 }
 
 #[test]
 fn non_subgroup_and_malformed_points_are_discarded_before_any_state_change() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_boneh_franklin_share_verifier();
     let (d, t) = partial();
     let mut e = Env::new(&d, t);
     e.advance_to(DEADLINE);
@@ -397,13 +360,10 @@ fn non_subgroup_and_malformed_points_are_discarded_before_any_state_change() {
         assert!(event_named(&out, "TimelockShareRejectedEvent").is_empty());
         assert_eq!(e.share_count(), 0);
     }
-    set_timelock_share_verifier(None);
 }
 
 #[test]
 fn wrong_epoch_wrong_count_and_early_submission_are_discarded() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_boneh_franklin_share_verifier();
     let (d, t) = partial();
     let mut e = Env::new(&d, t);
     let good = d.shares_for(0, &e.identity());
@@ -426,15 +386,12 @@ fn wrong_epoch_wrong_count_and_early_submission_are_discarded() {
     // And the right submission still works.
     assert!(kept_ok(&e.submit(e.epoch, good)));
     assert_eq!(e.share_count(), 2);
-    set_timelock_share_verifier(None);
 }
 
 /// The shares are valid per player but the epoch's mpk belongs to another secret, so the rebuilt key fails
 /// `e(dk, g2) = e(H1(id), mpk)`. The key must not be stored, and the status is `Expired(key-check-failed)`.
 #[test]
 fn rebuilt_key_that_fails_the_mpk_check_expires_and_is_not_stored() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_boneh_franklin_share_verifier();
     let d = Dealing::new(&[3], 2, 13);
     let other = Dealing::new(&[3], 2, 14);
     let mut e = Env::new(&d, 2);
@@ -468,10 +425,29 @@ fn rebuilt_key_that_fails_the_mpk_check_expires_and_is_not_stored() {
         vec![bcs::to_bytes(&e.timelock_id).unwrap()],
     );
     assert!(key.values.is_err(), "no decryption key is stored");
-    set_timelock_share_verifier(None);
 }
 
-// SCOUT(#229) TEST: one_valid_share_block_gives_equal_outputs_in_two_fresh_harnesses (no setup call).
+/// The same valid `TimelockShare` block, executed in two fresh harnesses with no setup call, gives equal
+/// transaction outputs. Any process that replays the chain (a node, the debugger, replay-verify) must
+/// reach the same state.
+#[test]
+fn one_valid_share_block_gives_equal_outputs_in_two_fresh_harnesses() {
+    let d = Dealing::new(&[3], 2, 23);
+    let run = || {
+        let mut e = Env::new(&d, 2);
+        e.advance_to(DEADLINE);
+        let shares = d.shares_for(0, &e.identity());
+        let out = e.submit(e.epoch, shares);
+        assert!(kept_ok(&out), "{:?}", out.status());
+        assert!(e.is_revealed());
+        out
+    };
+    let first = run();
+    let second = run();
+    assert!(!first.write_set().is_empty());
+    assert_eq!(first, second);
+}
+
 /// Submits the shares of `order` (validator indices) one by one. Only the last submission reaches the
 /// threshold, and it must reveal the key of `d`.
 fn reveal_in_order(d: &Dealing, threshold: u64, order: &[usize]) {
@@ -502,20 +478,14 @@ fn reveal_in_order(d: &Dealing, threshold: u64, order: &[usize]) {
 /// submit (validator 1 never does).
 #[test]
 fn equal_weights_reveal_below_full_weight_out_of_index_order() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_boneh_franklin_share_verifier();
     let d = Dealing::new(&[1, 1, 1, 1], 3, 21);
     reveal_in_order(&d, 3, &[2, 0, 3]);
-    set_timelock_share_verifier(None);
 }
 
 /// Unequal weights 2,1,1 with threshold 3: validator 2 (weight 1) submits before validator 0 (weight 2),
 /// validator 1 never does. Player ids must come from the weights of all validators.
 #[test]
 fn unequal_weights_reveal_out_of_index_order() {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_boneh_franklin_share_verifier();
     let d = Dealing::new(&[2, 1, 1], 3, 22);
     reveal_in_order(&d, 3, &[2, 0]);
-    set_timelock_share_verifier(None);
 }

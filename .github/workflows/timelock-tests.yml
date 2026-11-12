@@ -85,10 +85,11 @@ jobs:
           add-job-id-key: false
           save-if: true
 
-      # SCOUT(#229) EDIT: the floor of 9 stays (one test removed, one added). Once Crypto Crates Tests runs these tests, this job repeats them.
       # SCOUT(#225) EDIT: these tests register a timelock through the harness; they run only here until issue 229 moves them into the required check.
-      # 9 tests on 2026-11-04 (7 handler tests, plus the two multi-validator reveals below full
-      # weight: equal weights 1,1,1,1 in order 2,0,3 and unequal weights 2,1,1 in order 2,0), so 9 is the floor.
+      # 9 tests (7 handler tests, including the two-harness determinism test, plus the two
+      # multi-validator reveals below full weight: equal weights 1,1,1,1 in order 2,0,3 and unequal
+      # weights 2,1,1 in order 2,0), so 9 is the floor. The required Crypto Crates Tests job runs the
+      # same tests (atomica issue 229).
       - name: Run timelock_share VM tests (zero-test guard, minimum 9)
         run: |
           .github/scripts/run-tests-guarded.sh timelock_share 9 -- cargo test --locked -p e2e-move-tests --lib timelock_share:: -- --test-threads=1
