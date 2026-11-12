@@ -29,7 +29,7 @@ Kept from `dev-atomica`:
 
 - The deadline registry in `aptos-move/framework/aptos-framework/sources/ibe_config.move` (`TimelockRegistry`, `TimelockInfo`, `register_timelock`, `submit_dk_shares`, `finalize_timelock_reveal`, `on_new_block`).
 - The timelock validator transaction (`ValidatorTransaction::TimelockShare` in `types/src/validator_txn.rs` lines 19 to 33, handler in `aptos-move/aptos-vm/src/validator_txns/timelock.rs`).
-- The Move API names in `ibe_config.move` and `aptos-stdlib/sources/cryptography/ibe.move`, and the `ibe::reconstruct_ibe_dk` native (`aptos-move/framework/src/natives/cryptography/algebra/ibe.rs`). <!-- SCOUT(#240) DOC: the reconstruct native goes. The path given here is also stale: the natives live in aptos-move/framework/natives/src/timelock.rs. -->
+- The Move API names in `ibe_config.move` and `aptos-stdlib/sources/cryptography/ibe.move`. The natives live in `aptos-move/framework/natives/src/timelock.rs`. The old `ibe::reconstruct_ibe_dk` native is removed: the handler rebuilds the key in Rust.
 - Boneh-Franklin: `hash_to_g1`, `derive_decryption_key`, `ibe_encrypt`, `ibe_decrypt`, `verify_decryption_key` and `reconstruct_ibe_dk_from_g1_shares` in `crates/aptos-dkg/src/ibe/mod.rs` (lines 292, 328, 353, 401, 474, 624). These are ported from `blstrs` to arkworks. The port is checked against golden vectors.
 
 Replaced:
@@ -154,7 +154,7 @@ Implementation notes (`node-share-verification`):
 
 ### Reconstruction and key check (fixes gap 1)
 
-- When verified weight reaches `TimelockEpochConfig.reconstruct_threshold_weight`, the handler combines the stored shares by weighted Lagrange interpolation in G1. This is the existing `reconstruct_ibe_dk_from_g1_shares` logic (`ibe/mod.rs` line 624), ported to arkworks, and kept behind the `ibe::reconstruct_ibe_dk` native. <!-- SCOUT(#240) DOC: `kept behind the ibe::reconstruct_ibe_dk native` is no longer true. The issue names lines 32 and 268 only. -->
+- When verified weight reaches `TimelockEpochConfig.reconstruct_threshold_weight`, the handler combines the stored shares by weighted Lagrange interpolation in G1. This is the existing `reconstruct_ibe_dk_from_g1_shares` logic (`ibe/mod.rs` line 624), ported to arkworks. The handler calls it in Rust. No Move native exposes it.
 - The handler then checks `e(dk, g2) = e(Q, mpk)` (the port of `verify_decryption_key`, `ibe/mod.rs` line 474). Today this function is only called from tests.
 - `finalize_timelock_reveal` takes the checked key and repeats the same pairing check through a new native `ibe::verify_decryption_key`. This costs two pairings once per reveal. It is defense in depth, so that a handler bug cannot store an unchecked key.
 - If the check passes, the status becomes `Revealed`. If it fails, every share was individually valid against the verification keys. The failure then means the `Vs` and `V0` of the DKG output disagree, or a code bug. The handler sets nothing except the status `Expired(key-check-failed)`, emits an event, and the node raises an alert. Bids become refundable. The DKG-result check in section 4 makes this case unreachable for an accepted DKG output. The branch is kept as a backstop.
@@ -268,8 +268,7 @@ Written once per epoch by `finish_with_timelock_dkg_result`. Fields: `epoch`, `m
 | `verify_ct` from `aptos-batch-encryption` | Replaced | `ibe::verify_bid_ct` in section 6 |
 | `verify_decryption_key_share`, `verify_decryption_key` from `aptos-batch-encryption` | Replaced | The Boneh-Franklin checks in section 5 |
 
-<!-- SCOUT(#240) DOC: point at the last fork commit that held the prototype. -->
-The prototype `atomica/proto-fptx-timelock/` is kept as a reference. It is not part of the product path. Its README says so.
+The prototype `atomica/proto-fptx-timelock/` is removed from the fork. It was never part of the product path. Commit `6ce308a67a` on `dev-atomica` is the last fork commit that holds it, as a reference.
 
 ## 10. Test plan for the implementation tasks
 

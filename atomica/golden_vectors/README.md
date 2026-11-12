@@ -9,7 +9,6 @@ Golden vectors for the hardened Boneh-Franklin timelock. Design source: `atomica
 ### Files
 
 - `ibe_v2_golden_vectors.json` is the source of truth. It is generated, not hand written.
-- `legacy-v1/` holds the old vectors (identity `SHA3-256(timelock_id || deadline_us)`, blstrs shares). They are history only. No test reads them. <!-- SCOUT(#240) DOC: this line goes with the folder. -->
 - `aptos-move/framework/aptos-framework/sources/ibe_golden_vector_fixtures.move` is generated from the JSON.
 
 ### What the vectors cover

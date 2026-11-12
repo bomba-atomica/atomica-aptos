@@ -8,45 +8,10 @@
 ///
 /// | Native | Spec section | Purpose |
 /// |---|---|---|
-/// | `reconstruct_ibe_dk` | 5 | Weighted Lagrange interpolation of G1 key shares |
 /// | `verify_decryption_key` | 5 | Pairing check `e(dk, g2) = e(H1(id), mpk)` |
 /// | `verify_bid_ct` | 6 | Submission check of a bid ciphertext against its associated data |
-///
-/// Abort codes of `reconstruct_ibe_dk` (from the native): 1 when the type argument is not
-/// `bls12381_algebra::G1`, 2 for malformed input (shape, bounds, weights, below threshold, or a
-/// share that is not a valid prime-order non-identity G1 point).
 module aptos_std::ibe {
     // SCOUT(#227) DOC: the module table above gains a `decrypt_bid` row (spec section 6) and the stale Cargo feature name `natives-port-timelock` goes.
-    // SCOUT(#240) DOC: the module table and the abort code paragraph above lose `reconstruct_ibe_dk`.
-    // SCOUT(#240) REMOVE: `reconstruct_ibe_dk` has no caller outside tests; the `TimelockShare` handler rebuilds the key in Rust.
-    /// Reconstructs an IBE decryption key from G1 key shares.
-    ///
-    /// Performs weighted Lagrange interpolation directly on G1 points. Each validator's entry
-    /// holds one 48-byte compressed G1 point per virtual player.
-    ///
-    /// * `validator_indices` - validator indices (0-based, from the DKG).
-    /// * `dk_shares` - `dk_shares[i]` holds the shares of validator `validator_indices[i]`.
-    /// * `weights` - weights of every validator of the epoch, indexed by validator index (the full
-    ///   per-validator list, not only the submitters). Validator `i` owns the virtual players that
-    ///   start at `weights[0] + ... + weights[i - 1]`, and the weights must sum to `total_weight`.
-    /// * `threshold` - minimum weight required for reconstruction.
-    /// * `total_weight` - sum of all validator weights.
-    /// * `identity` - 32-byte identity (see `ibe_config::compute_identity`).
-    ///
-    /// Returns the 48-byte compressed G1 decryption key. Aborts on malformed input.
-    public fun reconstruct_ibe_dk<G1>(
-        validator_indices: vector<u64>,
-        dk_shares: vector<vector<vector<u8>>>,
-        weights: vector<u64>,
-        threshold: u64,
-        total_weight: u64,
-        identity: vector<u8>,
-    ): vector<u8> {
-        reconstruct_ibe_dk_internal<G1>(
-            validator_indices, dk_shares, weights, threshold, total_weight, identity
-        )
-    }
-
     /// Checks `e(dk, g2) = e(H1(identity), mpk)`.
     ///
     /// * `dk` - 48-byte compressed G1 key. Decoded with subgroup validation.
@@ -77,16 +42,6 @@ module aptos_std::ibe {
 
     // SCOUT(#227) ADD: `public fun decrypt_bid(dk: vector<u8>, identity: vector<u8>, ad: vector<u8>, ct: vector<u8>): Option<vector<u8>>` that calls the native `decrypt_bid_internal` and never aborts on bad input. A public stdlib function cannot be removed after release, so it is not stubbed here.
     // SCOUT(#228) EDIT: the product `auction::open_bids` calls `decrypt_bid` once per bid with the key and identity from the timelock registry.
-
-    // SCOUT(#240) REMOVE: native declaration of the unused reconstruction native.
-    native fun reconstruct_ibe_dk_internal<G1>(
-        validator_indices: vector<u64>,
-        dk_shares: vector<vector<vector<u8>>>,
-        weights: vector<u64>,
-        threshold: u64,
-        total_weight: u64,
-        identity: vector<u8>,
-    ): vector<u8>;
 
     native fun verify_decryption_key_internal(
         dk: vector<u8>, identity: vector<u8>, mpk: vector<u8>

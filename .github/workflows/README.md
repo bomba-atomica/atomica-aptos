@@ -190,14 +190,13 @@ step summary. Self-test: `.github/scripts/tests/selftest.sh` (also run in
 <!-- SCOUT(#227) DOC: the crypto-crates-tests.yml row below gains the ibe gas VM tests and the ibe Move unit tests. -->
 <!-- SCOUT(#229) DOC: the crypto-crates-tests.yml row below gains the TimelockShare VM tests. -->
 <!-- SCOUT(#231) DOC: the crypto-crates-tests.yml row below gains the timelock_dkg Move unit tests. -->
-<!-- SCOUT(#240) DOC: the timelock-tests.yml row below names the prototype. It becomes the TimelockShare VM tests row; the row never listed that job. -->
 
 | Workflow | Covers | Trigger |
 | --- | --- | --- |
 | `lint-format.yml` | rustfmt and clippy | push and PR on Rust paths |
 | `crypto-crates-tests.yml` | aptos-dkg, aptos-crypto, aptos-types, aptos-dkg-runtime timelock share service, aptos-eth-header-consensus, e2e-move-tests `eth_header::`, `ethereum_headers` Move unit tests | push and PR |
 | `node-framework-tests.yml` | aptos-node and aptos-framework (Move unit tests) | push and PR on Rust and Move paths |
-| `timelock-tests.yml` | `atomica/proto-fptx-timelock` (reference only, superseded for the product path) | push and PR on its folder |
+| `timelock-tests.yml` | TimelockShare VM tests: e2e-move-tests `timelock_share::` (the `TimelockShare` handler through AptosVM) | push and PR on the timelock registry, IBE natives, handler, IBE crate and `head.mrb` paths |
 | `debug-tests.yml` | smoke tests, including the live timelock reveal (`timelock_reveal_on_live_swarm`) and Ethereum header attestation (`eth_header_e2e::certified_header_on_live_swarm`) | every push to main and dev-atomica, PR on Rust paths |
 | `build-aptos-binary.yml` | node, CLI, faucet, framework bundle | push on Rust paths, manual |
 | `build-validator-image.yml` | validator image | release, manual |

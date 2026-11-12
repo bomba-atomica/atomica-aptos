@@ -1,5 +1,7 @@
 # IBE Golden Vector Tests - Implementation Summary
 
+> **Status: history.** This summary describes the January 2026 stub tests. The Move native `ibe::reconstruct_ibe_dk` it names was removed: the `TimelockShare` validator transaction handler rebuilds the key in Rust with `aptos_dkg::ibe::reconstruct_ibe_dk_from_g1_shares`. `aptos_std::ibe` now exposes `verify_decryption_key` and `verify_bid_ct` only. The current golden vector tests are described in `atomica/golden_vectors/README.md`.
+
 **Created:** 2026-01-21
 **Test File:** `aptos-move/framework/aptos-framework/sources/ibe_config_golden_tests.move`
 **Golden Vectors:** `atomica/golden_vectors/ibe_golden_vectors.json`
@@ -40,8 +42,7 @@ These tests demonstrate the correct structure but are marked as `#[expected_fail
 
 **Test:** `test_native_ibe_reconstruct_callable`
 
-<!-- SCOUT(#240) DOC: not named in the issue. This summary and the plan and technical notes under atomica/docs describe the removed native as live. -->
-**Purpose:** Verify that the native IBE reconstruction function (`ibe::reconstruct_ibe_dk`) is callable from Move and produces correct results.
+**Purpose:** Verify that the native IBE reconstruction function (`ibe::reconstruct_ibe_dk`, since removed) is callable from Move and produces correct results.
 
 **Golden Vector Used:** Test case 1 (5 validators, threshold 3, equal weights)
 

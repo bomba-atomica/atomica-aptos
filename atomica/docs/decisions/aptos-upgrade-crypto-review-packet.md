@@ -8,15 +8,14 @@ The forgectl feature `crypto-review-signoff` is closed on the engineering outcom
 
 Revision notice (2026-10-30): the design direction changed after this packet was written. Sections 0 to 7 below review the superseded Option C (FPTX) design and are kept as the record. Section 8 maps each earlier required change to the new design. Section 9 holds the open questions for the new design. The spec now under review is the [IBE on chunky DKG spec](aptos-upgrade-ibe-chunky-spec.md). Section 7, the Reviewer record, is unchanged and blank. No external cryptographer has signed anything, and review is still recommended before release.
 
-<!-- SCOUT(#240) DOC: three places in this packet name the prototype folder (here, the test run line in section 0, and section 8c). Each points at the last fork commit that held it. -->
-Superseded spec (sections 0 to 7): [Option C spec](aptos-upgrade-option-c-spec.md). Prototype: `atomica/proto-fptx-timelock/` in this fork. Upstream code: branch `baseline/aptos-node-v1.49.6` (tip `b4359185dd`, "Bump version to 1.49.6"). Paths in section 1 to 4 are relative to the repo root on that branch unless marked `proto:`.
+Superseded spec (sections 0 to 7): [Option C spec](aptos-upgrade-option-c-spec.md). Prototype: `atomica/proto-fptx-timelock/`, removed from this fork. Commit `6ce308a67a` on `dev-atomica` is the last fork commit that holds it. Upstream code: branch `baseline/aptos-node-v1.49.6` (tip `b4359185dd`, "Bump version to 1.49.6"). Paths in section 1 to 4 are relative to the repo root on that branch unless marked `proto:`.
 
 ## 0. What to know first
 
 - Curve: `aptos-batch-encryption` uses BLS12-381 (`crates/aptos-batch-encryption/src/group.rs`, lines 3 to 6). BN254 is only a commented-out alternative. G1 and G2 both have cofactor greater than 1, so a missing subgroup check is a real gap, not a formality.
 - Scheme: FPTX weighted batch threshold encryption. A bid is an IBE-style ciphertext whose identity is `H(one-time Ed25519 verifying key, associated data)`. A batch of identity values is committed as a KZG-style digest in G1. A decryption key is a threshold "shifted BLS" signature on `digest + H(mpk)`. An eval proof opens the digest at one identity.
 - Prototype scope: it exercises the library with `setup_for_testing` (one dealer, seeded RNG). It does not exercise chunky DKG, the digest key file loader, epochs, or the on-chain registry. Section 6 lists what no test covers.
-- Test run for this packet: `cd atomica/proto-fptx-timelock && cargo test --offline` gave 11 passed, 0 failed (3.14 s test time, optimized profile). This is a local run, not CI.
+- Test run for this packet: `cd atomica/proto-fptx-timelock && cargo test --offline` (at fork commit `6ce308a67a`, the last that holds the prototype) gave 11 passed, 0 failed (3.14 s test time, optimized profile). This is a local run, not CI.
 
 Prototype test names (all in `proto:tests/timelock.rs`):
 
@@ -339,7 +338,7 @@ Questions A and the network-facing deserialization part of B still apply in chan
 
 ### 8c. Evidence status
 
-- The prototype in `atomica/proto-fptx-timelock/` (11 passing tests, local run, not CI) covers the superseded FPTX design only. It is a reference. It gives no evidence for the new design.
+- The prototype in `atomica/proto-fptx-timelock/` (11 passing tests, local run, not CI; removed, last held at fork commit `6ce308a67a`) covers the superseded FPTX design only. It is a reference. It gives no evidence for the new design.
 - No test or prototype yet exists for the new design. Every claim in the new spec is a claim to confirm or refute.
 - No external cryptographer has reviewed or signed anything. Review is still recommended before any release or mainnet use.
 

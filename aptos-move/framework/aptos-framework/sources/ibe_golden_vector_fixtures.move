@@ -6,8 +6,7 @@
 ///
 /// The master public key, the verification keys and the shares come from a seeded real chunky DKG
 /// dealing (weights [2, 1, 2], threshold weight 3). Identity: `ibe_config::compute_identity(chain 7, epoch 3, id 11, deadline 1700000000000000)`.
-/// The legacy V1 vectors (old identity hash, blstrs shares) are kept as history in
-/// `atomica/golden_vectors/legacy-v1/` and are not used by any test.
+/// The legacy V1 vectors (old identity hash, blstrs shares) are retired. No copy is kept.
 module aptos_framework::ibe_golden_vector_fixtures {
 // ---- dealing
 public fun chain_id(): u8 { 7 }

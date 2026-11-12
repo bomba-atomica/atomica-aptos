@@ -783,8 +783,6 @@ fn mv_nested(v: &Value) -> String {
     format!("vector[\n{},\n        ]", rows.join(",\n"))
 }
 
-// SCOUT(#240) EDIT: the header text below names the legacy vector folder in two lines. Changing it regenerates `ibe_golden_vector_fixtures.move`, a shipped framework module, so head.mrb goes stale.
-// SCOUT(#240) EDIT: `reconstruction_sets`, `below_threshold_sets`, `poisoned_shares` and `poisoned_dk` lose their only Move readers when the reconstruction tests go. Drop the accessors or keep them on purpose.
 /// Renders the Move fixture module from the JSON. The accessors keep the names the registry tests
 /// use (`timelock_basic_*`).
 pub fn generate_move(json_text: &str) -> String {
@@ -808,8 +806,7 @@ pub fn generate_move(json_text: &str) -> String {
 ///\n\
 /// The master public key, the verification keys and the shares come from a seeded real chunky DKG\n\
 /// dealing (weights {w:?}, threshold weight {t}). Identity: `ibe_config::compute_identity(chain {c}, epoch {e}, id {i}, deadline {dl})`.\n\
-/// The legacy V1 vectors (old identity hash, blstrs shares) are kept as history in\n\
-/// `atomica/golden_vectors/legacy-v1/` and are not used by any test.\n\
+/// The legacy V1 vectors (old identity hash, blstrs shares) are retired. No copy is kept.\n\
 module aptos_framework::ibe_golden_vector_fixtures {{\n\
     // ---- dealing\n\
     public fun chain_id(): u8 {{ {c} }}\n\
