@@ -208,8 +208,9 @@ This mirrors `Ciphertext::verify` upstream (`crates/aptos-batch-encryption/src/s
 
 ### Kept
 
-<!-- SCOUT(#230) DOC: the submitter list survives expiry, `TimelockExpiredEvent` carries it and `get_submitters` returns it. -->
 Timelock id (monotonic, `next_timelock_id`), `deadline_us`, the identity, share bookkeeping (`validator_indices`, `submitted_shares`, `validator_weights`, `submitters`), the decryption key, the registration, reveal and expiry events, and `E_SHARE_ALREADY_SUBMITTED`.
+
+The submitter list survives expiry for every reason. `submitters` holds the validators whose share sets were accepted, in submission order. Expiry drops the stored shares, but it keeps this list. `TimelockExpiredEvent` carries it as `submitters`, and the view `get_submitters(timelock_id)` returns it. Anyone can compare it with the epoch's validator set to name the validators that did not submit. Nothing penalizes them on chain: the list is evidence only.
 
 ### Added to `TimelockInfo`
 

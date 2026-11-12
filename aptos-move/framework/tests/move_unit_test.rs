@@ -142,15 +142,11 @@ fn move_experimental_unit_tests() {
 // SCOUT(#225) EDIT: the Tee writer and the `passed: N` parse of the test below are local to it. Lift them into a shared helper before a second filtered test copies them.
 // SCOUT(#225) TEST: ibe_config_move_unit_tests: runs the Move tests of `ibe_config_tests` and fails below the number the file holds (46 today). Issues 226 and 230 need the same Rust test: the first to merge adds it, the others raise the floor.
 // SCOUT(#226) TEST: the same Rust test as issue 225 (ibe_config_move_unit_tests), with the floor raised by six.
-// SCOUT(#230) TEST: the same Rust test as issue 225 (ibe_config_move_unit_tests), with the floor raised by four.
 // SCOUT(#231) TEST: timelock_dkg_move_unit_tests: runs the Move tests of `timelock_dkg_tests` (12 today).
 // SCOUT(#227) TEST: a filtered Rust test for the Move tests of `ibe_native_test` and `ibe_golden_vector_tests`. One filter string cannot select both without `ibe_config_tests`, and the cargo filter `ibe` would also run ibe_config_move_unit_tests, so pick the names with care.
-/// The Move unit tests of `ethereum_headers` and `ethereum_header_config` (fork only). Runs
-/// with `cargo test -p aptos-framework --test move_unit_test -- ethereum_headers` and fails when the filter
-/// matches no Move test, so the Rust test never passes with zero Move tests.
-#[test]
-fn ethereum_headers_move_unit_tests() {
-    /// Copies the Move test report to stdout as it is written, so a failure still shows it.
+/// Runs the aptos-framework Move tests that match `filter` and returns how many passed. The report is
+/// copied to stdout as it is written, so a failure still shows it.
+fn run_filtered_framework_tests(filter: &str) -> u64 {
     struct Tee(Vec<u8>);
     impl std::io::Write for Tee {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -164,18 +160,29 @@ fn ethereum_headers_move_unit_tests() {
         }
     }
     let mut tee = Tee(Vec::new());
-    run_tests_for_pkg_with_filter(
-        "aptos-framework",
-        false,
-        Some("ethereum_headers_tests".to_string()),
-        &mut tee,
-    );
+    run_tests_for_pkg_with_filter("aptos-framework", false, Some(filter.to_string()), &mut tee);
     let out = String::from_utf8(tee.0).unwrap();
-    let passed: u64 = out
-        .split("passed: ")
+    out.split("passed: ")
         .nth(1)
         .and_then(|rest| rest.split(';').next())
         .and_then(|n| n.trim().parse().ok())
-        .expect("Move test summary line");
+        .expect("Move test summary line")
+}
+
+/// The Move unit tests of `ethereum_headers` and `ethereum_header_config` (fork only). Runs
+/// with `cargo test -p aptos-framework --test move_unit_test -- ethereum_headers` and fails when the filter
+/// matches no Move test, so the Rust test never passes with zero Move tests.
+#[test]
+fn ethereum_headers_move_unit_tests() {
+    let passed = run_filtered_framework_tests("ethereum_headers_tests");
     assert!(passed >= 8, "only {passed} ethereum_headers Move tests ran");
+}
+
+/// The Move unit tests of `ibe_config_tests` (fork only). Runs with
+/// `cargo test -p aptos-framework --test move_unit_test -- ibe_config` and fails when fewer Move tests
+/// pass than the file holds.
+#[test]
+fn ibe_config_move_unit_tests() {
+    let passed = run_filtered_framework_tests("ibe_config_tests");
+    assert!(passed >= 50, "only {passed} ibe_config Move tests ran");
 }

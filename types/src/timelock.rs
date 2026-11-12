@@ -42,8 +42,6 @@ pub enum TimelockStatusResource {
     Expired { reason: u8 },
 }
 
-// SCOUT(#230) EDIT: no change: this mirror pins the `TimelockInfo` layout. Keeping `submitters` after expiry must not move a field.
-// SCOUT(#230) ADD: a Rust mirror of `TimelockExpiredEvent` with `submitters` for the e2e event assertion in timelock_share.rs. None exists today.
 /// BCS mirror of the Move struct `0x1::ibe_config::TimelockInfo`, as stored in the registry table. The field
 /// order is the wire format. The node reads it from committed chain state to find the timelocks it serves.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -79,6 +77,16 @@ impl TimelockInfoResource {
             },
         }
     }
+}
+
+/// BCS mirror of the Move event `0x1::ibe_config::TimelockExpiredEvent`. The field order is the wire format.
+/// `submitters` lists the validators whose share sets were accepted, in submission order.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TimelockExpiredEvent {
+    pub timelock_id: u64,
+    pub reason: u8,
+    pub timestamp_us: u64,
+    pub submitters: Vec<move_core_types::account_address::AccountAddress>,
 }
 
 /// The table handle of `TimelockRegistry.timelocks`. The resource is `{ timelocks: Table, pending:

@@ -66,6 +66,13 @@ module aptos_framework::ibe_config_tests {
         out
     }
 
+    /// The only `TimelockExpiredEvent` emitted so far, as `(timelock_id, reason, submitters)`.
+    fun only_expired_event(): (u64, u8, vector<address>) {
+        let events = event::emitted_events<ibe_config::TimelockExpiredEvent>();
+        assert!(events.length() == 1, 100);
+        ibe_config::expired_event_fields_for_testing(&events[0])
+    }
+
     // SCOUT(#225) EDIT: 37 tests register through this helper as @0xA and no registrar is set. Setup must make @0xA the registrar, or each of them aborts with E_NOT_REGISTRAR.
     fun register(user: &signer, deadline_us: u64): u64 {
         let id = ibe_config::get_next_timelock_id();
@@ -346,7 +353,6 @@ module aptos_framework::ibe_config_tests {
         ibe_config::get_decryption_key(id);
     }
 
-    // SCOUT(#230) EDIT: also assert get_submitters and the event list for the key-check-failed expiry (reason 3).
     #[test(user = @0xA)]
     fun failed_key_check_expires_and_never_reopens(user: &signer) {
         setup_ready();
@@ -361,6 +367,9 @@ module aptos_framework::ibe_config_tests {
         assert!(!ibe_config::is_revealed(id), 5);
         let (_, _, _, count) = ibe_config::get_timelock(id);
         assert!(count == 0, 6);
+        assert!(ibe_config::get_submitters(id) == vector[@0xB0, @0xB1], 7);
+        let (event_id, reason, submitters) = only_expired_event();
+        assert!(event_id == id && reason == 3 && submitters == vector[@0xB0, @0xB1], 8);
     }
 
     /// A valid G1 point that is the key of another timelock fails the real pairing check.
@@ -409,11 +418,6 @@ module aptos_framework::ibe_config_tests {
     }
 
     // SCOUT(#226) EDIT: the read at 70 * MIN - 1 stays 0. The read at 70 * MIN is 2 even before on_new_block_for_testing runs, so the queue call no longer proves anything through get_status.
-    // SCOUT(#230) EDIT: add get_submitters and event assertions (reason 2). The share count assertion stays.
-    // SCOUT(#230) TEST: expired_by_reveal_window_keeps_and_emits_two_submitters_in_submission_order
-    // SCOUT(#230) TEST: expired_by_epoch_end_keeps_and_emits_submitters
-    // SCOUT(#230) TEST: expired_by_key_check_keeps_and_emits_submitters
-    // SCOUT(#230) TEST: expired_with_no_accepted_share_has_an_empty_list_and_an_empty_event_list
     #[test(user = @0xA)]
     fun reveal_window_expiry_marks_expired_and_drops_shares(user: &signer) {
         setup_ready();
@@ -434,6 +438,71 @@ module aptos_framework::ibe_config_tests {
         assert!(ibe_config::is_expired(id), 4);
         let (_, _, _, count) = ibe_config::get_timelock(id);
         assert!(count == 0, 5);
+        assert!(ibe_config::get_submitters(id) == vector[@0xB0], 6);
+        let (event_id, reason, submitters) = only_expired_event();
+        assert!(event_id == id && reason == 2 && submitters == vector[@0xB0], 7);
+    }
+
+    /// The list keeps submission order, not validator index order.
+    #[test(user = @0xA)]
+    fun expired_by_reveal_window_keeps_and_emits_two_submitters_in_submission_order(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 2, @0xB2, 0);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        timestamp::update_global_time_for_test(70 * MIN);
+        ibe_config::on_new_block_for_testing();
+        assert!(ibe_config::get_expiry_reason(id) == 2, 1);
+        let (_, _, _, count) = ibe_config::get_timelock(id);
+        assert!(count == 0, 2);
+        let kept = ibe_config::get_submitters(id);
+        assert!(kept == vector[@0xB2, @0xB0], 3);
+        let (event_id, reason, submitters) = only_expired_event();
+        assert!(event_id == id && reason == 2, 4);
+        assert!(submitters == kept, 5);
+    }
+
+    #[test(user = @0xA)]
+    fun expired_by_epoch_end_keeps_and_emits_submitters(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
+        reconfiguration::reconfigure_for_test_custom();
+        ibe_config::on_new_block_for_testing();
+        assert!(ibe_config::get_expiry_reason(id) == 1, 1);
+        assert!(ibe_config::get_submitters(id) == vector[@0xB1], 2);
+        let (event_id, reason, submitters) = only_expired_event();
+        assert!(event_id == id && reason == 1 && submitters == vector[@0xB1], 3);
+    }
+
+    #[test(user = @0xA)]
+    fun expired_by_key_check_keeps_and_emits_submitters(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 2, @0xB2, 0);
+        ibe_config::fail_key_check_for_testing(id);
+        assert!(ibe_config::get_expiry_reason(id) == 3, 1);
+        let (_, _, _, count) = ibe_config::get_timelock(id);
+        assert!(count == 0, 2);
+        assert!(ibe_config::get_submitters(id) == vector[@0xB1, @0xB2], 3);
+        let (event_id, reason, submitters) = only_expired_event();
+        assert!(event_id == id && reason == 3 && submitters == vector[@0xB1, @0xB2], 4);
+    }
+
+    #[test(user = @0xA)]
+    fun expired_with_no_accepted_share_has_an_empty_list_and_an_empty_event_list(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(70 * MIN);
+        ibe_config::on_new_block_for_testing();
+        assert!(ibe_config::get_expiry_reason(id) == 2, 1);
+        assert!(ibe_config::get_submitters(id).is_empty(), 2);
+        let (event_id, reason, submitters) = only_expired_event();
+        assert!(event_id == id && reason == 2 && submitters.is_empty(), 3);
     }
 
     // SCOUT(#226) EDIT: pins abort 15 from the stored status. It becomes 11 if assert_can_submit starts to read effective_status.
@@ -480,7 +549,6 @@ module aptos_framework::ibe_config_tests {
 
     // ---- epoch change ----
 
-    // SCOUT(#230) EDIT: also assert get_submitters after the queue drains (reason 1).
     #[test(user = @0xA)]
     fun epoch_change_expires_pending_with_epoch_ended(user: &signer) {
         setup_ready();
@@ -497,6 +565,7 @@ module aptos_framework::ibe_config_tests {
         ibe_config::on_new_block_for_testing();
         let (_, _, _, count) = ibe_config::get_timelock(id);
         assert!(count == 0, 5);
+        assert!(ibe_config::get_submitters(id) == vector[@0xB0], 6);
     }
 
     #[test(user = @0xA, framework = @0x1)]
