@@ -67,6 +67,7 @@ const TIMELOCK_ID: u64 = 11;
 const DEADLINE_US: u64 = 1_700_000_000_000_000;
 const WEIGHTS: [usize; 3] = [2, 1, 2];
 const THRESHOLD: usize = 3;
+// SCOUT(#227) ADD: constants of the price bid cases: three bidder bytes, their u64 prices, and one plaintext that is not 8 bytes.
 const BID_PLAINTEXT: &[u8] = b"atomica golden bid v2";
 
 type Tx = UnsignedWeightedTranscriptv2<Bls12_381>;
@@ -546,6 +547,7 @@ fn key_check_cases(d: &ChunkyDealing, id: &[u8], dk: &G1Affine, other_dk: &G1Aff
     )
 }
 
+// SCOUT(#227) ADD: a sibling `price_bid_cases()` with its own RNG seed. Drawing from the rng below before the existing cases would change their bytes and break the byte-identical criterion.
 fn bid_cases(
     d: &ChunkyDealing,
     id: &[u8; 32],
@@ -737,6 +739,7 @@ pub fn generate_json() -> String {
             "reconstruction_cases": reconstruction_cases(&d, &id, &shares),
             "key_check_cases": key_check_cases(&d, &id, &dk, &other_dk),
         },
+        // SCOUT(#227) EDIT: a new JSON section for the price bids, and a version bump. The product keeps byte copies of this file (state-proofs fixtures, SDK tests) that must be refreshed.
         "bids": {
             "plaintext": hx(BID_PLAINTEXT),
             "ad": hx(&bid_ad_bytes),
@@ -780,6 +783,8 @@ fn mv_nested(v: &Value) -> String {
     format!("vector[\n{},\n        ]", rows.join(",\n"))
 }
 
+// SCOUT(#240) EDIT: the header text below names the legacy vector folder in two lines. Changing it regenerates `ibe_golden_vector_fixtures.move`, a shipped framework module, so head.mrb goes stale.
+// SCOUT(#240) EDIT: `reconstruction_sets`, `below_threshold_sets`, `poisoned_shares` and `poisoned_dk` lose their only Move readers when the reconstruction tests go. Drop the accessors or keep them on purpose.
 /// Renders the Move fixture module from the JSON. The accessors keep the names the registry tests
 /// use (`timelock_basic_*`).
 pub fn generate_move(json_text: &str) -> String {
@@ -1008,6 +1013,8 @@ module aptos_framework::ibe_golden_vector_fixtures {{\n\
         ));
     }
 
+    // SCOUT(#227) ADD: Move accessors for the price bids. The issue names none and the product tests need them. Proposed: `price_bid_bidders(): vector<address>`, `price_bid_prices(): vector<u64>`, `price_bid_cts()`, `price_bid_ads()`, `bad_length_bid_ct()`, `bad_length_bid_ad()`.
+    // SCOUT(#228) EDIT: the product Move tests import these accessors from `aptos_framework::ibe_golden_vector_fixtures` at the pinned framework rev.
     // bids
     let bc = bids["cases"].as_array().unwrap();
     o.push_str(&format!(
@@ -1071,6 +1078,7 @@ fn write_golden_vectors() {
 // Tests against the checked-in bytes
 // ---------------------------------------------------------------------------------------------
 
+// SCOUT(#227) TEST: existing_bid_cases_are_byte_identical_after_the_price_bids_are_added (pins the 15 existing case ciphertexts).
 #[test]
 fn regeneration_reproduces_checked_in_bytes() {
     let json_text = generate_json();
@@ -1086,6 +1094,7 @@ fn regeneration_reproduces_checked_in_bytes() {
     assert!(generate_json() == json_text);
 }
 
+// SCOUT(#227) TEST: extend with the price bids: each decrypts to its 8-byte little-endian price under its own bidder's associated data and fails under another bidder's.
 #[test]
 fn checked_in_vectors_verify() {
     let doc: Value = serde_json::from_str(CHECKED_IN_JSON).unwrap();

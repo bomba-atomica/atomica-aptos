@@ -7,6 +7,7 @@
 //!
 //! The verifier is a process wide static, so the tests of this module take one lock.
 
+// SCOUT(#229) EDIT: the module doc above and the LOCK mutex below exist only for the process global. Every install and uninstall call in this file goes, 17 calls in all.
 use crate::MoveHarness;
 use aptos_crypto::arkworks::shamir::ShamirThresholdConfig;
 use aptos_dkg::ibe::{
@@ -21,6 +22,7 @@ use aptos_types::{
     transaction::{ExecutionStatus, Transaction, TransactionOutput, TransactionStatus},
     validator_txn::{TimelockShare, ValidatorTransaction},
 };
+// SCOUT(#229) REMOVE: this import.
 use aptos_vm::validator_txns::{
     install_boneh_franklin_share_verifier, set_timelock_share_verifier,
 };
@@ -136,6 +138,7 @@ impl Env {
                 bcs::to_bytes(&vec![2u8; 32]).unwrap(),
                 bcs::to_bytes(&dealing.vks()).unwrap(),
             ]);
+        // SCOUT(#225) EDIT: make this account the registrar before the registration below, with `h.executor.exec("ibe_config", "set_timelock_registrar", ...)`. The harness runs genesis from head.mrb, so it needs the refreshed bundle.
         let user = h.new_account_at(AccountAddress::from_hex_literal("0xa11ce").unwrap());
         let status = h.run_entry_function(
             &user,
@@ -257,6 +260,7 @@ fn partial() -> (Dealing, u64) {
     (Dealing::new(&[2, 2], 3, 11), 3)
 }
 
+// SCOUT(#229) REMOVE: this test. The outcome no longer exists.
 #[test]
 fn no_verifier_installed_fails_closed() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -289,6 +293,7 @@ fn valid_shares_are_stored_without_revealing_below_threshold() {
     set_timelock_share_verifier(None);
 }
 
+// SCOUT(#229) EDIT: passes with no verifier setup call anywhere in the file.
 #[test]
 fn valid_shares_reach_threshold_and_reveal_the_checked_key() {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -308,6 +313,7 @@ fn valid_shares_reach_threshold_and_reveal_the_checked_key() {
     set_timelock_share_verifier(None);
 }
 
+// SCOUT(#229) EDIT: passes with no verifier setup call: one TimelockShareRejectedEvent, nothing stored.
 /// Every bad share set is refused, nothing is stored, the author's slot stays free, and one event names
 /// the author. A good set from the same author is accepted right after.
 #[test]
@@ -453,6 +459,7 @@ fn rebuilt_key_that_fails_the_mpk_check_expires_and_is_not_stored() {
     assert!(!e.is_revealed());
     assert_eq!(e.status(), 2, "Expired");
     assert_eq!(e.expiry_reason(), 3, "key-check-failed");
+    // SCOUT(#230) EDIT: decode the event and assert its `submitters` equals the authors of the accepted share transactions. No Rust mirror of this event exists yet, so the test needs one.
     assert_eq!(event_named(&out, "TimelockExpiredEvent").len(), 1);
     assert!(event_named(&out, "TimelockRevealEvent").is_empty());
     let key = e.h.execute_view_function(
@@ -464,6 +471,7 @@ fn rebuilt_key_that_fails_the_mpk_check_expires_and_is_not_stored() {
     set_timelock_share_verifier(None);
 }
 
+// SCOUT(#229) TEST: one_valid_share_block_gives_equal_outputs_in_two_fresh_harnesses (no setup call).
 /// Submits the shares of `order` (validator indices) one by one. Only the last submission reaches the
 /// threshold, and it must reveal the key of `d`.
 fn reveal_in_order(d: &Dealing, threshold: u64, order: &[usize]) {

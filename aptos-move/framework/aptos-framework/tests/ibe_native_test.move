@@ -40,6 +40,7 @@ module aptos_framework::ibe_native_test {
         v
     }
 
+    // SCOUT(#240) REMOVE: this helper, the ten reconstruct tests and a_bad_share_gives_a_key_that_fails_the_check (through the end of the reconstruct section), and the shares, weights and non_subgroup_g1 fixtures above that they alone use.
     fun reconstruct(indices: vector<u64>, sh: vector<vector<vector<u8>>>): vector<u8> {
         ibe::reconstruct_ibe_dk<G1>(indices, sh, weights(), 5, 7, identity())
     }
@@ -199,6 +200,9 @@ module aptos_framework::ibe_native_test {
         assert!(!ibe::verify_bid_ct(ct_non_subgroup_u(), ad()), 0);
     }
 
+    // SCOUT(#227) TEST: decrypt_bid_opens_the_valid_bid
+    // SCOUT(#227) TEST: decrypt_bid_returns_none_for_the_other_key_and_for_a_flipped_byte_in_each_field_and_in_ad
+    // SCOUT(#227) TEST: decrypt_bid_returns_none_for_an_empty_ciphertext_a_47_byte_dk_and_a_31_byte_identity
     // ---------------------------------------------------------------- registry integration
 
     #[test]

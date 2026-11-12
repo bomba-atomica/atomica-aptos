@@ -1469,6 +1469,7 @@ async fn get_epoch_info(client: &Client) -> CliTypedResult<EpochInfo> {
         epoch: reconfig_resource.epoch(),
         epoch_interval_secs,
         current_epoch_start_time: Time::new_micros(last_reconfig),
+        // SCOUT(#231) EDIT: not named in the issue. `aptos node show-epoch-info` reports the next epoch start as `last_reconfig + epoch_interval`.
         next_epoch_start_time: Time::new_micros(last_reconfig + epoch_interval),
     })
 }

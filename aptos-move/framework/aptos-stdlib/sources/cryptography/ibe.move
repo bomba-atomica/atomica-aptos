@@ -16,6 +16,9 @@
 /// `bls12381_algebra::G1`, 2 for malformed input (shape, bounds, weights, below threshold, or a
 /// share that is not a valid prime-order non-identity G1 point).
 module aptos_std::ibe {
+    // SCOUT(#227) DOC: the module table above gains a `decrypt_bid` row (spec section 6) and the stale Cargo feature name `natives-port-timelock` goes.
+    // SCOUT(#240) DOC: the module table and the abort code paragraph above lose `reconstruct_ibe_dk`.
+    // SCOUT(#240) REMOVE: `reconstruct_ibe_dk` has no caller outside tests; the `TimelockShare` handler rebuilds the key in Rust.
     /// Reconstructs an IBE decryption key from G1 key shares.
     ///
     /// Performs weighted Lagrange interpolation directly on G1 points. Each validator's entry
@@ -72,6 +75,10 @@ module aptos_std::ibe {
         verify_bid_ct_internal(ct, ad)
     }
 
+    // SCOUT(#227) ADD: `public fun decrypt_bid(dk: vector<u8>, identity: vector<u8>, ad: vector<u8>, ct: vector<u8>): Option<vector<u8>>` that calls the native `decrypt_bid_internal` and never aborts on bad input. A public stdlib function cannot be removed after release, so it is not stubbed here.
+    // SCOUT(#228) EDIT: the product `auction::open_bids` calls `decrypt_bid` once per bid with the key and identity from the timelock registry.
+
+    // SCOUT(#240) REMOVE: native declaration of the unused reconstruction native.
     native fun reconstruct_ibe_dk_internal<G1>(
         validator_indices: vector<u64>,
         dk_shares: vector<vector<vector<u8>>>,
@@ -86,4 +93,6 @@ module aptos_std::ibe {
     ): bool;
 
     native fun verify_bid_ct_internal(ct: vector<u8>, ad: vector<u8>): bool;
+
+    // SCOUT(#227) ADD: `native fun decrypt_bid_internal(dk: vector<u8>, identity: vector<u8>, ad: vector<u8>, ct: vector<u8>): Option<vector<u8>>;` goes here, in the same commit that registers `native_decrypt_bid` in `timelock::make_all`. A native declared without its Rust side breaks loading of this module.
 }

@@ -46,6 +46,8 @@ module aptos_framework::ibe_config {
     use aptos_framework::system_addresses;
     use aptos_framework::timestamp;
 
+    // SCOUT(#225) DOC: lifecycle step 1 of the module doc above gains the rule that only the stored registrar may register.
+    // SCOUT(#226) DOC: the Lifecycle and Epoch rule sections of the module doc above gain the read rule: an unrevealed timelock reads Expired(reveal-window-elapsed) from the first block at or past `reveal_expiry_us`.
     friend aptos_framework::reconfiguration_with_dkg;
     friend aptos_framework::timelock_dkg;
     friend aptos_framework::block;
@@ -86,6 +88,8 @@ module aptos_framework::ibe_config {
     const E_REVEAL_WINDOW_ELAPSED: u64 = 15;
     /// The epoch config is invalid (empty weights, zero threshold, threshold above total weight).
     const E_INVALID_EPOCH_CONFIG: u64 = 16;
+    // SCOUT(#225) ADD: `const E_NOT_REGISTRAR: u64 = 17;` for a signer that is not the stored registrar, and for every signer while no registrar is set. Not declared here: any code change to a framework module changes genesis.
+    // SCOUT(#243) EDIT: the product `auction::create_auction` surfaces this code (17) when the stored registrar is not the package's registrar object.
 
     // ================================
     // Constants
@@ -95,6 +99,7 @@ module aptos_framework::ibe_config {
     const G1_LENGTH: u64 = 48;
 
     const MICROS_PER_MINUTE: u64 = 60_000_000;
+    // SCOUT(#231) EDIT: the guard stays 15 minutes, but genesis must keep every epoch boundary at least guard plus reveal window (25 minutes) away from the 07:45 and 16:15 UTC closes.
     /// A deadline must be at least this long before the epoch end (spec section 8, rule 2).
     const EPOCH_END_GUARD_US: u64 = 900_000_000;
     /// The reveal window after the deadline (spec section 7, rule 3).
@@ -124,6 +129,7 @@ module aptos_framework::ibe_config {
         epoch: u64
     }
 
+    // SCOUT(#225) ADD: new resource `struct TimelockRegistrar has key { registrar: address }` at @aptos_framework. While it is absent every registration aborts with `E_NOT_REGISTRAR`. New on-chain state, so it is not stubbed.
     /// Written once per epoch, after the epoch change, from the timelock chunky DKG result.
     struct TimelockEpochConfig has key, drop {
         epoch: u64,
@@ -133,6 +139,7 @@ module aptos_framework::ibe_config {
         total_weight: u64,
         /// Per-validator weights from the DKG rounding profile, indexed by validator index.
         weights: vector<u64>,
+        // SCOUT(#231) EDIT: with UTC-anchored epochs the end is the next configured boundary, not start plus interval. `TimelockEpochConfigResource` (types/src/dkg/timelock_dkg.rs) mirrors this struct in BCS, so a changed field changes both.
         /// Length of the epoch. The epoch ends at `last_reconfiguration_time + epoch_interval_us`.
         epoch_interval_us: u64,
         public_parameters_hash: vector<u8>,
@@ -167,6 +174,7 @@ module aptos_framework::ibe_config {
         /// `submitted_shares[i]` holds the shares of `validator_indices[i]`, one per virtual player.
         submitted_shares: vector<vector<vector<u8>>>,
         validator_weights: vector<u64>,
+        // SCOUT(#230) EDIT: this list survives `expire()`. The field keeps its position: `TimelockInfoResource` (types/src/timelock.rs) mirrors the layout in BCS.
         submitters: vector<address>
     }
 
@@ -187,6 +195,8 @@ module aptos_framework::ibe_config {
     // Events
     // ================================
 
+    // SCOUT(#225) EDIT: `sender` is always the registrar once the check lands.
+    // SCOUT(#243) EDIT: the product live test asserts that `sender` of the window's registration is the auction package's registrar address.
     #[event]
     struct TimelockRegistrationEvent has drop, store {
         timelock_id: u64,
@@ -214,6 +224,7 @@ module aptos_framework::ibe_config {
         timestamp_us: u64
     }
 
+    // SCOUT(#230) EDIT: gains `submitters: vector<address>`. This changes the BCS layout of the event for every client and indexer that decodes it.
     #[event]
     struct TimelockExpiredEvent has drop, store {
         timelock_id: u64,
@@ -426,6 +437,7 @@ module aptos_framework::ibe_config {
         keys
     }
 
+    // SCOUT(#231) EDIT: returns the next configured UTC epoch boundary instead of `last_reconfiguration_time + epoch_interval_us`, so the guard and `reveal_expiry_us` use the real epoch end.
     #[view]
     /// End of the current epoch: `last_reconfiguration_time + epoch_interval_us`.
     public fun epoch_end_us(): u64 acquires TimelockEpochConfig {
@@ -438,6 +450,8 @@ module aptos_framework::ibe_config {
     // Registration
     // ================================
 
+    // SCOUT(#225) EDIT: aborts with `E_NOT_REGISTRAR` unless `signer::address_of(account)` equals the stored registrar. The body moves to `register_timelock_with_id` and this entry calls it.
+    // SCOUT(#243) EDIT: the product SDK, UI and test helpers stop calling this entry; a direct call from the operator account must abort with `E_NOT_REGISTRAR`.
     /// Registers a timelock for `deadline_us`.
     ///
     /// Aborts unless the MPK of the current epoch is ready, the deadline is in the future and the deadline is at
@@ -449,6 +463,8 @@ module aptos_framework::ibe_config {
         let now = timestamp::now_microseconds();
         assert!(now < deadline_us, E_DEADLINE_IN_PAST);
 
+        // SCOUT(#231) EDIT: `epoch_end` becomes the next UTC boundary, so a deadline at 07:45 or 16:15 UTC passes the guard in the epoch that holds it.
+        // SCOUT(#243) EDIT: the product `create_auction` surfaces `E_DEADLINE_AFTER_EPOCH_END` (9) from this guard when the window close is later than 15 minutes before the epoch end.
         let epoch_end = epoch_end_us();
         let config = &TimelockEpochConfig[@aptos_framework];
         let epoch = config.epoch;
@@ -497,6 +513,12 @@ module aptos_framework::ibe_config {
             }
         );
     }
+
+    // SCOUT(#225) ADD: `public fun set_timelock_registrar(aptos_framework: &signer, registrar: address)`, framework signer only, called at genesis (layout field `timelock_registrar`) or by governance. A second call replaces the address.
+    // SCOUT(#225) ADD: `#[view] public fun timelock_registrar(): Option<address>`, `none` while no registrar is set (needs `use std::option`).
+    // SCOUT(#243) EDIT: the product live test compares `timelock_registrar()` with `auction::timelock_registrar_address` and the SDK registrar address.
+    // SCOUT(#225) ADD: `public fun register_timelock_with_id(account: &signer, deadline_us: u64): u64` with the registrar check and the body of `register_timelock`, which then calls it. A public framework function cannot be removed or change signature after release, so it is not stubbed here.
+    // SCOUT(#243) EDIT: the product `auction::create_auction` calls `register_timelock_with_id` with its registrar object signer and stores the returned id for the window id.
 
     // ================================
     // Share submission and reveal
@@ -551,6 +573,7 @@ module aptos_framework::ibe_config {
         let registry = &TimelockRegistry[@aptos_framework];
         assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
         let info = registry.timelocks.borrow(timelock_id);
+        // SCOUT(#226) EDIT: decide whether share submission keeps reading the stored status (abort stays 15 past the window) or reads `effective_status` (abort becomes 11). The test `submit_after_reveal_window_aborts` pins 15.
         assert!(info.status is TimelockStatus::Pending, E_NOT_PENDING);
         assert!(info.epoch == current_epoch, E_WRONG_EPOCH);
 
@@ -591,6 +614,7 @@ module aptos_framework::ibe_config {
         let registry = &TimelockRegistry[@aptos_framework];
         assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
         let info = registry.timelocks.borrow(timelock_id);
+        // SCOUT(#226) EDIT: aborts with `E_NOT_PENDING` (11) at or past `reveal_expiry_us`. `finalize_timelock_reveal` and `fail_timelock_key_check` call this first, so they abort here before `finalize_internal` reaches `E_REVEAL_WINDOW_ELAPSED` (15).
         assert!(effective_status(info) is TimelockStatus::Pending, E_NOT_PENDING);
         assert!(info.share_count >= info.reveal_threshold, E_BELOW_THRESHOLD);
         let config = &TimelockEpochConfig[@aptos_framework];
@@ -639,6 +663,7 @@ module aptos_framework::ibe_config {
             return false
         };
         let info = registry.timelocks.borrow(timelock_id);
+        // SCOUT(#226) EDIT: `is_reconstructable` reads false at or past `reveal_expiry_us`, also with threshold weight stored.
         (effective_status(info) is TimelockStatus::Pending) && info.share_count >= info.reveal_threshold
     }
 
@@ -664,12 +689,14 @@ module aptos_framework::ibe_config {
             expire(info, REASON_KEY_CHECK_FAILED);
             registry.pending.remove(&key);
             event::emit(
+                // SCOUT(#230) EDIT: fill `submitters` from `info.submitters` (key-check-failed expiry). Read the list before or after `expire`, which now keeps it.
                 TimelockExpiredEvent { timelock_id, reason: REASON_KEY_CHECK_FAILED, timestamp_us: now }
             );
             false
         }
     }
 
+    // SCOUT(#230) EDIT: keep `info.submitters`. Still clear `submitted_shares`, `validator_indices`, `validator_weights` and `share_count`.
     /// Sets `Expired(reason)` and drops the stored shares.
     fun expire(info: &mut TimelockInfo, reason: u8) {
         info.status = TimelockStatus::Expired { reason };
@@ -710,6 +737,7 @@ module aptos_framework::ibe_config {
                 if (info.epoch != current_epoch) { REASON_EPOCH_ENDED }
                 else { REASON_REVEAL_WINDOW_ELAPSED };
             expire(info, reason);
+            // SCOUT(#230) EDIT: fill `submitters` from `info.submitters` (reveal-window-elapsed and epoch-ended expiry).
             event::emit(TimelockExpiredEvent { timelock_id: key.timelock_id, reason, timestamp_us: now });
             processed += 1;
         };
@@ -724,6 +752,7 @@ module aptos_framework::ibe_config {
         registry.timelocks.borrow(timelock_id)
     }
 
+    // SCOUT(#226) EDIT: also return `Expired { reason: REASON_REVEAL_WINDOW_ELAPSED }` for a stored `Pending` timelock of the current epoch once `timestamp::now_microseconds() >= info.reveal_expiry_us`. The epoch-ended override keeps priority.
     /// The stored status, except that a `Pending` timelock of an earlier epoch reads as `Expired(epoch-ended)`.
     fun effective_status(info: &TimelockInfo): TimelockStatus {
         if ((info.status is TimelockStatus::Pending) && info.epoch != reconfiguration::current_epoch()) {
@@ -779,6 +808,7 @@ module aptos_framework::ibe_config {
     public fun get_status(timelock_id: u64): u8 acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
         let info = borrow_info(&TimelockRegistry[@aptos_framework], timelock_id);
+        // SCOUT(#226) EDIT: `get_status` returns 2 from the first block at or past `reveal_expiry_us`, before the queue reaches the entry. The product `refund_expired_window` reads this view.
         match (effective_status(info)) {
             TimelockStatus::Pending => STATUS_PENDING,
             TimelockStatus::Revealed => STATUS_REVEALED,
@@ -792,6 +822,7 @@ module aptos_framework::ibe_config {
     public fun get_expiry_reason(timelock_id: u64): u8 acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
         let info = borrow_info(&TimelockRegistry[@aptos_framework], timelock_id);
+        // SCOUT(#226) EDIT: `get_expiry_reason` returns 2 (reveal-window-elapsed) for the same read.
         match (effective_status(info)) {
             TimelockStatus::Expired { reason } => reason,
             _ => REASON_NONE
@@ -827,13 +858,17 @@ module aptos_framework::ibe_config {
         if (!registry.timelocks.contains(timelock_id)) {
             return false
         };
+        // SCOUT(#226) EDIT: `is_expired` agrees with `get_status` under the new read rule.
         effective_status(registry.timelocks.borrow(timelock_id)) is TimelockStatus::Expired
     }
 
+    // SCOUT(#243) EDIT: the product Move tests read this before `create_auction` to pin the id that `register_timelock_with_id` returns.
     #[view]
     public fun get_next_timelock_id(): u64 acquires TimelockRegistry {
         TimelockRegistry[@aptos_framework].next_timelock_id
     }
+
+    // SCOUT(#230) ADD: `#[view] public fun get_submitters(timelock_id: u64): vector<address>`, the validators whose share sets were accepted, in submission order. The list survives expiry for every reason; the stored shares are still dropped.
 
     /// Identity of a timelock. See the module doc for the byte layout.
     public fun compute_identity(chain: u8, epoch: u64, timelock_id: u64, deadline_us: u64): vector<u8> {
@@ -849,6 +884,7 @@ module aptos_framework::ibe_config {
     // Test-only helpers
     // ================================
 
+    // SCOUT(#225) EDIT: every Move test that registers needs a registrar first. Set one here or add a test-only helper; the product package tests register through the framework too.
     #[test_only]
     public fun initialize_for_testing(aptos_framework: &signer) {
         aptos_framework::account::create_account_for_test(@aptos_framework);

@@ -40,6 +40,7 @@ These tests demonstrate the correct structure but are marked as `#[expected_fail
 
 **Test:** `test_native_ibe_reconstruct_callable`
 
+<!-- SCOUT(#240) DOC: not named in the issue. This summary and the plan and technical notes under atomica/docs describe the removed native as live. -->
 **Purpose:** Verify that the native IBE reconstruction function (`ibe::reconstruct_ibe_dk`) is callable from Move and produces correct results.
 
 **Golden Vector Used:** Test case 1 (5 validators, threshold 3, equal weights)

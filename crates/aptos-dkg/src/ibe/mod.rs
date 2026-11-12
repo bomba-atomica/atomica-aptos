@@ -466,6 +466,7 @@ pub fn check_mpk_matches_verification_keys(
     Ok(())
 }
 
+// SCOUT(#240) DOC: the doc below names the removed native. The function stays: the `TimelockShare` handler calls it.
 /// Byte level reconstruction used by the `ibe::reconstruct_ibe_dk` native.
 ///
 /// `dk_shares[i]` holds the compressed G1 shares of validator `validator_indices[i]`, one per

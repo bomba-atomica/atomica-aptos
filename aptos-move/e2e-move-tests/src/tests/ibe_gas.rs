@@ -50,6 +50,7 @@ impl Env {
         self.h.evaluate_gas_signed(txn)
     }
 
+    // SCOUT(#240) REMOVE: this helper and the SHARES fixture above. The issue names line 98 only.
     fn reconstruct(&mut self, weights: Vec<u64>, counts: Vec<u64>, shares: Vec<&str>) -> u64 {
         let flat: Vec<Vec<u8>> = shares.iter().map(|s| hex(s)).collect();
         self.gas("reconstruct", vec![
@@ -95,6 +96,7 @@ fn ibe_natives_are_metered_and_scale_with_work() {
         "pairing check {dk_short} should exceed bid check {bid}"
     );
 
+    // SCOUT(#240) REMOVE: the reconstruct gas assertions through the end of this test.
     // reconstruct_ibe_dk: five shares, each a validated decode and a G1 scalar multiplication,
     // plus the Lagrange work. It must cost more than the single pairing check.
     let rec = e.reconstruct(vec![2, 3, 2], vec![2, 3], SHARES.to_vec());
@@ -105,6 +107,8 @@ fn ibe_natives_are_metered_and_scale_with_work() {
     );
 }
 
+// SCOUT(#227) TEST: decrypt_bid_costs_more_than_verify_bid_ct_and_grows_with_the_ciphertext_body
+// SCOUT(#227) TEST: hundred_decrypts_in_one_transaction_against_max_execution_gas (asserts the largest batch that fits equals a constant, which the doc of ibe::decrypt_bid repeats). The harness runs genesis from head.mrb, so these tests fail until the bundle is refreshed.
 #[test]
 fn ibe_native_gas_is_deterministic() {
     let mut e = Env::new();

@@ -9,7 +9,7 @@ Golden vectors for the hardened Boneh-Franklin timelock. Design source: `atomica
 ### Files
 
 - `ibe_v2_golden_vectors.json` is the source of truth. It is generated, not hand written.
-- `legacy-v1/` holds the old vectors (identity `SHA3-256(timelock_id || deadline_us)`, blstrs shares). They are history only. No test reads them.
+- `legacy-v1/` holds the old vectors (identity `SHA3-256(timelock_id || deadline_us)`, blstrs shares). They are history only. No test reads them. <!-- SCOUT(#240) DOC: this line goes with the folder. -->
 - `aptos-move/framework/aptos-framework/sources/ibe_golden_vector_fixtures.move` is generated from the JSON.
 
 ### What the vectors cover
@@ -17,7 +17,7 @@ Golden vectors for the hardened Boneh-Franklin timelock. Design source: `atomica
 - Identity and H1 (v2): chain, epoch, timelock id and deadline bound into `SHA3-256`, then `H1` as RFC 9380 `BLS12381G1_XMD:SHA-256_SSWU_RO_` with DST `ATOMICA_TIMELOCK_IBE_V2_H1`.
 - A seeded real chunky DKG dealing (three dealers, weights `[2, 1, 2]`, threshold weight 3). The master public key, verification keys and shares come from `get_dealt_public_key`, `get_public_key_share` and `decrypt_own_share` on the aggregated subtranscript. The JSON records the length and SHA3-256 of that subtranscript.
 - `dk_share` derivation, per validator share checks (valid and invalid: swapped, other identity, non-subgroup, off-curve, identity element, truncated, count mismatch, bad verification key).
-- Weighted reconstruction from several validator sets, the below-threshold error, a poisoned set, and the final key check (right and wrong).
+- Weighted reconstruction from several validator sets, the below-threshold error, a poisoned set, and the final key check (right and wrong). <!-- SCOUT(#227) DOC: add the price bid cases and what the product reads from them. -->
 - CCA bid ciphertexts: one valid bid and each tampered field, other associated data, non-subgroup `U` with a valid signature, a body re-signed under a new one time key, and malformed wires.
 - Cross-library vectors: scalars, `H1`, `U`, `dk` and `mpk` that the blstrs code and the arkworks port must both reproduce byte for byte.
 
@@ -55,6 +55,7 @@ Regenerate only when the scheme changes on purpose. A review must explain every 
 - That transaction's five events, and the event accumulator proof for event 2: type `0xcafe::auction::AuctionOutcome` (the dev address of `atomica`).
 - Intermediate values for Solidity: each CryptoHasher salt and seed, the signing message (LedgerInfo seed followed by BCS of the LedgerInfo), the RFC 9380 hash to G2 under `BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_`, and every key, aggregate key and signature in EIP-2537 uncompressed encoding.
 
+<!-- SCOUT(#221) DOC: stale sentence. The product fixes this layout now, and the computed-deadline change keeps the `eth_lock_deadline` field, so these vectors stay valid. -->
 The AuctionOutcome payload layout is not fixed in the product repo yet. The vectors pin this default: `struct AuctionOutcome { window_id: u64, pair_hash: vector<u8>, eth_lock_deadline: u64, dispositions_root: vector<u8>, leaf_count: u64 }`. Regenerate the vectors if the Move struct differs.
 
 ### Regenerating

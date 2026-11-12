@@ -187,6 +187,7 @@ fn derived_mpk(f: &Fixture) -> Vec<u8> {
         .mpk
 }
 
+// SCOUT(#223) EDIT: this helper fixes `ChainId::test()`, and `sign` above signs for the test chain only. The chain id 77 test needs both as parameters, or a missing-hash check that runs before the signature check.
 /// `expected` is the on-chain `ExpectedPublicParametersHash`, `None` when governance has not set it.
 fn check(
     f: &Fixture,
@@ -367,6 +368,7 @@ fn handler_check_rejects_each_fault() {
     let mpk = derived_mpk(f);
     let good = output_for(agg, cert.clone(), mpk.clone(), local_hash());
     assert_eq!(check(f, &good, EPOCH, Some(local_hash())), Ok(()));
+    // SCOUT(#223) EDIT: still Ok, but only because the helper uses the test chain. Reword the comment below.
     // No expected hash on chain: the hash is not checked at execution.
     assert_eq!(check(f, &good, EPOCH, None), Ok(()));
 
@@ -457,10 +459,13 @@ fn two_executors_with_different_local_blobs_give_identical_output() {
         let b = execute(blob_b);
         assert_eq!(a, b, "executors disagree with expected hash {:?}", expected);
     }
+    // SCOUT(#223) EDIT: still Ok on the test chain only. Reword the comment below.
     // No expected hash on chain: accepted, although neither local blob matches the dealers' hash.
     assert_eq!(check(f, &output, EPOCH, None), Ok(()));
 }
 
+// SCOUT(#223) TEST: missing_expected_hash_is_rejected_off_the_test_chain (chain id 77, `None`, expects ParametersHashMissing)
+// SCOUT(#223) TEST: missing_expected_hash_is_accepted_on_the_test_chain
 #[test]
 fn on_chain_expected_hash_mismatch_is_rejected() {
     let f = &*FIXTURE;

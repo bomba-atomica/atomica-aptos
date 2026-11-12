@@ -11,6 +11,7 @@ on:
     branches:
       - main
       - dev-atomica
+    # SCOUT(#226) EDIT: this pull request filter has no Move paths. A fork pull request that changes only Move sources and head.mrb never starts this required check and waits forever. Issues 226 and 230 start it only through their workflow or move_unit_test.rs edits.
     paths:
       - "**/*.rs"
       - "**/Cargo.toml"
@@ -116,6 +117,8 @@ jobs:
 
       # Two 4-validator swarms: the genesis flag timelock_dkg_enabled set (epoch 2 has a 96-byte timelock
       # key) and unset (no key). Minimum 2 so both must execute.
+      # SCOUT(#231) EDIT: the two genesis flag tests below gain the missing-key event assertions; the swarms need the UTC boundary layout values once the trigger changes.
+      # SCOUT(#225) EDIT: these swarms register no timelock, so they pass without a registrar.
       - name: Run timelock genesis flag tests
         if: always()
         run: .github/scripts/run-tests-guarded.sh timelock_genesis_flag 2 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_genesis_flag -- --nocapture --test-threads=1
@@ -123,6 +126,7 @@ jobs:
 
       # A 4-validator swarm on chain id 77 (not the test chain) with the shipped timelock parameters
       # (atomica/timelock-params) completes a timelock DKG. Minimum 1 so it must execute.
+      # SCOUT(#223) EDIT: the chain id 77 swarm below must set `timelock_public_parameters_hash` in its layout, or it gets no key after the change.
       - name: Run timelock DKG on a non-test chain id
         if: always()
         run: .github/scripts/run-tests-guarded.sh timelock_non_test_chain 1 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_dkg_on_non_test_chain_with_shipped_parameters -- --nocapture --test-threads=1
@@ -131,6 +135,7 @@ jobs:
       # The live timelock reveal: 4 validators, a 20 minute epoch, the timelock DKG on from genesis. It
       # registers a timelock, waits past the deadline, asserts Revealed and verify_decryption_key, and
       # decrypts one V2 bid. Minimum 1 so it must execute.
+      # SCOUT(#225) EDIT: the live reveal below sets the registrar at genesis and asserts a rejected registration from another account first.
       - name: Run timelock reveal on a live swarm
         if: always()
         run: .github/scripts/run-tests-guarded.sh timelock_reveal_live 1 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_reveal_on_live_swarm -- --nocapture --test-threads=1

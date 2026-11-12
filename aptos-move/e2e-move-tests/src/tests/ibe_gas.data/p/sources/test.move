@@ -9,11 +9,13 @@ module 0xbeef::ibe_gas {
         assert!(ibe::verify_bid_ct(ct, ad), 1);
     }
 
+    // SCOUT(#227) ADD: entry `decrypt(dk, identity, ad, ct)` that calls ibe::decrypt_bid once, and entry `decrypt_many(dk, identity, ads, cts)` that decrypts 100 bids in one transaction.
     /// Does not assert the result: only the metering is under test.
     public entry fun dk_check(dk: vector<u8>, identity: vector<u8>, mpk: vector<u8>) {
         ibe::verify_decryption_key(dk, identity, mpk);
     }
 
+    // SCOUT(#240) REMOVE: the reconstruct entry, with the G1 and vector imports it alone uses.
     /// `flat` is a flat list of 48-byte shares, `counts[i]` of them for validator i.
     public entry fun reconstruct(
         flat: vector<vector<u8>>, counts: vector<u64>, weights: vector<u64>, threshold: u64, total_weight: u64,

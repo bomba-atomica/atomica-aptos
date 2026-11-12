@@ -38,6 +38,7 @@ module aptos_framework::reconfiguration_with_dkg {
         }
     }
 
+    // SCOUT(#231) EDIT: owner question 4: this path never calls `timelock_dkg::start`, so the next epoch has no timelock key.
     /// Trigger a reconfiguration with DKG.
     /// Do nothing if one is already in progress.
     public(friend) fun try_start() {
@@ -93,6 +94,7 @@ module aptos_framework::reconfiguration_with_dkg {
             target_validator_set,
         );
         // Second chunky DKG session for the timelock secret. No-op while the feature is off.
+        // SCOUT(#242) EDIT: the timelock session takes `chunky_dkg_config::current()`, shared with the mempool session (secrecy 1/2 and reconstruction 2/3 of stake by default). A 67 percent secrecy bound for bids needs its own config or changes both sessions (owner decision 31).
         timelock_dkg::start(
             cur_epoch,
             chunky_dkg_config::current(),
@@ -128,6 +130,7 @@ module aptos_framework::reconfiguration_with_dkg {
         reconfiguration::reconfigure();
         // After the epoch change: writes the TimelockEpochConfig of the new epoch, if the timelock
         // DKG completed. Otherwise the new epoch has no timelock key.
+        // SCOUT(#231) EDIT: the only call of `on_new_epoch`. The missing-key event is emitted inside it, in this reconfiguration transaction, and must never abort it.
         timelock_dkg::on_new_epoch(framework);
     }
 
@@ -148,6 +151,7 @@ module aptos_framework::reconfiguration_with_dkg {
         // to `now >= last_reconfiguration_time + epoch_interval + grace_period`,
         // since `reconfiguration_state::start_time_secs()` is set when the
         // block prologue triggers reconfig after `epoch_interval` has elapsed.
+        // SCOUT(#231) EDIT: the watchdog comment above assumes the reconfiguration starts at `last_reconfiguration_time + epoch_interval`. Restate it for a start at the UTC boundary.
         let force_end_grace = epoch_timeout_config::force_end_grace_period_secs();
         if (force_end_grace.is_some()) {
             let now_us = timestamp::now_microseconds();

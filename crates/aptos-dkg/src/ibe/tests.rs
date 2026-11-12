@@ -676,6 +676,7 @@ fn bid_copy_under_another_context_does_not_decrypt() {
     assert!(decrypt_bid(&foreign, &s.id, &s.ad, &ct).is_err());
 }
 
+// SCOUT(#227) TEST: byte_level_decrypt_matches_typed_decrypt_and_fails_for_each_malformed_input (47-byte dk, 31-byte identity, empty ct, wrong ad).
 #[test]
 fn one_undecryptable_bid_does_not_stop_the_others() {
     let s = setup();
@@ -721,6 +722,8 @@ fn full_flow_chunky_shaped_shares_to_bid_open() {
 // Fixture generator for `aptos-move/framework/aptos-framework/tests/ibe_native_test.move`
 // ---------------------------------------------------------------------------------------------
 
+// SCOUT(#227) EDIT: `ibe_native_test.move` has no plaintext fixture for its ciphertext. Print one here, or test decryption on the golden fixtures only.
+// SCOUT(#240) EDIT: this ignored generator prints the fixtures of `ibe_native_test.move`, including the reconstruction shares. Trim it with the tests.
 /// Prints `NAME=hex` lines. Run with
 /// `cargo test -p aptos-dkg --lib ibe::tests::generate_move_fixtures -- --ignored --nocapture`.
 /// Deterministic: fixed seeds, so the output is reproducible.

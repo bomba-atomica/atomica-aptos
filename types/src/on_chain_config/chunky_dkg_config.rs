@@ -25,6 +25,7 @@ pub struct ConfigV1 {
     pub reconstruction_threshold: FixedPoint64MoveStruct,
 }
 
+// SCOUT(#242) EDIT: the default below (secrecy 1/2, reconstruction 2/3 of stake) is what the timelock DKG gets, because it shares this config with the mempool session. Only if the owner picks the 67 percent secrecy bound does this change (owner decision 31).
 impl Default for ConfigV1 {
     fn default() -> Self {
         Self {

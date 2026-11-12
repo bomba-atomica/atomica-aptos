@@ -130,6 +130,9 @@ pub struct GenesisConfiguration {
     /// legacy `V2` until the first `reconfiguration_with_dkg` lazily creates
     /// the resource and flips it to `V3` — exercising the V2->V3 cutover.
     pub initialize_decryption_at_genesis: bool,
+    // SCOUT(#223) ADD: optional field `timelock_public_parameters_hash` (32 bytes), next to `timelock_dkg_enabled`.
+    // SCOUT(#225) ADD: optional field `timelock_registrar` (address).
+    // SCOUT(#231) ADD: fields for the UTC epoch boundaries (shape depends on owner question 1).
     /// Whether genesis turns the timelock DKG on (`genesis::enable_timelock_dkg`). Then the first
     /// reconfiguration runs a timelock DKG session and epoch 2 has a timelock key. The timelock DKG
     /// also needs the chunky DKG and validator transactions on. Default `false`: the timelock DKG
@@ -375,6 +378,9 @@ pub fn encode_genesis_change_set(
         chunky_dkg_config,
     );
     initialize_chunky_dkg(&mut session, &module_storage, &mut traversal_context);
+    // SCOUT(#223) EDIT: also write the expected hash when the field is set.
+    // SCOUT(#225) ADD: genesis step that sets the registrar when the field is set.
+    // SCOUT(#231) ADD: genesis step that stores the epoch boundaries.
     if genesis_config.timelock_dkg_enabled {
         enable_timelock_dkg(&mut session, &module_storage, &mut traversal_context);
     }
@@ -459,6 +465,8 @@ pub fn encode_genesis_change_set(
     change_set
 }
 
+// SCOUT(#223) EDIT: fail when `timelock_dkg_enabled` is true, the hash is unset and the chain id is not 4. This function gets no chain id today; both callers hold one and must pass it.
+// SCOUT(#231) EDIT: fail when a configured epoch boundary is within 25 minutes of 07:45 or 16:15 UTC.
 fn validate_genesis_config(genesis_config: &GenesisConfiguration) {
     assert!(
         genesis_config.min_stake <= genesis_config.max_stake,
@@ -578,6 +586,7 @@ fn initialize(
 
     // Block timestamps are in microseconds and epoch_interval is used to check if a block timestamp
     // has crossed into a new epoch. So epoch_interval also needs to be in micro seconds.
+    // SCOUT(#231) EDIT: the interval is the only epoch input at genesis today. The boundaries are a second input, and `validate_genesis_config` must check the two agree.
     let epoch_interval_usecs = genesis_config.epoch_duration_secs * MICRO_SECONDS_PER_SECOND;
     exec_function(
         session,
@@ -838,6 +847,7 @@ fn initialize_chunky_dkg(
     );
 }
 
+// SCOUT(#223) EDIT: pass the hash to `genesis::enable_timelock_dkg`, or add a second `exec_function` for `timelock_dkg::set_expected_public_parameters_hash`.
 fn enable_timelock_dkg(
     session: &mut SessionExt<impl AptosMoveResolver>,
     module_storage: &impl AptosModuleStorage,
@@ -1556,6 +1566,9 @@ pub fn generate_test_genesis(
             initial_jwks: vec![],
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
+            // SCOUT(#223) EDIT: carry `timelock_public_parameters_hash` here.
+            // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+            // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: false,
             eth_chain_id: None,
         },
@@ -1612,6 +1625,9 @@ fn mainnet_genesis_config() -> GenesisConfiguration {
         initial_jwks: vec![],
         keyless_groth16_vk: None,
         initialize_decryption_at_genesis: true,
+        // SCOUT(#223) EDIT: carry `timelock_public_parameters_hash` here.
+        // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+        // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
         timelock_dkg_enabled: false,
         eth_chain_id: None,
     }
@@ -1641,6 +1657,8 @@ pub struct ValidatorWithCommissionRate {
     pub join_during_genesis: bool,
 }
 
+// SCOUT(#223) TEST: genesis_with_timelock_dkg_and_no_hash_fails_off_the_test_chain, and genesis_writes_the_expected_public_parameters_hash (reads `0x1::timelock_dkg::ExpectedPublicParametersHash`). No workflow runs the tests of this crate today.
+// SCOUT(#231) TEST: genesis_rejects_an_epoch_boundary_within_25_minutes_of_a_close.
 #[test]
 pub fn test_genesis_module_publishing() {
     let genesis_runtime_builder = GenesisRuntimeBuilder::new(ChainId::test());

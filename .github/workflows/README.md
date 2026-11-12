@@ -185,6 +185,12 @@ step summary. Self-test: `.github/scripts/tests/selftest.sh` (also run in
 `crypto-crates-tests.yml`).
 
 ## Workflow set for the 1.49.6 line (branch `dev-atomica`)
+<!-- SCOUT(#223) DOC: the crypto-crates-tests.yml row below gains the aptos-vm-genesis tests. -->
+<!-- SCOUT(#225) DOC: the crypto-crates-tests.yml row below gains the ibe_config Move unit tests. -->
+<!-- SCOUT(#227) DOC: the crypto-crates-tests.yml row below gains the ibe gas VM tests and the ibe Move unit tests. -->
+<!-- SCOUT(#229) DOC: the crypto-crates-tests.yml row below gains the TimelockShare VM tests. -->
+<!-- SCOUT(#231) DOC: the crypto-crates-tests.yml row below gains the timelock_dkg Move unit tests. -->
+<!-- SCOUT(#240) DOC: the timelock-tests.yml row below names the prototype. It becomes the TimelockShare VM tests row; the row never listed that job. -->
 
 | Workflow | Covers | Trigger |
 | --- | --- | --- |

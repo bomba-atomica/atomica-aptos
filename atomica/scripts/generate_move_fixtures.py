@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SCOUT(#240) REMOVE: whole file. Not named in the issue: this script reads only the legacy V1 vector format, and the path in its usage text no longer exists.
 """
 Generate Move fixture code from IBE golden vectors JSON.
 

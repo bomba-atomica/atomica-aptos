@@ -86,6 +86,7 @@ const OUTCOME_EVENT_INDEX: usize = 2;
 /// The named address `atomica` takes its dev address in the vectors.
 const OUTCOME_TYPE_TAG: &str = "0xcafe::auction::AuctionOutcome";
 
+// SCOUT(#221) DOC: the doc below is stale. The product fixes this layout, and LockBox's auction key drops the deadline (`keccak256(abi.encode(windowId, pairHash))`). The `eth_lock_deadline` field stays, so the vectors stay valid.
 /// BCS layout of the `AuctionOutcome` event payload. The product repo has not fixed it yet (its
 /// proof-gated LockBox issue owns the Move struct). This is the default the vectors pin: the
 /// fields LockBox needs to recompute the auction key `keccak256(window_id, pair_hash, deadline)`

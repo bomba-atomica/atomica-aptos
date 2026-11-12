@@ -264,6 +264,9 @@ pub fn fetch_mainnet_genesis_info(git_options: GitOptions) -> CliTypedResult<Mai
             initial_jwks: vec![],
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
+            // SCOUT(#223) EDIT: carry `timelock_public_parameters_hash` here.
+            // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+            // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: false,
             eth_chain_id: None,
             chain_id: layout.chain_id,
@@ -314,6 +317,9 @@ pub fn fetch_genesis_info(git_options: GitOptions) -> CliTypedResult<GenesisInfo
             initial_jwks: layout.initial_jwks.clone(),
             keyless_groth16_vk: layout.keyless_groth16_vk_override.clone(),
             initialize_decryption_at_genesis: true,
+            // SCOUT(#223) EDIT: carry `timelock_public_parameters_hash` here.
+            // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+            // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: layout.timelock_dkg_enabled,
             eth_chain_id: layout.eth_chain_id,
             chain_id: layout.chain_id,

@@ -191,6 +191,7 @@ fn completed_session_writes_the_epoch_config_after_the_epoch_change() {
     assert_eq!((got_epoch, threshold, total), (epoch + 1, 3, 4));
 }
 
+// SCOUT(#231) TEST: also assert one `TimelockKeyMissingEvent` with the new epoch in the reconfiguration output of `end_epoch`.
 #[test]
 fn failed_session_does_not_block_the_epoch_change_and_leaves_no_key() {
     let mut h = MoveHarness::new();
@@ -202,6 +203,7 @@ fn failed_session_does_not_block_the_epoch_change_and_leaves_no_key() {
     assert_eq!(current_epoch(&h), epoch + 1);
     assert!(!is_ready(&mut h));
 
+    // SCOUT(#225) EDIT: not named in the issue. This account is not the registrar, so the abort becomes E_NOT_REGISTRAR unless the registrar check runs after `is_ready`, or the harness sets 0xa11ce as registrar first. No workflow runs `e2e-move-tests --lib timelock_dkg::` today.
     // register_timelock aborts with E_IBE_NOT_READY (2).
     let user = h.new_account_at(AccountAddress::from_hex_literal("0xa11ce").unwrap());
     let status = h.run_entry_function(

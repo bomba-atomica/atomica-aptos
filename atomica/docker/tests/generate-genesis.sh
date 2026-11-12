@@ -94,6 +94,9 @@ done
 
 # Step 3: Create layout.yaml with generated root key
 echo "Step 3/7: Creating layout.yaml..."
+# SCOUT(#223) EDIT: when TIMELOCK_DKG_ENABLED=true, add a `timelock_public_parameters_hash:` line read from atomica/timelock-params/timelock-public-parameters.sha3-256. Without it a chain id other than 4 fails genesis.
+# SCOUT(#225) EDIT: add a `timelock_registrar:` line.
+# SCOUT(#231) EDIT: add the epoch boundary values next to `epoch_duration_secs: 7200`.
 cat > layout.yaml <<EOF
 ---
 root_key: "${ROOT_PUBLIC_KEY}"

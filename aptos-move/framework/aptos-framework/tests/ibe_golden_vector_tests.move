@@ -7,6 +7,7 @@
 /// per validator share through a pairing check, the weighted reconstruction native, the final key check
 /// native, and the bid submission native.
 module aptos_framework::ibe_golden_vector_tests {
+    // SCOUT(#240) DOC: the module doc above names the weighted reconstruction native, which goes.
     use std::features;
     use aptos_std::bls12381_algebra::{G1, G2, Gt, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
     use aptos_std::crypto_algebra;
@@ -161,6 +162,7 @@ module aptos_framework::ibe_golden_vector_tests {
         };
     }
 
+    // SCOUT(#240) REMOVE: this section. The issue names line 167 only; the helper and its three tests go: threshold_sets_rebuild_the_key, below_threshold_aborts, one_wrong_share_gives_a_key_that_fails_the_check. The Rust golden tests keep covering reconstruction.
     // ------------------------------------------------------------------ reconstruction
 
     fun reconstruct(who: vector<u64>, shares: vector<vector<vector<u8>>>): vector<u8> {
@@ -233,6 +235,9 @@ module aptos_framework::ibe_golden_vector_tests {
         assert!(*ads.borrow(0) == fx::bid_ad(), 2);
     }
 
+    // SCOUT(#227) EDIT: this test only reads the recorded flags (the opening is checked in Rust). With the native it calls decrypt_bid on case 11 and expects none.
+    // SCOUT(#227) TEST: decrypt_bid_agrees_with_bid_case_opens_for_every_golden_case. The fixtures record one plaintext only (bid_plaintext), which is enough: case 0 is the only case that opens.
+    // SCOUT(#227) TEST: price_bids_decrypt_to_their_little_endian_price_under_their_own_bidder_only, and the bad-length bid decrypts to a plaintext that is not 8 bytes.
     #[test]
     fun bid_that_passes_submission_but_does_not_open() {
         // Case 11 is the body re-signed under a new one time key. It passes the signature check.
