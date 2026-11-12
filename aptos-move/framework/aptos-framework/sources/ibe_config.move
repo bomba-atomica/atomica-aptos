@@ -174,7 +174,9 @@ module aptos_framework::ibe_config {
         /// `submitted_shares[i]` holds the shares of `validator_indices[i]`, one per virtual player.
         submitted_shares: vector<vector<vector<u8>>>,
         validator_weights: vector<u64>,
-        // SCOUT(#230) EDIT: this list survives `expire()`. The field keeps its position: `TimelockInfoResource` (types/src/timelock.rs) mirrors the layout in BCS.
+        /// Validators whose share sets were accepted, in submission order. Kept after expiry, so anyone can
+        /// name the validators of the epoch that did not submit. `TimelockInfoResource` (types/src/timelock.rs)
+        /// mirrors this layout in BCS, so the field keeps its last position.
         submitters: vector<address>
     }
 
@@ -224,13 +226,15 @@ module aptos_framework::ibe_config {
         timestamp_us: u64
     }
 
-    // SCOUT(#230) EDIT: gains `submitters: vector<address>`. This changes the BCS layout of the event for every client and indexer that decodes it.
+    // `TimelockExpiredEvent` in types/src/timelock.rs mirrors this layout in BCS.
     #[event]
     struct TimelockExpiredEvent has drop, store {
         timelock_id: u64,
         /// See `REASON_*`.
         reason: u8,
-        timestamp_us: u64
+        timestamp_us: u64,
+        /// The validators whose share sets were accepted, in submission order.
+        submitters: vector<address>
     }
 
     // ================================
@@ -689,21 +693,23 @@ module aptos_framework::ibe_config {
             expire(info, REASON_KEY_CHECK_FAILED);
             registry.pending.remove(&key);
             event::emit(
-                // SCOUT(#230) EDIT: fill `submitters` from `info.submitters` (key-check-failed expiry). Read the list before or after `expire`, which now keeps it.
-                TimelockExpiredEvent { timelock_id, reason: REASON_KEY_CHECK_FAILED, timestamp_us: now }
+                TimelockExpiredEvent {
+                    timelock_id,
+                    reason: REASON_KEY_CHECK_FAILED,
+                    timestamp_us: now,
+                    submitters: info.submitters
+                }
             );
             false
         }
     }
 
-    // SCOUT(#230) EDIT: keep `info.submitters`. Still clear `submitted_shares`, `validator_indices`, `validator_weights` and `share_count`.
-    /// Sets `Expired(reason)` and drops the stored shares.
+    /// Sets `Expired(reason)` and drops the stored shares. Keeps `submitters`.
     fun expire(info: &mut TimelockInfo, reason: u8) {
         info.status = TimelockStatus::Expired { reason };
         info.validator_indices = vector::empty();
         info.submitted_shares = vector::empty();
         info.validator_weights = vector::empty();
-        info.submitters = vector::empty();
         info.share_count = 0;
     }
 
@@ -737,8 +743,14 @@ module aptos_framework::ibe_config {
                 if (info.epoch != current_epoch) { REASON_EPOCH_ENDED }
                 else { REASON_REVEAL_WINDOW_ELAPSED };
             expire(info, reason);
-            // SCOUT(#230) EDIT: fill `submitters` from `info.submitters` (reveal-window-elapsed and epoch-ended expiry).
-            event::emit(TimelockExpiredEvent { timelock_id: key.timelock_id, reason, timestamp_us: now });
+            event::emit(
+                TimelockExpiredEvent {
+                    timelock_id: key.timelock_id,
+                    reason,
+                    timestamp_us: now,
+                    submitters: info.submitters
+                }
+            );
             processed += 1;
         };
     }
@@ -868,7 +880,13 @@ module aptos_framework::ibe_config {
         TimelockRegistry[@aptos_framework].next_timelock_id
     }
 
-    // SCOUT(#230) ADD: `#[view] public fun get_submitters(timelock_id: u64): vector<address>`, the validators whose share sets were accepted, in submission order. The list survives expiry for every reason; the stored shares are still dropped.
+    #[view]
+    /// The validators whose share sets were accepted, in submission order. The list survives expiry for
+    /// every reason. Aborts for an unknown timelock.
+    public fun get_submitters(timelock_id: u64): vector<address> acquires TimelockRegistry {
+        assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
+        borrow_info(&TimelockRegistry[@aptos_framework], timelock_id).submitters
+    }
 
     /// Identity of a timelock. See the module doc for the byte layout.
     public fun compute_identity(chain: u8, epoch: u64, timelock_id: u64, deadline_us: u64): vector<u8> {
@@ -971,5 +989,11 @@ module aptos_framework::ibe_config {
     #[test_only]
     public fun on_new_block_for_testing() acquires TimelockRegistry {
         on_new_block_internal();
+    }
+
+    #[test_only]
+    /// `(timelock_id, reason, submitters)` of an emitted `TimelockExpiredEvent`.
+    public fun expired_event_fields_for_testing(e: &TimelockExpiredEvent): (u64, u8, vector<address>) {
+        (e.timelock_id, e.reason, e.submitters)
     }
 }

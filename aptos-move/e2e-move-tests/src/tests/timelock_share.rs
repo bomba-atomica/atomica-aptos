@@ -16,6 +16,7 @@ use aptos_types::{
     account_config::CORE_CODE_ADDRESS,
     contract_event::ContractEvent,
     on_chain_config::{ConfigurationResource, OnChainConfig, ValidatorSet},
+    timelock::TimelockExpiredEvent,
     transaction::{ExecutionStatus, Transaction, TransactionOutput, TransactionStatus},
     validator_txn::{TimelockShare, ValidatorTransaction},
 };
@@ -416,8 +417,17 @@ fn rebuilt_key_that_fails_the_mpk_check_expires_and_is_not_stored() {
     assert!(!e.is_revealed());
     assert_eq!(e.status(), 2, "Expired");
     assert_eq!(e.expiry_reason(), 3, "key-check-failed");
-    // SCOUT(#230) EDIT: decode the event and assert its `submitters` equals the authors of the accepted share transactions. No Rust mirror of this event exists yet, so the test needs one.
-    assert_eq!(event_named(&out, "TimelockExpiredEvent").len(), 1);
+    let expired = event_named(&out, "TimelockExpiredEvent");
+    assert_eq!(expired.len(), 1);
+    let event: TimelockExpiredEvent = bcs::from_bytes(expired[0].event_data()).unwrap();
+    assert_eq!((event.timelock_id, event.reason), (e.timelock_id, 3));
+    // The author of the one accepted share transaction.
+    assert_eq!(event.submitters, vec![e.author]);
+    let kept: Vec<AccountAddress> = e.view("get_submitters", 0);
+    assert_eq!(
+        kept, event.submitters,
+        "the registry keeps the list after expiry"
+    );
     assert!(event_named(&out, "TimelockRevealEvent").is_empty());
     let key = e.h.execute_view_function(
         str::parse("0x1::ibe_config::get_decryption_key").unwrap(),
