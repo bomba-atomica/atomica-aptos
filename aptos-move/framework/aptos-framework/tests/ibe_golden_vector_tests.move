@@ -4,10 +4,9 @@
 /// The fixtures are generated from a seeded real chunky DKG dealing (see
 /// `ibe_golden_vector_fixtures.move` for the regeneration command). These tests check the checked-in
 /// bytes with the framework's own code: the identity layout, `H1` through `crypto_algebra`, every
-/// per validator share through a pairing check, the weighted reconstruction native, the final key check
-/// native, and the bid submission native.
+/// per validator share through a pairing check, the final key check native, and the bid submission
+/// native. The Rust golden tests cover the weighted reconstruction.
 module aptos_framework::ibe_golden_vector_tests {
-    // SCOUT(#240) DOC: the module doc above names the weighted reconstruction native, which goes.
     use std::features;
     use aptos_std::bls12381_algebra::{G1, G2, Gt, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
     use aptos_std::crypto_algebra;
@@ -43,12 +42,6 @@ module aptos_framework::ibe_golden_vector_tests {
             i += 1;
         };
         true
-    }
-
-    fun select(nested: vector<vector<vector<u8>>>, who: vector<u64>): vector<vector<vector<u8>>> {
-        let out = vector[];
-        who.for_each(|v| out.push_back(*nested.borrow(v)));
-        out
     }
 
     // ------------------------------------------------------------------ identity and H1
@@ -162,44 +155,7 @@ module aptos_framework::ibe_golden_vector_tests {
         };
     }
 
-    // SCOUT(#240) REMOVE: this section. The issue names line 167 only; the helper and its three tests go: threshold_sets_rebuild_the_key, below_threshold_aborts, one_wrong_share_gives_a_key_that_fails_the_check. The Rust golden tests keep covering reconstruction.
-    // ------------------------------------------------------------------ reconstruction
-
-    fun reconstruct(who: vector<u64>, shares: vector<vector<vector<u8>>>): vector<u8> {
-        ibe::reconstruct_ibe_dk<G1>(
-            who, shares, fx::validator_weights(), fx::threshold(), fx::total_weight(), fx::identity()
-        )
-    }
-
-    #[test]
-    fun threshold_sets_rebuild_the_key() {
-        let sets = fx::reconstruction_sets();
-        assert!(sets.length() == 5, 0);
-        let i = 0;
-        while (i < sets.length()) {
-            let who = *sets.borrow(i);
-            let got = reconstruct(who, select(fx::dk_shares(), who));
-            assert!(got == fx::dk(), 10 + i);
-            assert!(ibe::verify_decryption_key(got, fx::identity(), fx::mpk()), 20 + i);
-            i += 1;
-        };
-    }
-
-    #[test]
-    #[expected_failure]
-    fun below_threshold_aborts() {
-        let sets = fx::below_threshold_sets();
-        let who = *sets.borrow(0);
-        reconstruct(who, select(fx::dk_shares(), who));
-    }
-
-    #[test]
-    fun one_wrong_share_gives_a_key_that_fails_the_check() {
-        let got = reconstruct(vector[0, 2], fx::poisoned_shares());
-        assert!(got == fx::poisoned_dk(), 0);
-        assert!(got != fx::dk(), 1);
-        assert!(!ibe::verify_decryption_key(got, fx::identity(), fx::mpk()), 2);
-    }
+    // ------------------------------------------------------------------ final key check
 
     #[test]
     fun key_check_cases() {

@@ -723,7 +723,6 @@ fn full_flow_chunky_shaped_shares_to_bid_open() {
 // ---------------------------------------------------------------------------------------------
 
 // SCOUT(#227) EDIT: `ibe_native_test.move` has no plaintext fixture for its ciphertext. Print one here, or test decryption on the golden fixtures only.
-// SCOUT(#240) EDIT: this ignored generator prints the fixtures of `ibe_native_test.move`, including the reconstruction shares. Trim it with the tests.
 /// Prints `NAME=hex` lines. Run with
 /// `cargo test -p aptos-dkg --lib ibe::tests::generate_move_fixtures -- --ignored --nocapture`.
 /// Deterministic: fixed seeds, so the output is reproducible.
@@ -734,7 +733,6 @@ fn generate_move_fixtures() {
     let id = compute_identity(4, 2, 1, 1_000_000);
     let ad = bid_ad(1, 5, 2, 1);
     let who = [0usize, 1];
-    let nested = d.dk_shares(&who, &id);
     let dk = d.reconstruct(&who, &id).unwrap();
     assert!(verify_decryption_key(&dk, &id, &d.mpk));
     let ct = encrypt_bid(&d.mpk, &id, &ad, b"hello", &mut rng(4243)).unwrap();
@@ -761,11 +759,6 @@ fn generate_move_fixtures() {
     println!("MPK={}", hex::encode(encode_g2(&d.mpk)));
     println!("DK={}", hex::encode(encode_g1(&dk)));
     println!("OTHER_DK={}", hex::encode(encode_g1(&other_dk)));
-    for (v, shares) in nested.iter().enumerate() {
-        for (j, s) in shares.iter().enumerate() {
-            println!("SHARE_{v}_{j}={}", hex::encode(s));
-        }
-    }
     println!("AD={}", hex::encode(&ad));
     println!("CT={}", hex::encode(&wire));
     println!("CT_NON_SUBGROUP_U={}", hex::encode(bad.to_bytes()));
