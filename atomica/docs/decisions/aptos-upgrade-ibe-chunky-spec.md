@@ -245,14 +245,15 @@ Written once per epoch by `finish_with_timelock_dkg_result`. Fields: `epoch`, `m
 ### Rules
 
 1. Registration records `epoch` in `TimelockInfo`.
-2. Registration aborts with `E_DEADLINE_AFTER_EPOCH_END` unless `deadline_us <= epoch_end_us - 15 minutes`, where `epoch_end_us = last_reconfiguration_time + epoch_interval`. The 15 minutes also cover the 10 minute reveal window of section 7, rule 3. <!-- SCOUT(#231) DOC: `epoch_end_us` becomes the next configured UTC boundary. State the alignment rule: every boundary is at least 25 minutes from 07:45 and 16:15 UTC. -->
+2. Registration aborts with `E_DEADLINE_AFTER_EPOCH_END` unless `deadline_us <= epoch_end_us - 15 minutes`, where `epoch_end_us = last_reconfiguration_time + epoch_interval`. The 15 minutes also cover the 10 minute reveal window of section 7, rule 3.
 3. Bids are encrypted to the registered epoch's `mpk`. `AD` holds `epoch`. A bid whose `AD.epoch` is not the timelock's epoch aborts.
 4. The handler accepts a share only while `current_epoch == info.epoch` and `share.epoch == info.epoch`. `TimelockShare` gains an `epoch` field.
 5. When `on_new_epoch` runs, every `Pending` timelock of the old epoch becomes `Expired(epoch-ended)`, and its stored shares are dropped. No key for the old epoch is produced after that. The new validator set holds no old shares, so this is the only safe outcome.
 6. A reveal never straddles an epoch. A reveal is complete only if it is finalized in a block whose epoch equals `info.epoch`. Shares of two epochs are never combined, because the stored share list belongs to one `TimelockInfo` and one epoch.
 7. Node rule for deriving a share: only for a timelock with `status = Pending`, `info.epoch = current_epoch`, and a committed block timestamp at or after `deadline_us`, read from chain state. Not from the local clock, and not from a request.
-8. Auctions longer than one epoch are not supported. At a 2 hour epoch the longest bid window is under 105 minutes. A longer product needs a multi-epoch design and its own spec. <!-- SCOUT(#231) DOC: restate the longest bid window for the chosen epoch length (12 hours assumed). -->
+8. Auctions longer than one epoch are not supported. At a 2 hour epoch the longest bid window is under 105 minutes. A longer product needs a multi-epoch design and its own spec.
 9. Governance can force an early reconfiguration. The guard is best effort. A forced reconfiguration expires pending timelocks under rule 5. The auction contract must handle `epoch-ended` with a refund path before this ships.
+10. An epoch can start with no timelock key: the timelock DKG did not finish within its grace period, or the reconfiguration ran through `reconfiguration_with_dkg::try_start`, which starts no timelock DKG. While the timelock DKG is on, `timelock_dkg::on_new_epoch` then emits `TimelockKeyMissingEvent { epoch }` for the new epoch in the reconfiguration transaction. It never aborts the epoch change. In that epoch `ibe_config::is_ready()` is false and `register_timelock` aborts with `E_IBE_NOT_READY`.
 
 ## 9. What happens to the Option C FPTX decisions
 

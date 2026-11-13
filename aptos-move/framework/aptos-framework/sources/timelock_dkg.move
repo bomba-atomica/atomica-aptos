@@ -58,7 +58,13 @@ module aptos_framework::timelock_dkg {
         start_time_us: u64
     }
 
-    // SCOUT(#231) ADD: `#[event] struct TimelockKeyMissingEvent has drop, store { epoch: u64 }`, emitted in the reconfiguration transaction by `on_new_epoch` when the feature is on and no `TimelockEpochConfig` was written for the new epoch. A new event type is new framework code, so it is not declared here.
+    /// Emitted in the reconfiguration transaction by `on_new_epoch` when the feature is on and no
+    /// `TimelockEpochConfig` was written for the new epoch. `epoch` is the new epoch, which has no
+    /// timelock key: `ibe_config::is_ready()` is false and `register_timelock` aborts in it.
+    #[event]
+    struct TimelockKeyMissingEvent has drop, store {
+        epoch: u64
+    }
 
     struct TimelockDKGSessionState has copy, store, drop {
         metadata: TimelockDKGSessionMetadata,
@@ -186,9 +192,10 @@ module aptos_framework::timelock_dkg {
         }
     }
 
-    // SCOUT(#231) EDIT: owner question 4: only `try_start_with_chunky_dkg` calls this. A reconfiguration through `try_start` gives an epoch with no key, which the new event then reports.
     /// Marks the session in progress and notifies the validators. Idempotent for `dealer_epoch`.
-    /// Does nothing while the feature is off.
+    /// Does nothing while the feature is off. Only `reconfiguration_with_dkg::try_start_with_chunky_dkg`
+    /// calls this. A reconfiguration through `try_start` starts no session, so its new epoch has no key,
+    /// and `on_new_epoch` reports that epoch with `TimelockKeyMissingEvent`.
     public(friend) fun start(
         dealer_epoch: u64,
         chunky_dkg_config: ChunkyDKGConfig,
@@ -266,25 +273,35 @@ module aptos_framework::timelock_dkg {
         }
     }
 
-    // SCOUT(#231) EDIT: emit `TimelockKeyMissingEvent { epoch }` on every path below that writes no config while the feature is on. The function does not read `state.enabled` today, so the feature-off case needs a new check.
     /// Runs after the epoch change. Writes the `TimelockEpochConfig` of the new epoch when the session of
     /// the last epoch completed. Drops a pending config that is not for the new epoch. When nothing is
-    /// written, the old config stays and `ibe_config::is_ready()` is false for the new epoch.
+    /// written, the old config stays and `ibe_config::is_ready()` is false for the new epoch. Then, while
+    /// the feature is on, it emits `TimelockKeyMissingEvent` for the new epoch. Never aborts the epoch
+    /// change.
     public(friend) fun on_new_epoch(aptos_framework: &signer) acquires TimelockDKGState {
         system_addresses::assert_aptos_framework(aptos_framework);
         if (!exists<TimelockDKGState>(@aptos_framework)) { return };
         let state = &mut TimelockDKGState[@aptos_framework];
-        // SCOUT(#231) EDIT: emit here when `state.enabled`: no session completed for the new epoch.
-        if (state.pending_config.is_none()) { return };
-        let current_epoch = reconfiguration::current_epoch();
-        // A config for a later epoch waits for that epoch. A config for an earlier epoch is stale.
-        // SCOUT(#231) EDIT: emit here too: a config that waits for a later epoch leaves this epoch without a key.
-        if (state.pending_config.borrow().target_epoch > current_epoch) { return };
-        let pending = state.pending_config.extract();
-        // SCOUT(#231) EDIT: emit here: a stale config was dropped.
-        if (pending.target_epoch != current_epoch) { return };
+        let epoch = reconfiguration::current_epoch();
+        let written = try_write_pending_config(aptos_framework, &mut state.pending_config, epoch);
+        if (!written && state.enabled) {
+            emit(TimelockKeyMissingEvent { epoch });
+        }
+    }
+
+    /// Writes the pending config when it is for `current_epoch` and `ibe_config` accepts it. Returns
+    /// whether a config was written. A config for a later epoch waits for that epoch. A config for an
+    /// earlier epoch is stale and is dropped. A refused config is dropped.
+    fun try_write_pending_config(
+        aptos_framework: &signer,
+        pending_config: &mut Option<PendingTimelockConfig>,
+        current_epoch: u64
+    ): bool {
+        if (pending_config.is_none()) { return false };
+        if (pending_config.borrow().target_epoch > current_epoch) { return false };
+        let pending = pending_config.extract();
+        if (pending.target_epoch != current_epoch) { return false };
         // Never abort the epoch change: skip a config that `ibe_config` would refuse.
-        // SCOUT(#231) EDIT: emit here: `ibe_config` refuses the config. The epoch change must still not abort.
         if (!ibe_config::is_initialized()
             || !ibe_config::is_valid_epoch_config(
                 &pending.mpk,
@@ -292,7 +309,7 @@ module aptos_framework::timelock_dkg {
                 &pending.weights,
                 pending.epoch_interval_us,
                 &pending.verification_keys
-            )) { return };
+            )) { return false };
         let PendingTimelockConfig {
             target_epoch,
             mpk,
@@ -314,6 +331,7 @@ module aptos_framework::timelock_dkg {
             subtranscript_hash,
             verification_keys
         );
+        true
     }
 
     public fun incomplete_session(): Option<TimelockDKGSessionState> acquires TimelockDKGState {
@@ -383,5 +401,35 @@ module aptos_framework::timelock_dkg {
     #[test_only]
     public fun on_new_epoch_for_testing(aptos_framework: &signer) acquires TimelockDKGState {
         on_new_epoch(aptos_framework);
+    }
+
+    #[test_only]
+    /// The `epoch` of an emitted `TimelockKeyMissingEvent`.
+    public fun key_missing_event_epoch_for_testing(e: &TimelockKeyMissingEvent): u64 {
+        e.epoch
+    }
+
+    #[test_only]
+    /// Sets a pending config directly, so tests can reach the paths `finish` refuses.
+    public fun set_pending_config_for_testing(
+        target_epoch: u64,
+        mpk: vector<u8>,
+        reconstruct_threshold_weight: u64,
+        weights: vector<u64>,
+        epoch_interval_us: u64,
+        verification_keys: vector<vector<u8>>
+    ) acquires TimelockDKGState {
+        TimelockDKGState[@aptos_framework].pending_config = option::some(
+            PendingTimelockConfig {
+                target_epoch,
+                mpk,
+                reconstruct_threshold_weight,
+                weights,
+                epoch_interval_us,
+                public_parameters_hash: vector[],
+                subtranscript_hash: vector[],
+                verification_keys
+            }
+        );
     }
 }

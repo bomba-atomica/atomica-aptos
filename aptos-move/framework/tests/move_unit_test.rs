@@ -139,7 +139,6 @@ fn move_experimental_unit_tests() {
     run_tests_for_pkg("aptos-experimental", true);
 }
 
-// SCOUT(#231) TEST: timelock_dkg_move_unit_tests: runs the Move tests of `timelock_dkg_tests` (12 today).
 // SCOUT(#227) TEST: a filtered Rust test for the Move tests of `ibe_native_test` and `ibe_golden_vector_tests`. One filter string cannot select both without `ibe_config_tests`, and the cargo filter `ibe` would also run ibe_config_move_unit_tests, so pick the names with care.
 /// Runs the aptos-framework Move tests that match `filter` and returns how many passed. The report is
 /// copied to stdout as it is written, so a failure still shows it.
@@ -182,4 +181,13 @@ fn ethereum_headers_move_unit_tests() {
 fn ibe_config_move_unit_tests() {
     let passed = run_filtered_framework_tests("ibe_config_tests");
     assert!(passed >= 60, "only {passed} ibe_config Move tests ran");
+}
+
+/// The Move unit tests of `timelock_dkg_tests` (fork only), including the `TimelockKeyMissingEvent`
+/// tests (atomica issue 231). Runs with `cargo test -p aptos-framework --test move_unit_test --
+/// timelock_dkg` and fails when fewer Move tests pass than the file holds.
+#[test]
+fn timelock_dkg_move_unit_tests() {
+    let passed = run_filtered_framework_tests("timelock_dkg_tests");
+    assert!(passed >= 16, "only {passed} timelock_dkg Move tests ran");
 }

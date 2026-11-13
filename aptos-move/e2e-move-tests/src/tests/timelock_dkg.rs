@@ -17,6 +17,7 @@ use aptos_language_e2e_tests::account::Account;
 use aptos_types::{
     account_config::CORE_CODE_ADDRESS,
     aggregate_signature::AggregateSignature,
+    contract_event::ContractEvent,
     dkg::{
         chunky_dkg::CertifiedAggregatedChunkySubtranscript,
         timelock_dkg::CertifiedTimelockDKGOutput, DKGTranscriptMetadata,
@@ -159,13 +160,28 @@ fn start_session(h: &mut MoveHarness, epoch: u64) {
 }
 
 /// Moves block time forward by a few seconds, so `reconfiguration::reconfigure` sees time pass,
-/// then runs the finish step of the reconfiguration.
-fn end_epoch(h: &mut MoveHarness) {
+/// then runs the finish step of the reconfiguration. Returns the events of that step.
+fn end_epoch(h: &mut MoveHarness) -> Vec<ContractEvent> {
     h.executor.new_block();
-    h.executor
-        .exec("reconfiguration_with_dkg", "finish", vec![], vec![
+    let (write_set, events) = h
+        .executor
+        .try_exec("reconfiguration_with_dkg", "finish", vec![], vec![
             signer_arg(),
-        ]);
+        ])
+        .expect("reconfiguration_with_dkg::finish");
+    h.executor.apply_write_set(&write_set);
+    events
+}
+
+/// The `epoch` of each `timelock_dkg::TimelockKeyMissingEvent` in `events`.
+fn key_missing_epochs(events: &[ContractEvent]) -> Vec<u64> {
+    events
+        .iter()
+        .filter(|e| {
+            e.type_tag().to_canonical_string() == "0x1::timelock_dkg::TimelockKeyMissingEvent"
+        })
+        .map(|e| bcs::from_bytes::<u64>(e.event_data()).expect("TimelockKeyMissingEvent layout"))
+        .collect()
 }
 
 #[test]
@@ -177,9 +193,10 @@ fn completed_session_writes_the_epoch_config_after_the_epoch_change() {
     finish_with_result(&mut h, epoch);
     // Still the old epoch: nothing is ready yet.
     assert!(!is_ready(&mut h));
-    end_epoch(&mut h);
+    let events = end_epoch(&mut h);
     assert_eq!(current_epoch(&h), epoch + 1);
     assert!(is_ready(&mut h));
+    assert_eq!(key_missing_epochs(&events), Vec::<u64>::new());
     let out = h.execute_view_function(
         str::parse("0x1::ibe_config::get_epoch_config").unwrap(),
         vec![],
@@ -192,17 +209,17 @@ fn completed_session_writes_the_epoch_config_after_the_epoch_change() {
     assert_eq!((got_epoch, threshold, total), (epoch + 1, 3, 4));
 }
 
-// SCOUT(#231) TEST: also assert one `TimelockKeyMissingEvent` with the new epoch in the reconfiguration output of `end_epoch`.
 #[test]
 fn failed_session_does_not_block_the_epoch_change_and_leaves_no_key() {
     let mut h = MoveHarness::new();
     enable(&mut h);
     let epoch = current_epoch(&h);
     start_session(&mut h, epoch);
-    // No result arrives. The epoch changes anyway.
-    end_epoch(&mut h);
+    // No result arrives. The epoch changes anyway, and the reconfiguration reports the new epoch.
+    let events = end_epoch(&mut h);
     assert_eq!(current_epoch(&h), epoch + 1);
     assert!(!is_ready(&mut h));
+    assert_eq!(key_missing_epochs(&events), vec![epoch + 1]);
 
     // The registrar check runs first: 0xa11ce is not the registrar, so it gets E_NOT_REGISTRAR (17).
     let address = AccountAddress::from_hex_literal("0xa11ce").unwrap();

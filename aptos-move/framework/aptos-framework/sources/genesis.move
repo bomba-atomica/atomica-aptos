@@ -135,7 +135,6 @@ module aptos_framework::genesis {
         block::initialize(&aptos_framework_account, epoch_interval_microsecs);
         state_storage::initialize(&aptos_framework_account);
         nonce_validation::initialize(&aptos_framework_account);
-        // SCOUT(#231) ADD: genesis step that stores the UTC epoch boundaries from the layout.
         // Timelock registry. Empty until the timelock DKG writes the first epoch config.
         ibe_config::initialize(&aptos_framework_account);
         timelock_dkg::initialize(&aptos_framework_account);

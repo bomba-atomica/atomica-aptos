@@ -451,7 +451,6 @@ pub struct GenesisConfiguration {
     pub initialize_decryption_at_genesis: bool,
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_registrar`.
     pub timelock_registrar: Option<AccountAddress>,
-    // SCOUT(#231) ADD: fields for the UTC epoch boundaries (shape depends on owner question 1).
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_dkg_enabled`.
     pub timelock_dkg_enabled: bool,
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_public_parameters_hash`.
@@ -686,7 +685,6 @@ impl Builder {
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
             timelock_registrar: None,
-            // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: false,
             timelock_public_parameters_hash: None,
             eth_chain_id: None,

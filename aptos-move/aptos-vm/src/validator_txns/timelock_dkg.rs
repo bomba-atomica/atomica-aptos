@@ -197,7 +197,6 @@ impl AptosVM {
         let mut gas_meter = UnmeteredGasMeter;
         let mut session = self.new_session(resolver, session_id, None);
 
-        // SCOUT(#231) EDIT: with UTC-anchored epochs the handler passes what `ibe_config` needs for the next boundary, not `block::get_epoch_interval_secs`.
         // The epoch length at the time of the result. `ibe_config` derives the epoch end from it.
         let traversal_storage = TraversalStorage::new();
         let interval_values = session

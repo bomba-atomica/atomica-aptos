@@ -8,6 +8,7 @@ module aptos_framework::timelock_dkg_tests {
     use aptos_framework::account;
     use aptos_framework::chain_id;
     use aptos_framework::chunky_dkg_config;
+    use aptos_framework::event;
     use aptos_framework::ibe_config;
     use aptos_framework::ibe_golden_vector_fixtures as fixtures;
     use aptos_framework::reconfiguration;
@@ -41,6 +42,13 @@ module aptos_framework::timelock_dkg_tests {
         timelock_dkg::finish_for_testing(
             x"01", fixtures::timelock_basic_mpk(), threshold, weights, EPOCH_INTERVAL, vks(total)
         );
+    }
+
+    /// The epochs of every `TimelockKeyMissingEvent` emitted so far, in order.
+    fun key_missing_epochs(): vector<u64> {
+        event::emitted_events<timelock_dkg::TimelockKeyMissingEvent>().map_ref(
+            |e| timelock_dkg::key_missing_event_epoch_for_testing(e)
+        )
     }
 
     fun next_epoch() {
@@ -91,11 +99,6 @@ module aptos_framework::timelock_dkg_tests {
         assert!(ibe_config::get_mpk() == fixtures::timelock_basic_mpk(), 7);
     }
 
-    // SCOUT(#231) EDIT: also assert exactly one TimelockKeyMissingEvent with the new epoch.
-    // SCOUT(#231) TEST: no_key_missing_event_when_the_session_completed
-    // SCOUT(#231) TEST: no_key_missing_event_while_the_feature_is_off
-    // SCOUT(#231) TEST: key_missing_event_for_a_config_of_another_epoch_and_for_a_refused_config (the epoch change does not abort)
-    // SCOUT(#231) TEST: block_prologue_starts_the_reconfiguration_at_the_first_block_at_or_past_the_utc_boundary (also when the last epoch started late). This one needs the block prologue, so it may belong in a new block test file.
     #[test]
     fun missing_result_leaves_the_new_epoch_without_a_key() {
         let framework = setup();
@@ -105,9 +108,61 @@ module aptos_framework::timelock_dkg_tests {
         next_epoch();
         timelock_dkg::on_new_epoch_for_testing(&framework);
         assert!(!ibe_config::is_ready(), 1);
+        // Exactly one missing-key event, for the new epoch.
+        assert!(key_missing_epochs() == vector[1], 2);
     }
 
-    // SCOUT(#231) EDIT: assert the missing-key event here too (stale config).
+    #[test]
+    fun no_key_missing_event_when_the_session_completed() {
+        let framework = setup();
+        timelock_dkg::enable_for_testing(&framework);
+        start_session(0);
+        finish_ok(vector[2, 1, 2], 3, 5);
+        next_epoch();
+        timelock_dkg::on_new_epoch_for_testing(&framework);
+        assert!(ibe_config::is_ready(), 1);
+        assert!(key_missing_epochs().is_empty(), 2);
+    }
+
+    #[test]
+    fun no_key_missing_event_while_the_feature_is_off() {
+        let framework = setup();
+        next_epoch();
+        timelock_dkg::on_new_epoch_for_testing(&framework);
+        assert!(!ibe_config::is_ready(), 1);
+        // Turned off after it ran: still no event.
+        timelock_dkg::enable_for_testing(&framework);
+        timelock_dkg::disable(&framework);
+        next_epoch();
+        timelock_dkg::on_new_epoch_for_testing(&framework);
+        assert!(key_missing_epochs().is_empty(), 2);
+    }
+
+    #[test]
+    fun key_missing_event_for_a_config_of_another_epoch_and_for_a_refused_config() {
+        let framework = setup();
+        timelock_dkg::enable_for_testing(&framework);
+        // A config for a later epoch waits, so epoch 1 has no key.
+        timelock_dkg::set_pending_config_for_testing(
+            5, fixtures::timelock_basic_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL, vks(5)
+        );
+        next_epoch();
+        timelock_dkg::on_new_epoch_for_testing(&framework);
+        assert!(reconfiguration::current_epoch() == 1, 1);
+        assert!(!ibe_config::is_ready(), 2);
+        assert!(key_missing_epochs() == vector[1], 3);
+        // A config for epoch 2 that `ibe_config` refuses (5 weights, 4 verification keys): the epoch
+        // change does not abort, and epoch 2 has no key.
+        timelock_dkg::set_pending_config_for_testing(
+            2, fixtures::timelock_basic_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL, vks(4)
+        );
+        next_epoch();
+        timelock_dkg::on_new_epoch_for_testing(&framework);
+        assert!(reconfiguration::current_epoch() == 2, 4);
+        assert!(!ibe_config::is_ready(), 5);
+        assert!(key_missing_epochs() == vector[1, 2], 6);
+    }
+
     #[test]
     fun stale_result_is_dropped_and_old_config_is_not_ready() {
         let framework = setup();
@@ -117,10 +172,20 @@ module aptos_framework::timelock_dkg_tests {
         next_epoch();
         timelock_dkg::on_new_epoch_for_testing(&framework);
         assert!(ibe_config::is_ready(), 1);
+        assert!(key_missing_epochs().is_empty(), 3);
         // Epoch 1 has no timelock result: the epoch 1 config is not ready in epoch 2.
         next_epoch();
         timelock_dkg::on_new_epoch_for_testing(&framework);
         assert!(!ibe_config::is_ready(), 2);
+        assert!(key_missing_epochs() == vector[2], 4);
+        // A config for epoch 2 that arrives after epoch 2 started is stale in epoch 3 and is dropped.
+        timelock_dkg::set_pending_config_for_testing(
+            2, fixtures::timelock_basic_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL, vks(5)
+        );
+        next_epoch();
+        timelock_dkg::on_new_epoch_for_testing(&framework);
+        assert!(!ibe_config::is_ready(), 5);
+        assert!(key_missing_epochs() == vector[2, 3], 6);
     }
 
     #[test]

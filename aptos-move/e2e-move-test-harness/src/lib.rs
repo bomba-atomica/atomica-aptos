@@ -831,7 +831,6 @@ impl<O: OutputLogger> MoveHarnessImpl<O> {
             );
             activation_micros - 1
         };
-        // SCOUT(#231) EDIT: not named in the issue. The test harness forces an epoch change by passing `last_reconfiguration_time + epoch_interval`. If UTC boundaries replace the interval rule for every chain, every harness test that changes epochs breaks, so the boundary rule must be opt-in.
         // Create a new block at exactly the target timestamp. This must exceed
         // `last_reconfiguration_time + epoch_interval` to trigger a reconfiguration
         // that updates `last_reconfiguration_time` — the value the VM actually uses

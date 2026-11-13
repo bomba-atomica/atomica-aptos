@@ -178,7 +178,6 @@ impl TimelockDKGSessionState {
     }
 }
 
-// SCOUT(#231) EDIT: BCS mirror of `timelock_dkg::PendingTimelockConfig`. Keep `epoch_interval_us` and put the UTC boundaries in a new resource, so neither this layout nor `TimelockEpochConfig` moves.
 /// Reflection of Move type `0x1::timelock_dkg::PendingTimelockConfig`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PendingTimelockConfig {
@@ -794,7 +793,6 @@ pub fn check_timelock_dkg_result(
 // Node side: the timelock service of one epoch
 // ---------------------------------------------------------------------------------------------
 
-// SCOUT(#231) EDIT: BCS mirror of `ibe_config::TimelockEpochConfig`. A field the epoch alignment adds, drops or renames changes here in the same commit, or every node fails to read the config.
 /// Reflection of Move type `0x1::ibe_config::TimelockEpochConfig`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TimelockEpochConfigResource {
