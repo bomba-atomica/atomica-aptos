@@ -140,7 +140,6 @@ jobs:
       # One Rust test that runs the ibe_config Move unit tests and fails below the number
       # ibe_config_tests.move holds (atomica issue 230).
       # SCOUT(#225) ADD: guarded step for the ibe_config Move unit tests. Issues 226 and 230 need the same step: the first to merge adds it.
-      # SCOUT(#226) ADD: the ibe_config Move unit test step above (shared with issue 225).
       - name: Run ibe_config Move unit tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh ibe-config-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ibe_config

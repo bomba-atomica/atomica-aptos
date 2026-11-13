@@ -400,12 +400,87 @@ module aptos_framework::ibe_config_tests {
 
     // ---- expiry ----
 
-    // SCOUT(#226) TEST: status_reads_expired_at_reveal_expiry_without_running_the_queue
-    // SCOUT(#226) TEST: status_reads_pending_one_microsecond_before_reveal_expiry
-    // SCOUT(#226) TEST: undrained_51st_timelock_reads_expired_with_reason_2
-    // SCOUT(#226) TEST: revealed_timelock_never_reads_expired_after_reveal_expiry
-    // SCOUT(#226) TEST: earlier_epoch_pending_reads_epoch_ended_even_past_reveal_expiry
-    // SCOUT(#226) TEST: is_reconstructable_is_false_at_reveal_expiry_with_threshold_weight
+    /// Read rule: an unrevealed timelock reads expired from its reveal expiry on, before the queue runs.
+    #[test(user = @0xA)]
+    fun status_reads_expired_at_reveal_expiry_without_running_the_queue(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(70 * MIN);
+        assert!(ibe_config::get_status(id) == 2, 1);
+        assert!(ibe_config::is_expired(id), 2);
+        assert!(ibe_config::get_expiry_reason(id) == 2, 3);
+        // The queue has not run: no event yet.
+        assert!(event::emitted_events<ibe_config::TimelockExpiredEvent>().is_empty(), 4);
+    }
+
+    #[test(user = @0xA)]
+    fun status_reads_pending_one_microsecond_before_reveal_expiry(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(70 * MIN - 1);
+        assert!(ibe_config::get_status(id) == 0, 1);
+        assert!(!ibe_config::is_expired(id), 2);
+        assert!(ibe_config::get_expiry_reason(id) == 0, 3);
+    }
+
+    /// The queue drains 50 per block. The 51st entry is not drained and still reads expired with reason 2.
+    #[test(user = @0xA)]
+    fun undrained_51st_timelock_reads_expired_with_reason_2(user: &signer) {
+        setup_ready();
+        let i = 0;
+        while (i < 51) {
+            register(user, 60 * MIN);
+            i += 1;
+        };
+        timestamp::update_global_time_for_test(70 * MIN);
+        ibe_config::on_new_block_for_testing();
+        assert!(event::emitted_events<ibe_config::TimelockExpiredEvent>().length() == 50, 1);
+        assert!(ibe_config::get_status(50) == 2, 2);
+        assert!(ibe_config::get_expiry_reason(50) == 2, 3);
+        assert!(ibe_config::is_expired(50), 4);
+    }
+
+    #[test(user = @0xA)]
+    fun revealed_timelock_never_reads_expired_after_reveal_expiry(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
+        ibe_config::finalize_for_testing(id, dk_of(id));
+        timestamp::update_global_time_for_test(70 * MIN);
+        assert!(ibe_config::get_status(id) == 1, 1);
+        assert!(!ibe_config::is_expired(id), 2);
+        assert!(ibe_config::get_expiry_reason(id) == 0, 3);
+    }
+
+    /// The epoch rule keeps priority over the reveal window read rule.
+    #[test(user = @0xA)]
+    fun earlier_epoch_pending_reads_epoch_ended_even_past_reveal_expiry(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(71 * MIN);
+        reconfiguration::reconfigure_for_test_custom();
+        assert!(reconfiguration::current_epoch() == 1, 1);
+        assert!(ibe_config::get_status(id) == 2, 2);
+        assert!(ibe_config::get_expiry_reason(id) == 1, 3);
+    }
+
+    #[test(user = @0xA)]
+    fun is_reconstructable_is_false_at_reveal_expiry_with_threshold_weight(user: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        timestamp::update_global_time_for_test(60 * MIN);
+        ibe_config::submit_dk_shares_for_testing(id, shares(2), 0, @0xB0, 0);
+        ibe_config::submit_dk_shares_for_testing(id, shares(1), 1, @0xB1, 0);
+        assert!(ibe_config::is_reconstructable(id), 1);
+        timestamp::update_global_time_for_test(70 * MIN);
+        // Threshold weight is still stored, because the queue has not run.
+        let (_, _, _, count) = ibe_config::get_timelock(id);
+        assert!(count == 3, 2);
+        assert!(!ibe_config::is_reconstructable(id), 3);
+    }
+
     #[test(user = @0xA)]
     fun deadline_passed_differs_from_expired(user: &signer) {
         setup_ready();
@@ -417,7 +492,8 @@ module aptos_framework::ibe_config_tests {
         assert!(ibe_config::get_status(id) == 0, 4);
     }
 
-    // SCOUT(#226) EDIT: the read at 70 * MIN - 1 stays 0. The read at 70 * MIN is 2 even before on_new_block_for_testing runs, so the queue call no longer proves anything through get_status.
+    /// `get_status` reads 2 at the window end before the queue runs (read rule), so this test checks the
+    /// queue through the dropped shares and the single `TimelockExpiredEvent`.
     #[test(user = @0xA)]
     fun reveal_window_expiry_marks_expired_and_drops_shares(user: &signer) {
         setup_ready();
@@ -430,8 +506,11 @@ module aptos_framework::ibe_config_tests {
         ibe_config::on_new_block_for_testing();
         assert!(ibe_config::get_status(id) == 0, 1);
 
-        // At the window end: expired.
+        // At the window end: reads expired at once. The shares stay until the queue runs.
         timestamp::update_global_time_for_test(70 * MIN);
+        let (_, _, _, count) = ibe_config::get_timelock(id);
+        assert!(count == 2, 8);
+        assert!(event::emitted_events<ibe_config::TimelockExpiredEvent>().is_empty(), 9);
         ibe_config::on_new_block_for_testing();
         assert!(ibe_config::get_status(id) == 2, 2);
         assert!(ibe_config::get_expiry_reason(id) == 2, 3);
@@ -505,7 +584,8 @@ module aptos_framework::ibe_config_tests {
         assert!(event_id == id && reason == 2 && submitters.is_empty(), 3);
     }
 
-    // SCOUT(#226) EDIT: pins abort 15 from the stored status. It becomes 11 if assert_can_submit starts to read effective_status.
+    // Share submission reads the stored status, not the read rule, so a share past the window aborts with
+    // E_REVEAL_WINDOW_ELAPSED (15) and not E_NOT_PENDING (11).
     #[test(user = @0xA)]
     #[expected_failure(abort_code = 15, location = aptos_framework::ibe_config)]
     fun submit_after_reveal_window_aborts(user: &signer) {
@@ -539,11 +619,11 @@ module aptos_framework::ibe_config_tests {
         };
         timestamp::update_global_time_for_test(70 * MIN);
         ibe_config::on_new_block_for_testing();
-        // 50 per block: ids 0..49 expired, 50..59 pending.
-        assert!(ibe_config::get_status(49) == 2, 1);
-        // SCOUT(#226) EDIT: this expectation flips: id 50 is not drained yet and now reads 2. Assert the stored state another way (share count or event count) to keep testing the batch bound of 50.
-        assert!(ibe_config::get_status(50) == 0, 2);
+        // 50 per block: the first run emits 50 events. Every id reads 2 by the read rule, so the bound is
+        // counted through the events, not through get_status.
+        assert!(event::emitted_events<ibe_config::TimelockExpiredEvent>().length() == 50, 1);
         ibe_config::on_new_block_for_testing();
+        assert!(event::emitted_events<ibe_config::TimelockExpiredEvent>().length() == 60, 2);
         assert!(ibe_config::get_status(59) == 2, 3);
     }
 

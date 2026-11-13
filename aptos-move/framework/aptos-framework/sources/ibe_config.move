@@ -20,12 +20,20 @@
 /// 3. When verified weight reaches the threshold the handler passes the reconstructed key to
 ///    `finalize_timelock_reveal`. The key is checked again here with `ibe::verify_decryption_key`.
 /// 4. Status moves one way: `Pending` to `Revealed` or `Expired(reason)`. It never reopens.
+/// 5. An unrevealed timelock reads as `Expired(reveal-window-elapsed)` from the first block whose time is at or
+///    past `reveal_expiry_us`. Every view (`get_status`, `get_expiry_reason`, `is_expired`, `is_reconstructable`,
+///    `get_reconstruction_inputs`) applies this read rule, whether or not `on_new_block` has reached the entry.
+///    `on_new_block` later writes the status, drops the stored shares and emits `TimelockExpiredEvent` once.
+///    Share submission reads the stored status, so a share at or past the window aborts with
+///    `E_REVEAL_WINDOW_ELAPSED`.
 ///
 /// ## Epoch rule
 ///
 /// A timelock lives in one epoch. A `Pending` timelock of an earlier epoch reads as `Expired(epoch-ended)`
 /// from the first block of the new epoch, because every view and every guard compares `info.epoch` with the
 /// current epoch. `on_new_block` then writes the status and drops the stored shares, in bounded batches.
+/// The epoch rule takes priority over the reveal window read rule: a `Pending` timelock of an earlier epoch reads
+/// `Expired(epoch-ended)` even when its reveal window has also passed.
 ///
 /// ## Identity
 ///
@@ -47,7 +55,6 @@ module aptos_framework::ibe_config {
     use aptos_framework::timestamp;
 
     // SCOUT(#225) DOC: lifecycle step 1 of the module doc above gains the rule that only the stored registrar may register.
-    // SCOUT(#226) DOC: the Lifecycle and Epoch rule sections of the module doc above gain the read rule: an unrevealed timelock reads Expired(reveal-window-elapsed) from the first block at or past `reveal_expiry_us`.
     friend aptos_framework::reconfiguration_with_dkg;
     friend aptos_framework::timelock_dkg;
     friend aptos_framework::block;
@@ -577,7 +584,8 @@ module aptos_framework::ibe_config {
         let registry = &TimelockRegistry[@aptos_framework];
         assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
         let info = registry.timelocks.borrow(timelock_id);
-        // SCOUT(#226) EDIT: decide whether share submission keeps reading the stored status (abort stays 15 past the window) or reads `effective_status` (abort becomes 11). The test `submit_after_reveal_window_aborts` pins 15.
+        // Reads the stored status, not `effective_status`. A share at or past the reveal window passes this
+        // check and aborts below with `E_REVEAL_WINDOW_ELAPSED` (15), which names the real cause.
         assert!(info.status is TimelockStatus::Pending, E_NOT_PENDING);
         assert!(info.epoch == current_epoch, E_WRONG_EPOCH);
 
@@ -618,7 +626,9 @@ module aptos_framework::ibe_config {
         let registry = &TimelockRegistry[@aptos_framework];
         assert!(registry.timelocks.contains(timelock_id), E_TIMELOCK_NOT_FOUND);
         let info = registry.timelocks.borrow(timelock_id);
-        // SCOUT(#226) EDIT: aborts with `E_NOT_PENDING` (11) at or past `reveal_expiry_us`. `finalize_timelock_reveal` and `fail_timelock_key_check` call this first, so they abort here before `finalize_internal` reaches `E_REVEAL_WINDOW_ELAPSED` (15).
+        // Aborts with `E_NOT_PENDING` (11) at or past `reveal_expiry_us`. `finalize_timelock_reveal` and
+        // `fail_timelock_key_check` call this first, so they abort here before `finalize_internal` reaches
+        // `E_REVEAL_WINDOW_ELAPSED` (15).
         assert!(effective_status(info) is TimelockStatus::Pending, E_NOT_PENDING);
         assert!(info.share_count >= info.reveal_threshold, E_BELOW_THRESHOLD);
         let config = &TimelockEpochConfig[@aptos_framework];
@@ -667,7 +677,7 @@ module aptos_framework::ibe_config {
             return false
         };
         let info = registry.timelocks.borrow(timelock_id);
-        // SCOUT(#226) EDIT: `is_reconstructable` reads false at or past `reveal_expiry_us`, also with threshold weight stored.
+        // False at or past `reveal_expiry_us`, also with threshold weight stored.
         (effective_status(info) is TimelockStatus::Pending) && info.share_count >= info.reveal_threshold
     }
 
@@ -764,11 +774,16 @@ module aptos_framework::ibe_config {
         registry.timelocks.borrow(timelock_id)
     }
 
-    // SCOUT(#226) EDIT: also return `Expired { reason: REASON_REVEAL_WINDOW_ELAPSED }` for a stored `Pending` timelock of the current epoch once `timestamp::now_microseconds() >= info.reveal_expiry_us`. The epoch-ended override keeps priority.
-    /// The stored status, except that a `Pending` timelock of an earlier epoch reads as `Expired(epoch-ended)`.
+    /// The stored status, except for a stored `Pending` timelock: one of an earlier epoch reads as
+    /// `Expired(epoch-ended)`, and one of the current epoch reads as `Expired(reveal-window-elapsed)` once
+    /// `now >= reveal_expiry_us`. The epoch rule is checked first.
     fun effective_status(info: &TimelockInfo): TimelockStatus {
-        if ((info.status is TimelockStatus::Pending) && info.epoch != reconfiguration::current_epoch()) {
+        if (!(info.status is TimelockStatus::Pending)) {
+            info.status
+        } else if (info.epoch != reconfiguration::current_epoch()) {
             TimelockStatus::Expired { reason: REASON_EPOCH_ENDED }
+        } else if (timestamp::now_microseconds() >= info.reveal_expiry_us) {
+            TimelockStatus::Expired { reason: REASON_REVEAL_WINDOW_ELAPSED }
         } else {
             info.status
         }
@@ -820,7 +835,8 @@ module aptos_framework::ibe_config {
     public fun get_status(timelock_id: u64): u8 acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
         let info = borrow_info(&TimelockRegistry[@aptos_framework], timelock_id);
-        // SCOUT(#226) EDIT: `get_status` returns 2 from the first block at or past `reveal_expiry_us`, before the queue reaches the entry. The product `refund_expired_window` reads this view.
+        // Returns 2 from the first block at or past `reveal_expiry_us`, before the queue reaches the entry.
+        // The product `refund_expired_window` reads this view.
         match (effective_status(info)) {
             TimelockStatus::Pending => STATUS_PENDING,
             TimelockStatus::Revealed => STATUS_REVEALED,
@@ -834,7 +850,6 @@ module aptos_framework::ibe_config {
     public fun get_expiry_reason(timelock_id: u64): u8 acquires TimelockRegistry {
         assert!(exists<TimelockRegistry>(@aptos_framework), E_TIMELOCK_NOT_FOUND);
         let info = borrow_info(&TimelockRegistry[@aptos_framework], timelock_id);
-        // SCOUT(#226) EDIT: `get_expiry_reason` returns 2 (reveal-window-elapsed) for the same read.
         match (effective_status(info)) {
             TimelockStatus::Expired { reason } => reason,
             _ => REASON_NONE
@@ -870,7 +885,6 @@ module aptos_framework::ibe_config {
         if (!registry.timelocks.contains(timelock_id)) {
             return false
         };
-        // SCOUT(#226) EDIT: `is_expired` agrees with `get_status` under the new read rule.
         effective_status(registry.timelocks.borrow(timelock_id)) is TimelockStatus::Expired
     }
 
