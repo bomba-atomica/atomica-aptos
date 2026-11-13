@@ -1090,7 +1090,8 @@ module aptos_framework::ibe_golden_vector_fixtures {{\n\
         ));
     }
 
-    // SCOUT(#228) EDIT: the product Move tests import these accessors from `aptos_framework::ibe_golden_vector_fixtures` at the pinned framework rev.
+    // The product Move tests import these accessors from
+    // `aptos_framework::ibe_golden_vector_fixtures` at the pinned framework rev.
     // price bids
     let pb = &doc["price_bids"];
     let pc = pb["cases"].as_array().unwrap();

@@ -103,7 +103,9 @@ fn native_verify_bid_ct(
 /***************************************************************************************************
  * native fun decrypt_bid_internal
  **************************************************************************************************/
-// SCOUT(#228) EDIT: the product `auction::open_bids` pays this charge once per bid; the 100-bid gas test bounds the batch size it may pass.
+// The product `auction::open_bids` pays this charge once per bid. Its batch cap,
+// `MAX_OPEN_BIDS_PER_CALL` = 12, is B - 1 for B = 13 from the e2e test
+// `largest_decrypt_batch_fits_max_execution_gas`.
 /// Opens a bid with the revealed key. Returns `(true, plaintext)` on success and `(false, [])` on
 /// any failure. It never aborts on bad input, so one junk bid cannot stop a loop over bids.
 fn native_decrypt_bid(
