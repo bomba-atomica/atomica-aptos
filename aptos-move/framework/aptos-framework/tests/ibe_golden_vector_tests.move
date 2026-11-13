@@ -7,7 +7,9 @@
 /// per validator share through a pairing check, the final key check native, and the bid submission
 /// native. The Rust golden tests cover the weighted reconstruction.
 module aptos_framework::ibe_golden_vector_tests {
+    use std::bcs;
     use std::features;
+    use std::vector;
     use aptos_std::bls12381_algebra::{G1, G2, Gt, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
     use aptos_std::crypto_algebra;
     use aptos_std::ibe;
@@ -191,17 +193,16 @@ module aptos_framework::ibe_golden_vector_tests {
         assert!(*ads.borrow(0) == fx::bid_ad(), 2);
     }
 
-    // SCOUT(#227) EDIT: this test only reads the recorded flags (the opening is checked in Rust). With the native it calls decrypt_bid on case 11 and expects none.
-    // SCOUT(#227) TEST: decrypt_bid_agrees_with_bid_case_opens_for_every_golden_case. The fixtures record one plaintext only (bid_plaintext), which is enough: case 0 is the only case that opens.
-    // SCOUT(#227) TEST: price_bids_decrypt_to_their_little_endian_price_under_their_own_bidder_only, and the bad-length bid decrypts to a plaintext that is not 8 bytes.
     #[test]
     fun bid_that_passes_submission_but_does_not_open() {
         // Case 11 is the body re-signed under a new one time key. It passes the signature check.
-        // Its key derivation binds the new key, so only the original bid opens (checked in Rust).
+        // Its key derivation binds the new key, so the native does not open it.
         let verifies = fx::bid_case_verifies();
         let opens = fx::bid_case_opens();
         assert!(*verifies.borrow(11), 0);
         assert!(!*opens.borrow(11), 1);
+        let got = ibe::decrypt_bid(fx::dk(), fx::identity(), *fx::bid_case_ads().borrow(11), *fx::bid_case_cts().borrow(11));
+        assert!(got.is_none(), 4);
         let n = opens.length();
         let count = 0;
         let i = 0;
@@ -211,5 +212,72 @@ module aptos_framework::ibe_golden_vector_tests {
         };
         assert!(count == 1 && *opens.borrow(0), 2);
         assert!(!*fx::bid_case_opens_with_other_dk().borrow(0), 3);
+    }
+
+    #[test]
+    fun decrypt_bid_agrees_with_bid_case_opens_for_every_golden_case() {
+        let cts = fx::bid_case_cts();
+        let ads = fx::bid_case_ads();
+        let opens = fx::bid_case_opens();
+        let with_other = fx::bid_case_opens_with_other_dk();
+        assert!(cts.length() == 15, 0);
+        let i = 0;
+        while (i < cts.length()) {
+            let dk = if (*with_other.borrow(i)) fx::other_dk() else fx::dk();
+            let got = ibe::decrypt_bid(dk, fx::identity(), *ads.borrow(i), *cts.borrow(i));
+            assert!(got.is_some() == *opens.borrow(i), 100 + i);
+            if (got.is_some()) {
+                assert!(got.destroy_some() == fx::bid_plaintext(), 200 + i);
+            };
+            i += 1;
+        };
+        assert!(*opens.borrow(0), 1);
+    }
+
+    /// Reads a little-endian u64 from exactly 8 bytes.
+    fun le_u64(b: vector<u8>): u64 {
+        assert!(b.length() == 8, 0);
+        let v = 0u64;
+        let i = 8;
+        while (i > 0) {
+            i -= 1;
+            v = (v << 8) | (*b.borrow(i) as u64);
+        };
+        v
+    }
+
+    #[test]
+    fun price_bids_decrypt_to_their_little_endian_price_under_their_own_bidder_only() {
+        let bidders = fx::price_bid_bidders();
+        let prices = fx::price_bid_prices();
+        let cts = fx::price_bid_cts();
+        let ads = fx::price_bid_ads();
+        let n = cts.length();
+        assert!(n == 3 && bidders.length() == n && prices.length() == n && ads.length() == n, 0);
+        let i = 0;
+        while (i < n) {
+            let ct = *cts.borrow(i);
+            // The associated data names the bidder: BCS of tag (24), chain id (1), epoch, timelock
+            // id and auction id (8 each), then the 32-byte bidder address.
+            assert!(vector::slice(ads.borrow(i), 49, 81) == bcs::to_bytes(bidders.borrow(i)), 600 + i);
+            assert!(ibe::verify_bid_ct(ct, *ads.borrow(i)), 100 + i);
+            let got = ibe::decrypt_bid(fx::dk(), fx::identity(), *ads.borrow(i), ct);
+            assert!(got.is_some(), 200 + i);
+            assert!(le_u64(got.destroy_some()) == *prices.borrow(i), 300 + i);
+            // Under another bidder's associated data, or with the other key, it does not open.
+            let j = 0;
+            while (j < n) {
+                if (j != i) {
+                    assert!(ibe::decrypt_bid(fx::dk(), fx::identity(), *ads.borrow(j), ct).is_none(), 400 + i * 10 + j);
+                };
+                j += 1;
+            };
+            assert!(ibe::decrypt_bid(fx::other_dk(), fx::identity(), *ads.borrow(i), ct).is_none(), 500 + i);
+            i += 1;
+        };
+        // The bad-length bid opens, but its plaintext is not an 8-byte price.
+        let got = ibe::decrypt_bid(fx::dk(), fx::identity(), fx::bad_length_bid_ad(), fx::bad_length_bid_ct());
+        assert!(got.is_some(), 1);
+        assert!(got.destroy_some().length() != 8, 2);
     }
 }

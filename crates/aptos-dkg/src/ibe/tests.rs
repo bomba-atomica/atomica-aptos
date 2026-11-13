@@ -2,7 +2,7 @@
 // Licensed pursuant to the Innovation-Enabling Source Code License, available at https://github.com/aptos-labs/aptos-core/blob/main/LICENSE
 
 use super::{
-    ciphertext::{decrypt_bid, encrypt_bid, verify_bid_ct, BidCiphertext, SIG_LEN},
+    ciphertext::{decrypt_bid, decrypt_bid_ct, encrypt_bid, verify_bid_ct, BidCiphertext, SIG_LEN},
     *,
 };
 use ark_bls12_381::{Fq, Fq2};
@@ -676,7 +676,45 @@ fn bid_copy_under_another_context_does_not_decrypt() {
     assert!(decrypt_bid(&foreign, &s.id, &s.ad, &ct).is_err());
 }
 
-// SCOUT(#227) TEST: byte_level_decrypt_matches_typed_decrypt_and_fails_for_each_malformed_input (47-byte dk, 31-byte identity, empty ct, wrong ad).
+/// The byte-level entry of the `decrypt_bid_internal` native agrees with [`decrypt_bid`] and returns
+/// an error, never a panic, for each malformed input.
+#[test]
+fn byte_level_decrypt_matches_typed_decrypt_and_fails_for_each_malformed_input() {
+    let s = setup();
+    let msg = b"byte level";
+    let ct = encrypt_bid(&s.d.mpk, &s.id, &s.ad, msg, &mut rng(18)).unwrap();
+    let wire = ct.to_bytes();
+    let dk = encode_g1(&s.dk).to_vec();
+    let typed = decrypt_bid(&s.dk, &s.id, &s.ad, &ct).unwrap();
+    assert_eq!(typed, msg);
+    assert_eq!(decrypt_bid_ct(&dk, &s.id, &s.ad, &wire).unwrap(), typed);
+
+    // 47-byte dk, 31-byte identity, empty ct, wrong ad.
+    assert!(matches!(
+        decrypt_bid_ct(&dk[..47], &s.id, &s.ad, &wire),
+        Err(IbeError::InvalidLength { .. })
+    ));
+    assert!(matches!(
+        decrypt_bid_ct(&dk, &s.id[..31], &s.ad, &wire),
+        Err(IbeError::InvalidLength { .. })
+    ));
+    assert!(matches!(
+        decrypt_bid_ct(&dk, &s.id, &s.ad, &[]),
+        Err(IbeError::MalformedCiphertext(_))
+    ));
+    let wrong_ad = bid_ad(2, 5, 3, 11);
+    assert_eq!(
+        decrypt_bid_ct(&dk, &s.id, &wrong_ad, &wire),
+        decrypt_bid(&s.dk, &s.id, &wrong_ad, &ct)
+    );
+    assert!(decrypt_bid_ct(&dk, &s.id, &wrong_ad, &wire).is_err());
+
+    // A dk outside the subgroup, a 33-byte identity and a truncated wire also fail.
+    assert!(decrypt_bid_ct(&raw_g1(&non_subgroup_g1()), &s.id, &s.ad, &wire).is_err());
+    assert!(decrypt_bid_ct(&dk, &[0u8; 33], &s.ad, &wire).is_err());
+    assert!(decrypt_bid_ct(&dk, &s.id, &s.ad, &wire[..wire.len() - 1]).is_err());
+}
+
 #[test]
 fn one_undecryptable_bid_does_not_stop_the_others() {
     let s = setup();
@@ -722,7 +760,6 @@ fn full_flow_chunky_shaped_shares_to_bid_open() {
 // Fixture generator for `aptos-move/framework/aptos-framework/tests/ibe_native_test.move`
 // ---------------------------------------------------------------------------------------------
 
-// SCOUT(#227) EDIT: `ibe_native_test.move` has no plaintext fixture for its ciphertext. Print one here, or test decryption on the golden fixtures only.
 /// Prints `NAME=hex` lines. Run with
 /// `cargo test -p aptos-dkg --lib ibe::tests::generate_move_fixtures -- --ignored --nocapture`.
 /// Deterministic: fixed seeds, so the output is reproducible.
@@ -761,6 +798,7 @@ fn generate_move_fixtures() {
     println!("OTHER_DK={}", hex::encode(encode_g1(&other_dk)));
     println!("AD={}", hex::encode(&ad));
     println!("CT={}", hex::encode(&wire));
+    println!("PLAINTEXT={}", hex::encode(b"hello"));
     println!("CT_NON_SUBGROUP_U={}", hex::encode(bad.to_bytes()));
     println!("NON_SUBGROUP_G1={}", hex::encode(ns_share));
 }

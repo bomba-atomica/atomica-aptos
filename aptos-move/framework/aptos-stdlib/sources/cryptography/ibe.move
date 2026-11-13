@@ -2,7 +2,7 @@
 ///
 /// Design: `atomica/docs/decisions/aptos-upgrade-ibe-chunky-spec.md`.
 ///
-/// The Rust implementations live in the natives crate (feature natives-port-timelock).
+/// The Rust implementations live in the natives crate (`aptos-framework-natives`, `timelock.rs`).
 /// This module only declares the Move signatures that the registry (`ibe_config`) and the
 /// auction contract call.
 ///
@@ -10,8 +10,10 @@
 /// |---|---|---|
 /// | `verify_decryption_key` | 5 | Pairing check `e(dk, g2) = e(H1(id), mpk)` |
 /// | `verify_bid_ct` | 6 | Submission check of a bid ciphertext against its associated data |
+/// | `decrypt_bid` | 6 | Opening of a bid ciphertext with the revealed key |
 module aptos_std::ibe {
-    // SCOUT(#227) DOC: the module table above gains a `decrypt_bid` row (spec section 6) and the stale Cargo feature name `natives-port-timelock` goes.
+    use std::option::{Self, Option};
+
     /// Checks `e(dk, g2) = e(H1(identity), mpk)`.
     ///
     /// * `dk` - 48-byte compressed G1 key. Decoded with subgroup validation.
@@ -40,7 +42,28 @@ module aptos_std::ibe {
         verify_bid_ct_internal(ct, ad)
     }
 
-    // SCOUT(#227) ADD: `public fun decrypt_bid(dk: vector<u8>, identity: vector<u8>, ad: vector<u8>, ct: vector<u8>): Option<vector<u8>>` that calls the native `decrypt_bid_internal` and never aborts on bad input. A public stdlib function cannot be removed after release, so it is not stubbed here.
+    /// Opens a bid ciphertext with the revealed key of its timelock.
+    ///
+    /// * `dk` - 48-byte compressed G1 decryption key (`ibe_config::get_decryption_key`).
+    /// * `identity` - 32-byte timelock identity the bid was encrypted to.
+    /// * `ad` - associated data the contract built on chain, as for `verify_bid_ct`.
+    /// * `ct` - the bid ciphertext, as for `verify_bid_ct`.
+    ///
+    /// Runs the submission check of `verify_bid_ct`, one pairing `K = e(dk, U)`, the HKDF key
+    /// derivation and AES-128-GCM. Returns the plaintext, or none for any failure: a malformed
+    /// key, identity or ciphertext, other associated data, a wrong key, or a failed tag. It never
+    /// aborts on bad input, so one junk bid cannot stop a loop over bids.
+    ///
+    /// Gas: one decrypt costs about one pairing. The largest number of decrypts that fits in one
+    /// transaction under `max_execution_gas` is measured by the e2e test
+    /// `largest_decrypt_batch_fits_max_execution_gas`, largest batch: 13.
+    public fun decrypt_bid(
+        dk: vector<u8>, identity: vector<u8>, ad: vector<u8>, ct: vector<u8>
+    ): Option<vector<u8>> {
+        let (ok, plaintext) = decrypt_bid_internal(dk, identity, ad, ct);
+        if (ok) option::some(plaintext) else option::none()
+    }
+
     // SCOUT(#228) EDIT: the product `auction::open_bids` calls `decrypt_bid` once per bid with the key and identity from the timelock registry.
 
     native fun verify_decryption_key_internal(
@@ -49,5 +72,7 @@ module aptos_std::ibe {
 
     native fun verify_bid_ct_internal(ct: vector<u8>, ad: vector<u8>): bool;
 
-    // SCOUT(#227) ADD: `native fun decrypt_bid_internal(dk: vector<u8>, identity: vector<u8>, ad: vector<u8>, ct: vector<u8>): Option<vector<u8>>;` goes here, in the same commit that registers `native_decrypt_bid` in `timelock::make_all`. A native declared without its Rust side breaks loading of this module.
+    native fun decrypt_bid_internal(
+        dk: vector<u8>, identity: vector<u8>, ad: vector<u8>, ct: vector<u8>
+    ): (bool, vector<u8>);
 }

@@ -120,8 +120,7 @@ jobs:
 
       # The prover tests (move_prover_tests.rs, 4 tests) need Boogie, Z3 and CVC5,
       # which this runner does not install, so they panic. They are skipped, and
-      # the Move unit tests run (move_unit_test.rs, 10 tests, plus verify_tool = 11). Each filtered
+      # the Move unit tests run (move_unit_test.rs, 11 tests, plus verify_tool = 12). Each filtered
       # Rust test in move_unit_test.rs compiles the framework test package once more in this job.
-      # SCOUT(#227) EDIT: the same for the filtered ibe test.
       - name: Run aptos-framework tests (Move unit tests, prover skipped, minimum 8)
         run: .github/scripts/run-tests-guarded.sh aptos-framework 8 -- cargo test -p aptos-framework -- --skip prover

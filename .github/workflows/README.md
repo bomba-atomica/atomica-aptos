@@ -185,12 +185,11 @@ step summary. Self-test: `.github/scripts/tests/selftest.sh` (also run in
 `crypto-crates-tests.yml`).
 
 ## Workflow set for the 1.49.6 line (branch `dev-atomica`)
-<!-- SCOUT(#227) DOC: the crypto-crates-tests.yml row below gains the ibe gas VM tests and the ibe Move unit tests. -->
 
 | Workflow | Covers | Trigger |
 | --- | --- | --- |
 | `lint-format.yml` | rustfmt and clippy | push and PR on Rust paths |
-| `crypto-crates-tests.yml` | aptos-dkg, aptos-crypto, aptos-types, aptos-dkg-runtime timelock share service, aptos-eth-header-consensus, e2e-move-tests `eth_header::`, `ethereum_headers` Move unit tests, `ibe_config` Move unit tests, `timelock_dkg` Move unit tests (including `TimelockKeyMissingEvent`), TimelockDKGResult VM tests (e2e-move-tests `timelock_dkg::`), TimelockShare VM tests (e2e-move-tests `timelock_share::`), aptos-vm-genesis tests | push and PR |
+| `crypto-crates-tests.yml` | aptos-dkg, aptos-crypto, aptos-types, aptos-dkg-runtime timelock share service, aptos-eth-header-consensus, e2e-move-tests `eth_header::`, `ethereum_headers` Move unit tests, `ibe_config` Move unit tests, `timelock_dkg` Move unit tests (including `TimelockKeyMissingEvent`), `ibe_native_test` and `ibe_golden_vector_tests` Move unit tests (including `ibe::decrypt_bid`), ibe gas VM tests (e2e-move-tests `ibe_gas::`), TimelockDKGResult VM tests (e2e-move-tests `timelock_dkg::`), TimelockShare VM tests (e2e-move-tests `timelock_share::`), aptos-vm-genesis tests | push and PR |
 | `node-framework-tests.yml` | aptos-node and aptos-framework (Move unit tests) | push and PR on Rust and Move paths |
 | `timelock-tests.yml` | TimelockShare VM tests: e2e-move-tests `timelock_share::` (the `TimelockShare` handler through AptosVM) | push and PR on the timelock registry, IBE natives, handler, IBE crate and `head.mrb` paths |
 | `debug-tests.yml` | smoke tests, including the live timelock reveal (`timelock_reveal_on_live_swarm`) and Ethereum header attestation (`eth_header_e2e::certified_header_on_live_swarm`) | every push to main and dev-atomica, PR on Rust paths |

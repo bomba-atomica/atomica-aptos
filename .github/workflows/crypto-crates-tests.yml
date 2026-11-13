@@ -154,14 +154,20 @@ jobs:
       - name: Run timelock_dkg Move unit tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh timelock-dkg-move 1 -- cargo test -p aptos-framework --test move_unit_test -- timelock_dkg
-        #
-        # SCOUT(#227) ADD: guarded steps for the ibe gas VM tests and the ibe Move unit tests. No workflow runs `ibe_gas::` today. A filter that ends in `::` must be quoted in YAML.
-        # - name: Run ibe gas VM tests
-        #   if: ${{ !cancelled() }}
-        #   run: '.github/scripts/run-tests-guarded.sh ibe-gas 3 -- cargo test -p e2e-move-tests --lib ibe_gas::'
-        # - name: Run ibe Move unit tests
-        #   if: ${{ !cancelled() }}
-        #   run: .github/scripts/run-tests-guarded.sh ibe-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ibe
+
+      # Gas metering of the aptos_std::ibe natives against the real framework (atomica issue 227):
+      # metered and deterministic, ibe::decrypt_bid priced per byte above verify_bid_ct, and the
+      # largest decrypt batch that fits max_execution_gas. A filter that ends in `::` must be quoted.
+      - name: Run ibe gas VM tests
+        if: ${{ !cancelled() }}
+        run: '.github/scripts/run-tests-guarded.sh ibe-gas 4 -- cargo test -p e2e-move-tests --lib ibe_gas::'
+
+      # One Rust test that runs the ibe_native_test and ibe_golden_vector_tests Move unit tests,
+      # including ibe::decrypt_bid (atomica issue 227), and fails below the number the two files hold.
+      # The cargo filter is `ibe_bid`: `ibe` alone would also match ibe_config_move_unit_tests.
+      - name: Run ibe bid Move unit tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh ibe-bid-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ibe_bid
 
       # The TimelockDKGResult handler and the reconfiguration hooks against the real framework (atomica
       # issue 225): a failed session leaves no key, and registration aborts with E_NOT_REGISTRAR (17) before
