@@ -54,8 +54,7 @@ Regenerate only when the scheme changes on purpose. A review must explain every 
 - That transaction's five events, and the event accumulator proof for event 2: type `0xcafe::auction::AuctionOutcome` (the dev address of `atomica`).
 - Intermediate values for Solidity: each CryptoHasher salt and seed, the signing message (LedgerInfo seed followed by BCS of the LedgerInfo), the RFC 9380 hash to G2 under `BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_`, and every key, aggregate key and signature in EIP-2537 uncompressed encoding.
 
-<!-- SCOUT(#221) DOC: stale sentence. The product fixes this layout now, and the computed-deadline change keeps the `eth_lock_deadline` field, so these vectors stay valid. -->
-The AuctionOutcome payload layout is not fixed in the product repo yet. The vectors pin this default: `struct AuctionOutcome { window_id: u64, pair_hash: vector<u8>, eth_lock_deadline: u64, dispositions_root: vector<u8>, leaf_count: u64 }`. Regenerate the vectors if the Move struct differs.
+The vectors pin the product's `AuctionOutcome` layout (`source/atomica-move-contracts/sources/auction.move`): `struct AuctionOutcome { window_id: u64, pair_hash: vector<u8>, eth_lock_deadline: u64, dispositions_root: vector<u8>, leaf_count: u64 }`. LockBox decodes `eth_lock_deadline` and ignores it. Regenerate the vectors if the Move struct changes.
 
 ### Regenerating
 
