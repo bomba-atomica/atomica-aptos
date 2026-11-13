@@ -139,7 +139,6 @@ fn move_experimental_unit_tests() {
     run_tests_for_pkg("aptos-experimental", true);
 }
 
-// SCOUT(#227) TEST: a filtered Rust test for the Move tests of `ibe_native_test` and `ibe_golden_vector_tests`. One filter string cannot select both without `ibe_config_tests`, and the cargo filter `ibe` would also run ibe_config_move_unit_tests, so pick the names with care.
 /// Runs the aptos-framework Move tests that match `filter` and returns how many passed. The report is
 /// copied to stdout as it is written, so a failure still shows it.
 fn run_filtered_framework_tests(filter: &str) -> u64 {
@@ -190,4 +189,19 @@ fn ibe_config_move_unit_tests() {
 fn timelock_dkg_move_unit_tests() {
     let passed = run_filtered_framework_tests("timelock_dkg_tests");
     assert!(passed >= 16, "only {passed} timelock_dkg Move tests ran");
+}
+
+/// The Move unit tests of `ibe_native_test` and `ibe_golden_vector_tests` (fork only), including the
+/// `ibe::decrypt_bid` tests (atomica issue 227). Runs with `cargo test -p aptos-framework --test
+/// move_unit_test -- ibe_bid` and fails when fewer Move tests pass than the two files hold. The
+/// filter `ibe` alone would also run `ibe_config_move_unit_tests`.
+#[test]
+fn ibe_bid_move_unit_tests() {
+    let native = run_filtered_framework_tests("ibe_native_test");
+    assert!(native >= 11, "only {native} ibe_native_test Move tests ran");
+    let golden = run_filtered_framework_tests("ibe_golden_vector_tests");
+    assert!(
+        golden >= 11,
+        "only {golden} ibe_golden_vector_tests Move tests ran"
+    );
 }

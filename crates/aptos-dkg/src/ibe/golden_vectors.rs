@@ -26,7 +26,7 @@
 //! checked-in bytes (`regeneration_reproduces_checked_in_bytes`).
 
 use super::{
-    ciphertext::{decrypt_bid, encrypt_bid, verify_bid_ct, BidCiphertext},
+    ciphertext::{decrypt_bid, decrypt_bid_ct, encrypt_bid, verify_bid_ct, BidCiphertext},
     *,
 };
 use crate::pvss::{
@@ -67,8 +67,21 @@ const TIMELOCK_ID: u64 = 11;
 const DEADLINE_US: u64 = 1_700_000_000_000_000;
 const WEIGHTS: [usize; 3] = [2, 1, 2];
 const THRESHOLD: usize = 3;
-// SCOUT(#227) ADD: constants of the price bid cases: three bidder bytes, their u64 prices, and one plaintext that is not 8 bytes.
 const BID_PLAINTEXT: &[u8] = b"atomica golden bid v2";
+/// Price bids: each bidder byte fills a 32-byte address. The plaintext is the 8-byte little-endian
+/// price that the product auction reads after `ibe::decrypt_bid`.
+const PRICE_BID_BIDDERS: [u8; 3] = [0xA1, 0xB2, 0xC3];
+const PRICE_BID_PRICES: [u64; 3] = [1_000_000, 2_500_000_000, 7_000_000_000_000];
+/// Auction id of every price bid and of the bad-length bid.
+const PRICE_BID_AUCTION: u64 = 9;
+/// A bid that opens but whose plaintext is not an 8-byte price.
+const BAD_LENGTH_BIDDER: u8 = 0xD4;
+const BAD_LENGTH_PLAINTEXT: &[u8] = b"not a price";
+/// Seed of the price bids. A separate rng, so the earlier bid cases keep their bytes.
+const PRICE_BID_SEED: u64 = DEALING_SEED ^ 0x9_41CE;
+/// SHA3-256 over `len_le_u64 || ct` of the 15 bid cases of version 3.0.0, before the price bids.
+const EXISTING_BID_CASES_SHA3: &str =
+    "36355e0e3e5ec141cc845aa38079a7884a57512dc269be4c0e96c1e236531b45";
 
 type Tx = UnsignedWeightedTranscriptv2<Bls12_381>;
 
@@ -547,7 +560,38 @@ fn key_check_cases(d: &ChunkyDealing, id: &[u8], dk: &G1Affine, other_dk: &G1Aff
     )
 }
 
-// SCOUT(#227) ADD: a sibling `price_bid_cases()` with its own RNG seed. Drawing from the rng below before the existing cases would change their bytes and break the byte-identical criterion.
+/// Price bids for three bidders and one bid whose plaintext is not 8 bytes. Its own rng: drawing
+/// from the rng of [`bid_cases`] would change the bytes of the existing cases.
+fn price_bid_cases(d: &ChunkyDealing, id: &[u8; 32]) -> Value {
+    let mut rng = StdRng::seed_from_u64(PRICE_BID_SEED);
+    let mut bid = |bidder: u8, plaintext: &[u8]| -> Value {
+        let ad = bid_ad(bidder, PRICE_BID_AUCTION);
+        let ct = encrypt_bid(&d.mpk, id, &ad, plaintext, &mut rng).unwrap();
+        json!({
+            "bidder": hx(&[bidder; 32]),
+            "plaintext": hx(plaintext),
+            "ad": hx(&ad),
+            "ct": hx(&ct.to_bytes()),
+        })
+    };
+    let cases: Vec<Value> = PRICE_BID_BIDDERS
+        .iter()
+        .zip(PRICE_BID_PRICES)
+        .map(|(b, price)| {
+            let mut c = bid(*b, &price.to_le_bytes());
+            c["price"] = json!(price);
+            c
+        })
+        .collect();
+    let bad_length = bid(BAD_LENGTH_BIDDER, BAD_LENGTH_PLAINTEXT);
+    json!({
+        "auction_id": PRICE_BID_AUCTION,
+        "opens_with": "dk",
+        "cases": cases,
+        "bad_length": bad_length,
+    })
+}
+
 fn bid_cases(
     d: &ChunkyDealing,
     id: &[u8; 32],
@@ -691,9 +735,10 @@ pub fn generate_json() -> String {
     }
 
     let (bids, bid_ad_bytes) = bid_cases(&d, &id, &dk, &other_dk);
+    let price_bids = price_bid_cases(&d, &id);
 
     let doc = json!({
-        "version": "3.0.0",
+        "version": "3.1.0",
         "scheme": "Boneh-Franklin timelock V2 (arkworks), chunky-derived keys, CCA bid wrapper",
         "spec": "atomica/docs/decisions/aptos-upgrade-ibe-chunky-spec.md sections 5 and 6",
         "generator": GENERATOR_COMMAND,
@@ -739,12 +784,14 @@ pub fn generate_json() -> String {
             "reconstruction_cases": reconstruction_cases(&d, &id, &shares),
             "key_check_cases": key_check_cases(&d, &id, &dk, &other_dk),
         },
-        // SCOUT(#227) EDIT: a new JSON section for the price bids, and a version bump. The product keeps byte copies of this file (state-proofs fixtures, SDK tests) that must be refreshed.
         "bids": {
             "plaintext": hx(BID_PLAINTEXT),
             "ad": hx(&bid_ad_bytes),
             "cases": bids,
         },
+        // Added in 3.1.0. The product keeps byte copies of this file (state-proofs fixtures, SDK
+        // tests) that are refreshed when its framework pin moves.
+        "price_bids": price_bids,
     });
     let mut s = serde_json::to_string_pretty(&doc).unwrap();
     s.push('\n');
@@ -1010,8 +1057,6 @@ module aptos_framework::ibe_golden_vector_fixtures {{\n\
         ));
     }
 
-    // SCOUT(#227) ADD: Move accessors for the price bids. The issue names none and the product tests need them. Proposed: `price_bid_bidders(): vector<address>`, `price_bid_prices(): vector<u64>`, `price_bid_cts()`, `price_bid_ads()`, `bad_length_bid_ct()`, `bad_length_bid_ad()`.
-    // SCOUT(#228) EDIT: the product Move tests import these accessors from `aptos_framework::ibe_golden_vector_fixtures` at the pinned framework rev.
     // bids
     let bc = bids["cases"].as_array().unwrap();
     o.push_str(&format!(
@@ -1042,6 +1087,44 @@ module aptos_framework::ibe_golden_vector_fixtures {{\n\
         o.push_str(&format!(
             "    public fun {name}(): vector<{ty}> {{ {} }}\n",
             mv_vec(&items)
+        ));
+    }
+
+    // SCOUT(#228) EDIT: the product Move tests import these accessors from `aptos_framework::ibe_golden_vector_fixtures` at the pinned framework rev.
+    // price bids
+    let pb = &doc["price_bids"];
+    let pc = pb["cases"].as_array().unwrap();
+    o.push_str(&format!(
+        "\n    // ---- price bids, index aligned. Each opens with `dk()` to the 8-byte little-endian price\n    // under its own bidder's associated data (auction {}).\n",
+        pb["auction_id"]
+    ));
+    o.push_str(&format!(
+        "    public fun price_bid_bidders(): vector<address> {{ {} }}\n",
+        mv_vec(
+            &pc.iter()
+                .map(|c| format!("@0x{}", c["bidder"].as_str().unwrap()))
+                .collect::<Vec<_>>()
+        )
+    ));
+    o.push_str(&format!(
+        "    public fun price_bid_prices(): vector<u64> {{ {} }}\n",
+        mv_vec(
+            &pc.iter()
+                .map(|c| c["price"].to_string())
+                .collect::<Vec<_>>()
+        )
+    ));
+    for (name, field) in [("price_bid_cts", "ct"), ("price_bid_ads", "ad")] {
+        o.push_str(&format!(
+            "    public fun {name}(): vector<vector<u8>> {{ {} }}\n",
+            mv_vec(&pc.iter().map(|c| mv_bytes(&c[field])).collect::<Vec<_>>())
+        ));
+    }
+    o.push_str("    /// Opens with `dk()` to a plaintext that is not 8 bytes.\n");
+    for (name, field) in [("bad_length_bid_ct", "ct"), ("bad_length_bid_ad", "ad")] {
+        o.push_str(&format!(
+            "    public fun {name}(): vector<u8> {{ {} }}\n",
+            mv_bytes(&pb["bad_length"][field])
         ));
     }
     o.push_str("}\n");
@@ -1075,7 +1158,29 @@ fn write_golden_vectors() {
 // Tests against the checked-in bytes
 // ---------------------------------------------------------------------------------------------
 
-// SCOUT(#227) TEST: existing_bid_cases_are_byte_identical_after_the_price_bids_are_added (pins the 15 existing case ciphertexts).
+fn bid_cases_sha3(doc: &Value) -> String {
+    let mut h = Sha3_256::new();
+    let cases = doc["bids"]["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 15);
+    for c in cases {
+        let ct = unhex(&c["ct"]);
+        h.update((ct.len() as u64).to_le_bytes());
+        h.update(&ct);
+    }
+    hx(&h.finalize())
+}
+
+/// The price bids come from their own rng: the 15 earlier bid cases keep their bytes.
+#[test]
+fn existing_bid_cases_are_byte_identical_after_the_price_bids_are_added() {
+    let fresh: Value = serde_json::from_str(&generate_json()).unwrap();
+    let checked_in: Value = serde_json::from_str(CHECKED_IN_JSON).unwrap();
+    assert_eq!(bid_cases_sha3(&fresh), EXISTING_BID_CASES_SHA3);
+    assert_eq!(bid_cases_sha3(&checked_in), EXISTING_BID_CASES_SHA3);
+    assert_eq!(fresh["bids"], checked_in["bids"]);
+    assert_eq!(fresh["dealing"], checked_in["dealing"]);
+}
+
 #[test]
 fn regeneration_reproduces_checked_in_bytes() {
     let json_text = generate_json();
@@ -1091,7 +1196,6 @@ fn regeneration_reproduces_checked_in_bytes() {
     assert!(generate_json() == json_text);
 }
 
-// SCOUT(#227) TEST: extend with the price bids: each decrypts to its 8-byte little-endian price under its own bidder's associated data and fails under another bidder's.
 #[test]
 fn checked_in_vectors_verify() {
     let doc: Value = serde_json::from_str(CHECKED_IN_JSON).unwrap();
@@ -1268,6 +1372,46 @@ fn checked_in_vectors_verify() {
         .collect();
     assert_eq!(opens.iter().filter(|b| **b).count(), 1);
     assert!(opens[0]);
+
+    // Price bids: each opens with `dk` to its 8-byte little-endian price under its own bidder's
+    // associated data, and fails under another bidder's. The byte-level native entry agrees.
+    let pb = &doc["price_bids"];
+    let auction = pb["auction_id"].as_u64().unwrap();
+    let cases = pb["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 3);
+    let dk_bytes = unhex(&dl["dk"]);
+    for (i, c) in cases.iter().enumerate() {
+        let bidder = unhex(&c["bidder"]);
+        assert_eq!(bidder, vec![bidder[0]; 32]);
+        let ad = unhex(&c["ad"]);
+        assert_eq!(ad, bid_ad(bidder[0], auction), "price bid {i}");
+        let ct = unhex(&c["ct"]);
+        assert!(verify_bid_ct(&ct, &ad).is_ok(), "price bid {i}");
+        let price = c["price"].as_u64().unwrap();
+        let opened = decrypt_bid_ct(&dk_bytes, &id, &ad, &ct).unwrap();
+        assert_eq!(opened, price.to_le_bytes().to_vec(), "price bid {i}");
+        assert_eq!(opened, unhex(&c["plaintext"]), "price bid {i}");
+        assert_eq!(u64::from_le_bytes(opened.try_into().unwrap()), price);
+        for (j, other) in cases.iter().enumerate() {
+            if i != j {
+                let other_ad = unhex(&other["ad"]);
+                assert!(
+                    decrypt_bid_ct(&dk_bytes, &id, &other_ad, &ct).is_err(),
+                    "{i} under {j}"
+                );
+            }
+        }
+        assert!(
+            decrypt_bid_ct(&unhex(&dl["other_dk"]), &id, &ad, &ct).is_err(),
+            "price bid {i} under other_dk"
+        );
+    }
+    let prices: Vec<u64> = cases.iter().map(|c| c["price"].as_u64().unwrap()).collect();
+    assert_eq!(prices, PRICE_BID_PRICES.to_vec());
+    let bad = &pb["bad_length"];
+    let opened = decrypt_bid_ct(&dk_bytes, &id, &unhex(&bad["ad"]), &unhex(&bad["ct"])).unwrap();
+    assert_ne!(opened.len(), 8);
+    assert_eq!(opened, unhex(&bad["plaintext"]));
 }
 
 #[test]

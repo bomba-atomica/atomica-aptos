@@ -11,15 +11,19 @@
 //! |---|---|
 //! | `verify_decryption_key_internal` | G1 and G2 validated decode, hash to G1 (base and per byte), one two-term multi-pairing (two pairings) |
 //! | `verify_bid_ct_internal` | one G2 validated decode (curve and subgroup check) and one strict Ed25519 verification, with the per byte message hashing |
+//! | `decrypt_bid_internal` | one G1 and one G2 validated decode, the strict Ed25519 verification of `verify_bid_ct_internal`, one pairing, and `HASH_SHA2_256_PER_BYTE` per byte of `ct` and `ad` for the HKDF and AES-128-GCM work |
+//!
+//! Every charge is made before any input is decoded, so a malformed input pays the full price.
 //!
 //! Per-share verification against verification keys is not a Move native. It runs in the Rust
 //! validator transaction handler.
 //!
 //! No FPTX or `aptos-batch-encryption` function is used or exposed here.
 
-// SCOUT(#227) DOC: the gas table in the module doc above gains a `decrypt_bid_internal` row.
 use aptos_dkg::ibe;
-use aptos_gas_schedule::gas_params::natives::aptos_framework::*;
+use aptos_gas_schedule::gas_params::natives::{
+    aptos_framework::*, move_stdlib::HASH_SHA2_256_PER_BYTE,
+};
 use aptos_native_interface::{
     safely_pop_arg, RawSafeNative, SafeNativeBuilder, SafeNativeContext, SafeNativeResult,
 };
@@ -96,11 +100,51 @@ fn native_verify_bid_ct(
     )])
 }
 
-// SCOUT(#227) ADD: `fn native_decrypt_bid(context, ty_args, args)` for `ibe::decrypt_bid_internal(dk, identity, ad, ct)`. It pops four byte vectors, charges gas before any decoding, calls `aptos_dkg::ibe::decrypt_bid_ct` and returns the plaintext or a failure flag. It never aborts on bad input. No Rust stub here: this crate is consensus code, and the stub would be dead until the Move declaration lands in the same commit.
-// SCOUT(#227) EDIT: `Option` is an enum in this move-stdlib (`public enum Option`), so a native cannot cheaply return one. Return `(bool, vector<u8>)` and let `ibe::decrypt_bid` build the `Option` in Move.
-// SCOUT(#227) EDIT: gas comes from existing parameters only: validated G1 and G2 decode, strict Ed25519 with per-byte hashing, one pairing, and a per-byte charge over `ct` and `ad`. No existing parameter prices HKDF or AES-GCM, so the per-byte parameter must be chosen and named.
+/***************************************************************************************************
+ * native fun decrypt_bid_internal
+ **************************************************************************************************/
 // SCOUT(#228) EDIT: the product `auction::open_bids` pays this charge once per bid; the 100-bid gas test bounds the batch size it may pass.
-// SCOUT(#227) ADD: register `("decrypt_bid_internal", native_decrypt_bid)` in the table below, in the same commit as the Move native declaration.
+/// Opens a bid with the revealed key. Returns `(true, plaintext)` on success and `(false, [])` on
+/// any failure. It never aborts on bad input, so one junk bid cannot stop a loop over bids.
+fn native_decrypt_bid(
+    context: &mut SafeNativeContext,
+    _ty_args: &[Type],
+    mut args: VecDeque<Value>,
+) -> SafeNativeResult<SmallVec<[Value; 1]>> {
+    debug_assert!(_ty_args.is_empty());
+    debug_assert_eq!(args.len(), 4);
+
+    let ct = safely_pop_arg!(args, Vec<u8>);
+    let ad = safely_pop_arg!(args, Vec<u8>);
+    let identity = safely_pop_arg!(args, Vec<u8>);
+    let dk = safely_pop_arg!(args, Vec<u8>);
+
+    // The submission check of `verify_bid_ct_internal` (G2 decode of U and strict Ed25519 over
+    // about |ct| + |ad| bytes), the G1 decode of dk, one pairing for the decapsulation, and the
+    // HKDF and AES-128-GCM work priced per byte of ct and ad. Charged before any decoding.
+    let body_len = ct.len().saturating_add(ad.len());
+    let msg_len = body_len.saturating_add(16);
+    context.charge(
+        ALGEBRA_ARK_BLS12_381_G1_AFFINE_DESER_COMP
+            + ALGEBRA_ARK_BLS12_381_G2_AFFINE_DESER_COMP
+            + ED25519_BASE
+            + ED25519_PER_PUBKEY_DESERIALIZE * NumArgs::one()
+            + ED25519_PER_PUBKEY_SMALL_ORDER_CHECK * NumArgs::one()
+            + ED25519_PER_SIG_DESERIALIZE * NumArgs::one()
+            + ED25519_PER_SIG_STRICT_VERIFY * NumArgs::one()
+            + ED25519_PER_MSG_HASHING_BASE * NumArgs::one()
+            + ED25519_PER_MSG_BYTE_HASHING * NumBytes::new(msg_len as u64)
+            + ALGEBRA_ARK_BLS12_381_PAIRING
+            + HASH_SHA2_256_PER_BYTE * NumBytes::new(body_len as u64),
+    )?;
+
+    let (ok, plaintext) = match ibe::ciphertext::decrypt_bid_ct(&dk, &identity, &ad, &ct) {
+        Ok(p) => (true, p),
+        Err(_) => (false, vec![]),
+    };
+    Ok(smallvec![Value::bool(ok), Value::vector_u8(plaintext)])
+}
+
 pub fn make_all(
     builder: &SafeNativeBuilder,
 ) -> impl Iterator<Item = (String, NativeFunction)> + '_ {
@@ -110,6 +154,7 @@ pub fn make_all(
             native_verify_decryption_key as RawSafeNative,
         ),
         ("verify_bid_ct_internal", native_verify_bid_ct),
+        ("decrypt_bid_internal", native_decrypt_bid),
     ];
     builder.make_named_natives(natives)
 }

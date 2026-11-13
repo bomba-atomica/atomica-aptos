@@ -181,9 +181,10 @@ ct_id = H( vk, AD )                                // upstream pattern, ids.rs l
 
 `sk` is erased after signing. `r` is fresh for every bid, so every bid has its own AES key and a repeated nonce is not a concern.
 
-<!-- SCOUT(#227) DOC: section 6 states that the chain can decrypt a bid: `ibe::decrypt_bid` runs the step below on chain and returns none for a failed tag. -->
 <!-- SCOUT(#228) DOC: the product auction opens bids with `ibe::decrypt_bid`; the bid plaintext is the 8-byte little-endian price. -->
 Decryption, after the reveal, with the revealed key `dk`: `K = e(dk, U)`, derive `key` the same way, then AES-GCM decrypt with `aad = AD` read from the contract's stored bid record. A failed tag means the bid is invalid.
+
+The chain runs this step itself. `aptos_std::ibe::decrypt_bid(dk, identity, AD, ct)` (native `decrypt_bid_internal`) runs the submission check below, the pairing, the key derivation and AES-GCM, and returns the plaintext. It returns none for any failure, including a failed tag, a malformed key, identity or ciphertext, and other associated data. It never aborts, so one junk bid cannot stop a loop over bids. Its gas is one pairing, one G1 and one G2 decode, the strict Ed25519 check of `verify_bid_ct`, and the SHA-256 per-byte price over `ct` and `AD`. The largest batch of decrypts that fits in one transaction is in the doc of `ibe::decrypt_bid`.
 
 ### Submission check
 

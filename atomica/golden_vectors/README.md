@@ -16,8 +16,9 @@ Golden vectors for the hardened Boneh-Franklin timelock. Design source: `atomica
 - Identity and H1 (v2): chain, epoch, timelock id and deadline bound into `SHA3-256`, then `H1` as RFC 9380 `BLS12381G1_XMD:SHA-256_SSWU_RO_` with DST `ATOMICA_TIMELOCK_IBE_V2_H1`.
 - A seeded real chunky DKG dealing (three dealers, weights `[2, 1, 2]`, threshold weight 3). The master public key, verification keys and shares come from `get_dealt_public_key`, `get_public_key_share` and `decrypt_own_share` on the aggregated subtranscript. The JSON records the length and SHA3-256 of that subtranscript.
 - `dk_share` derivation, per validator share checks (valid and invalid: swapped, other identity, non-subgroup, off-curve, identity element, truncated, count mismatch, bad verification key).
-- Weighted reconstruction from several validator sets, the below-threshold error, a poisoned set, and the final key check (right and wrong). <!-- SCOUT(#227) DOC: add the price bid cases and what the product reads from them. -->
+- Weighted reconstruction from several validator sets, the below-threshold error, a poisoned set, and the final key check (right and wrong).
 - CCA bid ciphertexts: one valid bid and each tampered field, other associated data, non-subgroup `U` with a valid signature, a body re-signed under a new one time key, and malformed wires.
+- Price bids (`price_bids`, since version 3.1.0): three bidders, each with a bid whose plaintext is its 8-byte little-endian price, and one bid whose plaintext is not 8 bytes. They come from their own seed, so the earlier bid cases keep their bytes. The product auction tests read the bidders, prices, ciphertexts and associated data (Move accessors `price_bid_bidders`, `price_bid_prices`, `price_bid_cts`, `price_bid_ads`, `bad_length_bid_ct` and `bad_length_bid_ad`), open each bid with `ibe::decrypt_bid` and `dk()`, and clear a window from the prices.
 - Cross-library vectors: scalars, `H1`, `U`, `dk` and `mpk` that the blstrs code and the arkworks port must both reproduce byte for byte.
 
 No vector depends on `aptos-batch-encryption`, FPTX digests, eval proofs or the `DigestKey` format. Encodings are ZCash compressed (G1 48 bytes, G2 96 bytes).
@@ -35,7 +36,7 @@ Regenerate only when the scheme changes on purpose. A review must explain every 
 ### Checks
 
 - Rust, `cargo test -p aptos-dkg --lib ibe::golden_vectors`: decodes the checked-in JSON and verifies it with the production code (`checked_in_vectors_verify`), checks the cross-library claim against blstrs (`checked_in_cross_library_vectors_match_both_libraries`), and checks that a fresh generation equals the checked-in bytes (`regeneration_reproduces_checked_in_bytes`).
-- Move, `ibe_golden_vector_tests.move`: identity and H1 through `crypto_algebra`, pairing checks for every share case, the reconstruction and key check natives, and the bid submission native.
+- Move, `ibe_golden_vector_tests.move`: identity and H1 through `crypto_algebra`, pairing checks for every share case, the reconstruction and key check natives, the bid submission native, and `ibe::decrypt_bid` on every bid case and price bid.
 
 ### Consumers
 
