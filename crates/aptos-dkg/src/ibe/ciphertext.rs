@@ -243,7 +243,8 @@ pub fn verify_bid_ct(ct: &[u8], ad: &[u8]) -> Result<(), IbeError> {
     BidCiphertext::from_bytes(ct)?.verify(ad)
 }
 
-// SCOUT(#228) EDIT: the product auction reaches this function through `aptos_std::ibe::decrypt_bid` when it opens bids on chain.
+// The product auction reaches this function through `aptos_std::ibe::decrypt_bid` when
+// `auction::open_bids` opens bids on chain.
 /// Native entry of `ibe::decrypt_bid_internal`: decode `dk`, check the identity length, parse the
 /// serialized `ct`, then open it against `ad` with [`decrypt_bid`].
 ///
