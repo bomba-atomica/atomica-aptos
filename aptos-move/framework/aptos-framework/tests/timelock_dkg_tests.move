@@ -6,6 +6,7 @@
 module aptos_framework::timelock_dkg_tests {
     use std::vector;
     use aptos_framework::account;
+    use aptos_framework::chain_id;
     use aptos_framework::chunky_dkg_config;
     use aptos_framework::ibe_config;
     use aptos_framework::ibe_golden_vector_fixtures as fixtures;
@@ -166,9 +167,10 @@ module aptos_framework::timelock_dkg_tests {
         let _ = vector::length(&vks(0));
     }
 
-    // SCOUT(#223) EDIT: the name and the clear step describe an optional check. After the change an absent hash rejects every result off the test chain.
+    /// `setup` puts the chain on chain id 4, so the clear step removes the hash and a second clear is a
+    /// no-op.
     #[test]
-    fun expected_parameters_hash_is_absent_until_governance_sets_it() {
+    fun expected_parameters_hash_is_set_and_replaced_by_the_framework() {
         let framework = setup();
         assert!(timelock_dkg::expected_public_parameters_hash().is_none(), 1);
         let hash = x"0101010101010101010101010101010101010101010101010101010101010101";
@@ -179,6 +181,19 @@ module aptos_framework::timelock_dkg_tests {
         assert!(timelock_dkg::expected_public_parameters_hash() == std::option::some(other), 3);
         timelock_dkg::clear_expected_public_parameters_hash(&framework);
         assert!(timelock_dkg::expected_public_parameters_hash().is_none(), 4);
+        timelock_dkg::clear_expected_public_parameters_hash(&framework);
+    }
+
+    /// Off the test chain an absent hash rejects every result, so the pin cannot be cleared.
+    #[test]
+    #[expected_failure(abort_code = 0x30005, location = aptos_framework::timelock_dkg)]
+    fun clear_expected_parameters_hash_aborts_off_the_test_chain() {
+        let framework = account::create_signer_for_test(@0x1);
+        chain_id::initialize_for_test(&framework, 77);
+        timelock_dkg::initialize(&framework);
+        timelock_dkg::set_expected_public_parameters_hash(
+            &framework, x"0101010101010101010101010101010101010101010101010101010101010101"
+        );
         timelock_dkg::clear_expected_public_parameters_hash(&framework);
     }
 

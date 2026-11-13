@@ -12,12 +12,12 @@
 //! - Nothing FPTX is derived. The handler rederives `mpk` from the subtranscript, compares it with the claimed
 //!   value, checks that `V0` equals the G2 interpolation of threshold sets of the verification keys, and
 //!   hands every derived value to `reconfiguration_with_dkg::finish_with_timelock_dkg_result`.
-//! - The blob hash the dealers used is compared with `timelock_dkg::ExpectedPublicParametersHash`, when
-//!   governance has set it. Execution reads chain state only, never the node-local parameters blob.
+//! - The blob hash the dealers used is compared with `timelock_dkg::ExpectedPublicParametersHash`, which
+//!   genesis or governance sets. An absent hash rejects the result, except on the test chain (chain id 4).
+//!   Execution reads chain state only, never the node-local parameters blob.
 //!
 //! [`check_timelock_dkg_result`] is a pure function of its arguments so the checks can be tested without a chain.
 
-// SCOUT(#223) DOC: the module doc above says the hash is compared when governance has set it. It becomes: an absent hash rejects the result, except on chain id 4.
 use crate::{
     aptos_vm::get_system_transaction_output,
     errors::expect_only_successful_execution,
@@ -61,8 +61,9 @@ enum ExpectedFailure {
     TranscriptDeserializationFailed = 0x10504,
     KeyDerivationFailed = 0x10505,
     ClaimedMpkMismatch = 0x10506,
-    // SCOUT(#223) EDIT: add `ParametersHashMissing = 0x10508`, the next free `invalid_argument` code of this handler.
     ParametersHashMismatch = 0x10507,
+    /// No expected parameters hash on chain, and the chain is not the test chain (chain id 4).
+    ParametersHashMissing = 0x10508,
 
     // Move equivalent: `errors::invalid_state(*)`
     MissingResourceTimelockDKGState = 0x30501,
@@ -85,8 +86,8 @@ impl From<ResultRejection> for ExpectedFailure {
             ResultRejection::MultiSigVerificationFailed => Self::MultiSigVerificationFailed,
             ResultRejection::KeyDerivationFailed(_) => Self::KeyDerivationFailed,
             ResultRejection::ClaimedMpkMismatch => Self::ClaimedMpkMismatch,
-            // SCOUT(#223) EDIT: map `ResultRejection::ParametersHashMissing`. This match is exhaustive: the new variant does not compile until this arm exists.
             ResultRejection::ParametersHashMismatch => Self::ParametersHashMismatch,
+            ResultRejection::ParametersHashMissing => Self::ParametersHashMissing,
         }
     }
 }
@@ -174,7 +175,8 @@ impl AptosVM {
 
         let verifier = ValidatorVerifier::from(&validator_set);
         // Chain state only: a node-local file here would let nodes disagree on the same transaction.
-        // SCOUT(#223) EDIT: `None` is now a rejection inside `check_timelock_dkg_result` on every chain id but 4. The discarded transaction stays in each validator's pool until the session is cleared at the epoch change.
+        // An absent hash rejects the result inside `check_timelock_dkg_result` on every chain id but 4.
+        // The discarded transaction stays in each validator's pool until the session clears at the epoch change.
         let expected_params_hash =
             ExpectedTimelockParametersHash::fetch_config(resolver).map_err(|e| {
                 ExecutionFailure::Unexpected(VMStatus::error(

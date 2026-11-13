@@ -33,6 +33,19 @@ case "$TIMELOCK_DKG_ENABLED" in
     *) echo "TIMELOCK_DKG_ENABLED must be true or false, got '$TIMELOCK_DKG_ENABLED'" >&2; exit 1 ;;
 esac
 
+# With the timelock DKG on, genesis pins the SHA3-256 of the shipped timelock parameters blob (layout field
+# timelock_public_parameters_hash). Off chain id 4 genesis fails without it. The validator image copies
+# atomica/timelock-params/timelock-public-parameters.sha3-256 to the default path below.
+TIMELOCK_PARAMETERS_HASH_FILE="${TIMELOCK_PARAMETERS_HASH_FILE:-/opt/aptos/timelock-params/timelock-public-parameters.sha3-256}"
+TIMELOCK_HASH_LINE=""
+if [ "$TIMELOCK_DKG_ENABLED" = "true" ]; then
+    if [ ! -f "$TIMELOCK_PARAMETERS_HASH_FILE" ]; then
+        echo "TIMELOCK_DKG_ENABLED=true needs the timelock parameters hash at $TIMELOCK_PARAMETERS_HASH_FILE" >&2
+        exit 1
+    fi
+    TIMELOCK_HASH_LINE="timelock_public_parameters_hash: \"$(tr -d '[:space:]' < "$TIMELOCK_PARAMETERS_HASH_FILE")\""
+fi
+
 # Set ETH_CHAIN_ID to an EIP-155 chain id to turn Ethereum header attestation on at genesis (layout
 # field eth_chain_id). Validators also need eth_header_observer enabled in their node config.
 ETH_CHAIN_ID="${ETH_CHAIN_ID:-}"
@@ -94,7 +107,6 @@ done
 
 # Step 3: Create layout.yaml with generated root key
 echo "Step 3/7: Creating layout.yaml..."
-# SCOUT(#223) EDIT: when TIMELOCK_DKG_ENABLED=true, add a `timelock_public_parameters_hash:` line read from atomica/timelock-params/timelock-public-parameters.sha3-256. Without it a chain id other than 4 fails genesis.
 # SCOUT(#225) EDIT: add a `timelock_registrar:` line.
 # SCOUT(#231) EDIT: add the epoch boundary values next to `epoch_duration_secs: 7200`.
 cat > layout.yaml <<EOF
@@ -114,6 +126,7 @@ rewards_apy_percentage: 10
 voting_duration_secs: 43200
 voting_power_increase_limit: 20
 timelock_dkg_enabled: ${TIMELOCK_DKG_ENABLED}
+${TIMELOCK_HASH_LINE}
 ${ETH_CHAIN_ID_LINE}
 EOF
 

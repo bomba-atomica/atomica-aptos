@@ -127,8 +127,8 @@ jobs:
         timeout-minutes: 60
 
       # A 4-validator swarm on chain id 77 (not the test chain) with the shipped timelock parameters
-      # (atomica/timelock-params) completes a timelock DKG. Minimum 1 so it must execute.
-      # SCOUT(#223) EDIT: the chain id 77 swarm below must set `timelock_public_parameters_hash` in its layout, or it gets no key after the change.
+      # (atomica/timelock-params) completes a timelock DKG. Its layout pins `timelock_public_parameters_hash`
+      # (atomica issue 223), without which it gets no key. Minimum 1 so it must execute.
       - name: Run timelock DKG on a non-test chain id
         if: always()
         run: .github/scripts/run-tests-guarded.sh timelock_non_test_chain 1 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_dkg_on_non_test_chain_with_shipped_parameters -- --nocapture --test-threads=1

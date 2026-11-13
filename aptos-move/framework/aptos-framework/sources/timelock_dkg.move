@@ -21,6 +21,7 @@
 module aptos_framework::timelock_dkg {
     use std::error;
     use std::option::{Self, Option};
+    use aptos_framework::chain_id;
     use aptos_framework::chunky_dkg_config::ChunkyDKGConfig;
     use aptos_framework::event::emit;
     use aptos_framework::ibe_config;
@@ -34,6 +35,8 @@ module aptos_framework::timelock_dkg {
     const ETIMELOCK_DKG_NOT_ENABLED: u64 = 2;
     const EINVALID_RESULT: u64 = 3;
     const EINVALID_PARAMETERS_HASH: u64 = 4;
+    /// `clear_expected_public_parameters_hash` runs only on the test chain (chain id 4).
+    const ECLEAR_HASH_ONLY_ON_TEST_CHAIN: u64 = 5;
 
     /// Length of a SHA3-256 hash of the timelock `PublicParameters` blob.
     const PARAMETERS_HASH_LENGTH: u64 = 32;
@@ -84,11 +87,12 @@ module aptos_framework::timelock_dkg {
         pending_config: Option<PendingTimelockConfig>
     }
 
-    // SCOUT(#223) DOC: the doc below changes: an absent hash rejects the result on every chain except chain id 4, and genesis can set the hash.
-    /// The hash of the timelock `PublicParameters` blob that a `TimelockDKGResult` must carry. Set by
-    /// governance. The handler reads it from chain state, never from a node-local file, so every node
-    /// executes the result the same way. When it is absent the handler does not check the hash, and each
-    /// node still refuses to serve the timelock when its blob differs from `TimelockEpochConfig`.
+    /// The hash of the timelock `PublicParameters` blob that a `TimelockDKGResult` must carry. Set at
+    /// genesis (layout field `timelock_public_parameters_hash`) or by governance. The handler reads it from
+    /// chain state, never from a node-local file, so every node executes the result the same way. When it
+    /// is absent the handler rejects every result, except on the test chain (chain id 4), which uses the
+    /// built-in test parameters and stays unpinned. Each node also refuses to serve the timelock when its
+    /// blob differs from `TimelockEpochConfig`.
     struct ExpectedPublicParametersHash has key, drop {
         hash: vector<u8>
     }
@@ -109,12 +113,17 @@ module aptos_framework::timelock_dkg {
         }
     }
 
-    // SCOUT(#223) EDIT: not named in the issue. After the change, clearing the hash on a chain other than chain id 4 stops every later timelock key. Fix this doc or remove the function.
-    /// Stops the hash check of `TimelockDKGResult`. Idempotent.
+    /// Removes the pinned hash on the test chain (chain id 4) only. Idempotent there. The test chain
+    /// accepts a result with no pinned hash. On any other chain an absent hash rejects every
+    /// `TimelockDKGResult`, so this aborts with `ECLEAR_HASH_ONLY_ON_TEST_CHAIN`.
     public fun clear_expected_public_parameters_hash(
         aptos_framework: &signer
     ) acquires ExpectedPublicParametersHash {
         system_addresses::assert_aptos_framework(aptos_framework);
+        assert!(
+            chain_id::get() == 4,
+            error::invalid_state(ECLEAR_HASH_ONLY_ON_TEST_CHAIN)
+        );
         if (exists<ExpectedPublicParametersHash>(@aptos_framework)) {
             move_from<ExpectedPublicParametersHash>(@aptos_framework);
         }

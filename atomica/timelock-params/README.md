@@ -12,9 +12,11 @@ background load refuses it, and the node then takes no part in the timelock sess
   the only secret-dependent part of the parameters. A single party generated it once with `OsRng` and
   says the trapdoor was dropped. Nobody else can check that claim.
 - `timelock-public-parameters.sha256`: SHA-256 of the full blob, in `sha256sum` format.
-- `timelock-public-parameters.sha3-256`: SHA3-256 of the full blob. This is the value a node puts in <!-- SCOUT(#223) DOC: genesis pins this value too, through the layout field `timelock_public_parameters_hash`. The docker genesis scripts read this file. -->
-  `TimelockDKGResult.public_parameters_hash` and the value governance pins with
-  `0x1::timelock_dkg::set_expected_public_parameters_hash`.
+- `timelock-public-parameters.sha3-256`: SHA3-256 of the full blob. This is the value a node puts in
+  `TimelockDKGResult.public_parameters_hash`. Genesis pins it through the layout field
+  `timelock_public_parameters_hash`, and governance can replace it with
+  `0x1::timelock_dkg::set_expected_public_parameters_hash`. The docker genesis script
+  (`atomica/docker/tests/generate-genesis.sh`) reads this file when `TIMELOCK_DKG_ENABLED=true`.
 
 The full blob is not committed. It is about 220 MB, almost all of it the dlog table, and the dlog table is
 deterministic. The blob is rebuilt from the key, and the same key always gives the same bytes.

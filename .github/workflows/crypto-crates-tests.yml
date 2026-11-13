@@ -103,10 +103,10 @@ jobs:
 
       # The timelock DKG session and the TimelockDKGResult handler checks, including
       # the rule that execution reads chain state only (atomica issue 158).
-      # SCOUT(#223) EDIT: raise the guard minimum of the step below from 16 to 18 (two new session tests).
+      # The missing-hash check (atomica issue 223) adds two tests.
       - name: Run timelock DKG session tests
         if: ${{ !cancelled() }}
-        run: .github/scripts/run-tests-guarded.sh timelock-session 16 -- cargo test -p aptos-dkg-runtime --lib chunky::timelock_session_tests --verbose
+        run: .github/scripts/run-tests-guarded.sh timelock-session 18 -- cargo test -p aptos-dkg-runtime --lib chunky::timelock_session_tests --verbose
 
       # The Aptos outcome proof golden vectors (atomica issue 201): every accept and reject case
       # verified with production aptos-types code, and regeneration reproduces the checked-in bytes.
@@ -143,12 +143,13 @@ jobs:
       - name: Run ibe_config Move unit tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh ibe-config-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ibe_config
-        #
-        # SCOUT(#223) ADD: guarded step for the vm-genesis tests. No workflow runs this crate today. Issue 231 needs the same step: add it once.
-        # - name: Run aptos-vm-genesis tests
-        #   if: ${{ !cancelled() }}
-        #   run: .github/scripts/run-tests-guarded.sh aptos-vm-genesis 1 -- cargo test -p aptos-vm-genesis
-        # SCOUT(#231) ADD: the aptos-vm-genesis step above also runs the epoch boundary check test.
+
+      # The genesis tests of aptos-vm-genesis, including the pinned timelock parameters hash
+      # (atomica issue 223): genesis writes it, and fails off chain id 4 with the timelock DKG on and no hash.
+      # SCOUT(#231) ADD: the aptos-vm-genesis step below also runs the epoch boundary check test.
+      - name: Run aptos-vm-genesis tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh aptos-vm-genesis 1 -- cargo test -p aptos-vm-genesis
         #
         # SCOUT(#231) ADD: guarded step for the timelock_dkg Move unit tests.
         # - name: Run timelock_dkg Move unit tests
