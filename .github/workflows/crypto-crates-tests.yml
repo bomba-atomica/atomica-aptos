@@ -138,8 +138,7 @@ jobs:
         run: .github/scripts/run-tests-guarded.sh ethereum-headers-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ethereum_headers
 
       # One Rust test that runs the ibe_config Move unit tests and fails below the number
-      # ibe_config_tests.move holds (atomica issue 230).
-      # SCOUT(#225) ADD: guarded step for the ibe_config Move unit tests. Issues 226 and 230 need the same step: the first to merge adds it.
+      # ibe_config_tests.move holds (atomica issues 230, 226 and 225).
       - name: Run ibe_config Move unit tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh ibe-config-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ibe_config
@@ -163,6 +162,13 @@ jobs:
         # - name: Run ibe Move unit tests
         #   if: ${{ !cancelled() }}
         #   run: .github/scripts/run-tests-guarded.sh ibe-move 1 -- cargo test -p aptos-framework --test move_unit_test -- ibe
+
+      # The TimelockDKGResult handler and the reconfiguration hooks against the real framework (atomica
+      # issue 225): a failed session leaves no key, and registration aborts with E_NOT_REGISTRAR (17) before
+      # the registrar is set and E_IBE_NOT_READY (2) after. A filter that ends in `::` must be quoted.
+      - name: Run timelock_dkg VM tests
+        if: ${{ !cancelled() }}
+        run: '.github/scripts/run-tests-guarded.sh timelock-dkg-vm 4 -- cargo test -p e2e-move-tests --lib timelock_dkg::'
 
       # The TimelockShare handler through AptosVM against the real framework (atomica issue 229): valid
       # shares stored and revealed, bad shares rejected with an event, malformed points discarded, and the

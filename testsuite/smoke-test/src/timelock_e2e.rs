@@ -44,6 +44,7 @@ use aptos_logger::info;
 use aptos_rest_client::Client;
 use aptos_sdk::types::LocalAccount;
 use aptos_types::{
+    account_config::aptos_test_root_address,
     decryption::PerEpochEncryptionKeyResource,
     dkg::timelock_dkg::TimelockEpochConfigResource,
     on_chain_config::{FeatureFlag, Features, OnChainChunkyDKGConfig, OnChainRandomnessConfig},
@@ -160,11 +161,12 @@ async fn timelock_row(client: &Client, id: u64) -> Result<(u64, Vec<u8>, bool, u
     ))
 }
 
-// SCOUT(#225) EDIT: every caller must sign with the registrar account. Today each test registers with a fresh funded account.
+/// Registers a timelock as `account`. Only the stored registrar succeeds: the swarm sets the root account
+/// (`0xa550c18`) as registrar at genesis.
 async fn register_timelock(
     client: &Client,
     chain_id: aptos_types::chain_id::ChainId,
-    account: &mut LocalAccount,
+    account: &LocalAccount,
     deadline_us: u64,
 ) -> Result<u64> {
     let before = as_u64(&view(client, "0x1::ibe_config::get_next_timelock_id", vec![]).await?[0]);
@@ -270,13 +272,17 @@ async fn emit_encrypted_traffic(swarm: &mut impl Swarm, secs: u64) -> u64 {
     stats.committed
 }
 
-// SCOUT(#225) EDIT: timelock_e2e and timelock_testnet_for_script turn the DKG on with this governance script, so it must also call ibe_config::set_timelock_registrar. Neither test runs in CI.
+/// Turns the timelock DKG on by governance and makes the root account the timelock registrar, the same
+/// address genesis sets.
 const ENABLE_TIMELOCK_DKG_SCRIPT: &str = r#"
 script {
+    use std::signer;
     use aptos_framework::aptos_governance;
+    use aptos_framework::ibe_config;
     use aptos_framework::timelock_dkg;
     fun main(core_resources: &signer) {
         let framework_signer = aptos_governance::get_signer_testnet_only(core_resources, @0x1);
+        ibe_config::set_timelock_registrar(&framework_signer, signer::address_of(core_resources));
         timelock_dkg::enable(&framework_signer, 300);
         aptos_governance::reconfigure(&framework_signer);
     }
@@ -319,7 +325,8 @@ async fn start_network(
             let mut features = Features::default();
             features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
             conf.initial_features_override = Some(features);
-            // SCOUT(#225) EDIT: set `conf.timelock_registrar` to the account the tests register with.
+            // The root account registers every timelock of these tests.
+            conf.timelock_registrar = Some(aptos_test_root_address());
             // SCOUT(#231) EDIT: set the epoch boundary values so the 20 and 30 minute test epochs still change.
             conf.timelock_dkg_enabled = timelock_dkg_enabled;
         }))
@@ -339,6 +346,11 @@ async fn enable_timelock_dkg(swarm: &mut LocalSwarm, cli: &mut CliTestFramework)
     cli.run_script(root_idx, ENABLE_TIMELOCK_DKG_SCRIPT)
         .await
         .expect("enable timelock dkg");
+    // The governance script advanced the root account's sequence number behind the harness's back.
+    swarm
+        .aptos_public_info()
+        .sync_root_account_sequence_number()
+        .await;
     swarm
         .wait_for_all_nodes_to_catchup_to_epoch(3, Duration::from_secs(600))
         .await
@@ -356,13 +368,8 @@ async fn timelock_testnet_for_script() {
     };
     let (mut swarm, mut cli, _faucet) = start_network(false, EPOCH_DURATION_SECS).await;
     enable_timelock_dkg(&mut swarm, &mut cli).await;
-    // The governance script advanced the root account's sequence number behind the harness's back.
-    swarm
-        .aptos_public_info()
-        .sync_root_account_sequence_number()
-        .await;
     let mut accounts = vec![];
-    for _ in 0..4 {
+    for _ in 0..3 {
         accounts.push(
             swarm
                 .aptos_public_info()
@@ -374,8 +381,9 @@ async fn timelock_testnet_for_script() {
     let key_hex = |a: &LocalAccount| hex::encode(a.private_key().to_bytes());
     let vars = json!({
         "REST_URL": swarm.validators().next().unwrap().rest_api_endpoint().to_string(),
-        "REGISTRAR_KEY": key_hex(&accounts[0]),
-        "BIDDER_KEYS": accounts[1..].iter().map(key_hex).collect::<Vec<_>>().join(","),
+        // The registrar is the root account 0xa550c18, set at genesis.
+        "REGISTRAR_KEY": hex::encode(swarm.root_key().to_bytes()),
+        "BIDDER_KEYS": accounts.iter().map(key_hex).collect::<Vec<_>>().join(","),
         "ROOT_KEY": hex::encode(swarm.root_key().to_bytes()),
         "VALIDATOR_REST_URLS": swarm.validators().map(|v| v.rest_api_endpoint().to_string()).collect::<Vec<_>>(),
     });
@@ -482,16 +490,11 @@ async fn timelock_e2e() {
                 .expect("bidder"),
         );
     }
-    let mut registrar = swarm
-        .aptos_public_info()
-        .create_and_fund_user_account(1_000_000_000)
-        .await
-        .expect("registrar");
+    let registrar = swarm.chain_info().root_account();
 
     let now = chain_now_us(&client).await;
     let deadline_us = now + DEADLINE_AHEAD_US;
-    // SCOUT(#225) EDIT: `registrar` must be the on-chain registrar (three registrations in this test).
-    let t1 = register_timelock(&client, chain_id, &mut registrar, deadline_us)
+    let t1 = register_timelock(&client, chain_id, &registrar, deadline_us)
         .await
         .expect("register timelock 1");
     let (row_deadline, identity_bytes, _, _) = timelock_row(&client, t1).await.unwrap();
@@ -663,7 +666,7 @@ async fn timelock_e2e() {
     // once and runs no DKG). Deadline well after the forced change.
     let now = chain_now_us(&client).await;
     let t2_deadline = now + 600_000_000;
-    let t2 = register_timelock(&client, chain_id, &mut registrar, t2_deadline)
+    let t2 = register_timelock(&client, chain_id, &registrar, t2_deadline)
         .await
         .expect("register timelock 2");
     let before = timelock_status(&client, t2).await.unwrap();
@@ -713,6 +716,10 @@ script {
         .await
         .expect("reconfigure with DKG");
     swarm
+        .aptos_public_info()
+        .sync_root_account_sequence_number()
+        .await;
+    swarm
         .wait_for_all_nodes_to_catchup_to_epoch(5, Duration::from_secs(600))
         .await
         .expect("epoch 5");
@@ -761,7 +768,7 @@ script {
         // A full reveal under the second secret.
         let now = chain_now_us(&client).await;
         let t3_deadline = now + 45_000_000;
-        let t3 = register_timelock(&client, chain_id, &mut registrar, t3_deadline)
+        let t3 = register_timelock(&client, chain_id, &registrar, t3_deadline)
             .await
             .expect("register timelock 3");
         let (_, id3_bytes, _, _) = timelock_row(&client, t3).await.unwrap();
@@ -884,14 +891,36 @@ async fn timelock_reveal_on_live_swarm() {
     );
     let mpk = decode_g2(&config.mpk).expect("timelock mpk is a valid G2 point");
 
-    let mut registrar = swarm
+    // Genesis set the root account as the only registrar. Another funded account is rejected with
+    // E_NOT_REGISTRAR (17, 0x11) before any other check.
+    let registrar = swarm.chain_info().root_account();
+    let registrar_view = view(&client, "0x1::ibe_config::timelock_registrar", vec![])
+        .await
+        .expect("timelock_registrar view");
+    let stored = registrar_view[0]["vec"][0]
+        .as_str()
+        .and_then(|a| AccountAddress::from_str(a).ok());
+    assert_eq!(
+        stored,
+        Some(registrar.address()),
+        "genesis registrar {registrar_view:?}"
+    );
+    let other = swarm
         .aptos_public_info()
         .create_and_fund_user_account(1_000_000_000)
         .await
-        .expect("registrar");
+        .expect("other account");
+    let rejected_deadline_us = chain_now_us(&client).await + REVEAL_DEADLINE_AHEAD_US;
+    let rejected = register_timelock(&client, chain_id, &other, rejected_deadline_us)
+        .await
+        .expect_err("a registration by an account that is not the registrar");
+    let rejected = format!("{rejected:#}");
+    assert!(
+        rejected.contains("ibe_config") && rejected.contains("0x11"),
+        "expected E_NOT_REGISTRAR (0x11) from ibe_config, got: {rejected}"
+    );
     let deadline_us = chain_now_us(&client).await + REVEAL_DEADLINE_AHEAD_US;
-    // SCOUT(#225) EDIT: first assert that a registration from another funded account fails with the E_NOT_REGISTRAR abort code, then register with the registrar.
-    let id = register_timelock(&client, chain_id, &mut registrar, deadline_us)
+    let id = register_timelock(&client, chain_id, &registrar, deadline_us)
         .await
         .expect("register timelock");
     let (row_deadline, identity_bytes, _, _) = timelock_row(&client, id).await.unwrap();

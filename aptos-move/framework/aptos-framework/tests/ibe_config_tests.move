@@ -6,6 +6,7 @@
 /// `s * H1(identity)` of a registered timelock with `crypto_algebra`.
 module aptos_framework::ibe_config_tests {
     use std::features;
+    use std::option;
     use std::vector;
     use aptos_std::bls12381_algebra::{Fr, G1, G2, FormatG1Compr, FormatG2Compr, HashG1XmdSha256SswuRo};
     use aptos_std::crypto_algebra::{Self, Element};
@@ -22,12 +23,20 @@ module aptos_framework::ibe_config_tests {
     /// Master secret of the test key pair. Test only: it is public.
     const TEST_MASTER_SECRET: u64 = 0xA70A;
 
-    fun setup(): signer {
+    /// The registry with no registrar set.
+    fun setup_without_registrar(): signer {
         let framework = account::create_signer_for_test(@0x1);
         features::change_feature_flags_for_testing(
             &framework, vector[features::get_bls12_381_strutures_feature()], vector[]
         );
         ibe_config::initialize_for_testing(&framework);
+        framework
+    }
+
+    /// The registry with `@0xA` as registrar. Every test that registers signs as `@0xA`.
+    fun setup(): signer {
+        let framework = setup_without_registrar();
+        ibe_config::set_timelock_registrar(&framework, @0xA);
         framework
     }
 
@@ -73,7 +82,6 @@ module aptos_framework::ibe_config_tests {
         ibe_config::expired_event_fields_for_testing(&events[0])
     }
 
-    // SCOUT(#225) EDIT: 37 tests register through this helper as @0xA and no registrar is set. Setup must make @0xA the registrar, or each of them aborts with E_NOT_REGISTRAR.
     fun register(user: &signer, deadline_us: u64): u64 {
         let id = ibe_config::get_next_timelock_id();
         ibe_config::register_timelock(user, deadline_us);
@@ -114,13 +122,59 @@ module aptos_framework::ibe_config_tests {
         );
     }
 
-    // SCOUT(#225) TEST: register_aborts_with_not_registrar_while_no_registrar_is_set
-    // SCOUT(#225) TEST: register_aborts_for_another_signer_and_succeeds_for_the_registrar
-    // SCOUT(#225) TEST: register_with_id_returns_the_next_id_and_the_event_carries_it
-    // SCOUT(#225) TEST: set_registrar_is_framework_only_and_a_second_call_replaces_the_address
-    // SCOUT(#225) EDIT: the order of the checks decides this abort code: with the registrar check first, a non-registrar sees E_NOT_REGISTRAR and not E_IBE_NOT_READY (2).
+    // ---- registrar ----
+
+    #[test(user = @0xA)]
+    #[expected_failure(abort_code = 17, location = aptos_framework::ibe_config)]
+    fun register_aborts_with_not_registrar_while_no_registrar_is_set(user: &signer) {
+        let framework = setup_without_registrar();
+        ibe_config::set_epoch_config_for_testing(
+            &framework, 0, test_mpk(), 3, vector[2, 1, 2], EPOCH_INTERVAL
+        );
+        assert!(ibe_config::is_ready(), 1);
+        assert!(ibe_config::timelock_registrar().is_none(), 2);
+        register(user, 60 * MIN);
+    }
+
+    #[test(user = @0xA, other = @0xB)]
+    #[expected_failure(abort_code = 17, location = aptos_framework::ibe_config)]
+    fun register_aborts_for_another_signer_and_succeeds_for_the_registrar(user: &signer, other: &signer) {
+        setup_ready();
+        let id = register(user, 60 * MIN);
+        assert!(id == 0, 1);
+        assert!(ibe_config::get_status(id) == 0, 2);
+        register(other, 60 * MIN);
+    }
+
+    #[test(user = @0xA)]
+    fun register_with_id_returns_the_next_id_and_the_event_carries_it(user: &signer) {
+        setup_ready();
+        register(user, 60 * MIN);
+        let expected = ibe_config::get_next_timelock_id();
+        let id = ibe_config::register_timelock_with_id(user, 60 * MIN);
+        assert!(id == expected && id == 1, 1);
+        assert!(ibe_config::get_next_timelock_id() == id + 1, 2);
+        let events = event::emitted_events<ibe_config::TimelockRegistrationEvent>();
+        assert!(events.length() == 2, 3);
+        let (event_id, sender) = ibe_config::registration_event_fields_for_testing(&events[1]);
+        assert!(event_id == id && sender == @0xA, 4);
+    }
+
+    #[test(framework = @0x1, other = @0xB)]
+    #[expected_failure(abort_code = 0x50003, location = aptos_framework::system_addresses)]
+    fun set_registrar_is_framework_only_and_a_second_call_replaces_the_address(framework: &signer, other: &signer) {
+        setup_without_registrar();
+        assert!(ibe_config::timelock_registrar().is_none(), 1);
+        ibe_config::set_timelock_registrar(framework, @0xA);
+        assert!(ibe_config::timelock_registrar() == option::some(@0xA), 2);
+        ibe_config::set_timelock_registrar(framework, @0xB);
+        assert!(ibe_config::timelock_registrar() == option::some(@0xB), 3);
+        ibe_config::set_timelock_registrar(other, @0xB);
+    }
+
     #[test(user = @0xA)]
     #[expected_failure(abort_code = 2, location = aptos_framework::ibe_config)]
+    /// `setup` made `@0xA` the registrar, so the readiness check (2) decides, not the registrar check (17).
     fun register_aborts_when_not_ready(user: &signer) {
         setup();
         register(user, 60 * MIN);

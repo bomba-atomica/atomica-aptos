@@ -26,6 +26,7 @@ use aptos_framework::ReleaseBundle;
 use aptos_keygen::KeyGen;
 use aptos_logger::prelude::*;
 use aptos_types::{
+    account_address::AccountAddress,
     chain_id::ChainId,
     jwks::patch::IssuerJWK,
     keyless::Groth16VerificationKey,
@@ -448,7 +449,8 @@ pub struct GenesisConfiguration {
     pub keyless_groth16_vk: Option<Groth16VerificationKey>,
     /// See `aptos_vm_genesis::GenesisConfiguration::initialize_decryption_at_genesis`.
     pub initialize_decryption_at_genesis: bool,
-    // SCOUT(#225) ADD: optional field `timelock_registrar` (address).
+    /// See `aptos_vm_genesis::GenesisConfiguration::timelock_registrar`.
+    pub timelock_registrar: Option<AccountAddress>,
     // SCOUT(#231) ADD: fields for the UTC epoch boundaries (shape depends on owner question 1).
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_dkg_enabled`.
     pub timelock_dkg_enabled: bool,
@@ -683,7 +685,7 @@ impl Builder {
             initial_jwks: vec![],
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
-            // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+            timelock_registrar: None,
             // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: false,
             timelock_public_parameters_hash: None,

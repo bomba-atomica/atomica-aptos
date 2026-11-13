@@ -100,7 +100,10 @@ pub struct Layout {
     /// An optional initial features override.
     #[serde(default)]
     pub initial_features_override: Option<Features>,
-    // SCOUT(#225) ADD: `#[serde(default)]` layout field `timelock_registrar` (address).
+    /// The only address allowed to register timelocks (`ibe_config::set_timelock_registrar`). Default
+    /// unset: every registration aborts until governance sets one.
+    #[serde(default)]
+    pub timelock_registrar: Option<AccountAddress>,
     // SCOUT(#231) ADD: `#[serde(default)]` layout fields for the UTC epoch boundaries.
     // SCOUT(#243) EDIT: the product docker genesis writes `timelock_registrar` into this layout, with the named object address of `@atomica`.
     /// Turns the timelock DKG on at genesis, so epoch 2 has a timelock key. It also needs the chunky
@@ -160,7 +163,7 @@ impl Default for Layout {
             randomness_config_override: None,
             chunky_dkg_config_override: None,
             initial_features_override: None,
-            // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+            timelock_registrar: None,
             // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: false,
             timelock_public_parameters_hash: None,

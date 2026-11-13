@@ -120,7 +120,6 @@ jobs:
       # Two 4-validator swarms: the genesis flag timelock_dkg_enabled set (epoch 2 has a 96-byte timelock
       # key) and unset (no key). Minimum 2 so both must execute.
       # SCOUT(#231) EDIT: the two genesis flag tests below gain the missing-key event assertions; the swarms need the UTC boundary layout values once the trigger changes.
-      # SCOUT(#225) EDIT: these swarms register no timelock, so they pass without a registrar.
       - name: Run timelock genesis flag tests
         if: always()
         run: .github/scripts/run-tests-guarded.sh timelock_genesis_flag 2 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_genesis_flag -- --nocapture --test-threads=1
@@ -136,8 +135,9 @@ jobs:
 
       # The live timelock reveal: 4 validators, a 20 minute epoch, the timelock DKG on from genesis. It
       # registers a timelock, waits past the deadline, asserts Revealed and verify_decryption_key, and
-      # decrypts one V2 bid. Minimum 1 so it must execute.
-      # SCOUT(#225) EDIT: the live reveal below sets the registrar at genesis and asserts a rejected registration from another account first.
+      # decrypts one V2 bid. Genesis sets the root account as the timelock registrar: the test first
+      # asserts that another funded account is rejected with E_NOT_REGISTRAR (atomica issue 225).
+      # Minimum 1 so it must execute.
       - name: Run timelock reveal on a live swarm
         if: always()
         run: .github/scripts/run-tests-guarded.sh timelock_reveal_live 1 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_reveal_on_live_swarm -- --nocapture --test-threads=1

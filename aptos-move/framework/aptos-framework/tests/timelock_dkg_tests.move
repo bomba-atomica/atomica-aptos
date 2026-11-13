@@ -123,9 +123,9 @@ module aptos_framework::timelock_dkg_tests {
         assert!(!ibe_config::is_ready(), 2);
     }
 
-    // SCOUT(#225) EDIT: this test registers with a plain account. Make it the registrar so the abort stays E_IBE_NOT_READY (2) and does not become E_NOT_REGISTRAR.
     #[test]
     #[expected_failure(abort_code = 2, location = aptos_framework::ibe_config)]
+    /// The account is the registrar, so the readiness check (2) decides, not the registrar check (17).
     fun register_timelock_aborts_when_the_session_failed() {
         let framework = setup();
         timelock_dkg::enable_for_testing(&framework);
@@ -133,6 +133,7 @@ module aptos_framework::timelock_dkg_tests {
         timelock_dkg::try_clear_incomplete_session(&framework);
         next_epoch();
         timelock_dkg::on_new_epoch_for_testing(&framework);
+        ibe_config::set_timelock_registrar(&framework, @0xa11ce);
         let user = account::create_signer_for_test(@0xa11ce);
         ibe_config::register_timelock(&user, timestamp::now_microseconds() + 1_000_000);
     }

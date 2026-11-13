@@ -22,6 +22,7 @@ use aptos_framework::ReleaseBundle;
 use aptos_storage_interface::DbReaderWriter;
 use aptos_temppath::TempPath;
 use aptos_types::{
+    account_address::AccountAddress,
     chain_id::ChainId,
     jwks::patch::IssuerJWK,
     keyless::Groth16VerificationKey,
@@ -83,7 +84,8 @@ pub struct GenesisInfo {
     pub keyless_groth16_vk: Option<Groth16VerificationKey>,
     /// See `aptos_vm_genesis::GenesisConfiguration::initialize_decryption_at_genesis`.
     pub initialize_decryption_at_genesis: bool,
-    // SCOUT(#225) ADD: optional field `timelock_registrar` (address).
+    /// See `aptos_vm_genesis::GenesisConfiguration::timelock_registrar`.
+    pub timelock_registrar: Option<AccountAddress>,
     // SCOUT(#231) ADD: fields for the UTC epoch boundaries (shape depends on owner question 1).
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_dkg_enabled`.
     pub timelock_dkg_enabled: bool,
@@ -134,7 +136,7 @@ impl GenesisInfo {
             initial_jwks: genesis_config.initial_jwks.clone(),
             keyless_groth16_vk: genesis_config.keyless_groth16_vk.clone(),
             initialize_decryption_at_genesis: genesis_config.initialize_decryption_at_genesis,
-            // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+            timelock_registrar: genesis_config.timelock_registrar,
             // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: genesis_config.timelock_dkg_enabled,
             timelock_public_parameters_hash: genesis_config.timelock_public_parameters_hash,
@@ -178,7 +180,7 @@ impl GenesisInfo {
                 initial_jwks: self.initial_jwks.clone(),
                 keyless_groth16_vk: self.keyless_groth16_vk.clone(),
                 initialize_decryption_at_genesis: self.initialize_decryption_at_genesis,
-                // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+                timelock_registrar: self.timelock_registrar,
                 // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
                 timelock_dkg_enabled: self.timelock_dkg_enabled,
                 timelock_public_parameters_hash: self
