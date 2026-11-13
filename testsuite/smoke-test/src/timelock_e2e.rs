@@ -213,8 +213,8 @@ fn plaintext(price: u64, salt: u8) -> Vec<u8> {
     p
 }
 
-/// All `TimelockShareRejectedEvent`s on chain: `(timelock_id, epoch, validator)`.
-async fn rejected_share_events(client: &Client) -> Vec<(u64, u64, AccountAddress)> {
+/// The BCS data of every committed event whose type ends with `type_suffix`, in ledger order.
+async fn event_data_of(client: &Client, type_suffix: &str) -> Vec<Vec<u8>> {
     let mut out = vec![];
     let mut start = 0u64;
     let last = client
@@ -238,16 +238,36 @@ async fn rejected_share_events(client: &Client) -> Vec<(u64, u64, AccountAddress
                 if event
                     .type_tag()
                     .to_canonical_string()
-                    .ends_with("::ibe_config::TimelockShareRejectedEvent")
+                    .ends_with(type_suffix)
                 {
-                    let (timelock_id, epoch, validator, _ts): (u64, u64, AccountAddress, u64) =
-                        bcs::from_bytes(event.event_data()).expect("rejected event");
-                    out.push((timelock_id, epoch, validator));
+                    out.push(event.event_data().to_vec());
                 }
             }
         }
     }
     out
+}
+
+/// All `TimelockShareRejectedEvent`s on chain: `(timelock_id, epoch, validator)`.
+async fn rejected_share_events(client: &Client) -> Vec<(u64, u64, AccountAddress)> {
+    event_data_of(client, "::ibe_config::TimelockShareRejectedEvent")
+        .await
+        .iter()
+        .map(|data| {
+            let (timelock_id, epoch, validator, _ts): (u64, u64, AccountAddress, u64) =
+                bcs::from_bytes(data).expect("rejected event");
+            (timelock_id, epoch, validator)
+        })
+        .collect()
+}
+
+/// The `epoch` of every `TimelockKeyMissingEvent` on chain.
+async fn key_missing_event_epochs(client: &Client) -> Vec<u64> {
+    event_data_of(client, "::timelock_dkg::TimelockKeyMissingEvent")
+        .await
+        .iter()
+        .map(|data| bcs::from_bytes(data).expect("TimelockKeyMissingEvent"))
+        .collect()
 }
 
 async fn emit_encrypted_traffic(swarm: &mut impl Swarm, secs: u64) -> u64 {
@@ -327,7 +347,6 @@ async fn start_network(
             conf.initial_features_override = Some(features);
             // The root account registers every timelock of these tests.
             conf.timelock_registrar = Some(aptos_test_root_address());
-            // SCOUT(#231) EDIT: set the epoch boundary values so the 20 and 30 minute test epochs still change.
             conf.timelock_dkg_enabled = timelock_dkg_enabled;
         }))
         .build_with_cli(0)
@@ -1045,9 +1064,12 @@ async fn timelock_reveal_on_live_swarm() {
     );
 }
 
-/// `(ibe_config::is_ready, ibe_config::get_mpk, timelock_dkg::is_enabled, epoch)` once every node is in
-/// epoch 2. Epoch 2 is the first epoch a genesis-enabled timelock DKG can have a key for.
-async fn timelock_state_at_epoch_2(timelock_dkg_enabled: bool) -> (bool, Vec<u8>, bool, u64) {
+/// `(ibe_config::is_ready, ibe_config::get_mpk, timelock_dkg::is_enabled, epoch, key-missing epochs)`
+/// once every node is in epoch 2. Epoch 2 is the first epoch a genesis-enabled timelock DKG can have a key
+/// for. The last item holds the `epoch` of every `TimelockKeyMissingEvent` committed so far.
+async fn timelock_state_at_epoch_2(
+    timelock_dkg_enabled: bool,
+) -> (bool, Vec<u8>, bool, u64, Vec<u64>) {
     let (swarm, _cli, _faucet) = start_network(timelock_dkg_enabled, EPOCH_DURATION_SECS).await;
     swarm
         .wait_for_all_nodes_to_catchup_to_epoch(2, Duration::from_secs(300))
@@ -1075,16 +1097,17 @@ async fn timelock_state_at_epoch_2(timelock_dkg_enabled: bool) -> (bool, Vec<u8>
         .unwrap()[0]
         .as_bool()
         .expect("is_enabled bool");
-    info!("timelock_dkg_enabled={timelock_dkg_enabled}: epoch={epoch} is_ready={ready} mpk={} bytes is_enabled={enabled}", mpk.len());
-    (ready, mpk, enabled, epoch)
+    let missing = key_missing_event_epochs(&client).await;
+    info!("timelock_dkg_enabled={timelock_dkg_enabled}: epoch={epoch} is_ready={ready} mpk={} bytes is_enabled={enabled} key_missing_epochs={missing:?}", mpk.len());
+    (ready, mpk, enabled, epoch, missing)
 }
 
-// SCOUT(#231) EDIT: also assert that no TimelockKeyMissingEvent exists for epoch 2.
 /// The genesis layout flag `timelock_dkg_enabled` turns the timelock DKG on at genesis: the first
-/// reconfiguration runs a timelock DKG session and epoch 2 has a 96-byte master public key.
+/// reconfiguration runs a timelock DKG session and epoch 2 has a 96-byte master public key. No
+/// `TimelockKeyMissingEvent` reports epoch 2.
 #[tokio::test]
 async fn timelock_genesis_flag_set_gives_key_at_epoch_2() {
-    let (ready, mpk, enabled, epoch) = timelock_state_at_epoch_2(true).await;
+    let (ready, mpk, enabled, epoch, missing) = timelock_state_at_epoch_2(true).await;
     assert!(
         enabled,
         "timelock_dkg::is_enabled is false with the genesis flag set"
@@ -1094,13 +1117,17 @@ async fn timelock_genesis_flag_set_gives_key_at_epoch_2() {
         "ibe_config::is_ready is false at epoch {epoch} with the genesis flag set"
     );
     assert_eq!(mpk.len(), 96, "ibe_config::get_mpk length at epoch {epoch}");
+    assert!(
+        !missing.contains(&2),
+        "TimelockKeyMissingEvent for epoch 2 with the genesis flag set: {missing:?}"
+    );
 }
 
-// SCOUT(#231) EDIT: also assert that no TimelockKeyMissingEvent exists with the flag unset.
-/// Without the flag the timelock DKG stays off: epoch 2 has no timelock key.
+/// Without the flag the timelock DKG stays off: epoch 2 has no timelock key, and no
+/// `TimelockKeyMissingEvent` is emitted, because the event reports only while the feature is on.
 #[tokio::test]
 async fn timelock_genesis_flag_unset_keeps_key_absent() {
-    let (ready, mpk, enabled, epoch) = timelock_state_at_epoch_2(false).await;
+    let (ready, mpk, enabled, epoch, missing) = timelock_state_at_epoch_2(false).await;
     assert!(
         !enabled,
         "timelock_dkg::is_enabled is true without the genesis flag"
@@ -1113,6 +1140,10 @@ async fn timelock_genesis_flag_unset_keeps_key_absent() {
         mpk.is_empty(),
         "ibe_config::get_mpk is {} bytes without the genesis flag",
         mpk.len()
+    );
+    assert!(
+        missing.is_empty(),
+        "TimelockKeyMissingEvent without the genesis flag: {missing:?}"
     );
 }
 

@@ -22,7 +22,6 @@ module aptos_framework::block {
 
     const MAX_U64: u64 = 18446744073709551615;
 
-    // SCOUT(#231) EDIT: do not add the UTC boundaries as a field here. `types/src/account_config/events/new_block.rs` mirrors this layout in BCS. Use a new resource.
     /// Should be in-sync with BlockResource rust struct in new_block.rs
     struct BlockResource has key {
         /// Height of the current block
@@ -131,7 +130,6 @@ module aptos_framework::block {
         );
     }
 
-    // SCOUT(#231) EDIT: decide what a governance change of the interval means once epochs end at fixed UTC times.
     /// Update the epoch interval.
     /// Can only be called as part of the Aptos governance proposal process established by the AptosGovernance module.
     public fun update_epoch_interval_microsecs(
@@ -147,7 +145,6 @@ module aptos_framework::block {
         event::emit(UpdateEpochInterval { old_epoch_interval, new_epoch_interval });
     }
 
-    // SCOUT(#231) EDIT: the `TimelockDKGResult` handler reads this view to fill `TimelockEpochConfig.epoch_interval_us`. With UTC boundaries it needs the boundary values instead.
     #[view]
     /// Return epoch interval in seconds.
     public fun get_epoch_interval_secs(): u64 acquires BlockResource {
@@ -232,7 +229,6 @@ module aptos_framework::block {
         randomness::on_new_block(&vm, epoch, round, option::none());
         decryption::on_new_block(&vm, epoch, round, option::none());
 
-        // SCOUT(#231) EDIT: legacy prologue. This trigger calls `reconfiguration::reconfigure()` directly and never reaches `timelock_dkg::on_new_epoch`, so it emits no missing-key event. Decide whether it also moves to the UTC boundary.
         if (timestamp - reconfiguration::last_reconfiguration_time() >= epoch_interval) {
             reconfiguration::reconfigure();
         };
@@ -264,7 +260,6 @@ module aptos_framework::block {
         randomness::on_new_block(&vm, epoch, round, randomness_seed);
         decryption::on_new_block(&vm, epoch, round, option::none());
 
-        // SCOUT(#231) EDIT: start the reconfiguration at the first block at or past the next configured UTC boundary, not at `last_reconfiguration_time + epoch_interval` (owner questions 1 and 2). This path runs `try_start`, which starts no timelock DKG.
         if (timestamp - reconfiguration::last_reconfiguration_time() >= epoch_interval) {
             reconfiguration_with_dkg::try_start();
             reconfiguration_with_dkg::try_advance_reconfig();
@@ -303,7 +298,6 @@ module aptos_framework::block {
         randomness::on_new_block(&vm, epoch, round, randomness_seed);
         decryption::on_new_block(&vm, epoch, round, decryption_key);
 
-        // SCOUT(#231) EDIT: start the reconfiguration at the first block at or past the next configured UTC boundary (owner questions 1 and 2).
         if (timestamp - reconfiguration::last_reconfiguration_time() >= epoch_interval) {
             reconfiguration_with_dkg::try_start_with_chunky_dkg();
             reconfiguration_with_dkg::try_advance_reconfig();
@@ -340,7 +334,6 @@ module aptos_framework::block {
         randomness::on_new_block(&vm, epoch, round, randomness_seed);
         decryption::on_new_block_v2(&vm, epoch, round, decryption_key, decryption_round);
 
-        // SCOUT(#231) EDIT: start the reconfiguration at the first block at or past the next configured UTC boundary (owner questions 1 and 2). This is the prologue a chain with decryption on runs.
         if (timestamp - reconfiguration::last_reconfiguration_time() >= epoch_interval) {
             reconfiguration_with_dkg::try_start_with_chunky_dkg();
             reconfiguration_with_dkg::try_advance_reconfig();

@@ -109,7 +109,6 @@ module aptos_framework::ibe_config {
     const G1_LENGTH: u64 = 48;
 
     const MICROS_PER_MINUTE: u64 = 60_000_000;
-    // SCOUT(#231) EDIT: the guard stays 15 minutes, but genesis must keep every epoch boundary at least guard plus reveal window (25 minutes) away from the 07:45 and 16:15 UTC closes.
     /// A deadline must be at least this long before the epoch end (spec section 8, rule 2).
     const EPOCH_END_GUARD_US: u64 = 900_000_000;
     /// The reveal window after the deadline (spec section 7, rule 3).
@@ -154,7 +153,6 @@ module aptos_framework::ibe_config {
         total_weight: u64,
         /// Per-validator weights from the DKG rounding profile, indexed by validator index.
         weights: vector<u64>,
-        // SCOUT(#231) EDIT: with UTC-anchored epochs the end is the next configured boundary, not start plus interval. `TimelockEpochConfigResource` (types/src/dkg/timelock_dkg.rs) mirrors this struct in BCS, so a changed field changes both.
         /// Length of the epoch. The epoch ends at `last_reconfiguration_time + epoch_interval_us`.
         epoch_interval_us: u64,
         public_parameters_hash: vector<u8>,
@@ -456,7 +454,6 @@ module aptos_framework::ibe_config {
         keys
     }
 
-    // SCOUT(#231) EDIT: returns the next configured UTC epoch boundary instead of `last_reconfiguration_time + epoch_interval_us`, so the guard and `reveal_expiry_us` use the real epoch end.
     #[view]
     /// End of the current epoch: `last_reconfiguration_time + epoch_interval_us`.
     public fun epoch_end_us(): u64 acquires TimelockEpochConfig {
@@ -502,7 +499,6 @@ module aptos_framework::ibe_config {
         let now = timestamp::now_microseconds();
         assert!(now < deadline_us, E_DEADLINE_IN_PAST);
 
-        // SCOUT(#231) EDIT: `epoch_end` becomes the next UTC boundary, so a deadline at 07:45 or 16:15 UTC passes the guard in the epoch that holds it.
         // SCOUT(#243) EDIT: the product `create_auction` surfaces `E_DEADLINE_AFTER_EPOCH_END` (9) from this guard when the window close is later than 15 minutes before the epoch end.
         let epoch_end = epoch_end_us();
         let config = &TimelockEpochConfig[@aptos_framework];

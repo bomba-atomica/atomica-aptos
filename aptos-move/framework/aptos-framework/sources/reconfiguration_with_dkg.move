@@ -38,9 +38,10 @@ module aptos_framework::reconfiguration_with_dkg {
         }
     }
 
-    // SCOUT(#231) EDIT: owner question 4: this path never calls `timelock_dkg::start`, so the next epoch has no timelock key.
     /// Trigger a reconfiguration with DKG.
     /// Do nothing if one is already in progress.
+    /// This path never calls `timelock_dkg::start`, so the next epoch has no timelock key. `finish`
+    /// reports that epoch with `timelock_dkg::TimelockKeyMissingEvent` while the timelock DKG is on.
     public(friend) fun try_start() {
         let incomplete_dkg_session = dkg::incomplete_session();
         if (incomplete_dkg_session.is_some()) {
@@ -129,8 +130,8 @@ module aptos_framework::reconfiguration_with_dkg {
         decryption::on_new_epoch(framework, reconfiguration::current_epoch() + 1);
         reconfiguration::reconfigure();
         // After the epoch change: writes the TimelockEpochConfig of the new epoch, if the timelock
-        // DKG completed. Otherwise the new epoch has no timelock key.
-        // SCOUT(#231) EDIT: the only call of `on_new_epoch`. The missing-key event is emitted inside it, in this reconfiguration transaction, and must never abort it.
+        // DKG completed. Otherwise the new epoch has no timelock key, and `on_new_epoch` emits
+        // `TimelockKeyMissingEvent` in this transaction while the feature is on. It never aborts.
         timelock_dkg::on_new_epoch(framework);
     }
 
@@ -151,7 +152,6 @@ module aptos_framework::reconfiguration_with_dkg {
         // to `now >= last_reconfiguration_time + epoch_interval + grace_period`,
         // since `reconfiguration_state::start_time_secs()` is set when the
         // block prologue triggers reconfig after `epoch_interval` has elapsed.
-        // SCOUT(#231) EDIT: the watchdog comment above assumes the reconfiguration starts at `last_reconfiguration_time + epoch_interval`. Restate it for a start at the UTC boundary.
         let force_end_grace = epoch_timeout_config::force_end_grace_period_secs();
         if (force_end_grace.is_some()) {
             let now_us = timestamp::now_microseconds();

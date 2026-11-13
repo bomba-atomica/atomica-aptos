@@ -265,7 +265,6 @@ pub fn fetch_mainnet_genesis_info(git_options: GitOptions) -> CliTypedResult<Mai
             keyless_groth16_vk: None,
             initialize_decryption_at_genesis: true,
             timelock_registrar: None,
-            // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: false,
             timelock_public_parameters_hash: None,
             eth_chain_id: None,
@@ -318,7 +317,6 @@ pub fn fetch_genesis_info(git_options: GitOptions) -> CliTypedResult<GenesisInfo
             keyless_groth16_vk: layout.keyless_groth16_vk_override.clone(),
             initialize_decryption_at_genesis: true,
             timelock_registrar: layout.timelock_registrar,
-            // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: layout.timelock_dkg_enabled,
             timelock_public_parameters_hash: layout.timelock_public_parameters_hash,
             eth_chain_id: layout.eth_chain_id,

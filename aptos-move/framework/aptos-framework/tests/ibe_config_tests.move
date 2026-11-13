@@ -225,8 +225,6 @@ module aptos_framework::ibe_config_tests {
         register(user, 10 * MIN);
     }
 
-    // SCOUT(#231) EDIT: EPOCH_INTERVAL with time 0 as the epoch start models the interval rule. The boundary rule needs a UTC-anchored setup for this test and the next one.
-    // SCOUT(#231) TEST: register_accepts_0745_and_1615_utc_deadlines_in_the_epoch_that_holds_them (reveal_expiry_us equals the deadline plus 10 minutes).
     #[test(user = @0xA)]
     fun register_accepts_deadline_exactly_at_epoch_end_minus_guard(user: &signer) {
         setup_ready();

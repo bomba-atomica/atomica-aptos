@@ -86,7 +86,6 @@ pub struct GenesisInfo {
     pub initialize_decryption_at_genesis: bool,
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_registrar`.
     pub timelock_registrar: Option<AccountAddress>,
-    // SCOUT(#231) ADD: fields for the UTC epoch boundaries (shape depends on owner question 1).
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_dkg_enabled`.
     pub timelock_dkg_enabled: bool,
     /// See `aptos_vm_genesis::GenesisConfiguration::timelock_public_parameters_hash`.
@@ -137,7 +136,6 @@ impl GenesisInfo {
             keyless_groth16_vk: genesis_config.keyless_groth16_vk.clone(),
             initialize_decryption_at_genesis: genesis_config.initialize_decryption_at_genesis,
             timelock_registrar: genesis_config.timelock_registrar,
-            // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: genesis_config.timelock_dkg_enabled,
             timelock_public_parameters_hash: genesis_config.timelock_public_parameters_hash,
             eth_chain_id: genesis_config.eth_chain_id,
@@ -181,7 +179,6 @@ impl GenesisInfo {
                 keyless_groth16_vk: self.keyless_groth16_vk.clone(),
                 initialize_decryption_at_genesis: self.initialize_decryption_at_genesis,
                 timelock_registrar: self.timelock_registrar,
-                // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
                 timelock_dkg_enabled: self.timelock_dkg_enabled,
                 timelock_public_parameters_hash: self
                     .timelock_public_parameters_hash

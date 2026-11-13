@@ -134,7 +134,6 @@ pub struct GenesisConfiguration {
     /// (`genesis::set_timelock_registrar`). Default `None`: no registrar, so every
     /// `ibe_config::register_timelock` call aborts until governance sets one.
     pub timelock_registrar: Option<AccountAddress>,
-    // SCOUT(#231) ADD: fields for the UTC epoch boundaries (shape depends on owner question 1).
     /// Whether genesis turns the timelock DKG on (`genesis::enable_timelock_dkg`). Then the first
     /// reconfiguration runs a timelock DKG session and epoch 2 has a timelock key. The timelock DKG
     /// also needs the chunky DKG and validator transactions on. Default `false`: the timelock DKG
@@ -393,7 +392,6 @@ pub fn encode_genesis_change_set(
             registrar,
         );
     }
-    // SCOUT(#231) ADD: genesis step that stores the epoch boundaries.
     if let Some(hash) = &genesis_config.timelock_public_parameters_hash {
         set_expected_timelock_public_parameters_hash(
             &mut session,
@@ -486,7 +484,6 @@ pub fn encode_genesis_change_set(
     change_set
 }
 
-// SCOUT(#231) EDIT: fail when a configured epoch boundary is within 25 minutes of 07:45 or 16:15 UTC.
 fn validate_genesis_config(genesis_config: &GenesisConfiguration, chain_id: ChainId) {
     assert!(
         genesis_config.min_stake <= genesis_config.max_stake,
@@ -614,7 +611,6 @@ fn initialize(
 
     // Block timestamps are in microseconds and epoch_interval is used to check if a block timestamp
     // has crossed into a new epoch. So epoch_interval also needs to be in micro seconds.
-    // SCOUT(#231) EDIT: the interval is the only epoch input at genesis today. The boundaries are a second input, and `validate_genesis_config` must check the two agree.
     let epoch_interval_usecs = genesis_config.epoch_duration_secs * MICRO_SECONDS_PER_SECOND;
     exec_function(
         session,
@@ -1645,7 +1641,6 @@ fn test_genesis_config() -> GenesisConfiguration {
         keyless_groth16_vk: None,
         initialize_decryption_at_genesis: true,
         timelock_registrar: Some(aptos_test_root_address()),
-        // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
         timelock_dkg_enabled: false,
         timelock_public_parameters_hash: None,
         eth_chain_id: None,
@@ -1699,7 +1694,6 @@ fn mainnet_genesis_config() -> GenesisConfiguration {
         keyless_groth16_vk: None,
         initialize_decryption_at_genesis: true,
         timelock_registrar: None,
-        // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
         timelock_dkg_enabled: false,
         timelock_public_parameters_hash: None,
         eth_chain_id: None,
@@ -1730,7 +1724,6 @@ pub struct ValidatorWithCommissionRate {
     pub join_during_genesis: bool,
 }
 
-// SCOUT(#231) TEST: genesis_rejects_an_epoch_boundary_within_25_minutes_of_a_close.
 #[test]
 #[should_panic(
     expected = "timelock_dkg_enabled needs timelock_public_parameters_hash on a chain other than chain id 4"

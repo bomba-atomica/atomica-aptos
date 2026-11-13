@@ -55,7 +55,6 @@ done
 # Step 3: Create layout.yaml
 echo "Step 3/7: Creating layout.yaml..."
 # timelock_registrar: the root account 0xa550c18 (key in root-account/) is the only timelock registrar.
-# SCOUT(#231) EDIT: add the epoch boundary values next to `epoch_duration_secs: 7200`.
 cat > layout.yaml <<EOF
 ---
 root_key: "${ROOT_PUBLIC_KEY}"

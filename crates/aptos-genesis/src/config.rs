@@ -104,7 +104,6 @@ pub struct Layout {
     /// unset: every registration aborts until governance sets one.
     #[serde(default)]
     pub timelock_registrar: Option<AccountAddress>,
-    // SCOUT(#231) ADD: `#[serde(default)]` layout fields for the UTC epoch boundaries.
     // SCOUT(#243) EDIT: the product docker genesis writes `timelock_registrar` into this layout, with the named object address of `@atomica`.
     /// Turns the timelock DKG on at genesis, so epoch 2 has a timelock key. It also needs the chunky
     /// DKG and validator transactions on. Default `false`.
@@ -164,7 +163,6 @@ impl Default for Layout {
             chunky_dkg_config_override: None,
             initial_features_override: None,
             timelock_registrar: None,
-            // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
             timelock_dkg_enabled: false,
             timelock_public_parameters_hash: None,
             eth_chain_id: None,

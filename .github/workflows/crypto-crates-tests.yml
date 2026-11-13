@@ -145,15 +145,15 @@ jobs:
 
       # The genesis tests of aptos-vm-genesis, including the pinned timelock parameters hash
       # (atomica issue 223): genesis writes it, and fails off chain id 4 with the timelock DKG on and no hash.
-      # SCOUT(#231) ADD: the aptos-vm-genesis step below also runs the epoch boundary check test.
       - name: Run aptos-vm-genesis tests
         if: ${{ !cancelled() }}
         run: .github/scripts/run-tests-guarded.sh aptos-vm-genesis 1 -- cargo test -p aptos-vm-genesis
-        #
-        # SCOUT(#231) ADD: guarded step for the timelock_dkg Move unit tests.
-        # - name: Run timelock_dkg Move unit tests
-        #   if: ${{ !cancelled() }}
-        #   run: .github/scripts/run-tests-guarded.sh timelock-dkg-move 1 -- cargo test -p aptos-framework --test move_unit_test -- timelock_dkg
+
+      # One Rust test that runs the timelock_dkg Move unit tests and fails below the number
+      # timelock_dkg_tests.move holds, including the TimelockKeyMissingEvent tests (atomica issue 231).
+      - name: Run timelock_dkg Move unit tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh timelock-dkg-move 1 -- cargo test -p aptos-framework --test move_unit_test -- timelock_dkg
         #
         # SCOUT(#227) ADD: guarded steps for the ibe gas VM tests and the ibe Move unit tests. No workflow runs `ibe_gas::` today. A filter that ends in `::` must be quoted in YAML.
         # - name: Run ibe gas VM tests
@@ -165,7 +165,8 @@ jobs:
 
       # The TimelockDKGResult handler and the reconfiguration hooks against the real framework (atomica
       # issue 225): a failed session leaves no key, and registration aborts with E_NOT_REGISTRAR (17) before
-      # the registrar is set and E_IBE_NOT_READY (2) after. A filter that ends in `::` must be quoted.
+      # the registrar is set and E_IBE_NOT_READY (2) after. The epoch change of `end_epoch` emits one
+      # TimelockKeyMissingEvent for the new epoch (atomica issue 231). A filter that ends in `::` must be quoted.
       - name: Run timelock_dkg VM tests
         if: ${{ !cancelled() }}
         run: '.github/scripts/run-tests-guarded.sh timelock-dkg-vm 4 -- cargo test -p e2e-move-tests --lib timelock_dkg::'

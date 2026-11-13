@@ -118,8 +118,8 @@ jobs:
         timeout-minutes: 60
 
       # Two 4-validator swarms: the genesis flag timelock_dkg_enabled set (epoch 2 has a 96-byte timelock
-      # key) and unset (no key). Minimum 2 so both must execute.
-      # SCOUT(#231) EDIT: the two genesis flag tests below gain the missing-key event assertions; the swarms need the UTC boundary layout values once the trigger changes.
+      # key) and unset (no key). Both also check TimelockKeyMissingEvent: none for epoch 2 with the flag
+      # set, none at all with it unset (atomica issue 231). Minimum 2 so both must execute.
       - name: Run timelock genesis flag tests
         if: always()
         run: .github/scripts/run-tests-guarded.sh timelock_genesis_flag 2 -- cargo test --release -p smoke-test --lib timelock_e2e::timelock_genesis_flag -- --nocapture --test-threads=1
