@@ -379,7 +379,6 @@ impl AptosVM {
             );
         }
 
-        // SCOUT(#226) EDIT: no change. `submit_dk_shares` in step 3 already aborts at or past `reveal_expiry_us` (code 15), so step 4 runs only while the stored and the effective status agree.
         // 4. Reveal, once verified weight reached the threshold.
         let reconstructable: bool = decode_return(
             &call_ibe_config(

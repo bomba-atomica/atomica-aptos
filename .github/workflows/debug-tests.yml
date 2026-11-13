@@ -11,10 +11,12 @@ on:
     branches:
       - main
       - dev-atomica
-    # SCOUT(#226) EDIT: this pull request filter has no Move paths. A fork pull request that changes only Move sources and head.mrb never starts this required check and waits forever. Issues 226 and 230 start it only through their workflow or move_unit_test.rs edits.
+    # Move sources and head.mrb are listed so a Move-only pull request still starts this required check.
     paths:
       - "**/*.rs"
       - "**/Cargo.toml"
+      - "**/*.move"
+      - "aptos-move/framework/cached-packages/**"
       - ".github/workflows/**"
       - "atomica/timelock-params/**"
   workflow_dispatch:
