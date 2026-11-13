@@ -470,8 +470,11 @@ module aptos_framework::ibe_config {
     // ================================
 
     // SCOUT(#243) EDIT: the product SDK, UI and test helpers stop calling this entry; a direct call from the operator account must abort with `E_NOT_REGISTRAR`.
-    /// Registers a timelock for `deadline_us`. Entry for scripts and tests. Same checks as
-    /// `register_timelock_with_id`.
+    // Entry for scripts and tests. It runs the checks of `register_timelock_with_id`, the registrar check first.
+    /// Registers a timelock for `deadline_us`.
+    ///
+    /// Aborts unless the MPK of the current epoch is ready, the deadline is in the future and the deadline is at
+    /// most `epoch_end - 15 minutes`.
     public entry fun register_timelock(
         account: &signer, deadline_us: u64
     ) acquires TimelockRegistrar, TimelockRegistry, TimelockEpochConfig {
