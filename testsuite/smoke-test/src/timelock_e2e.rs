@@ -1158,8 +1158,9 @@ async fn timelock_dkg_on_non_test_chain_with_shipped_parameters() {
             let mut features = Features::default();
             features.enable(FeatureFlag::ENCRYPTED_TRANSACTIONS);
             conf.initial_features_override = Some(features);
-            // SCOUT(#223) EDIT: set the layout hash to `blob_hash`. Without it this chain id 77 swarm gets no timelock key after the change.
             conf.timelock_dkg_enabled = true;
+            // Off the test chain an absent pinned hash rejects every timelock DKG result.
+            conf.timelock_public_parameters_hash = Some(blob_hash);
         }))
         .build()
         .await;
@@ -1188,7 +1189,23 @@ async fn timelock_dkg_on_non_test_chain_with_shipped_parameters() {
             .unwrap()[0],
     );
     assert_eq!(mpk.len(), 96, "ibe_config::get_mpk length");
-    // SCOUT(#223) EDIT: also assert that the view 0x1::timelock_dkg::expected_public_parameters_hash returns the shipped hash.
+    // Genesis pinned the shipped hash. The view returns `Option<vector<u8>>` as `{"vec": [...]}`.
+    let pinned = view(
+        &client,
+        "0x1::timelock_dkg::expected_public_parameters_hash",
+        vec![],
+    )
+    .await
+    .unwrap();
+    let pinned = pinned[0]["vec"]
+        .as_array()
+        .expect("expected_public_parameters_hash option");
+    assert_eq!(pinned.len(), 1, "no expected parameters hash pinned");
+    assert_eq!(
+        as_bytes(&pinned[0]),
+        blob_hash.to_vec(),
+        "timelock_dkg::expected_public_parameters_hash is not the shipped hash"
+    );
     let config = get_on_chain_resource::<TimelockEpochConfigResource>(&client).await;
     assert_eq!(
         config.public_parameters_hash,

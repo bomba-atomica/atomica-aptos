@@ -187,10 +187,11 @@ fn derived_mpk(f: &Fixture) -> Vec<u8> {
         .mpk
 }
 
-// SCOUT(#223) EDIT: this helper fixes `ChainId::test()`, and `sign` above signs for the test chain only. The chain id 77 test needs both as parameters, or a missing-hash check that runs before the signature check.
-/// `expected` is the on-chain `ExpectedPublicParametersHash`, `None` when governance has not set it.
+/// `expected` is the on-chain `ExpectedPublicParametersHash`, `None` when it is not set. `sign` above
+/// signs for the test chain only, so a certificate verifies only when `chain_id` is `ChainId::test()`.
 fn check(
     f: &Fixture,
+    chain_id: ChainId,
     output: &CertifiedTimelockDKGOutput,
     epoch: u64,
     expected: Option<HashValue>,
@@ -199,7 +200,7 @@ fn check(
         output,
         epoch,
         &f.timelock.session_metadata,
-        ChainId::test(),
+        chain_id,
         &f.timelock.epoch_state.verifier,
         expected.as_ref().map(|h| h.as_ref().as_slice()),
     )
@@ -314,11 +315,14 @@ fn certificates_do_not_verify_in_the_other_domain() {
     let mpk = derived_mpk(f);
     let replayed = output_for(agg, mempool_cert, mpk.clone(), local_hash());
     assert_eq!(
-        check(f, &replayed, EPOCH, Some(local_hash())),
+        check(f, ChainId::test(), &replayed, EPOCH, Some(local_hash())),
         Err(ResultRejection::MultiSigVerificationFailed)
     );
     let genuine = output_for(agg, timelock_cert, mpk, local_hash());
-    assert_eq!(check(f, &genuine, EPOCH, Some(local_hash())), Ok(()));
+    assert_eq!(
+        check(f, ChainId::test(), &genuine, EPOCH, Some(local_hash())),
+        Ok(())
+    );
 }
 
 #[test]
@@ -337,7 +341,7 @@ fn certified_mempool_aggregate_never_becomes_a_timelock_result() {
         .mpk;
     let output = output_for(&f.mempool_agg, cert, mpk, local_hash());
     assert_eq!(
-        check(f, &output, EPOCH, Some(local_hash())),
+        check(f, ChainId::test(), &output, EPOCH, Some(local_hash())),
         Err(ResultRejection::MultiSigVerificationFailed)
     );
     // And the reverse: a timelock certificate does not verify as a mempool certificate.
@@ -367,14 +371,17 @@ fn handler_check_rejects_each_fault() {
     let cert = sign(&f.timelock, ChunkyDKGSessionKind::Timelock, agg, &signers);
     let mpk = derived_mpk(f);
     let good = output_for(agg, cert.clone(), mpk.clone(), local_hash());
-    assert_eq!(check(f, &good, EPOCH, Some(local_hash())), Ok(()));
-    // SCOUT(#223) EDIT: still Ok, but only because the helper uses the test chain. Reword the comment below.
-    // No expected hash on chain: the hash is not checked at execution.
-    assert_eq!(check(f, &good, EPOCH, None), Ok(()));
+    assert_eq!(
+        check(f, ChainId::test(), &good, EPOCH, Some(local_hash())),
+        Ok(())
+    );
+    // No expected hash on chain: accepted only because this is the test chain (chain id 4). Any other
+    // chain rejects it with `ParametersHashMissing`.
+    assert_eq!(check(f, ChainId::test(), &good, EPOCH, None), Ok(()));
 
     // Epoch not current.
     assert_eq!(
-        check(f, &good, EPOCH + 1, Some(local_hash())),
+        check(f, ChainId::test(), &good, EPOCH + 1, Some(local_hash())),
         Err(ResultRejection::EpochNotCurrent)
     );
 
@@ -382,7 +389,7 @@ fn handler_check_rejects_each_fault() {
     let weak = sign(&f.timelock, ChunkyDKGSessionKind::Timelock, agg, &[0]);
     let weak_out = output_for(agg, weak, mpk.clone(), local_hash());
     assert_eq!(
-        check(f, &weak_out, EPOCH, Some(local_hash())),
+        check(f, ChainId::test(), &weak_out, EPOCH, Some(local_hash())),
         Err(ResultRejection::NotEnoughVotingPower)
     );
 
@@ -390,7 +397,7 @@ fn handler_check_rejects_each_fault() {
     let other_mpk = encode_g2(&master_public_key(&MasterScalar::from(5u64))).to_vec();
     let wrong_mpk = output_for(agg, cert.clone(), other_mpk, local_hash());
     assert_eq!(
-        check(f, &wrong_mpk, EPOCH, Some(local_hash())),
+        check(f, ChainId::test(), &wrong_mpk, EPOCH, Some(local_hash())),
         Err(ResultRejection::ClaimedMpkMismatch)
     );
 
@@ -398,7 +405,7 @@ fn handler_check_rejects_each_fault() {
     let other_hash = HashValue::sha3_256_of(b"another blob");
     let wrong_hash = output_for(agg, cert.clone(), mpk.clone(), other_hash);
     assert_eq!(
-        check(f, &wrong_hash, EPOCH, Some(local_hash())),
+        check(f, ChainId::test(), &wrong_hash, EPOCH, Some(local_hash())),
         Err(ResultRejection::ParametersHashMismatch)
     );
 
@@ -406,7 +413,7 @@ fn handler_check_rejects_each_fault() {
     let mut garbled = good.clone();
     garbled.certified_transcript.transcript_bytes = vec![1, 2, 3];
     assert_eq!(
-        check(f, &garbled, EPOCH, Some(local_hash())),
+        check(f, ChainId::test(), &garbled, EPOCH, Some(local_hash())),
         Err(ResultRejection::TranscriptDeserializationFailed)
     );
 
@@ -421,7 +428,7 @@ fn handler_check_rejects_each_fault() {
     );
     let stale_out = output_for(&stale, stale_cert, mpk, local_hash());
     assert_eq!(
-        check(f, &stale_out, EPOCH, Some(local_hash())),
+        check(f, ChainId::test(), &stale_out, EPOCH, Some(local_hash())),
         Err(ResultRejection::EpochNotCurrent)
     );
 }
@@ -459,13 +466,38 @@ fn two_executors_with_different_local_blobs_give_identical_output() {
         let b = execute(blob_b);
         assert_eq!(a, b, "executors disagree with expected hash {:?}", expected);
     }
-    // SCOUT(#223) EDIT: still Ok on the test chain only. Reword the comment below.
-    // No expected hash on chain: accepted, although neither local blob matches the dealers' hash.
-    assert_eq!(check(f, &output, EPOCH, None), Ok(()));
+    // No expected hash on chain: accepted on the test chain only (chain id 4), although neither local blob
+    // matches the dealers' hash. Any other chain rejects it with `ParametersHashMissing`.
+    assert_eq!(check(f, ChainId::test(), &output, EPOCH, None), Ok(()));
 }
 
-// SCOUT(#223) TEST: missing_expected_hash_is_rejected_off_the_test_chain (chain id 77, `None`, expects ParametersHashMissing)
-// SCOUT(#223) TEST: missing_expected_hash_is_accepted_on_the_test_chain
+#[test]
+fn missing_expected_hash_is_rejected_off_the_test_chain() {
+    // The certificate is signed for the test chain, so on chain id 77 the multi-signature check would
+    // fail. `ParametersHashMissing` proves the missing-hash check runs before it.
+    let f = &*FIXTURE;
+    let agg = &f.timelock_agg;
+    let cert = sign(&f.timelock, ChunkyDKGSessionKind::Timelock, agg, &[
+        0usize, 1, 2,
+    ]);
+    let output = output_for(agg, cert, derived_mpk(f), local_hash());
+    assert_eq!(
+        check(f, ChainId::new(77), &output, EPOCH, None),
+        Err(ResultRejection::ParametersHashMissing)
+    );
+}
+
+#[test]
+fn missing_expected_hash_is_accepted_on_the_test_chain() {
+    let f = &*FIXTURE;
+    let agg = &f.timelock_agg;
+    let cert = sign(&f.timelock, ChunkyDKGSessionKind::Timelock, agg, &[
+        0usize, 1, 2,
+    ]);
+    let output = output_for(agg, cert, derived_mpk(f), local_hash());
+    assert_eq!(check(f, ChainId::test(), &output, EPOCH, None), Ok(()));
+}
+
 #[test]
 fn on_chain_expected_hash_mismatch_is_rejected() {
     let f = &*FIXTURE;
@@ -475,10 +507,14 @@ fn on_chain_expected_hash_mismatch_is_rejected() {
     ]);
     let dealers_hash = timelock_public_parameters_hash(b"dealers blob");
     let output = output_for(agg, cert, derived_mpk(f), dealers_hash);
-    assert_eq!(check(f, &output, EPOCH, Some(dealers_hash)), Ok(()));
+    assert_eq!(
+        check(f, ChainId::test(), &output, EPOCH, Some(dealers_hash)),
+        Ok(())
+    );
     assert_eq!(
         check(
             f,
+            ChainId::test(),
             &output,
             EPOCH,
             Some(timelock_public_parameters_hash(b"governance blob"))
@@ -512,7 +548,7 @@ fn mismatched_v0_is_rejected_even_when_certified() {
     ]);
     // Even with the claimed mpk equal to the (wrong) V0, the interpolation check refuses it.
     let output = output_for(&bad, cert, encode_g2(&foreign).to_vec(), local_hash());
-    match check(f, &output, EPOCH, Some(local_hash())) {
+    match check(f, ChainId::test(), &output, EPOCH, Some(local_hash())) {
         Err(ResultRejection::KeyDerivationFailed(msg)) => {
             assert!(msg.contains("MpkMismatch"), "{msg}")
         },
@@ -526,7 +562,7 @@ fn mismatched_v0_is_rejected_even_when_certified() {
     ]);
     let output = output_for(&bad_vk, cert, derived_mpk(f), local_hash());
     assert!(matches!(
-        check(f, &output, EPOCH, Some(local_hash())),
+        check(f, ChainId::test(), &output, EPOCH, Some(local_hash())),
         Err(ResultRejection::KeyDerivationFailed(_))
     ));
 }

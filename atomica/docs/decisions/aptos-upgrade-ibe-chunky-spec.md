@@ -81,7 +81,7 @@ Status of the implementation, 2026-10-31. **The two-manager wiring and the recon
 - Replay defence: the certificate of the timelock session is a signature over `TimelockSubtranscriptSigningMessage`, a separate hash domain, so a certified mempool aggregate never verifies as a `TimelockDKGResult`.
 - The validator transaction is `TimelockDKGResult` at tag 4. Its pool topic is `Topic::TimelockDKG`. The new `DKGMessage::TimelockRequest` variant is appended, so mempool messages keep their encoding.
 - `timelock_dkg.move` holds `TimelockDKGState` (with an `enabled` switch, off by default). `finish_with_timelock_dkg_result` stores the derived config. `timelock_dkg::on_new_epoch` writes `TimelockEpochConfig` after the epoch change.
-- The handler (`check_timelock_dkg_result`) rederives `mpk` and the verification keys, checks `V0` against interpolated keys, compares the claimed `mpk`, and compares the blob hash with the governance-set `timelock_dkg::ExpectedPublicParametersHash` when it exists. Execution never reads the node-local blob (atomica issue 158). <!-- SCOUT(#223) DOC: `when it exists` becomes: an absent hash rejects the result, except on chain id 4. Genesis can pin the hash. -->
+- The handler (`check_timelock_dkg_result`) rederives `mpk` and the verification keys, checks `V0` against interpolated keys, compares the claimed `mpk`, and compares the blob hash with `timelock_dkg::ExpectedPublicParametersHash`. An absent hash rejects the result, except on chain id 4 (atomica issue 223). Genesis can pin the hash (layout field `timelock_public_parameters_hash`), and governance can replace it. Only chain id 4 can clear it. Execution never reads the node-local blob (atomica issue 158).
 
 ### From the DKG output to Boneh-Franklin keys
 

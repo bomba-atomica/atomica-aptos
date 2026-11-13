@@ -216,9 +216,9 @@ impl OnChainConfig for TimelockDKGState {
     const TYPE_IDENTIFIER: &'static str = "TimelockDKGState";
 }
 
-// SCOUT(#223) DOC: the doc below says the hash is set by governance; genesis sets it too.
 /// Reflection of Move type `0x1::timelock_dkg::ExpectedPublicParametersHash`: the blob hash a
-/// `TimelockDKGResult` must carry, set by governance.
+/// `TimelockDKGResult` must carry, set at genesis or by governance. An absent hash rejects every
+/// result, except on the test chain (chain id 4).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ExpectedTimelockParametersHash {
     pub hash: Vec<u8>,
@@ -701,10 +701,11 @@ pub fn check_claimed_mpk(
 // Acceptance of a certified result (the check of the `TimelockDKGResult` handler)
 // ---------------------------------------------------------------------------------------------
 
-// SCOUT(#223) EDIT: add `ParametersHashMissing`: no expected hash on chain and the chain id is not `ChainId::test()`. The only exhaustive match on this enum is in the VM handler.
 /// Why a certified timelock DKG result is refused. The transaction is discarded and nothing changes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResultRejection {
+    /// No expected parameters hash on chain, and the chain is not the test chain (chain id 4).
+    ParametersHashMissing,
     EpochNotCurrent,
     NotEnoughVotingPower,
     TranscriptDeserializationFailed,
@@ -724,12 +725,13 @@ pub struct CheckedTimelockResult {
     pub subtranscript_hash: HashValue,
 }
 
-// SCOUT(#223) DOC: the doc below changes: `None` rejects the result on every chain except the test chain.
 /// All checks of a certified timelock DKG result against chain state. No VM, no I/O.
 ///
 /// Every argument comes from the transaction or from chain state, so every node gets the same answer.
 /// `expected_params_hash` is `ExpectedPublicParametersHash.hash` of `0x1::timelock_dkg`, `None` when
-/// governance has not set it. The node-local blob is never an input: a node checks its own blob against
+/// neither genesis nor governance has set it. `None` rejects the result with
+/// `ParametersHashMissing` on every chain except the test chain (chain id 4). That check runs first,
+/// before every other check. The node-local blob is never an input: a node checks its own blob against
 /// `TimelockEpochConfig` before it serves the timelock (`derive_timelock_service_state`).
 pub fn check_timelock_dkg_result(
     output: &CertifiedTimelockDKGOutput,
@@ -739,6 +741,10 @@ pub fn check_timelock_dkg_result(
     verifier: &ValidatorVerifier,
     expected_params_hash: Option<&[u8]>,
 ) -> Result<CheckedTimelockResult, ResultRejection> {
+    if expected_params_hash.is_none() && chain_id != ChainId::test() {
+        return Err(ResultRejection::ParametersHashMissing);
+    }
+
     let certified = &output.certified_transcript;
     if certified.metadata.epoch != current_epoch || session_metadata.dealer_epoch != current_epoch {
         return Err(ResultRejection::EpochNotCurrent);
@@ -769,7 +775,7 @@ pub fn check_timelock_dkg_result(
         .map_err(|e| ResultRejection::KeyDerivationFailed(e.to_string()))?;
     check_claimed_mpk(&derived, &output.mpk).map_err(|_| ResultRejection::ClaimedMpkMismatch)?;
 
-    // SCOUT(#223) EDIT: return `ParametersHashMissing` when `expected_params_hash` is `None` and `chain_id != ChainId::test()`. This check runs after the signature check, so a unit test on chain id 77 needs a certificate signed for chain 77, or the check moves to the top.
+    // `None` reaches here only on the test chain, which stays unpinned.
     if let Some(expected) = expected_params_hash
         && expected != output.public_parameters_hash.as_ref()
     {

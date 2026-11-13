@@ -130,7 +130,6 @@ pub struct GenesisConfiguration {
     /// legacy `V2` until the first `reconfiguration_with_dkg` lazily creates
     /// the resource and flips it to `V3` — exercising the V2->V3 cutover.
     pub initialize_decryption_at_genesis: bool,
-    // SCOUT(#223) ADD: optional field `timelock_public_parameters_hash` (32 bytes), next to `timelock_dkg_enabled`.
     // SCOUT(#225) ADD: optional field `timelock_registrar` (address).
     // SCOUT(#231) ADD: fields for the UTC epoch boundaries (shape depends on owner question 1).
     /// Whether genesis turns the timelock DKG on (`genesis::enable_timelock_dkg`). Then the first
@@ -138,6 +137,11 @@ pub struct GenesisConfiguration {
     /// also needs the chunky DKG and validator transactions on. Default `false`: the timelock DKG
     /// starts off and only governance can turn it on.
     pub timelock_dkg_enabled: bool,
+    /// When set, genesis pins this SHA3-256 of the timelock `PublicParameters` blob
+    /// (`timelock_dkg::set_expected_public_parameters_hash`). Every `TimelockDKGResult` must then carry it.
+    /// Genesis fails when `timelock_dkg_enabled` is true, this is unset and the chain id is not 4,
+    /// because the handler rejects every result off the test chain while no hash is pinned.
+    pub timelock_public_parameters_hash: Option<Vec<u8>>,
     /// When set, genesis turns Ethereum header attestation on for this EIP-155 chain id
     /// (`ethereum_header_config::set`). Default `None`: attestation starts off and only governance can
     /// turn it on.
@@ -168,7 +172,7 @@ pub fn encode_aptos_mainnet_genesis_transaction(
     genesis_config: &GenesisConfiguration,
 ) -> Transaction {
     assert!(!genesis_config.is_test, "This is mainnet!");
-    validate_genesis_config(genesis_config);
+    validate_genesis_config(genesis_config, chain_id);
 
     let mut state_view = GenesisStateView::new();
     for (module_bytes, module) in framework.code_and_compiled_modules() {
@@ -299,7 +303,7 @@ pub fn encode_genesis_change_set(
     execution_config: &OnChainExecutionConfig,
     gas_schedule: &GasScheduleV2,
 ) -> ChangeSet {
-    validate_genesis_config(genesis_config);
+    validate_genesis_config(genesis_config, chain_id);
 
     let mut state_view = GenesisStateView::new();
     for (module_bytes, module) in framework.code_and_compiled_modules() {
@@ -378,9 +382,16 @@ pub fn encode_genesis_change_set(
         chunky_dkg_config,
     );
     initialize_chunky_dkg(&mut session, &module_storage, &mut traversal_context);
-    // SCOUT(#223) EDIT: also write the expected hash when the field is set.
     // SCOUT(#225) ADD: genesis step that sets the registrar when the field is set.
     // SCOUT(#231) ADD: genesis step that stores the epoch boundaries.
+    if let Some(hash) = &genesis_config.timelock_public_parameters_hash {
+        set_expected_timelock_public_parameters_hash(
+            &mut session,
+            &module_storage,
+            &mut traversal_context,
+            hash.clone(),
+        );
+    }
     if genesis_config.timelock_dkg_enabled {
         enable_timelock_dkg(&mut session, &module_storage, &mut traversal_context);
     }
@@ -465,9 +476,8 @@ pub fn encode_genesis_change_set(
     change_set
 }
 
-// SCOUT(#223) EDIT: fail when `timelock_dkg_enabled` is true, the hash is unset and the chain id is not 4. This function gets no chain id today; both callers hold one and must pass it.
 // SCOUT(#231) EDIT: fail when a configured epoch boundary is within 25 minutes of 07:45 or 16:15 UTC.
-fn validate_genesis_config(genesis_config: &GenesisConfiguration) {
+fn validate_genesis_config(genesis_config: &GenesisConfiguration, chain_id: ChainId) {
     assert!(
         genesis_config.min_stake <= genesis_config.max_stake,
         "Min stake must be smaller than or equal to max stake"
@@ -500,6 +510,14 @@ fn validate_genesis_config(genesis_config: &GenesisConfiguration) {
         genesis_config.voting_power_increase_limit > 0
             && genesis_config.voting_power_increase_limit <= 50,
         "voting_power_increase_limit must be > 0 and <= 50"
+    );
+    // Off the test chain the handler rejects every timelock DKG result while no hash is pinned, so the
+    // chain would never get a timelock key.
+    assert!(
+        !genesis_config.timelock_dkg_enabled
+            || genesis_config.timelock_public_parameters_hash.is_some()
+            || chain_id == ChainId::test(),
+        "timelock_dkg_enabled needs timelock_public_parameters_hash on a chain other than chain id 4"
     );
 }
 
@@ -847,7 +865,27 @@ fn initialize_chunky_dkg(
     );
 }
 
-// SCOUT(#223) EDIT: pass the hash to `genesis::enable_timelock_dkg`, or add a second `exec_function` for `timelock_dkg::set_expected_public_parameters_hash`.
+/// Pins the hash every `TimelockDKGResult` must carry. The Move side aborts unless it is 32 bytes.
+fn set_expected_timelock_public_parameters_hash(
+    session: &mut SessionExt<impl AptosMoveResolver>,
+    module_storage: &impl AptosModuleStorage,
+    traversal_context: &mut TraversalContext,
+    hash: Vec<u8>,
+) {
+    exec_function(
+        session,
+        module_storage,
+        traversal_context,
+        "timelock_dkg",
+        "set_expected_public_parameters_hash",
+        vec![],
+        serialize_values(&vec![
+            MoveValue::Signer(CORE_CODE_ADDRESS),
+            MoveValue::vector_u8(hash),
+        ]),
+    );
+}
+
 fn enable_timelock_dkg(
     session: &mut SessionExt<impl AptosMoveResolver>,
     module_storage: &impl AptosModuleStorage,
@@ -1544,39 +1582,43 @@ pub fn generate_test_genesis(
         validators,
         framework,
         ChainId::test(),
-        &GenesisConfiguration {
-            allow_new_validators: true,
-            epoch_duration_secs: 3600,
-            is_test: true,
-            min_stake: 0,
-            min_voting_threshold: 0,
-            // 1M APTOS coins (with 8 decimals).
-            max_stake: 100_000_000_000_000,
-            recurring_lockup_duration_secs: 7200,
-            required_proposer_stake: 0,
-            rewards_apy_percentage: 10,
-            voting_duration_secs: 3600,
-            voting_power_increase_limit: 50,
-            employee_vesting_start: 1663456089,
-            employee_vesting_period_duration: 5 * 60, // 5 minutes
-            initial_features_override: None,
-            randomness_config_override: None,
-            chunky_dkg_config_override: None,
-            jwk_consensus_config_override: None,
-            initial_jwks: vec![],
-            keyless_groth16_vk: None,
-            initialize_decryption_at_genesis: true,
-            // SCOUT(#223) EDIT: carry `timelock_public_parameters_hash` here.
-            // SCOUT(#225) EDIT: carry `timelock_registrar` here.
-            // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
-            timelock_dkg_enabled: false,
-            eth_chain_id: None,
-        },
+        &test_genesis_config(),
         &OnChainConsensusConfig::default_for_genesis(),
         &OnChainExecutionConfig::default_for_genesis(),
         &default_gas_schedule(),
     );
     (genesis, test_validators)
+}
+
+fn test_genesis_config() -> GenesisConfiguration {
+    GenesisConfiguration {
+        allow_new_validators: true,
+        epoch_duration_secs: 3600,
+        is_test: true,
+        min_stake: 0,
+        min_voting_threshold: 0,
+        // 1M APTOS coins (with 8 decimals).
+        max_stake: 100_000_000_000_000,
+        recurring_lockup_duration_secs: 7200,
+        required_proposer_stake: 0,
+        rewards_apy_percentage: 10,
+        voting_duration_secs: 3600,
+        voting_power_increase_limit: 50,
+        employee_vesting_start: 1663456089,
+        employee_vesting_period_duration: 5 * 60, // 5 minutes
+        initial_features_override: None,
+        randomness_config_override: None,
+        chunky_dkg_config_override: None,
+        jwk_consensus_config_override: None,
+        initial_jwks: vec![],
+        keyless_groth16_vk: None,
+        initialize_decryption_at_genesis: true,
+        // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+        // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
+        timelock_dkg_enabled: false,
+        timelock_public_parameters_hash: None,
+        eth_chain_id: None,
+    }
 }
 
 pub fn generate_mainnet_genesis(
@@ -1625,10 +1667,10 @@ fn mainnet_genesis_config() -> GenesisConfiguration {
         initial_jwks: vec![],
         keyless_groth16_vk: None,
         initialize_decryption_at_genesis: true,
-        // SCOUT(#223) EDIT: carry `timelock_public_parameters_hash` here.
         // SCOUT(#225) EDIT: carry `timelock_registrar` here.
         // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
         timelock_dkg_enabled: false,
+        timelock_public_parameters_hash: None,
         eth_chain_id: None,
     }
 }
@@ -1657,8 +1699,71 @@ pub struct ValidatorWithCommissionRate {
     pub join_during_genesis: bool,
 }
 
-// SCOUT(#223) TEST: genesis_with_timelock_dkg_and_no_hash_fails_off_the_test_chain, and genesis_writes_the_expected_public_parameters_hash (reads `0x1::timelock_dkg::ExpectedPublicParametersHash`). No workflow runs the tests of this crate today.
 // SCOUT(#231) TEST: genesis_rejects_an_epoch_boundary_within_25_minutes_of_a_close.
+#[test]
+#[should_panic(
+    expected = "timelock_dkg_enabled needs timelock_public_parameters_hash on a chain other than chain id 4"
+)]
+fn genesis_with_timelock_dkg_and_no_hash_fails_off_the_test_chain() {
+    let validators: Vec<Validator> = TestValidator::new_test_set(Some(1), Some(100_000_000))
+        .into_iter()
+        .map(|t| t.data)
+        .collect();
+    encode_genesis_change_set(
+        &GENESIS_KEYPAIR.1,
+        &validators,
+        aptos_cached_packages::head_release_bundle(),
+        ChainId::new(77),
+        &GenesisConfiguration {
+            timelock_dkg_enabled: true,
+            timelock_public_parameters_hash: None,
+            ..test_genesis_config()
+        },
+        &OnChainConsensusConfig::default_for_genesis(),
+        &OnChainExecutionConfig::default_for_genesis(),
+        &default_gas_schedule(),
+    );
+}
+
+#[test]
+fn genesis_writes_the_expected_public_parameters_hash() {
+    use aptos_types::{
+        dkg::timelock_dkg::ExpectedTimelockParametersHash, state_store::state_key::StateKey,
+        write_set::TransactionWrite,
+    };
+
+    let hash: Vec<u8> = (0u8..32).collect();
+    let validators: Vec<Validator> = TestValidator::new_test_set(Some(1), Some(100_000_000))
+        .into_iter()
+        .map(|t| t.data)
+        .collect();
+    let change_set = encode_genesis_change_set(
+        &GENESIS_KEYPAIR.1,
+        &validators,
+        aptos_cached_packages::head_release_bundle(),
+        ChainId::new(77),
+        &GenesisConfiguration {
+            timelock_dkg_enabled: true,
+            timelock_public_parameters_hash: Some(hash.clone()),
+            ..test_genesis_config()
+        },
+        &OnChainConsensusConfig::default_for_genesis(),
+        &OnChainExecutionConfig::default_for_genesis(),
+        &default_gas_schedule(),
+    );
+
+    let state_key = StateKey::on_chain_config::<ExpectedTimelockParametersHash>().unwrap();
+    let bytes = change_set
+        .write_set()
+        .as_v0()
+        .get(&state_key)
+        .expect("genesis writes ExpectedPublicParametersHash")
+        .extract_raw_bytes()
+        .unwrap();
+    let stored: ExpectedTimelockParametersHash = bcs::from_bytes(&bytes).unwrap();
+    assert_eq!(stored.hash, hash);
+}
+
 #[test]
 pub fn test_genesis_module_publishing() {
     let genesis_runtime_builder = GenesisRuntimeBuilder::new(ChainId::test());

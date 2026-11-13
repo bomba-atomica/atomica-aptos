@@ -54,7 +54,6 @@ done
 
 # Step 3: Create layout.yaml
 echo "Step 3/7: Creating layout.yaml..."
-# SCOUT(#223) EDIT: this script has no TIMELOCK_DKG_ENABLED switch and writes no `timelock_dkg_enabled` line, so there is nothing to pin here unless the switch is added first.
 # SCOUT(#225) EDIT: add a `timelock_registrar:` line.
 # SCOUT(#231) EDIT: add the epoch boundary values next to `epoch_duration_secs: 7200`.
 cat > layout.yaml <<EOF
