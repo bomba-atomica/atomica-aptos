@@ -56,7 +56,7 @@ module aptos_std::ibe {
     ///
     /// Gas: one decrypt costs about one pairing. The largest number of decrypts that fits in one
     /// transaction under `max_execution_gas` is measured by the e2e test
-    /// `largest_decrypt_batch_fits_max_execution_gas`, largest batch: 15.
+    /// `largest_decrypt_batch_fits_max_execution_gas`, largest batch: 13.
     public fun decrypt_bid(
         dk: vector<u8>, identity: vector<u8>, ad: vector<u8>, ct: vector<u8>
     ): Option<vector<u8>> {

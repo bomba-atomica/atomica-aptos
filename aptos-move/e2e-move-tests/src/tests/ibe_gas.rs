@@ -21,7 +21,7 @@ const IDENTITY: &str = "be639abf404445211e05906cb7459f81cbc236fbf41f615f2d52b53b
 
 /// The largest number of `ibe::decrypt_bid` calls that fit in one transaction under
 /// `max_execution_gas`. The doc comment of `ibe::decrypt_bid` repeats it as `largest batch: N`.
-const LARGEST_DECRYPT_BATCH: u64 = 15;
+const LARGEST_DECRYPT_BATCH: u64 = 13;
 const IBE_MOVE: &str =
     include_str!("../../../framework/aptos-stdlib/sources/cryptography/ibe.move");
 /// Growth of the associated data in the slope test. A transaction holds at most 64 KiB.
