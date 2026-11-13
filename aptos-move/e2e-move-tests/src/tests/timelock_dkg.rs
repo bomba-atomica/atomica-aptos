@@ -13,6 +13,7 @@
 use crate::MoveHarness;
 use aptos_crypto::HashValue;
 use aptos_dkg::ibe::{encode_g2, master_public_key, MasterScalar};
+use aptos_language_e2e_tests::account::Account;
 use aptos_types::{
     account_config::CORE_CODE_ADDRESS,
     aggregate_signature::AggregateSignature,
@@ -203,17 +204,30 @@ fn failed_session_does_not_block_the_epoch_change_and_leaves_no_key() {
     assert_eq!(current_epoch(&h), epoch + 1);
     assert!(!is_ready(&mut h));
 
-    // SCOUT(#225) EDIT: not named in the issue. This account is not the registrar, so the abort becomes E_NOT_REGISTRAR unless the registrar check runs after `is_ready`, or the harness sets 0xa11ce as registrar first. No workflow runs `e2e-move-tests --lib timelock_dkg::` today.
-    // register_timelock aborts with E_IBE_NOT_READY (2).
-    let user = h.new_account_at(AccountAddress::from_hex_literal("0xa11ce").unwrap());
+    // The registrar check runs first: 0xa11ce is not the registrar, so it gets E_NOT_REGISTRAR (17).
+    let address = AccountAddress::from_hex_literal("0xa11ce").unwrap();
+    let user = h.new_account_at(address);
+    assert_eq!(register_abort_code(&mut h, &user), 17);
+
+    // As the registrar, register_timelock aborts with E_IBE_NOT_READY (2).
+    h.executor
+        .exec("ibe_config", "set_timelock_registrar", vec![], vec![
+            signer_arg(),
+            bcs::to_bytes(&address).unwrap(),
+        ]);
+    assert_eq!(register_abort_code(&mut h, &user), 2);
+}
+
+/// Abort code of one `register_timelock` call by `user`.
+fn register_abort_code(h: &mut MoveHarness, user: &Account) -> u64 {
     let status = h.run_entry_function(
-        &user,
+        user,
         str::parse("0x1::ibe_config::register_timelock").unwrap(),
         vec![],
         vec![bcs::to_bytes(&(u64::MAX / 2)).unwrap()],
     );
     match status {
-        TransactionStatus::Keep(ExecutionStatus::MoveAbort { code, .. }) => assert_eq!(code, 2),
-        other => panic!("expected E_IBE_NOT_READY, got {other:?}"),
+        TransactionStatus::Keep(ExecutionStatus::MoveAbort { code, .. }) => code,
+        other => panic!("expected a Move abort, got {other:?}"),
     }
 }

@@ -17,7 +17,10 @@
 #
 # Variables:
 #   REST_URL         node REST endpoint, for example http://127.0.0.1:8080/v1
-#   REGISTRAR_KEY    hex private key of a funded account that registers timelocks
+#   REGISTRAR_KEY    hex private key of the on-chain timelock registrar (`ibe_config::timelock_registrar`).
+#                    Only that address may register. Test networks set the root account 0xa550c18.
+#   REGISTRAR_ADDRESS  address of the registrar (default 0xa550c18, the root account, whose address
+#                    does not derive from its key)
 #   BIDDER_KEYS      three comma separated hex private keys of funded accounts (bidder identities)
 #   ROOT_KEY         hex private key of the root (core resources) account, only for FORCE_EPOCH_CHANGE=1
 #   APTOS            path of the `aptos` CLI (default: aptos)
@@ -30,6 +33,7 @@ set -uo pipefail
 
 REST_URL="${REST_URL:?set REST_URL}"
 REGISTRAR_KEY="${REGISTRAR_KEY:?set REGISTRAR_KEY}"
+REGISTRAR_ADDRESS="${REGISTRAR_ADDRESS:-0xa550c18}"
 BIDDER_KEYS="${BIDDER_KEYS:?set BIDDER_KEYS (three keys, comma separated)}"
 APTOS="${APTOS:-aptos}"
 DEADLINE_AHEAD_SECS="${DEADLINE_AHEAD_SECS:-60}"
@@ -81,8 +85,8 @@ MPK="$(view 0x1::ibe_config::get_mpk | jq -r '.[0]')"
 NOW="$(chain_now_us)"
 DEADLINE=$((NOW + DEADLINE_AHEAD_SECS * 1000000))
 TL="$(view 0x1::ibe_config::get_next_timelock_id | jq -r '.[0]')"
-# SCOUT(#225) EDIT: REGISTRAR_KEY must be the key of the on-chain registrar, and the network that timelock_testnet_for_script starts must set that registrar.
-run_as "$REGISTRAR_KEY" 0x1::ibe_config::register_timelock --args "u64:$DEADLINE"
+run_as "$REGISTRAR_KEY" 0x1::ibe_config::register_timelock --args "u64:$DEADLINE" \
+  --sender-account "$REGISTRAR_ADDRESS"
 TL_EPOCH="$(view 0x1::ibe_config::get_timelock_epoch "[\"$TL\"]" | jq -r '.[0]')"
 ID="$(view 0x1::ibe_config::get_identity "[\"$TL\"]" | jq -r '.[0]')"
 EXPECT_ID="0x$(bid_tool identity "$CHAIN_ID" "$TL_EPOCH" "$TL" "$DEADLINE")"
@@ -143,8 +147,8 @@ if [ "$FORCE_EPOCH_CHANGE" = 1 ]; then
   ROOT_KEY="${ROOT_KEY:?set ROOT_KEY for FORCE_EPOCH_CHANGE=1}"
   NOW="$(chain_now_us)"
   TL2="$(view 0x1::ibe_config::get_next_timelock_id | jq -r '.[0]')"
-  # SCOUT(#225) EDIT: the same registrar rule for this second registration.
-  run_as "$REGISTRAR_KEY" 0x1::ibe_config::register_timelock --args "u64:$((NOW + 600 * 1000000))"
+  run_as "$REGISTRAR_KEY" 0x1::ibe_config::register_timelock --args "u64:$((NOW + 600 * 1000000))" \
+    --sender-account "$REGISTRAR_ADDRESS"
   EPOCH0="$(curl -sf "$REST_URL" | jq -r '.epoch')"
   # The root account is the core resources account 0xa550c18. Its balance is large and gas price 1 is accepted.
   run_as "$ROOT_KEY" 0x1::aptos_governance::force_end_epoch_test_only \

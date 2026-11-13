@@ -13,8 +13,10 @@
 ///
 /// ## Lifecycle of one timelock
 ///
-/// 1. `register_timelock(deadline_us)` records the epoch and the identity. It aborts unless the MPK of the
-///    current epoch is ready and the deadline leaves room for the reveal window before the epoch ends.
+/// 1. `register_timelock(deadline_us)` records the epoch and the identity. Only the stored registrar
+///    (`TimelockRegistrar`, set at genesis or by governance) may register: every other signer, and every signer
+///    while no registrar is set, aborts with `E_NOT_REGISTRAR` before any other check. It also aborts unless the
+///    MPK of the current epoch is ready and the deadline leaves room for the reveal window before the epoch ends.
 /// 2. After the deadline the validator transaction handler submits verified key shares (`submit_dk_shares`).
 ///    The share check happens in Rust before the share reaches this module.
 /// 3. When verified weight reaches the threshold the handler passes the reconstructed key to
@@ -42,6 +44,7 @@
 module aptos_framework::ibe_config {
     use std::bcs;
     use std::hash::sha3_256;
+    use std::option::{Self, Option};
     use std::signer;
     use std::vector;
     use aptos_std::ibe;
@@ -54,7 +57,6 @@ module aptos_framework::ibe_config {
     use aptos_framework::system_addresses;
     use aptos_framework::timestamp;
 
-    // SCOUT(#225) DOC: lifecycle step 1 of the module doc above gains the rule that only the stored registrar may register.
     friend aptos_framework::reconfiguration_with_dkg;
     friend aptos_framework::timelock_dkg;
     friend aptos_framework::block;
@@ -95,7 +97,8 @@ module aptos_framework::ibe_config {
     const E_REVEAL_WINDOW_ELAPSED: u64 = 15;
     /// The epoch config is invalid (empty weights, zero threshold, threshold above total weight).
     const E_INVALID_EPOCH_CONFIG: u64 = 16;
-    // SCOUT(#225) ADD: `const E_NOT_REGISTRAR: u64 = 17;` for a signer that is not the stored registrar, and for every signer while no registrar is set. Not declared here: any code change to a framework module changes genesis.
+    /// The signer is not the stored timelock registrar, or no registrar is set.
+    const E_NOT_REGISTRAR: u64 = 17;
     // SCOUT(#243) EDIT: the product `auction::create_auction` surfaces this code (17) when the stored registrar is not the package's registrar object.
 
     // ================================
@@ -136,7 +139,12 @@ module aptos_framework::ibe_config {
         epoch: u64
     }
 
-    // SCOUT(#225) ADD: new resource `struct TimelockRegistrar has key { registrar: address }` at @aptos_framework. While it is absent every registration aborts with `E_NOT_REGISTRAR`. New on-chain state, so it is not stubbed.
+    /// The only address allowed to register timelocks. Set by the framework signer at genesis or by governance.
+    /// While it is absent every registration aborts with `E_NOT_REGISTRAR`.
+    struct TimelockRegistrar has key {
+        registrar: address
+    }
+
     /// Written once per epoch, after the epoch change, from the timelock chunky DKG result.
     struct TimelockEpochConfig has key, drop {
         epoch: u64,
@@ -204,9 +212,9 @@ module aptos_framework::ibe_config {
     // Events
     // ================================
 
-    // SCOUT(#225) EDIT: `sender` is always the registrar once the check lands.
     // SCOUT(#243) EDIT: the product live test asserts that `sender` of the window's registration is the auction package's registrar address.
     #[event]
+    /// Emitted per registration. `sender` is always the stored registrar.
     struct TimelockRegistrationEvent has drop, store {
         timelock_id: u64,
         epoch: u64,
@@ -461,13 +469,33 @@ module aptos_framework::ibe_config {
     // Registration
     // ================================
 
-    // SCOUT(#225) EDIT: aborts with `E_NOT_REGISTRAR` unless `signer::address_of(account)` equals the stored registrar. The body moves to `register_timelock_with_id` and this entry calls it.
     // SCOUT(#243) EDIT: the product SDK, UI and test helpers stop calling this entry; a direct call from the operator account must abort with `E_NOT_REGISTRAR`.
+    // Entry for scripts and tests. It runs the checks of `register_timelock_with_id`, the registrar check first.
     /// Registers a timelock for `deadline_us`.
     ///
     /// Aborts unless the MPK of the current epoch is ready, the deadline is in the future and the deadline is at
     /// most `epoch_end - 15 minutes`.
-    public entry fun register_timelock(account: &signer, deadline_us: u64) acquires TimelockRegistry, TimelockEpochConfig {
+    public entry fun register_timelock(
+        account: &signer, deadline_us: u64
+    ) acquires TimelockRegistrar, TimelockRegistry, TimelockEpochConfig {
+        register_timelock_with_id(account, deadline_us);
+    }
+
+    // SCOUT(#243) EDIT: the product `auction::create_auction` calls `register_timelock_with_id` with its registrar object signer and stores the returned id for the window id.
+    /// Registers a timelock for `deadline_us` and returns its id.
+    ///
+    /// Aborts with `E_NOT_REGISTRAR` first unless `account` is the stored registrar. Then aborts unless the
+    /// registry exists, the MPK of the current epoch is ready, the deadline is in the future and the deadline is
+    /// at most `epoch_end - 15 minutes`.
+    public fun register_timelock_with_id(
+        account: &signer, deadline_us: u64
+    ): u64 acquires TimelockRegistrar, TimelockRegistry, TimelockEpochConfig {
+        let sender = signer::address_of(account);
+        assert!(
+            exists<TimelockRegistrar>(@aptos_framework)
+                && TimelockRegistrar[@aptos_framework].registrar == sender,
+            E_NOT_REGISTRAR
+        );
         assert!(exists<TimelockRegistry>(@aptos_framework), E_REGISTRY_NOT_INITIALIZED);
         assert!(is_ready(), E_IBE_NOT_READY);
 
@@ -519,17 +547,34 @@ module aptos_framework::ibe_config {
                 epoch,
                 deadline_us,
                 reveal_expiry_us,
-                sender: signer::address_of(account),
+                sender,
                 timestamp_us: now
             }
         );
+        timelock_id
     }
 
-    // SCOUT(#225) ADD: `public fun set_timelock_registrar(aptos_framework: &signer, registrar: address)`, framework signer only, called at genesis (layout field `timelock_registrar`) or by governance. A second call replaces the address.
-    // SCOUT(#225) ADD: `#[view] public fun timelock_registrar(): Option<address>`, `none` while no registrar is set (needs `use std::option`).
+    /// Sets the only address allowed to register timelocks. Framework signer only: called at genesis (layout
+    /// field `timelock_registrar`) or by governance. A second call replaces the address.
+    public fun set_timelock_registrar(aptos_framework: &signer, registrar: address) acquires TimelockRegistrar {
+        system_addresses::assert_aptos_framework(aptos_framework);
+        if (exists<TimelockRegistrar>(@aptos_framework)) {
+            TimelockRegistrar[@aptos_framework].registrar = registrar;
+        } else {
+            move_to(aptos_framework, TimelockRegistrar { registrar });
+        }
+    }
+
     // SCOUT(#243) EDIT: the product live test compares `timelock_registrar()` with `auction::timelock_registrar_address` and the SDK registrar address.
-    // SCOUT(#225) ADD: `public fun register_timelock_with_id(account: &signer, deadline_us: u64): u64` with the registrar check and the body of `register_timelock`, which then calls it. A public framework function cannot be removed or change signature after release, so it is not stubbed here.
-    // SCOUT(#243) EDIT: the product `auction::create_auction` calls `register_timelock_with_id` with its registrar object signer and stores the returned id for the window id.
+    #[view]
+    /// The stored timelock registrar, `none` while no registrar is set.
+    public fun timelock_registrar(): Option<address> acquires TimelockRegistrar {
+        if (exists<TimelockRegistrar>(@aptos_framework)) {
+            option::some(TimelockRegistrar[@aptos_framework].registrar)
+        } else {
+            option::none()
+        }
+    }
 
     // ================================
     // Share submission and reveal
@@ -916,8 +961,9 @@ module aptos_framework::ibe_config {
     // Test-only helpers
     // ================================
 
-    // SCOUT(#225) EDIT: every Move test that registers needs a registrar first. Set one here or add a test-only helper; the product package tests register through the framework too.
     #[test_only]
+    /// Sets up the registry without a registrar. A test that registers sets one first with
+    /// `set_timelock_registrar`.
     public fun initialize_for_testing(aptos_framework: &signer) {
         aptos_framework::account::create_account_for_test(@aptos_framework);
         timestamp::set_time_has_started_for_testing(aptos_framework);
@@ -1009,5 +1055,11 @@ module aptos_framework::ibe_config {
     /// `(timelock_id, reason, submitters)` of an emitted `TimelockExpiredEvent`.
     public fun expired_event_fields_for_testing(e: &TimelockExpiredEvent): (u64, u8, vector<address>) {
         (e.timelock_id, e.reason, e.submitters)
+    }
+
+    #[test_only]
+    /// Fields of a `TimelockRegistrationEvent` as `(timelock_id, sender)`.
+    public fun registration_event_fields_for_testing(e: &TimelockRegistrationEvent): (u64, address) {
+        (e.timelock_id, e.sender)
     }
 }

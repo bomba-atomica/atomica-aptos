@@ -107,7 +107,7 @@ done
 
 # Step 3: Create layout.yaml with generated root key
 echo "Step 3/7: Creating layout.yaml..."
-# SCOUT(#225) EDIT: add a `timelock_registrar:` line.
+# timelock_registrar: the root account 0xa550c18 (key in root-account/) is the only timelock registrar.
 # SCOUT(#231) EDIT: add the epoch boundary values next to `epoch_duration_secs: 7200`.
 cat > layout.yaml <<EOF
 ---
@@ -126,6 +126,7 @@ rewards_apy_percentage: 10
 voting_duration_secs: 43200
 voting_power_increase_limit: 20
 timelock_dkg_enabled: ${TIMELOCK_DKG_ENABLED}
+timelock_registrar: "0xa550c18"
 ${TIMELOCK_HASH_LINE}
 ${ETH_CHAIN_ID_LINE}
 EOF

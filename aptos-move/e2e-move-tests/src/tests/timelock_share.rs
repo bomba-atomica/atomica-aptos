@@ -129,8 +129,16 @@ impl Env {
                 bcs::to_bytes(&vec![2u8; 32]).unwrap(),
                 bcs::to_bytes(&dealing.vks()).unwrap(),
             ]);
-        // SCOUT(#225) EDIT: make this account the registrar before the registration below, with `h.executor.exec("ibe_config", "set_timelock_registrar", ...)`. The harness runs genesis from head.mrb, so it needs the refreshed bundle.
-        let user = h.new_account_at(AccountAddress::from_hex_literal("0xa11ce").unwrap());
+        // Only the stored registrar may register: make 0xa11ce the registrar first.
+        let registrar = AccountAddress::from_hex_literal("0xa11ce").unwrap();
+        h.executor
+            .exec("ibe_config", "set_timelock_registrar", vec![], vec![
+                MoveValue::Signer(CORE_CODE_ADDRESS)
+                    .simple_serialize()
+                    .unwrap(),
+                bcs::to_bytes(&registrar).unwrap(),
+            ]);
+        let user = h.new_account_at(registrar);
         let status = h.run_entry_function(
             &user,
             str::parse("0x1::ibe_config::register_timelock").unwrap(),

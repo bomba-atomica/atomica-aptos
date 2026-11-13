@@ -130,7 +130,10 @@ pub struct GenesisConfiguration {
     /// legacy `V2` until the first `reconfiguration_with_dkg` lazily creates
     /// the resource and flips it to `V3` — exercising the V2->V3 cutover.
     pub initialize_decryption_at_genesis: bool,
-    // SCOUT(#225) ADD: optional field `timelock_registrar` (address).
+    /// When set, genesis stores this address as the only timelock registrar
+    /// (`genesis::set_timelock_registrar`). Default `None`: no registrar, so every
+    /// `ibe_config::register_timelock` call aborts until governance sets one.
+    pub timelock_registrar: Option<AccountAddress>,
     // SCOUT(#231) ADD: fields for the UTC epoch boundaries (shape depends on owner question 1).
     /// Whether genesis turns the timelock DKG on (`genesis::enable_timelock_dkg`). Then the first
     /// reconfiguration runs a timelock DKG session and epoch 2 has a timelock key. The timelock DKG
@@ -382,7 +385,14 @@ pub fn encode_genesis_change_set(
         chunky_dkg_config,
     );
     initialize_chunky_dkg(&mut session, &module_storage, &mut traversal_context);
-    // SCOUT(#225) ADD: genesis step that sets the registrar when the field is set.
+    if let Some(registrar) = genesis_config.timelock_registrar {
+        set_timelock_registrar(
+            &mut session,
+            &module_storage,
+            &mut traversal_context,
+            registrar,
+        );
+    }
     // SCOUT(#231) ADD: genesis step that stores the epoch boundaries.
     if let Some(hash) = &genesis_config.timelock_public_parameters_hash {
         set_expected_timelock_public_parameters_hash(
@@ -882,6 +892,27 @@ fn set_expected_timelock_public_parameters_hash(
         serialize_values(&vec![
             MoveValue::Signer(CORE_CODE_ADDRESS),
             MoveValue::vector_u8(hash),
+        ]),
+    );
+}
+
+/// Stores the only address allowed to register timelocks.
+fn set_timelock_registrar(
+    session: &mut SessionExt<impl AptosMoveResolver>,
+    module_storage: &impl AptosModuleStorage,
+    traversal_context: &mut TraversalContext,
+    registrar: AccountAddress,
+) {
+    exec_function(
+        session,
+        module_storage,
+        traversal_context,
+        GENESIS_MODULE_NAME,
+        "set_timelock_registrar",
+        vec![],
+        serialize_values(&vec![
+            MoveValue::Signer(CORE_CODE_ADDRESS),
+            MoveValue::Address(registrar),
         ]),
     );
 }
@@ -1613,7 +1644,7 @@ fn test_genesis_config() -> GenesisConfiguration {
         initial_jwks: vec![],
         keyless_groth16_vk: None,
         initialize_decryption_at_genesis: true,
-        // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+        timelock_registrar: Some(aptos_test_root_address()),
         // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
         timelock_dkg_enabled: false,
         timelock_public_parameters_hash: None,
@@ -1667,7 +1698,7 @@ fn mainnet_genesis_config() -> GenesisConfiguration {
         initial_jwks: vec![],
         keyless_groth16_vk: None,
         initialize_decryption_at_genesis: true,
-        // SCOUT(#225) EDIT: carry `timelock_registrar` here.
+        timelock_registrar: None,
         // SCOUT(#231) EDIT: carry the UTC epoch boundary values here.
         timelock_dkg_enabled: false,
         timelock_public_parameters_hash: None,
