@@ -23,6 +23,8 @@ on:
       - ".github/workflows/**"
       - "rustfmt.toml"
       - "clippy.toml"
+  schedule:
+    - cron: "0 3 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -33,6 +35,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  CI_CLASS: code-hygiene
   RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -71,6 +74,103 @@ jobs:
         uses: actions/checkout@v4.2.2
         with:
           fetch-depth: 0
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          set -euo pipefail
+          actionlint_dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$actionlint_dir"
+          release_url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL "$release_url/$archive" -o "$actionlint_dir/$archive"
+          curl -fsSL "$release_url/actionlint_${ACTIONLINT_VERSION}_checksums.txt" \
+            -o "$actionlint_dir/checksums.txt"
+          grep -F " $archive" "$actionlint_dir/checksums.txt" \
+            > "$actionlint_dir/checksum.txt"
+          (cd "$actionlint_dir" && sha256sum -c checksum.txt)
+          tar -xzf "$actionlint_dir/$archive" -C "$actionlint_dir" actionlint
+          echo "$actionlint_dir" >> "$GITHUB_PATH"
+
+      - name: Lint release workflows
+        run: |
+          actionlint -no-color \
+            .github/workflows/build-aptos-binary.yml \
+            .github/workflows/build-validator-image.yml
+
+      - name: Check release dispatch guard
+        run: |
+          set -euo pipefail
+          bash atomica/scripts/check-release-dispatch.sh
+
+          mutated_workflow="$RUNNER_TEMP/build-aptos-binary-without-dispatch.yml"
+          awk '
+            /^  dispatch-validator-image:$/ { skip = 1; next }
+            skip && /^  [A-Za-z0-9_-]+:$/ { skip = 0 }
+            !skip { print }
+          ' .github/workflows/build-aptos-binary.yml > "$mutated_workflow"
+
+          failure_output="$RUNNER_TEMP/check-release-dispatch-negative.log"
+          if bash atomica/scripts/check-release-dispatch.sh "$mutated_workflow" \
+            > "$failure_output" 2>&1; then
+            cat "$failure_output"
+            echo "The dispatch guard passed after its dispatch job was removed" >&2
+            exit 1
+          fi
+          grep -Fq 'dispatch-validator-image job is missing' "$failure_output"
+          echo "The dispatch guard rejected a workflow with its dispatch job removed"
+
+          event_gated_workflow="$RUNNER_TEMP/build-aptos-binary-gated-on-release.yml"
+          awk '
+            /^    if: github.ref == '\''refs\/heads\/dev-atomica'\''$/ {
+              print "    if: github.ref == '\''refs/heads/dev-atomica'\'' && github.event_name == '\''release'\''"
+              next
+            }
+            { print }
+          ' .github/workflows/build-aptos-binary.yml > "$event_gated_workflow"
+
+          failure_output="$RUNNER_TEMP/check-release-dispatch-event-negative.log"
+          if bash atomica/scripts/check-release-dispatch.sh "$event_gated_workflow" \
+            > "$failure_output" 2>&1; then
+            cat "$failure_output"
+            echo "The dispatch guard passed after a release-only event condition was added" >&2
+            exit 1
+          fi
+          grep -Fq 'image dispatch job condition must be exactly the dev-atomica ref guard' "$failure_output"
+          echo "The dispatch guard rejected a job condition that excludes push and workflow_dispatch"
+
+          image_without_release="$RUNNER_TEMP/build-validator-image-without-release.yml"
+          awk '
+            /^  release:$/ { skip = 1; next }
+            skip && /^  [A-Za-z0-9_-]+:$/ { skip = 0 }
+            !skip { print }
+          ' .github/workflows/build-validator-image.yml > "$image_without_release"
+
+          failure_output="$RUNNER_TEMP/check-release-trigger-negative.log"
+          if bash atomica/scripts/check-release-dispatch.sh \
+            .github/workflows/build-aptos-binary.yml "$image_without_release" \
+            > "$failure_output" 2>&1; then
+            cat "$failure_output"
+            echo "The dispatch guard passed after the validator release trigger was removed" >&2
+            exit 1
+          fi
+          grep -Fq 'validator image workflow lost release event' "$failure_output"
+          echo "The dispatch guard rejected a validator workflow with its release trigger removed"
+
+          workflow_without_repo="$RUNNER_TEMP/build-aptos-binary-without-repo-context.yml"
+          awk '!/--repo "\$GITHUB_REPOSITORY"/' \
+            .github/workflows/build-aptos-binary.yml > "$workflow_without_repo"
+
+          failure_output="$RUNNER_TEMP/check-release-dispatch-repo-negative.log"
+          if bash atomica/scripts/check-release-dispatch.sh "$workflow_without_repo" \
+            > "$failure_output" 2>&1; then
+            cat "$failure_output"
+            echo "The dispatch guard passed after the repository context was removed" >&2
+            exit 1
+          fi
+          grep -Fq 'image dispatch job does not provide explicit repository context' "$failure_output"
+          echo "The dispatch guard rejected a workflow dispatch without explicit repository context"
 
       - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
         run: |
