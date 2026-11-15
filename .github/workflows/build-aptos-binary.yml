@@ -32,6 +32,8 @@ env:
 jobs:
   # Single job: Build all Aptos binaries in one run for efficiency
   build-aptos-binaries:
+    outputs:
+      release_tag: ${{ steps.git-commit.outputs.release_tag }}
     # Using ubuntu-latest (7GB RAM, 2 cores). For faster builds with a paid plan:
     # runs-on: ubuntu-latest-4-cores (16GB RAM, 4 cores)
     runs-on: ubuntu-latest
@@ -72,6 +74,7 @@ jobs:
 
           echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
           echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
+          echo "release_tag=binary-$GIT_SHA" >> $GITHUB_OUTPUT
           echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "Git commit: $GIT_SHA (full: $GIT_SHA_FULL)"
 
@@ -265,3 +268,27 @@ jobs:
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # GITHUB_TOKEN does not trigger workflows from a release event. Explicitly
+  # dispatch the image build after the binary release has been published.
+  dispatch-validator-image:
+    name: Dispatch validator image build
+    needs: build-aptos-binaries
+    if: github.ref == 'refs/heads/dev-atomica'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch image build for the published binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.build-aptos-binaries.outputs.release_tag }}
+        run: |
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "Error: binary release job did not provide a release tag"
+            exit 1
+          fi
+
+          gh workflow run build-validator-image.yml \
+            --ref dev-atomica \
+            -f release_tag="$RELEASE_TAG"
