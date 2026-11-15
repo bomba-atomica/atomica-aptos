@@ -103,10 +103,18 @@ jobs:
 
       # The timelock DKG session and the TimelockDKGResult handler checks, including
       # the rule that execution reads chain state only (atomica issue 158).
-      # The missing-hash check (atomica issue 223) adds two tests.
+      # The missing-hash check (atomica issue 223) adds two tests. The two-thirds bound
+      # (atomica issue 282) adds two real-DKG reconstruction tests.
       - name: Run timelock DKG session tests
         if: ${{ !cancelled() }}
-        run: .github/scripts/run-tests-guarded.sh timelock-session 18 -- cargo test -p aptos-dkg-runtime --lib chunky::timelock_session_tests --verbose
+        run: .github/scripts/run-tests-guarded.sh timelock-session 20 -- cargo test -p aptos-dkg-runtime --lib chunky::timelock_session_tests --verbose
+
+      # The timelock threshold profile (atomica issue 282): one bound of two thirds of stake.
+      # Subset enumeration and the rounding band per stake vector, the mempool profile kept
+      # byte for byte, and the golden vector stake-derived case.
+      - name: Run timelock threshold profile tests
+        if: ${{ !cancelled() }}
+        run: .github/scripts/run-tests-guarded.sh timelock-profile 7 -- cargo test -p aptos-types --lib --verbose -- dkg::real_dkg::rounding::tests::timelock dkg::chunky_dkg::tests
 
       # The Aptos outcome proof golden vectors (atomica issue 201): every accept and reject case
       # verified with production aptos-types code, and regeneration reproduces the checked-in bytes.

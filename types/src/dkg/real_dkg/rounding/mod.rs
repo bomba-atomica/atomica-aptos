@@ -276,6 +276,45 @@ impl DKGRoundingProfile {
     }
 }
 
+/// The smallest weight above two thirds of `total_weight`: `floor(2 * total_weight / 3) + 1`.
+/// This is the consensus quorum rule, applied to DKG weights. Integer arithmetic only.
+pub fn timelock_reconstruct_threshold_in_weights(total_weight: u64) -> u64 {
+    // Computed in u128, so no overflow. The result is at most `total_weight + 1` and fits in u64.
+    let threshold = u128::from(total_weight) * 2 / 3 + 1;
+    u64::try_from(threshold).expect("floor(2W/3) + 1 fits in u64")
+}
+
+impl DKGRoundingProfile {
+    /// The rounding profile of the timelock DKG session.
+    ///
+    /// The timelock session has one bound, two thirds of stake, for both secrecy and reconstruction.
+    /// A validator subset needs strictly more than two thirds of the total weight to rebuild the key
+    /// (`timelock_reconstruct_threshold_in_weights`).
+    ///
+    /// The weights are those of the default profile (secrecy 1/2, reconstruction 2/3), so the share
+    /// count and the weighting stay as they were. They do not read the on-chain chunky DKG config, which
+    /// belongs to the mempool session. Weight rounding moves a subset's weight fraction away from its
+    /// stake fraction, so the two-thirds bound holds in stake up to a rounding band. The band is
+    /// computed per stake vector by the `timelock` tests in `tests.rs`.
+    pub fn timelock(validator_stakes: &Vec<u64>) -> Self {
+        let secrecy = *DEFAULT_SECRECY_THRESHOLD;
+        let reconstruct = *DEFAULT_RECONSTRUCT_THRESHOLD;
+        let weighting = Self::new(validator_stakes, secrecy, reconstruct, None)
+            .unwrap_or_else(|_| Self::infallible(validator_stakes, secrecy, reconstruct, None));
+        let total_weight: u64 = weighting.validator_weights.iter().sum();
+        Self {
+            validator_weights: weighting.validator_weights,
+            secrecy_threshold_in_stake_ratio: *TIMELOCK_THRESHOLD,
+            reconstruct_threshold_in_stake_ratio: *TIMELOCK_THRESHOLD,
+            reconstruct_threshold_in_weights: timelock_reconstruct_threshold_in_weights(
+                total_weight,
+            ),
+            fast_reconstruct_threshold_in_stake_ratio: None,
+            fast_reconstruct_threshold_in_weights: None,
+        }
+    }
+}
+
 fn is_valid_profile(
     profile: &DKGRoundingProfile,
     reconstruct_threshold_in_stake_ratio: U64F64,
@@ -364,4 +403,8 @@ pub static DEFAULT_RECONSTRUCT_THRESHOLD: Lazy<U64F64> =
     Lazy::new(|| U64F64::from_num(2) / U64F64::from_num(3));
 
 pub static DEFAULT_FAST_PATH_SECRECY_THRESHOLD: Lazy<U64F64> =
+    Lazy::new(|| U64F64::from_num(2) / U64F64::from_num(3));
+
+/// The one stake bound of the timelock DKG session, for both secrecy and reconstruction.
+pub static TIMELOCK_THRESHOLD: Lazy<U64F64> =
     Lazy::new(|| U64F64::from_num(2) / U64F64::from_num(3));

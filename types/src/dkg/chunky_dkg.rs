@@ -393,6 +393,34 @@ pub fn chunky_threshold_config(
     .expect("Failed to create WeightedConfigArkworks")
 }
 
+/// The weighted threshold config of the timelock session: the default weighting, and a threshold of
+/// strictly more than two thirds of the total weight (`DKGRoundingProfile::timelock`). It ignores the
+/// on-chain chunky DKG config, which belongs to the mempool session.
+pub fn timelock_threshold_config(
+    dkg_session_metadata: &ChunkyDKGSessionMetadata,
+) -> ChunkyDKGThresholdConfig {
+    let validator_stakes: Vec<u64> = dkg_session_metadata
+        .target_validator_consensus_infos_cloned()
+        .iter()
+        .map(|vi| vi.voting_power)
+        .collect();
+    timelock_threshold_config_for_stakes(&validator_stakes)
+}
+
+/// `timelock_threshold_config` from the target validators' stakes alone.
+pub fn timelock_threshold_config_for_stakes(validator_stakes: &[u64]) -> ChunkyDKGThresholdConfig {
+    let profile = DKGRoundingProfile::timelock(&validator_stakes.to_vec());
+    ChunkyDKGThresholdConfig::new(
+        profile.reconstruct_threshold_in_weights as usize,
+        profile
+            .validator_weights
+            .iter()
+            .map(|w| *w as usize)
+            .collect(),
+    )
+    .expect("the timelock threshold is between 1 and the total weight")
+}
+
 impl ChunkyDKGSession {
     /// Create the mempool DKG session from on-chain session metadata.
     pub fn new(dkg_session_metadata: &ChunkyDKGSessionMetadata) -> Arc<ChunkyDKGSession> {
@@ -432,7 +460,10 @@ impl ChunkyDKGSession {
         kind: ChunkyDKGSessionKind,
         chain_id: ChainId,
     ) -> Arc<ChunkyDKGSession> {
-        let threshold_config = chunky_threshold_config(dkg_session_metadata);
+        let threshold_config = match kind {
+            ChunkyDKGSessionKind::Mempool => chunky_threshold_config(dkg_session_metadata),
+            ChunkyDKGSessionKind::Timelock => timelock_threshold_config(dkg_session_metadata),
+        };
         let eks: Vec<ChunkyEncryptPubKey> = dkg_session_metadata
             .target_validator_consensus_infos_cloned()
             .iter()
@@ -765,5 +796,149 @@ mod transcript_size_bound_tests {
     #[test]
     fn within_bound_w400() {
         deal_and_check(vec![40; 10], 512);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        dkg::real_dkg::rounding::timelock_reconstruct_threshold_in_weights,
+        validator_verifier::ValidatorConsensusInfo,
+    };
+    use aptos_crypto::{bls12381::PrivateKey, TSecretSharingConfig, Uniform};
+    use aptos_dkg::pvss::Player;
+
+    /// Session metadata with the default chunky DKG config, for validators with `stakes`.
+    fn metadata(stakes: &[u64]) -> ChunkyDKGSessionMetadata {
+        let validators: Vec<ValidatorConsensusInfoMoveStruct> = stakes
+            .iter()
+            .map(|stake| {
+                let sk = PrivateKey::generate_for_testing();
+                ValidatorConsensusInfo::new(AccountAddress::random(), (&sk).into(), *stake).into()
+            })
+            .collect();
+        ChunkyDKGSessionMetadata {
+            dealer_epoch: 7,
+            chunky_dkg_config: OnChainChunkyDKGConfig::default_enabled().into(),
+            dealer_validator_set: validators.clone(),
+            target_validator_set: validators,
+        }
+    }
+
+    fn weights(config: &ChunkyDKGThresholdConfig) -> Vec<u64> {
+        (0..config.get_total_num_players())
+            .map(|id| config.get_player_weight(&Player { id }).unwrap() as u64)
+            .collect()
+    }
+
+    const STAKE_VECTORS: [&[u64]; 4] = [
+        &[100; 4],
+        &[100; 7],
+        &[30, 20, 15, 10, 8, 6, 4, 3, 2, 2],
+        &[60, 10, 10, 10, 10],
+    ];
+
+    /// The mempool session keeps the pre-change profile (secrecy 1/2, reconstruction 2/3 of stake),
+    /// byte for byte. The timelock session has the same weights and a threshold above 2/3 of weight.
+    #[test]
+    fn timelock_and_mempool_profiles_are_separate() {
+        for stakes in STAKE_VECTORS {
+            let m = metadata(stakes);
+            let mempool = chunky_threshold_config(&m);
+            let pre_change = DKGRoundingProfile::new(
+                &stakes.to_vec(),
+                *DEFAULT_SECRECY_THRESHOLD,
+                *DEFAULT_RECONSTRUCT_THRESHOLD,
+                None,
+            )
+            .unwrap();
+            let expected = ChunkyDKGThresholdConfig::new(
+                pre_change.reconstruct_threshold_in_weights as usize,
+                pre_change
+                    .validator_weights
+                    .iter()
+                    .map(|w| *w as usize)
+                    .collect(),
+            )
+            .unwrap();
+            assert_eq!(
+                bcs::to_bytes(&mempool).unwrap(),
+                bcs::to_bytes(&expected).unwrap(),
+                "mempool config changed for stakes {stakes:?}"
+            );
+
+            let timelock = timelock_threshold_config(&m);
+            assert_eq!(timelock, timelock_threshold_config_for_stakes(stakes));
+            assert_eq!(weights(&timelock), weights(&mempool));
+            let total = timelock.get_total_weight() as u64;
+            let t = timelock.get_threshold_weight() as u64;
+            assert_eq!(t, timelock_reconstruct_threshold_in_weights(total));
+            assert!(t * 3 > total * 2 && (t - 1) * 3 <= total * 2);
+        }
+        // Pinned pre-change mempool thresholds: 4 equal gives 3 of 4, 7 equal gives 5 of 7.
+        assert_eq!(
+            chunky_threshold_config(&metadata(&[100; 4])).get_threshold_weight(),
+            3
+        );
+        assert_eq!(
+            chunky_threshold_config(&metadata(&[100; 7])).get_threshold_weight(),
+            5
+        );
+        // The 60 percent validator: both thresholds are 7 of 9. With 100 equal validators the two
+        // profiles part: the mempool needs 51 of 100, the timelock 67 of 100.
+        let m = metadata(&[60, 10, 10, 10, 10]);
+        assert_eq!(chunky_threshold_config(&m).get_threshold_weight(), 7);
+        assert_eq!(timelock_threshold_config(&m).get_threshold_weight(), 7);
+        let m = metadata(&[100; 100]);
+        assert_eq!(chunky_threshold_config(&m).get_threshold_weight(), 51);
+        assert_eq!(timelock_threshold_config(&m).get_threshold_weight(), 67);
+        assert_eq!(timelock_threshold_config(&m).get_total_weight(), 100);
+    }
+
+    /// A session picks its profile by kind.
+    #[test]
+    fn sessions_use_their_own_profile() {
+        let m = metadata(&[60, 10, 10, 10, 10]);
+        let pp = Arc::clone(&TEST_PUBLIC_PARAMETERS);
+        let mempool = ChunkyDKGSession::from_parts(
+            &m,
+            pp.clone(),
+            ChunkyDKGSessionKind::Mempool,
+            ChainId::test(),
+        );
+        let timelock =
+            ChunkyDKGSession::from_parts(&m, pp, ChunkyDKGSessionKind::Timelock, ChainId::test());
+        assert_eq!(mempool.threshold_config, chunky_threshold_config(&m));
+        assert_eq!(timelock.threshold_config, timelock_threshold_config(&m));
+    }
+
+    /// The stake-derived case of the golden vectors records the weights and threshold of
+    /// `timelock_threshold_config` for its stakes.
+    #[test]
+    fn golden_vector_stake_derived_case_matches_timelock_threshold_config() {
+        let doc: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../atomica/golden_vectors/ibe_v2_golden_vectors.json"
+        ))
+        .unwrap();
+        let case = &doc["stake_derived"];
+        let as_u64s = |v: &serde_json::Value| -> Vec<u64> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_u64().unwrap())
+                .collect()
+        };
+        let stakes = as_u64s(&case["stakes"]);
+        let config = timelock_threshold_config_for_stakes(&stakes);
+        assert_eq!(weights(&config), as_u64s(&case["weights"]));
+        assert_eq!(
+            config.get_threshold_weight() as u64,
+            case["threshold_weight"].as_u64().unwrap()
+        );
+        assert_eq!(
+            config.get_total_weight() as u64,
+            case["total_weight"].as_u64().unwrap()
+        );
     }
 }

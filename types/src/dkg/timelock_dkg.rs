@@ -22,7 +22,7 @@ use crate::{
     aggregate_signature::AggregateSignature,
     chain_id::ChainId,
     dkg::chunky_dkg::{
-        chunky_threshold_config, AggregatedSubtranscript, CertifiedAggregatedChunkySubtranscript,
+        timelock_threshold_config, AggregatedSubtranscript, CertifiedAggregatedChunkySubtranscript,
         ChunkyDKGPublicParameters, ChunkyDKGSessionMetadata, ChunkyDKGThresholdConfig,
         ChunkyDecryptPrivKey, ChunkySubtranscript,
     },
@@ -769,7 +769,7 @@ pub fn check_timelock_dkg_result(
 
     // Rederive mpk and the verification keys from the subtranscript, check V0 against the
     // interpolated keys, then compare with the claimed mpk.
-    let threshold_config = chunky_threshold_config(session_metadata);
+    let threshold_config = timelock_threshold_config(session_metadata);
     let derived = derive_timelock_config(&aggregated.subtranscript, &threshold_config)
         .map_err(|e| ResultRejection::KeyDerivationFailed(e.to_string()))?;
     check_claimed_mpk(&derived, &output.mpk).map_err(|_| ResultRejection::ClaimedMpkMismatch)?;
@@ -901,7 +901,7 @@ pub fn derive_timelock_service_state(
             "subtranscript hash differs from the epoch config".to_string(),
         ));
     }
-    let threshold_config = chunky_threshold_config(&session.metadata);
+    let threshold_config = timelock_threshold_config(&session.metadata);
     match derive_timelock_config(&aggregated.subtranscript, &threshold_config) {
         Ok(derived) => {
             if derived.verification_keys != config.verification_keys || derived.mpk != config.mpk {

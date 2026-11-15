@@ -400,3 +400,153 @@ fn get_sub_total(vals: &[u64], subset: u64) -> u64 {
         .map(|(idx, &val)| val * ((subset >> idx) & 1))
         .sum()
 }
+
+/// The timelock profile: one bound of two thirds of stake for secrecy and reconstruction.
+///
+/// For each fixed stake vector every validator subset is enumerated. A subset below two thirds of stake
+/// that reaches the threshold weight breaks secrecy. A subset at or above two thirds of stake that does
+/// not reach it breaks reconstruction. Both happen only inside the rounding band, which is computed here
+/// and pinned, so the band in the docs is the band of the code.
+mod timelock {
+    use super::get_sub_total;
+    use crate::dkg::real_dkg::rounding::{
+        timelock_reconstruct_threshold_in_weights, DKGRoundingProfile,
+        DEFAULT_RECONSTRUCT_THRESHOLD, DEFAULT_SECRECY_THRESHOLD, TIMELOCK_THRESHOLD,
+    };
+
+    /// The rounding band of one stake vector, as subset stake sums.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Band {
+        /// Lowest stake of a subset below two thirds that still reaches the threshold weight.
+        secrecy_low: Option<u64>,
+        /// Highest stake of a subset at or above two thirds that does not reach the threshold weight.
+        reconstruct_high: Option<u64>,
+    }
+
+    fn at_least_two_thirds(stake: u64, total: u64) -> bool {
+        u128::from(stake) * 3 >= u128::from(total) * 2
+    }
+
+    fn band(stakes: &[u64], profile: &DKGRoundingProfile) -> Band {
+        let total: u64 = stakes.iter().sum();
+        let threshold = profile.reconstruct_threshold_in_weights;
+        let mut band = Band {
+            secrecy_low: None,
+            reconstruct_high: None,
+        };
+        for subset in 0..(1u64 << stakes.len()) {
+            let stake = get_sub_total(stakes, subset);
+            let weight = get_sub_total(&profile.validator_weights, subset);
+            if !at_least_two_thirds(stake, total) && weight >= threshold {
+                band.secrecy_low = Some(band.secrecy_low.map_or(stake, |s| s.min(stake)));
+            }
+            if at_least_two_thirds(stake, total) && weight < threshold {
+                band.reconstruct_high = Some(band.reconstruct_high.map_or(stake, |s| s.max(stake)));
+            }
+        }
+        band
+    }
+
+    /// Checks one stake vector: pinned weights and threshold, pinned band, and the two statements
+    /// outside the band for every subset.
+    fn check(stakes: &[u64], weights: &[u64], threshold: u64, expected: Band) {
+        let profile = DKGRoundingProfile::timelock(&stakes.to_vec());
+        let computed = band(stakes, &profile);
+        let total: u64 = stakes.iter().sum();
+        println!(
+            "stakes {stakes:?}: {profile:?} band {computed:?}, as stake fractions: secrecy_low {:?}, reconstruct_high {:?}",
+            computed.secrecy_low.map(|s| s as f64 / total as f64),
+            computed.reconstruct_high.map(|s| s as f64 / total as f64),
+        );
+        // The weighting is the default one (share count unchanged), the threshold is above 2/3 of weight.
+        let default = DKGRoundingProfile::new(
+            &stakes.to_vec(),
+            *DEFAULT_SECRECY_THRESHOLD,
+            *DEFAULT_RECONSTRUCT_THRESHOLD,
+            None,
+        )
+        .unwrap();
+        assert_eq!(profile.validator_weights, default.validator_weights);
+        assert_eq!(profile.validator_weights, weights);
+        let total_weight: u64 = weights.iter().sum();
+        assert_eq!(profile.reconstruct_threshold_in_weights, threshold);
+        assert_eq!(
+            threshold,
+            timelock_reconstruct_threshold_in_weights(total_weight)
+        );
+        assert!(threshold * 3 > total_weight * 2);
+        assert!((threshold - 1) * 3 <= total_weight * 2);
+        assert_eq!(
+            profile.secrecy_threshold_in_stake_ratio,
+            *TIMELOCK_THRESHOLD
+        );
+        assert_eq!(
+            profile.reconstruct_threshold_in_stake_ratio,
+            *TIMELOCK_THRESHOLD
+        );
+
+        assert_eq!(computed, expected);
+
+        let band_low = expected.secrecy_low.unwrap_or(u64::MAX);
+        let band_high = expected.reconstruct_high.unwrap_or(0);
+        for subset in 0..(1u64 << stakes.len()) {
+            let stake = get_sub_total(stakes, subset);
+            let weight = get_sub_total(weights, subset);
+            if !at_least_two_thirds(stake, total) && stake < band_low {
+                assert!(
+                    weight < threshold,
+                    "subset {subset:b}: stake {stake} of {total} reconstructs"
+                );
+            }
+            if at_least_two_thirds(stake, total) && stake > band_high {
+                assert!(
+                    weight >= threshold,
+                    "subset {subset:b}: stake {stake} of {total} cannot reconstruct"
+                );
+            }
+        }
+    }
+
+    /// 4 equal validators: 2 cannot rebuild the key, any 3 can. No band.
+    #[test]
+    fn four_equal() {
+        check(&[100; 4], &[1; 4], 3, Band {
+            secrecy_low: None,
+            reconstruct_high: None,
+        });
+    }
+
+    /// 7 equal validators: 4 cannot (57 percent), any 5 can (71 percent). No band.
+    #[test]
+    fn seven_equal() {
+        check(&[100; 7], &[1; 7], 5, Band {
+            secrecy_low: None,
+            reconstruct_high: None,
+        });
+    }
+
+    /// 10 skewed validators. Band 0.65 to 0.70 of stake: a 65 percent subset can rebuild the key, a
+    /// 70 percent subset may not. The two smallest validators round to weight 0.
+    #[test]
+    fn ten_skewed() {
+        check(
+            &[30, 20, 15, 10, 8, 6, 4, 3, 2, 2],
+            &[6, 4, 3, 2, 2, 1, 1, 1, 0, 0],
+            14,
+            Band {
+                secrecy_low: Some(65),
+                reconstruct_high: Some(70),
+            },
+        );
+    }
+
+    /// One validator holds 60 percent. Alone it cannot rebuild the key. Band 2/3 to 0.70 of stake on the
+    /// reconstruction side only: it plus one other validator (70 percent) cannot, plus two (80 percent) can.
+    #[test]
+    fn sixty_percent_dominant() {
+        check(&[60, 10, 10, 10, 10], &[5, 1, 1, 1, 1], 7, Band {
+            secrecy_low: None,
+            reconstruct_high: Some(70),
+        });
+    }
+}

@@ -201,7 +201,7 @@ fn ibe_bid_move_unit_tests() {
     assert!(native >= 11, "only {native} ibe_native_test Move tests ran");
     let golden = run_filtered_framework_tests("ibe_golden_vector_tests");
     assert!(
-        golden >= 11,
+        golden >= 15,
         "only {golden} ibe_golden_vector_tests Move tests ran"
     );
 }

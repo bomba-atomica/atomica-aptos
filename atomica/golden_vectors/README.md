@@ -19,6 +19,7 @@ Golden vectors for the hardened Boneh-Franklin timelock. Design source: `atomica
 - Weighted reconstruction from several validator sets, the below-threshold error, a poisoned set, and the final key check (right and wrong).
 - CCA bid ciphertexts: one valid bid and each tampered field, other associated data, non-subgroup `U` with a valid signature, a body re-signed under a new one time key, and malformed wires.
 - Price bids (`price_bids`, since version 3.1.0): three bidders, each with a bid whose plaintext is its 8-byte little-endian price, and one bid whose plaintext is not 8 bytes. They come from their own seed, so the earlier bid cases keep their bytes. The product auction tests read the bidders, prices, ciphertexts and associated data (Move accessors `price_bid_bidders`, `price_bid_prices`, `price_bid_cts`, `price_bid_ads`, `bad_length_bid_ct` and `bad_length_bid_ad`), open each bid with `ibe::decrypt_bid` and `dk()`, and clear a window from the prices.
+- Stake-derived case (`stake_derived`, since version 3.2.0): the timelock DKG profile of stakes `[60, 10, 10, 10, 10]`. Weights `[5, 1, 1, 1, 1]` come from the default rounding, and the threshold weight is `floor(2W/3) + 1` = 7 of 9, one bound of two thirds of stake. Its own seeded dealing gives the master public key, verification keys and shares. Sets at or above two thirds of stake (80 percent) rebuild the key. Sets below the threshold weight (60, 70 and 40 percent) cannot, and the forced interpolation of their shares fails the key check. The 70 percent set sits in the rounding band. The `aptos-types` test `golden_vector_stake_derived_case_matches_timelock_threshold_config` checks the weights and threshold against `timelock_threshold_config`. Move accessors: `stake_derived_*`. The earlier sections keep their bytes.
 - Cross-library vectors: scalars, `H1`, `U`, `dk` and `mpk` that the blstrs code and the arkworks port must both reproduce byte for byte.
 
 No vector depends on `aptos-batch-encryption`, FPTX digests, eval proofs or the `DigestKey` format. Encodings are ZCash compressed (G1 48 bytes, G2 96 bytes).
@@ -36,7 +37,8 @@ Regenerate only when the scheme changes on purpose. A review must explain every 
 ### Checks
 
 - Rust, `cargo test -p aptos-dkg --lib ibe::golden_vectors`: decodes the checked-in JSON and verifies it with the production code (`checked_in_vectors_verify`), checks the cross-library claim against blstrs (`checked_in_cross_library_vectors_match_both_libraries`), and checks that a fresh generation equals the checked-in bytes (`regeneration_reproduces_checked_in_bytes`).
-- Move, `ibe_golden_vector_tests.move`: identity and H1 through `crypto_algebra`, pairing checks for every share case, the reconstruction and key check natives, the bid submission native, and `ibe::decrypt_bid` on every bid case and price bid.
+- Move, `ibe_golden_vector_tests.move`: identity and H1 through `crypto_algebra`, pairing checks for every share case, the reconstruction and key check natives, the bid submission native, `ibe::decrypt_bid` on every bid case and price bid, and the stake-derived case (the two-thirds rule on its sets, its shares, its key check).
+- Rust, `cargo test -p aptos-types --lib dkg::chunky_dkg::tests`: the stake-derived case matches `timelock_threshold_config`.
 
 ### Consumers
 

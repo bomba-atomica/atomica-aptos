@@ -29,7 +29,7 @@ use aptos_types::{
     chain_id::ChainId,
     dkg::{
         chunky_dkg::{
-            chunky_threshold_config, AggregatedSubtranscript,
+            timelock_threshold_config, AggregatedSubtranscript,
             CertifiedAggregatedChunkySubtranscript, CertifiedChunkyDKGOutput, ChunkyDKGSession,
             ChunkyDKGSessionMetadata, ChunkyDKGSessionState, ChunkyDKGStartEvent,
             ChunkyDKGTranscript, ChunkyInputSecret, ChunkySubtranscript, DealerPrivateKey,
@@ -679,7 +679,7 @@ impl ChunkyDKGManager {
                 ChunkyDKGSessionKind::Timelock => {
                     // Check what the VM handler will check, so an invalid result is never proposed:
                     // shape, validated points, and V0 against the interpolated verification keys.
-                    let threshold_config = chunky_threshold_config(&session_metadata);
+                    let threshold_config = timelock_threshold_config(&session_metadata);
                     let derived = derive_timelock_config(
                         &agg_subtrx_for_blocking.subtranscript,
                         &threshold_config,

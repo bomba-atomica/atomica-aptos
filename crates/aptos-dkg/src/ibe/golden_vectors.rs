@@ -79,6 +79,15 @@ const BAD_LENGTH_BIDDER: u8 = 0xD4;
 const BAD_LENGTH_PLAINTEXT: &[u8] = b"not a price";
 /// Seed of the price bids. A separate rng, so the earlier bid cases keep their bytes.
 const PRICE_BID_SEED: u64 = DEALING_SEED ^ 0x9_41CE;
+/// Stake-derived case (since 3.2.0): the timelock DKG profile of these stakes. The weights are the
+/// default rounding (secrecy 1/2, reconstruction 2/3 of stake), the threshold weight is
+/// `floor(2 * total_weight / 3) + 1`. `aptos-types` checks both against `timelock_threshold_config`
+/// (`golden_vector_stake_derived_case_matches_timelock_threshold_config`).
+const STAKE_DERIVED_STAKES: [u64; 5] = [60, 10, 10, 10, 10];
+const STAKE_DERIVED_WEIGHTS: [usize; 5] = [5, 1, 1, 1, 1];
+const STAKE_DERIVED_THRESHOLD: usize = 7;
+/// Seed of the stake-derived dealing. A separate rng, so the earlier sections keep their bytes.
+const STAKE_DERIVED_SEED: u64 = DEALING_SEED ^ 0x2_0282;
 /// SHA3-256 over `len_le_u64 || ct` of the 15 bid cases of version 3.0.0, before the price bids.
 const EXISTING_BID_CASES_SHA3: &str =
     "36355e0e3e5ec141cc845aa38079a7884a57512dc269be4c0e96c1e236531b45";
@@ -204,9 +213,13 @@ fn session_id() -> (&'static str, u8, u64) {
 }
 
 fn chunky_dealing() -> ChunkyDealing {
-    let mut rng = StdRng::seed_from_u64(DEALING_SEED);
-    let total: usize = WEIGHTS.iter().sum();
-    let sc = WeightedConfigArkworks::<Fr>::new(THRESHOLD, WEIGHTS.to_vec()).unwrap();
+    chunky_dealing_with(DEALING_SEED, &WEIGHTS, THRESHOLD)
+}
+
+fn chunky_dealing_with(seed: u64, weights: &[usize], threshold: usize) -> ChunkyDealing {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let total: usize = weights.iter().sum();
+    let sc = WeightedConfigArkworks::<Fr>::new(threshold, weights.to_vec()).unwrap();
 
     // The standard BLS12-381 G2 generator is the commitment base, so `V0 = g2^s` (spec section 4).
     let pp = PublicParameters::<Bls12_381>::new_for_testing(
@@ -270,14 +283,23 @@ fn pick<T: Clone>(nested: &[Vec<T>], who: &[usize]) -> Vec<Vec<T>> {
 }
 
 fn reconstruct(nested: &[Vec<Vec<u8>>], who: &[usize]) -> Result<G1Affine, IbeError> {
+    reconstruct_with(nested, who, &WEIGHTS, THRESHOLD)
+}
+
+fn reconstruct_with(
+    nested: &[Vec<Vec<u8>>],
+    who: &[usize],
+    weights: &[usize],
+    threshold: usize,
+) -> Result<G1Affine, IbeError> {
     let idx: Vec<u64> = who.iter().map(|v| *v as u64).collect();
-    let weights: Vec<u64> = WEIGHTS.iter().map(|w| *w as u64).collect();
+    let weights_u64: Vec<u64> = weights.iter().map(|w| *w as u64).collect();
     reconstruct_ibe_dk_from_g1_shares(
         &idx,
         &pick(nested, who),
-        &weights,
-        THRESHOLD as u64,
-        WEIGHTS.iter().sum::<usize>() as u64,
+        &weights_u64,
+        threshold as u64,
+        weights.iter().sum::<usize>() as u64,
     )
 }
 
@@ -715,6 +737,109 @@ fn bid_cases(
     (Value::Array(out), ad)
 }
 
+/// The stake-derived case: a dealing at the timelock profile of `STAKE_DERIVED_STAKES`, and the validator
+/// sets on each side of two thirds of stake.
+fn stake_derived_case(id: &[u8]) -> Value {
+    let total_weight: usize = STAKE_DERIVED_WEIGHTS.iter().sum();
+    assert_eq!(STAKE_DERIVED_THRESHOLD, 2 * total_weight / 3 + 1);
+    let total_stake: u64 = STAKE_DERIVED_STAKES.iter().sum();
+    let stake_of = |who: &[usize]| -> u64 { who.iter().map(|&v| STAKE_DERIVED_STAKES[v]).sum() };
+    let weight_of =
+        |who: &[usize]| -> usize { who.iter().map(|&v| STAKE_DERIVED_WEIGHTS[v]).sum() };
+
+    let d = chunky_dealing_with(
+        STAKE_DERIVED_SEED,
+        &STAKE_DERIVED_WEIGHTS,
+        STAKE_DERIVED_THRESHOLD,
+    );
+    let shares = nested_dk_shares(&d, id);
+    let rebuild = |who: &[usize]| {
+        reconstruct_with(
+            &shares,
+            who,
+            &STAKE_DERIVED_WEIGHTS,
+            STAKE_DERIVED_THRESHOLD,
+        )
+    };
+    let dk = rebuild(&[0, 1, 2]).unwrap();
+    assert!(verify_decryption_key(&dk, id, &d.mpk));
+
+    let mut cases: Vec<Value> = vec![];
+    let ok_sets: [(&str, &[usize]); 3] = [
+        ("validators 0, 1 and 2 (80 percent of stake, weight 7)", &[
+            0, 1, 2,
+        ]),
+        ("validators 0, 3 and 4 (80 percent of stake, weight 7)", &[
+            0, 3, 4,
+        ]),
+        ("all validators (weight 9)", &[0, 1, 2, 3, 4]),
+    ];
+    for (name, who) in ok_sets {
+        assert!(3 * stake_of(who) >= 2 * total_stake);
+        let got = rebuild(who).expect("a threshold set reconstructs");
+        assert_eq!(got, dk);
+        cases.push(json!({
+            "name": name,
+            "validators": who,
+            "stake": stake_of(who),
+            "weight": weight_of(who),
+            "expect": "ok",
+            "dk": hx(&encode_g1(&got)),
+            "key_check": true,
+        }));
+    }
+    // Below the threshold weight. `forced_dk` interpolates the shares the set holds as if they were
+    // enough: it fails the key check, so the set cannot rebuild the key.
+    let below_sets: [(&str, &[usize]); 3] = [
+        ("validator 0 alone (60 percent of stake, weight 5)", &[0]),
+        (
+            "validators 0 and 1 (70 percent of stake, weight 6, inside the rounding band)",
+            &[0, 1],
+        ),
+        ("validators 1 to 4 (40 percent of stake, weight 4)", &[
+            1, 2, 3, 4,
+        ]),
+    ];
+    for (name, who) in below_sets {
+        assert!(weight_of(who) < STAKE_DERIVED_THRESHOLD);
+        let err = rebuild(who).unwrap_err();
+        assert!(matches!(err, IbeError::BelowThreshold { .. }));
+        let forced =
+            reconstruct_with(&shares, who, &STAKE_DERIVED_WEIGHTS, weight_of(who)).unwrap();
+        assert!(!verify_decryption_key(&forced, id, &d.mpk));
+        cases.push(json!({
+            "name": name,
+            "validators": who,
+            "stake": stake_of(who),
+            "weight": weight_of(who),
+            "expect": "below_threshold",
+            "forced_dk": hx(&encode_g1(&forced)),
+            "key_check": false,
+        }));
+    }
+
+    json!({
+        "rule": "weights: default rounding profile (secrecy 1/2, reconstruction 2/3 of stake); threshold_weight = floor(2 * total_weight / 3) + 1",
+        "seed": STAKE_DERIVED_SEED,
+        "stakes": STAKE_DERIVED_STAKES,
+        "weights": STAKE_DERIVED_WEIGHTS,
+        "threshold_weight": STAKE_DERIVED_THRESHOLD,
+        "total_weight": total_weight,
+        "aggregated_subtranscript_bcs_len": d.subtranscript_bcs.len(),
+        "aggregated_subtranscript_bcs_sha3_256": hx(&Sha3_256::digest(&d.subtranscript_bcs)),
+        "mpk": hx(&encode_g2(&d.mpk)),
+        "verification_keys": d.vks.iter()
+            .map(|v| v.iter().map(|p| hx(&encode_g2(p))).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        "identity": hx(id),
+        "dk_shares": shares.iter()
+            .map(|v| v.iter().map(|s| hx(s)).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        "dk": hx(&encode_g1(&dk)),
+        "reconstruction_cases": cases,
+    })
+}
+
 /// Builds the whole vector set from the seeds. Pure and deterministic.
 pub fn generate_json() -> String {
     let d = chunky_dealing();
@@ -738,7 +863,7 @@ pub fn generate_json() -> String {
     let price_bids = price_bid_cases(&d, &id);
 
     let doc = json!({
-        "version": "3.1.0",
+        "version": "3.2.0",
         "scheme": "Boneh-Franklin timelock V2 (arkworks), chunky-derived keys, CCA bid wrapper",
         "spec": "atomica/docs/decisions/aptos-upgrade-ibe-chunky-spec.md sections 5 and 6",
         "generator": GENERATOR_COMMAND,
@@ -792,6 +917,8 @@ pub fn generate_json() -> String {
         // Added in 3.1.0. The product keeps byte copies of this file (state-proofs fixtures, SDK
         // tests) that are refreshed when its framework pin moves.
         "price_bids": price_bids,
+        // Added in 3.2.0: the timelock DKG profile (two thirds of stake) of one stake vector.
+        "stake_derived": stake_derived_case(&id),
     });
     let mut s = serde_json::to_string_pretty(&doc).unwrap();
     s.push('\n');
@@ -1128,6 +1255,63 @@ module aptos_framework::ibe_golden_vector_fixtures {{\n\
             mv_bytes(&pb["bad_length"][field])
         ));
     }
+
+    // stake-derived case
+    let sd = &doc["stake_derived"];
+    let u64s = |v: &Value| -> String {
+        mv_vec(
+            &v.as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let sd_cases = sd["reconstruction_cases"].as_array().unwrap();
+    let sets = |expect: &str| -> String {
+        mv_vec(
+            &sd_cases
+                .iter()
+                .filter(|c| c["expect"] == expect)
+                .map(|c| u64s(&c["validators"]))
+                .collect::<Vec<_>>(),
+        )
+    };
+    o.push_str(&format!(
+        "\n    // ---- stake-derived case: the timelock DKG profile of `stake_derived_stakes()`. Weights from the\n\
+\x20   // default rounding, threshold weight floor(2 * total_weight / 3) + 1. Identity: `identity()`.\n\
+\x20   public fun stake_derived_stakes(): vector<u64> {{ {} }}\n\
+\x20   public fun stake_derived_weights(): vector<u64> {{ {} }}\n\
+\x20   public fun stake_derived_threshold(): u64 {{ {} }}\n\
+\x20   public fun stake_derived_total_weight(): u64 {{ {} }}\n\
+\x20   public fun stake_derived_mpk(): vector<u8> {{ {} }}\n\
+\x20   public fun stake_derived_dk(): vector<u8> {{ {} }}\n\
+\x20   public fun stake_derived_verification_keys(): vector<vector<vector<u8>>> {{\n        {}\n    }}\n\
+\x20   public fun stake_derived_dk_shares(): vector<vector<vector<u8>>> {{\n        {}\n    }}\n\
+\x20   /// Validator sets that hold at least two thirds of stake and rebuild `stake_derived_dk()`.\n\
+\x20   public fun stake_derived_reconstruction_sets(): vector<vector<u64>> {{ {} }}\n\
+\x20   /// Validator sets below the threshold weight, index aligned with `stake_derived_forced_dks()`.\n\
+\x20   public fun stake_derived_below_threshold_sets(): vector<vector<u64>> {{ {} }}\n\
+\x20   /// Interpolation of each below-threshold set's shares as if they were enough. Each fails the key check.\n\
+\x20   public fun stake_derived_forced_dks(): vector<vector<u8>> {{ {} }}\n",
+        u64s(&sd["stakes"]),
+        u64s(&sd["weights"]),
+        sd["threshold_weight"],
+        sd["total_weight"],
+        mv_bytes(&sd["mpk"]),
+        mv_bytes(&sd["dk"]),
+        mv_nested(&sd["verification_keys"]),
+        mv_nested(&sd["dk_shares"]),
+        sets("ok"),
+        sets("below_threshold"),
+        mv_vec(
+            &sd_cases
+                .iter()
+                .filter(|c| c["expect"] == "below_threshold")
+                .map(|c| mv_bytes(&c["forced_dk"]))
+                .collect::<Vec<_>>()
+        ),
+    ));
     o.push_str("}\n");
     o
 }
@@ -1413,6 +1597,80 @@ fn checked_in_vectors_verify() {
     let opened = decrypt_bid_ct(&dk_bytes, &id, &unhex(&bad["ad"]), &unhex(&bad["ct"])).unwrap();
     assert_ne!(opened.len(), 8);
     assert_eq!(opened, unhex(&bad["plaintext"]));
+
+    check_stake_derived_case(&doc["stake_derived"], &id);
+}
+
+/// The stake-derived case: every share matches its verification key, a set at or above two thirds of
+/// stake rebuilds `dk`, a set below the threshold weight cannot, and its forced interpolation fails the
+/// key check.
+fn check_stake_derived_case(sd: &Value, id: &[u8]) {
+    let as_u64s = |v: &Value| -> Vec<u64> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_u64().unwrap())
+            .collect()
+    };
+    let stakes = as_u64s(&sd["stakes"]);
+    let weights = as_u64s(&sd["weights"]);
+    let threshold = sd["threshold_weight"].as_u64().unwrap();
+    let total = sd["total_weight"].as_u64().unwrap();
+    assert_eq!(stakes, STAKE_DERIVED_STAKES.to_vec());
+    assert_eq!(weights.iter().sum::<u64>(), total);
+    assert_eq!(threshold, 2 * total / 3 + 1);
+    assert_eq!(unhex(&sd["identity"]), id.to_vec());
+    let mpk = decode_g2(&unhex(&sd["mpk"])).unwrap();
+    let dk = decode_g1(&unhex(&sd["dk"])).unwrap();
+    assert!(verify_decryption_key(&dk, id, &mpk));
+
+    let nested = |v: &Value| -> Vec<Vec<Vec<u8>>> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row.as_array().unwrap().iter().map(unhex).collect())
+            .collect()
+    };
+    let shares = nested(&sd["dk_shares"]);
+    let vks = nested(&sd["verification_keys"]);
+    for (v, row) in shares.iter().enumerate() {
+        assert_eq!(row.len() as u64, weights[v]);
+        for (j, share) in row.iter().enumerate() {
+            let share = decode_g1(share).unwrap();
+            let vk = decode_g2(&vks[v][j]).unwrap();
+            assert!(verify_dk_share(&share, id, &vk), "validator {v} share {j}");
+        }
+    }
+
+    let total_stake: u64 = stakes.iter().sum();
+    for c in sd["reconstruction_cases"].as_array().unwrap() {
+        let who = as_u64s(&c["validators"]);
+        let stake: u64 = who.iter().map(|v| stakes[*v as usize]).sum();
+        let weight: u64 = who.iter().map(|v| weights[*v as usize]).sum();
+        assert_eq!(stake, c["stake"].as_u64().unwrap(), "{}", c["name"]);
+        assert_eq!(weight, c["weight"].as_u64().unwrap(), "{}", c["name"]);
+        let input: Vec<Vec<Vec<u8>>> = who.iter().map(|v| shares[*v as usize].clone()).collect();
+        let got = reconstruct_ibe_dk_from_g1_shares(&who, &input, &weights, threshold, total);
+        match c["expect"].as_str().unwrap() {
+            "below_threshold" => {
+                assert!(weight < threshold, "{}", c["name"]);
+                assert!(
+                    matches!(got, Err(IbeError::BelowThreshold { .. })),
+                    "{}",
+                    c["name"]
+                );
+                let forced =
+                    reconstruct_ibe_dk_from_g1_shares(&who, &input, &weights, weight, total)
+                        .unwrap();
+                assert_eq!(encode_g1(&forced).to_vec(), unhex(&c["forced_dk"]));
+                assert!(!verify_decryption_key(&forced, id, &mpk), "{}", c["name"]);
+            },
+            _ => {
+                assert!(3 * stake >= 2 * total_stake, "{}", c["name"]);
+                assert_eq!(got.unwrap(), dk, "{}", c["name"]);
+            },
+        }
+    }
 }
 
 #[test]

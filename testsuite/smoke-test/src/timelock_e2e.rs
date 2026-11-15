@@ -908,6 +908,15 @@ async fn timelock_reveal_on_live_swarm() {
         "validators in the timelock DKG of epoch {}",
         config.epoch
     );
+    // One bound of two thirds of stake (atomica issue 282): the threshold is the smallest weight above
+    // two thirds of the total, so with 4 equal validators 2 cannot rebuild a key and any 3 can.
+    assert!(
+        config.reconstruct_threshold_weight * 3 > config.total_weight * 2
+            && (config.reconstruct_threshold_weight - 1) * 3 <= config.total_weight * 2,
+        "timelock threshold {} of {} is not the smallest weight above two thirds",
+        config.reconstruct_threshold_weight,
+        config.total_weight
+    );
     let mpk = decode_g2(&config.mpk).expect("timelock mpk is a valid G2 point");
 
     // Genesis set the root account as the only registrar. Another funded account is rejected with
