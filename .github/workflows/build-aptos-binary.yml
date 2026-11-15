@@ -292,5 +292,6 @@ jobs:
           fi
 
           gh workflow run build-validator-image.yml \
+            --repo "$GITHUB_REPOSITORY" \
             --ref dev-atomica \
             -f release_tag="$RELEASE_TAG"

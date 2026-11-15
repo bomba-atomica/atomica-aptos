@@ -44,6 +44,8 @@ grep -Fq 'RELEASE_TAG: ${{ needs.build-aptos-binaries.outputs.release_tag }}' <<
   || fail "image dispatch job does not pass the published release tag"
 grep -Fq 'gh workflow run build-validator-image.yml' <<<"$dispatch_job" \
   || fail "image dispatch job does not dispatch build-validator-image.yml"
+grep -Fq -- '--repo "$GITHUB_REPOSITORY"' <<<"$dispatch_job" \
+  || fail "image dispatch job does not provide explicit repository context"
 grep -Fq -- '--ref dev-atomica' <<<"$dispatch_job" \
   || fail "image dispatch job does not target dev-atomica"
 grep -Fq -- '-f release_tag="$RELEASE_TAG"' <<<"$dispatch_job" \

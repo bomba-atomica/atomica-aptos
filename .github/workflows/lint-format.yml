@@ -158,6 +158,20 @@ jobs:
           grep -Fq 'validator image workflow lost release event' "$failure_output"
           echo "The dispatch guard rejected a validator workflow with its release trigger removed"
 
+          workflow_without_repo="$RUNNER_TEMP/build-aptos-binary-without-repo-context.yml"
+          awk '!/--repo "\$GITHUB_REPOSITORY"/' \
+            .github/workflows/build-aptos-binary.yml > "$workflow_without_repo"
+
+          failure_output="$RUNNER_TEMP/check-release-dispatch-repo-negative.log"
+          if bash atomica/scripts/check-release-dispatch.sh "$workflow_without_repo" \
+            > "$failure_output" 2>&1; then
+            cat "$failure_output"
+            echo "The dispatch guard passed after the repository context was removed" >&2
+            exit 1
+          fi
+          grep -Fq 'image dispatch job does not provide explicit repository context' "$failure_output"
+          echo "The dispatch guard rejected a workflow dispatch without explicit repository context"
+
       - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -c clippy
