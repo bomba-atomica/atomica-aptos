@@ -34,8 +34,8 @@ grep -Fq '} >> "$GITHUB_OUTPUT"' <<<"$build_job" \
   || fail "git-commit outputs are not appended to GITHUB_OUTPUT"
 grep -Fq 'needs: build-aptos-binaries' <<<"$dispatch_job" \
   || fail "image dispatch job does not wait for the binary release job"
-grep -Fq "if: github.ref == 'refs/heads/dev-atomica'" <<<"$dispatch_job" \
-  || fail "image dispatch job is not gated on dev-atomica"
+grep -Eq "^    if: github.ref == 'refs/heads/dev-atomica'$" <<<"$dispatch_job" \
+  || fail "image dispatch job condition must be exactly the dev-atomica ref guard"
 grep -Eq '^      actions: write$' <<<"$dispatch_job" \
   || fail "image dispatch job lacks actions: write permission"
 grep -Fq 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' <<<"$dispatch_job" \
