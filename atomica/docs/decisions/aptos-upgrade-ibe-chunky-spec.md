@@ -92,7 +92,7 @@ All of this uses the trait methods of `TranscriptCore` on the chunky `Subtranscr
 | Master public key `mpk` (G2, 96 bytes) | `subtranscript.get_dealt_public_key().as_g2()` (`V0`) | `subtranscript.rs` line 104, `fptx_weighted.rs` line 251 for the same call |
 | Verification key of virtual player `p` (G2) | `subtranscript.get_public_key_share(config, &player)` (`Vs[player][j] = g2^{s_p}`) | `subtranscript.rs` lines 93 to 101 |
 | Validator's master secret shares (Fr, one per virtual player) | `subtranscript.decrypt_own_share(config, &player, &dk, &pp)` with `dk` the consensus key | `subtranscript.rs` lines 109 to 153 |
-| Weights and threshold | The session's `WeightedConfigArkworks` (`reconstruct_threshold_in_weights`, per-validator weights) | `types/src/dkg/chunky_dkg.rs` lines 347 to 395 |
+| Weights and threshold | The session's `WeightedConfigArkworks` from `timelock_threshold_config` (per-validator weights of the default rounding, threshold `floor(2W/3) + 1`) | `types/src/dkg/chunky_dkg.rs`, `types/src/dkg/real_dkg/rounding/mod.rs` |
 
 Rules:
 
@@ -100,7 +100,17 @@ Rules:
 - After `decrypt_own_share`, the node checks `vk_j == g2 * share_j` for each of its virtual players. This is the same check FPTX setup runs (`fptx_weighted.rs`, the `VKMSKMismatchError` loop). On mismatch the node does not serve the timelock for that epoch. It logs and raises an alert.
 - Shares are derived again at every epoch start from the on-chain subtranscript and the consensus key, the way the mempool does it (`epoch_manager.rs` lines 1169 to 1227). No new secret is persisted by the node.
 - When the DKG result is accepted, the handler also checks that `V0` equals the Lagrange interpolation in G2 of any threshold set of virtual public key shares. A subtranscript whose `V0` and `Vs` disagree is rejected. Whether upstream transcript verification already implies this is a question for the cryptographer. The check is cheap, so it is required here.
-- The Shamir polynomial degree comes from the DKG. The registry threshold is therefore the DKG's `reconstruct_threshold_in_weights`, stored in `TimelockEpochConfig`. It replaces today's fixed two-thirds-plus-one of total weight (`ibe_config.move` constants `DEFAULT_REVEAL_THRESHOLD_NUMERATOR` and `DENOMINATOR`, used in `submit_dk_shares`). <!-- SCOUT(#242) DOC: this spec never states the secrecy bound. It is 1/2 of stake by default, from the chunky DKG config the timelock session shares with the mempool session. The PRD sentence on bid secrecy depends on it. -->
+- The Shamir polynomial degree comes from the DKG. The registry threshold is therefore the DKG's `reconstruct_threshold_in_weights`, stored in `TimelockEpochConfig`. It replaces today's fixed two-thirds-plus-one of total weight (`ibe_config.move` constants `DEFAULT_REVEAL_THRESHOLD_NUMERATOR` and `DENOMINATOR`, used in `submit_dk_shares`).
+- The timelock session has one bound of two thirds of stake, for both secrecy and reconstruction (owner decision D4b). It does not read the on-chain chunky DKG config, which belongs to the mempool session (secrecy 1/2, reconstruction 2/3 of stake by default). The weights are the default rounding of the stakes, so the share count is unchanged. The threshold weight is the smallest weight above two thirds of the total weight, `floor(2W/3) + 1`, the consensus quorum rule.
+- Weight rounding makes the bound hold in stake only outside a rounding band. The band is computed, not engineered away. Per tested stake vector (`dkg::real_dkg::rounding::tests::timelock`):
+
+| Stake vector | Weights | Threshold weight | Rounding band (stake fraction) |
+|---|---|---|---|
+| 4 equal | `[1, 1, 1, 1]` | 3 of 4 | none: 2 validators (0.50) cannot, any 3 (0.75) can |
+| 7 equal | `[1; 7]` | 5 of 7 | none: 4 validators (0.571) cannot, any 5 (0.714) can |
+| 10 skewed `[30, 20, 15, 10, 8, 6, 4, 3, 2, 2]` | `[6, 4, 3, 2, 2, 1, 1, 1, 0, 0]` | 14 of 20 | 0.65 to 0.70: a 0.65 subset can rebuild the key, a 0.70 subset may not |
+| 60 percent dominant `[60, 10, 10, 10, 10]` | `[5, 1, 1, 1, 1]` | 7 of 9 | 2/3 to 0.70, reconstruction side only: 0.60 alone cannot, 0.70 cannot, 0.80 can |
+
 
 ### Separation from the mempool
 

@@ -95,7 +95,9 @@ module aptos_framework::reconfiguration_with_dkg {
             target_validator_set,
         );
         // Second chunky DKG session for the timelock secret. No-op while the feature is off.
-        // SCOUT(#242) EDIT: the timelock session takes `chunky_dkg_config::current()`, shared with the mempool session (secrecy 1/2 and reconstruction 2/3 of stake by default). A 67 percent secrecy bound for bids needs its own config or changes both sessions (owner decision 31).
+        // Its metadata carries `chunky_dkg_config::current()`, but its weights and threshold ignore it: the
+        // timelock profile (Rust `timelock_threshold_config`) has one bound of two thirds of stake for
+        // secrecy and reconstruction.
         timelock_dkg::start(
             cur_epoch,
             chunky_dkg_config::current(),

@@ -280,4 +280,69 @@ module aptos_framework::ibe_golden_vector_tests {
         assert!(got.is_some(), 1);
         assert!(got.destroy_some().length() != 8, 2);
     }
+
+    // ------------------------------------------------------------------ stake-derived case (two thirds of stake)
+
+    fun sum_at(values: &vector<u64>, idx: &vector<u64>): u64 {
+        let total = 0;
+        let i = 0;
+        while (i < idx.length()) {
+            total += *values.borrow(*idx.borrow(i));
+            i += 1;
+        };
+        total
+    }
+
+    /// The timelock profile: the threshold weight is the smallest weight above two thirds of the total.
+    /// Every recorded reconstruction set holds at least two thirds of stake and the threshold weight.
+    /// Every recorded below-threshold set holds less than the threshold weight.
+    #[test]
+    fun stake_derived_sets_follow_the_two_thirds_rule() {
+        let stakes = fx::stake_derived_stakes();
+        let weights = fx::stake_derived_weights();
+        let t = fx::stake_derived_threshold();
+        let total = fx::stake_derived_total_weight();
+        assert!(stakes.length() == weights.length(), 0);
+        let all = vector[];
+        let i = 0;
+        while (i < weights.length()) { all.push_back(i); i += 1; };
+        assert!(sum_at(&weights, &all) == total, 1);
+        assert!(t * 3 > total * 2 && (t - 1) * 3 <= total * 2, 2);
+        let total_stake = sum_at(&stakes, &all);
+        fx::stake_derived_reconstruction_sets().for_each_ref(|set| {
+            assert!(sum_at(&weights, set) >= t, 3);
+            assert!(sum_at(&stakes, set) * 3 >= total_stake * 2, 4);
+        });
+        let below = fx::stake_derived_below_threshold_sets();
+        assert!(below.length() == 3, 5);
+        below.for_each_ref(|set| assert!(sum_at(&weights, set) < t, 6));
+    }
+
+    #[test(fw = @aptos_framework)]
+    fun stake_derived_shares_verify(fw: &signer) {
+        enable_algebra(fw);
+        let shares = fx::stake_derived_dk_shares();
+        let vks = fx::stake_derived_verification_keys();
+        let weights = fx::stake_derived_weights();
+        assert!(shares.length() == weights.length() && vks.length() == weights.length(), 0);
+        let v = 0;
+        while (v < shares.length()) {
+            assert!(shares.borrow(v).length() == *weights.borrow(v), 100 + v);
+            assert!(shares_verify(fx::identity(), *shares.borrow(v), *vks.borrow(v)), 200 + v);
+            v += 1;
+        };
+    }
+
+    /// The key of a two-thirds set passes the key check. The forced interpolation of each
+    /// below-threshold set fails it, so those sets cannot open a bid.
+    #[test]
+    fun stake_derived_key_check() {
+        assert!(ibe::verify_decryption_key(fx::stake_derived_dk(), fx::identity(), fx::stake_derived_mpk()), 0);
+        assert!(!ibe::verify_decryption_key(fx::dk(), fx::identity(), fx::stake_derived_mpk()), 1);
+        let forced = fx::stake_derived_forced_dks();
+        assert!(forced.length() == 3, 2);
+        forced.for_each_ref(|dk| {
+            assert!(!ibe::verify_decryption_key(*dk, fx::identity(), fx::stake_derived_mpk()), 3);
+        });
+    }
 }

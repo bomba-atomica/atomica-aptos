@@ -71,7 +71,16 @@ The public key of the IBE system, generated via DKG and published on-chain. All 
 The secret key from which all decryption keys are derived. Never reconstructed or stored on any single machine.
 
 - **Distribution**: Split into shares via DKG
-- **Threshold**: Requires 2/3+ of validator shares to reconstruct <!-- SCOUT(#242) DOC: reconstruction needs 2/3 of stake. Secrecy holds only against at most 1/2 of stake (fork default); this file does not say so. -->
+- **Threshold**: One bound of two thirds of stake, for both secrecy and reconstruction. A validator set below two thirds of stake cannot rebuild a decryption key. A set at or above two thirds can. In weights, a set needs strictly more than two thirds of the total weight: `floor(2W/3) + 1` (`DKGRoundingProfile::timelock`, `timelock_threshold_config`). The mempool chunky DKG and the randomness DKG keep their own thresholds.
+- **Rounding band**: Stake is rounded to small integer weights, so both statements hold only outside a band around two thirds. The weighting is the default rounding (secrecy 1/2, reconstruction 2/3), unchanged. The band per tested stake vector, computed by `cargo test -p aptos-types --lib dkg::real_dkg::rounding::tests::timelock`:
+
+| Stake vector | Weights | Threshold weight | Rounding band (stake fraction) |
+|---|---|---|---|
+| 4 equal | `[1, 1, 1, 1]` | 3 of 4 | none: 2 validators (0.50) cannot, any 3 (0.75) can |
+| 7 equal | `[1; 7]` | 5 of 7 | none: 4 validators (0.571) cannot, any 5 (0.714) can |
+| 10 skewed `[30, 20, 15, 10, 8, 6, 4, 3, 2, 2]` | `[6, 4, 3, 2, 2, 1, 1, 1, 0, 0]` | 14 of 20 | 0.65 to 0.70: a 0.65 subset can rebuild the key, a 0.70 subset may not |
+| 60 percent dominant `[60, 10, 10, 10, 10]` | `[5, 1, 1, 1, 1]` | 7 of 9 | 2/3 to 0.70, reconstruction side only: 0.60 alone cannot, 0.70 cannot, 0.80 can |
+
 
 ### Decryption Key (DK)
 
