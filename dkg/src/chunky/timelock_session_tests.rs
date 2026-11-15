@@ -55,7 +55,7 @@ use aptos_types::{
     chain_id::ChainId,
     dkg::{
         chunky_dkg::{
-            chunky_threshold_config, AggregatedSubtranscript,
+            chunky_threshold_config, timelock_threshold_config, AggregatedSubtranscript,
             CertifiedAggregatedChunkySubtranscript, ChunkyDKGPublicParameters, ChunkyDKGStartEvent,
             ChunkyDecryptPrivKey, ChunkyTranscript, TimelockDKGSessionId,
         },
@@ -181,7 +181,7 @@ fn local_hash() -> HashValue {
 }
 
 fn derived_mpk(f: &Fixture) -> Vec<u8> {
-    let config = chunky_threshold_config(&f.timelock.session_metadata);
+    let config = timelock_threshold_config(&f.timelock.session_metadata);
     derive_timelock_config(&f.timelock_agg.subtranscript, &config)
         .unwrap()
         .mpk
@@ -261,8 +261,9 @@ fn two_sessions_one_reconfiguration_distinct_ids_unrelated_mpk() {
 
     // Unrelated master public keys, and both interpolate (V0 against Vs).
     let mempool_cfg = chunky_threshold_config(&f.mempool.session_metadata);
+    let timelock_cfg = timelock_threshold_config(&f.timelock.session_metadata);
     let m = derive_timelock_config(&f.mempool_agg.subtranscript, &mempool_cfg).unwrap();
-    let t = derive_timelock_config(&f.timelock_agg.subtranscript, &mempool_cfg).unwrap();
+    let t = derive_timelock_config(&f.timelock_agg.subtranscript, &timelock_cfg).unwrap();
     assert_ne!(m.mpk, t.mpk);
     assert_ne!(m.verification_keys, t.verification_keys);
 }
@@ -1145,6 +1146,165 @@ async fn two_managers_in_one_epoch_produce_separate_results() {
         .unwrap()
         .mpk;
     assert_ne!(timelock_result.mpk, mempool_mpk);
+}
+
+// ---- one bound of two thirds of stake: real dealing, aggregation and key reconstruction ----
+
+/// A real timelock DKG over `stakes`: every validator deals, the transcripts are aggregated, and every
+/// validator derives its own shares from the subtranscript and its consensus key.
+struct RealTimelockKeys {
+    stakes: Vec<u64>,
+    weights: Vec<u64>,
+    threshold: usize,
+    total: usize,
+    mpk: Vec<u8>,
+    identity: [u8; 32],
+    /// `(virtual player id, dk share)` of each validator, for `identity`.
+    per_validator: Vec<Vec<(usize, Vec<u8>)>>,
+}
+
+fn real_timelock_dkg(stakes: Vec<u64>) -> RealTimelockKeys {
+    let setup = ChunkyTestSetup::new(stakes.len(), stakes.clone()).timelock_twin();
+    let config = &setup.dkg_config.threshold_config;
+    assert_eq!(*config, timelock_threshold_config(&setup.session_metadata));
+    let trxs: Vec<_> = (0..stakes.len())
+        .map(|i| setup.deal_transcript(i).1)
+        .collect();
+    let agg = aggregate(&setup, &trxs);
+    let derived = derive_timelock_config(&agg.subtranscript, config).unwrap();
+    let params = TIMELOCK_PUBLIC_PARAMETERS.as_ref().unwrap();
+    let identity = compute_identity(4, EPOCH + 1, 3, 2_000_000);
+    let per_validator = (0..stakes.len())
+        .map(|v| {
+            let player = Player { id: v };
+            let dk = ChunkyDecryptPrivKey::from(&*setup.private_keys[v]);
+            let own = derive_own_shares(&agg.subtranscript, config, &player, &dk, &params.pp)
+                .unwrap_or_else(|e| panic!("validator {v}: {e}"));
+            let start = config.get_player_starting_index(&player);
+            own.shares()
+                .iter()
+                .enumerate()
+                .map(|(j, s)| {
+                    let share = derive_decryption_key(s, &identity).unwrap();
+                    (start + j, encode_g1(&share).to_vec())
+                })
+                .collect()
+        })
+        .collect();
+    RealTimelockKeys {
+        stakes,
+        weights: derived.weights,
+        threshold: config.get_threshold_weight(),
+        total: config.get_total_weight(),
+        mpk: derived.mpk,
+        identity,
+        per_validator,
+    }
+}
+
+impl RealTimelockKeys {
+    fn validators(subset: u32, n: usize) -> Vec<usize> {
+        (0..n).filter(|v| subset >> v & 1 == 1).collect()
+    }
+
+    fn stake(&self, validators: &[usize]) -> u64 {
+        validators.iter().map(|v| self.stakes[*v]).sum()
+    }
+
+    fn weight(&self, validators: &[usize]) -> u64 {
+        validators.iter().map(|v| self.weights[*v]).sum()
+    }
+
+    fn at_least_two_thirds(&self, validators: &[usize]) -> bool {
+        3 * self.stake(validators) >= 2 * self.stakes.iter().sum::<u64>()
+    }
+
+    /// Rebuilds the key from the shares of `validators` with a polynomial of degree `threshold - 1`
+    /// (the session threshold when `None`). `Err` when the set holds too few shares, else whether the key
+    /// passes `e(dk, g2) = e(H1(id), mpk)` against the session's mpk.
+    fn opens(&self, validators: &[usize], threshold: Option<usize>) -> Result<bool, String> {
+        let mut ids = vec![];
+        let mut shares = vec![];
+        for v in validators {
+            for (id, share) in &self.per_validator[*v] {
+                ids.push(*id);
+                shares.push(decode_g1(share).unwrap());
+            }
+        }
+        let t = threshold.unwrap_or(self.threshold);
+        let dk = reconstruct_dk(&ids, &shares, t, self.total).map_err(|e| e.to_string())?;
+        Ok(verify_decryption_key(
+            &dk,
+            &self.identity,
+            &decode_g2(&self.mpk).unwrap(),
+        ))
+    }
+
+    /// A set below the threshold weight cannot rebuild the key: too few shares at the session
+    /// threshold, and the interpolation of the shares it holds fails the key check.
+    fn assert_cannot_open(&self, validators: &[usize]) {
+        assert!(
+            self.opens(validators, None).is_err(),
+            "{validators:?} reconstructs"
+        );
+        let held = self.weight(validators) as usize;
+        if held > 0 {
+            assert_eq!(
+                self.opens(validators, Some(held)),
+                Ok(false),
+                "{validators:?}"
+            );
+        }
+    }
+}
+
+/// 4 equal validators: the threshold is 3 of 4. No 2 validators rebuild the key, any 3 do, and the key
+/// matches the mpk.
+#[test]
+fn two_thirds_four_equal_validators_two_cannot_any_three_can() {
+    let k = real_timelock_dkg(vec![100; 4]);
+    assert_eq!((k.threshold, k.total), (3, 4));
+    assert!(k.threshold * 3 > k.total * 2);
+    for subset in 0u32..16 {
+        let who = RealTimelockKeys::validators(subset, 4);
+        match who.len() {
+            0..=2 => k.assert_cannot_open(&who),
+            _ => assert_eq!(k.opens(&who, None), Ok(true), "{who:?}"),
+        }
+    }
+}
+
+/// One validator holds 60 percent of stake: weights `[5, 1, 1, 1, 1]`, threshold 7 of 9. The rounding
+/// band is 2/3 to 0.70 of stake on the reconstruction side (rounding test `sixty_percent_dominant`).
+/// Every set below two thirds of stake cannot rebuild the key. Every set above 0.70 can. The 70 percent
+/// sets (the 60 percent validator and one other) sit in the band and cannot.
+#[test]
+fn two_thirds_non_uniform_stakes() {
+    let k = real_timelock_dkg(vec![60, 10, 10, 10, 10]);
+    assert_eq!(k.weights, vec![5, 1, 1, 1, 1]);
+    assert_eq!((k.threshold, k.total), (7, 9));
+    // Just under two thirds: 60 percent alone, and the four small validators (40 percent).
+    k.assert_cannot_open(&[0]);
+    k.assert_cannot_open(&[1, 2, 3, 4]);
+    // Inside the band: 70 percent.
+    k.assert_cannot_open(&[0, 1]);
+    // At or above two thirds, outside the band.
+    assert_eq!(k.opens(&[0, 1, 2], None), Ok(true));
+    assert_eq!(k.opens(&[0, 3, 4], None), Ok(true));
+    let total_stake: u64 = k.stakes.iter().sum();
+    for subset in 0u32..32 {
+        let who = RealTimelockKeys::validators(subset, 5);
+        let stake = k.stake(&who);
+        if !k.at_least_two_thirds(&who) {
+            k.assert_cannot_open(&who);
+        } else if stake * 100 > total_stake * 70 {
+            assert_eq!(k.opens(&who, None), Ok(true), "{who:?}");
+        } else {
+            // In the band [2/3, 0.70]: the 60 percent validator and one small one.
+            assert_eq!(who.len(), 2);
+            k.assert_cannot_open(&who);
+        }
+    }
 }
 
 #[test]

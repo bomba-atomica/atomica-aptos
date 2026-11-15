@@ -139,4 +139,37 @@ public fun timelock_basic_reconstructed_dk(): vector<u8> { dk() }
     /// Opens with `dk()` to a plaintext that is not 8 bytes.
     public fun bad_length_bid_ct(): vector<u8> { x"201ad9b97708fae92a60fbb38007eb6c8810c4b7e651fce274e23bd413bf3beff56084b8a8882d0eabc5b66f880674df41847387c1c2bd8a984fd48a3070f1baf00938d5463b823a2b100a9fc7f11d87157502f312ade8d3f64a5c07b9dd780bd475bbe23ceaaa19f6803755b1603a9d54cb35de49e1e8fd3f055a6d17e49e4d1c7a0c87cacde2775930953e3f071a1b29b55d4d5e7b1346504ee676d506a5177cdc8171bc990db942b0c24038d54b3ff5194a6aedaae376ea57b407ca3759ada22e577dd32b7740fc7dbb94c38bcd53381c2a3136224669aeada7742aba830630e6697b241261d983aee902" }
     public fun bad_length_bid_ad(): vector<u8> { x"1761746f6d6963612f74696d656c6f636b2d6269642f76320703000000000000000b000000000000000900000000000000d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d400401e18240a0600" }
+
+    // ---- stake-derived case: the timelock DKG profile of `stake_derived_stakes()`. Weights from the
+    // default rounding, threshold weight floor(2 * total_weight / 3) + 1. Identity: `identity()`.
+    public fun stake_derived_stakes(): vector<u64> { vector[60, 10, 10, 10, 10] }
+    public fun stake_derived_weights(): vector<u64> { vector[5, 1, 1, 1, 1] }
+    public fun stake_derived_threshold(): u64 { 7 }
+    public fun stake_derived_total_weight(): u64 { 9 }
+    public fun stake_derived_mpk(): vector<u8> { x"83ab239c3f06498c6bbc6a56170265b8794273bfbedca455a05449dd538b655efcb4fa643c22b8a44d198e82497ce6c6189c607c49086d0ab4697ef4d70f746f69a31b06eb5be86f81cfd8238dcab9e53a15732b723d733d84f9555496e87fba" }
+    public fun stake_derived_dk(): vector<u8> { x"87be7a455711c03f5a6dc9317cec66517ce6668bd04cb3e706f1b571f782b1629f64b566fc984689b8017234f196eefc" }
+    public fun stake_derived_verification_keys(): vector<vector<vector<u8>>> {
+        vector[
+            vector[x"958b9b8521f8d05b05962dc5adcc09c240f7dd4a8afd80c62a4d3dfac59ba883ae30d58b8173a6fe6981f344ae501f3e039a6f3d31ec4f28fe8a042999f037bd5efbb2847bbc808aab379a4b2bd7461438c349f64dc25507fba12344d5105b7c", x"a14ef8573554cf122b82e154a4e2fcf413672116ad1d4fe0ebc4be634d289546677a27da76901e4196ec95bace972df418652be11eb8fe5fbe09c44ac724d679e67b6dafb09dd1d79cc0e397322d45e5dca5034384ab3c2b92a0beeabd157137", x"97b74bff2f8dd600c0cbc9a56681447860d63b9855b41167eb0ca3a21b7951df2f8f2c3a06db9cb18807864882fa1a201949f17cd897f1a90f9b4bf2d4c8f346bf4fd110cf6d49fbc2df6b40758fbe6f34ed5778f73891595cdb651349b50b9c", x"b5de8dc596567a3dcdc446ee92d13b74d8ab82efad0f0f1914a5b9fdb3924e516c0f7d38f303bbebc227ad24dd02d4430b6e0f34f86f92973b5ff34115ec7fb77de81bc43c921e8e24247cb087c8516caab0735ed6d3ff2096e42869b7c8171c", x"a26dd477ea141fce63488c6c82df40cafb3e110d891c1f2efcf5ec554a6d18566c5c5da7a230c1a628276511c1b6714908f11a422f1768aba5ecdef39ecfb0ae04f1456f8fa32180a928f554d930190ba432b7ef61481812fae6f5185c758ad7"],
+            vector[x"97035e5193c075c03eaab0f82296419e3382d18af34c81fae379f006d0a997619ad4b53f20db166154ba233d64d14eea06ca1e515dc1cec2b12a6e7dcdf59dd0ff75038d45a6a655c9f346665eb7c6fc28e3fd08fe17f4406ea6da1f33ca4fe0"],
+            vector[x"ad631d3e55023b05c7f0d44a3ddab504202f6002cd65859f0e0225648ed53d284e8c95162698bf39163addc430b939af10fd304cb25b9ddc3f7350e26f4a688931a110b19a7348612a64d123be6d98696d61042dc8a141050ca56cdf32db1828"],
+            vector[x"a6cf6e3e5555fbffe430c1147afa72fe2b12142996a0e8f10980931f7390ba27217eb21387140a7bad4d5963a8855a630fb1dc27ae687a7d99198da8b2dd30ec493ac5f5d9956e755daf813ad347f2c7282a3cbcc4760c51004e2af06b217b9e"],
+            vector[x"92904d2fd17e26df27e48f8370356c9dd79759ae9aad3b4a9832f6e09f8c213c8a08166d96898a109d4f067737d865ad0dde503bcd1cda24b21acb0f261b0649ef5da5f9cdd29851238ddd2f0698664f6c87d4e327ab0a890d58cc7f45bb1307"],
+        ]
+    }
+    public fun stake_derived_dk_shares(): vector<vector<vector<u8>>> {
+        vector[
+            vector[x"87cf558182338f2ad606826bf38e3bdce8b27a86d6680ae3515d2c20910bbbbd55c7fa1b7a556d6c65f51f39853baca1", x"a8567e2b7933ddc084e6890ead7e6f5b48c9613513d437e827df2b8506a91ccbcbf03a96b2eb9f7f6596a7407f46194d", x"a04d317b74c6d26f742663fd9905e01cb38a36ff05f9949b7240a3299b7f18cb32beb8889a40bb50ceee7c3618366764", x"b1d720ad0b785b8edb4882e120c6b2e0dffed76e63aa83ec1f8b4ba0552ed4e7073ec31a119f16849f2ae1553c2ad66b", x"920023a983ee6068c5114068befd006187f0d75b6d09cf1a7129164dd449849a2cabcbaa43e18e987d271e01e779c7f7"],
+            vector[x"b228e144321691cf8132ad6b5b069c427cb54f4fce5802256d0d383c1ca1f2f7df05c5ee9b94c87ed1bbae4bfa669116"],
+            vector[x"aa10ab06f366b8ae35cdeb701c9bc798c6d6a87e328ca6fbacb977cdb5bed1fa1669abc57238057ea9d4795bb6c903a3"],
+            vector[x"adc7bffb1e8f602aee4e3b2892b4adc41e4d3822d76a79e05f6ead67c5cf8b2c088efcb4023841e86f323fdf83d1abc7"],
+            vector[x"98d6c8e0af1c1741a15ad970204745b694a803cb64ab37ff659f3fa800e6674fe0bb2863ea068f2115423b5df76369b4"],
+        ]
+    }
+    /// Validator sets that hold at least two thirds of stake and rebuild `stake_derived_dk()`.
+    public fun stake_derived_reconstruction_sets(): vector<vector<u64>> { vector[vector[0, 1, 2], vector[0, 3, 4], vector[0, 1, 2, 3, 4]] }
+    /// Validator sets below the threshold weight, index aligned with `stake_derived_forced_dks()`.
+    public fun stake_derived_below_threshold_sets(): vector<vector<u64>> { vector[vector[0], vector[0, 1], vector[1, 2, 3, 4]] }
+    /// Interpolation of each below-threshold set's shares as if they were enough. Each fails the key check.
+    public fun stake_derived_forced_dks(): vector<vector<u8>> { vector[x"8178b596462e9b735a2dcb5098106ffa987af9fe81c3b6ea0fc335507257379897c7f685ec595eb9170191083d3610a3", x"961f2d0ecb4b5b1ed4461f69b6e8c6646fa1cf827bd1a3d68e5fd1a6c0db0dbac5b881631a377a7c4461fcb28b12c049", x"b09130a9731a5e59600336781415d7badd9a9f2dc87c70e1f00b26bc38bef76072dabb6bf061ad00c376382d110b3f06"] }
 }
