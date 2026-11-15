@@ -28,8 +28,10 @@ dispatch_job="$(awk '
 [[ -n "$dispatch_job" ]] || fail "dispatch-validator-image job is missing"
 grep -Fq 'release_tag: ${{ steps.git-commit.outputs.release_tag }}' <<<"$build_job" \
   || fail "binary build job does not expose the release tag output"
-grep -Fq 'echo "release_tag=binary-$GIT_SHA" >> $GITHUB_OUTPUT' <<<"$build_job" \
+grep -Fq 'echo "release_tag=binary-$GIT_SHA"' <<<"$build_job" \
   || fail "git-commit step does not emit the exact binary release tag"
+grep -Fq '} >> "$GITHUB_OUTPUT"' <<<"$build_job" \
+  || fail "git-commit outputs are not appended to GITHUB_OUTPUT"
 grep -Fq 'needs: build-aptos-binaries' <<<"$dispatch_job" \
   || fail "image dispatch job does not wait for the binary release job"
 grep -Fq "if: github.ref == 'refs/heads/dev-atomica'" <<<"$dispatch_job" \

@@ -72,10 +72,12 @@ jobs:
             exit 1
           fi
 
-          echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
-          echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
-          echo "release_tag=binary-$GIT_SHA" >> $GITHUB_OUTPUT
-          echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          {
+            echo "sha=$GIT_SHA"
+            echo "sha_full=$GIT_SHA_FULL"
+            echo "release_tag=binary-$GIT_SHA"
+            echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
           echo "Git commit: $GIT_SHA (full: $GIT_SHA_FULL)"
 
       - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
@@ -183,7 +185,7 @@ jobs:
 
           # Compute hash of Move source files for versioning
           FRAMEWORK_HASH=$(find aptos-move/framework -name "*.move" -type f -exec sha256sum {} \; | sort | sha256sum | cut -c1-16)
-          echo "framework_hash=$FRAMEWORK_HASH" >> $GITHUB_ENV
+          echo "framework_hash=$FRAMEWORK_HASH" >> "$GITHUB_ENV"
           echo "Move framework hash: $FRAMEWORK_HASH"
 
           ls -lh head.mrb

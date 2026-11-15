@@ -100,10 +100,12 @@ jobs:
             exit 1
           fi
 
-          echo "tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
-          echo "sha=$GIT_SHA" >> $GITHUB_OUTPUT
-          echo "sha_full=$GIT_SHA_FULL" >> $GITHUB_OUTPUT
-          echo "prerelease=$PRERELEASE" >> $GITHUB_OUTPUT
+          {
+            echo "tag=$RELEASE_TAG"
+            echo "sha=$GIT_SHA"
+            echo "sha_full=$GIT_SHA_FULL"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
           echo "Release tag: $RELEASE_TAG"
           echo "Git SHA: $GIT_SHA (full: $GIT_SHA_FULL)"
           echo "Pre-release: $PRERELEASE"
@@ -112,7 +114,7 @@ jobs:
         id: dockerfile-hash
         run: |
           DOCKERFILE_HASH=$(sha256sum atomica/docker/Dockerfile | cut -c1-8)
-          echo "hash=$DOCKERFILE_HASH" >> $GITHUB_OUTPUT
+          echo "hash=$DOCKERFILE_HASH" >> "$GITHUB_OUTPUT"
           echo "Dockerfile hash: $DOCKERFILE_HASH"
 
       - name: Verify binary release exists
@@ -134,11 +136,11 @@ jobs:
           BINARY_COUNT=$(echo "$ASSET_CHECK" | wc -l)
 
           if [ "$BINARY_COUNT" -ge 2 ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "✓ Binary release found: $RELEASE_TAG"
             echo "✓ Assets found: $BINARY_COUNT"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "✗ Binary release missing required assets"
             echo "  Release: $RELEASE_TAG"
             echo "  Expected assets: $BINARY_NAME, $FAUCET_BINARY_NAME"
@@ -226,13 +228,13 @@ jobs:
           IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release-info.outputs.sha }}-${{ steps.dockerfile-hash.outputs.hash }}"
 
           if [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "Force rebuild requested - will build: $IMAGE_TAG"
           elif docker manifest inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Image already exists: $IMAGE_TAG"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "Image does not exist, will build: $IMAGE_TAG"
           fi
 
