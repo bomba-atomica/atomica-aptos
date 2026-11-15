@@ -140,6 +140,24 @@ jobs:
           grep -Fq 'image dispatch job condition must be exactly the dev-atomica ref guard' "$failure_output"
           echo "The dispatch guard rejected a job condition that excludes push and workflow_dispatch"
 
+          image_without_release="$RUNNER_TEMP/build-validator-image-without-release.yml"
+          awk '
+            /^  release:$/ { skip = 1; next }
+            skip && /^  [A-Za-z0-9_-]+:$/ { skip = 0 }
+            !skip { print }
+          ' .github/workflows/build-validator-image.yml > "$image_without_release"
+
+          failure_output="$RUNNER_TEMP/check-release-trigger-negative.log"
+          if bash atomica/scripts/check-release-dispatch.sh \
+            .github/workflows/build-aptos-binary.yml "$image_without_release" \
+            > "$failure_output" 2>&1; then
+            cat "$failure_output"
+            echo "The dispatch guard passed after the validator release trigger was removed" >&2
+            exit 1
+          fi
+          grep -Fq 'validator image workflow lost release event' "$failure_output"
+          echo "The dispatch guard rejected a validator workflow with its release trigger removed"
+
       - name: Install Rust toolchain (pinned, matches rust-toolchain.toml)
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -c clippy

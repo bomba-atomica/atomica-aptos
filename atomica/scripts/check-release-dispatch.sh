@@ -53,6 +53,20 @@ grep -Fq 'CI_CLASS: ignore' "$BINARY_WORKFLOW" \
   || fail "binary workflow lost CI_CLASS: ignore"
 grep -Fq 'CI_CLASS: ignore' "$IMAGE_WORKFLOW" \
   || fail "validator image workflow lost CI_CLASS: ignore"
+image_release_event="$(awk '
+  /^on:$/ { in_events = 1; next }
+  in_events && /^[^[:space:]]/ { exit }
+  in_events { print }
+' "$IMAGE_WORKFLOW")"
+grep -Eq '^  release:$' <<<"$image_release_event" \
+  || fail "validator image workflow lost release event"
+image_release_trigger="$(awk '
+  /^  release:$/ { in_release = 1; print; next }
+  in_release && /^  [A-Za-z0-9_-]+:$/ { exit }
+  in_release { print }
+' <<<"$image_release_event")"
+grep -Eq '^    types: \[published\]$' <<<"$image_release_trigger" \
+  || fail "validator image workflow lost release published trigger"
 grep -Eq '^  workflow_dispatch:$' "$IMAGE_WORKFLOW" \
   || fail "validator image workflow lost workflow_dispatch"
 grep -Eq '^      release_tag:$' "$IMAGE_WORKFLOW" \
