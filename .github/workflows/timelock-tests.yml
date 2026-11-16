@@ -43,6 +43,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  CI_CLASS: feature-correctness
   RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1

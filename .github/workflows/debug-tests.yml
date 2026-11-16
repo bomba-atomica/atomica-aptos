@@ -8,6 +8,7 @@ on:
       - main
       - dev-atomica
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
       - dev-atomica
@@ -29,6 +30,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  CI_CLASS: system-correctness
   RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -47,6 +49,7 @@ env:
 
 jobs:
   debug-tests:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: Debug Smoke Tests
     runs-on: ubuntu-latest
     timeout-minutes: 240

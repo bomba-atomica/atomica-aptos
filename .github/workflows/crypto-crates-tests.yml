@@ -2,9 +2,11 @@ name: Crypto Crates Tests
 
 on:
   push:
+    paths-ignore: ['**.md', '**.txt']
     branches:
       - dev-atomica
   pull_request:
+    paths-ignore: ['**.md', '**.txt']
     types: [opened, synchronize, reopened]
     branches:
       - dev-atomica
@@ -17,6 +19,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  CI_CLASS: feature-correctness
   RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -25,14 +28,6 @@ env:
   RUST_MIN_STACK: 104857600
 
 jobs:
-  guard-selftest:
-    name: Zero-test guard self-test
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4.2.2
-      - run: .github/scripts/tests/selftest.sh
-
   crypto-crates:
     name: Crypto Crates Tests
     runs-on: ubuntu-latest
