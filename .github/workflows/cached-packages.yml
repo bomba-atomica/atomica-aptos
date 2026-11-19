@@ -35,6 +35,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  CI_CLASS: code-hygiene
   RUST_TOOLCHAIN: "1.94.1"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
